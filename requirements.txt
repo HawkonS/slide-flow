@@ -3,3 +3,4 @@ uvicorn[standard]>=0.30
 python-multipart>=0.0.9
 fonttools>=4.53
 Pillow>=10.4
+psutil>=5.9

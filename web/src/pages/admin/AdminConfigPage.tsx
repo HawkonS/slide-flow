@@ -93,16 +93,9 @@ export function AdminConfigPage() {
         json: { items },
       }),
     onSuccess: (res) => {
-      const appliedCount = res.applied.length;
       const pendingCount = res.pending_restart.length;
-      if (appliedCount && pendingCount) {
-        toast.success(
-          `保存成功：${appliedCount} 项已即时生效，${pendingCount} 项需重启服务后生效`,
-        );
-      } else if (appliedCount) {
-        toast.success(`保存成功，${appliedCount} 项已即时生效`);
-      } else if (pendingCount) {
-        toast.success(`保存成功，${pendingCount} 项需重启服务后生效`);
+      if (pendingCount) {
+        toast.success(`保存成功，${pendingCount} 项配置需重启服务后生效`);
       } else {
         toast.success("保存成功");
       }
@@ -159,10 +152,10 @@ export function AdminConfigPage() {
   return (
     <div className="mx-auto flex max-w-5xl flex-col gap-4">
       <div className="flex flex-col gap-1">
-        <h1 className="text-xl font-semibold">系统配置</h1>
+        <h1 className="text-xl font-semibold">配置管理</h1>
         <p className="text-sm text-muted-foreground">
           直接读写 <code className="rounded bg-muted px-1.5 py-0.5 text-xs">slide_flow.properties</code>
-          。可热加载项保存后立即生效，其余项需重启服务。
+          。所有配置修改需重启服务后生效。
         </p>
       </div>
 
@@ -193,18 +186,12 @@ export function AdminConfigPage() {
                       <code className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
                         {key}
                       </code>
-                      {item.hot_reload ? (
-                        <Badge variant="secondary" className="text-[10px]">
-                          可热加载
-                        </Badge>
-                      ) : (
-                        <Badge
-                          className="border-amber-500/40 bg-amber-100 text-[10px] text-amber-800 hover:bg-amber-100"
-                          variant="outline"
-                        >
-                          需重启
-                        </Badge>
-                      )}
+                      <Badge
+                        className="border-amber-500/40 bg-amber-100 text-[10px] text-amber-800 hover:bg-amber-100"
+                        variant="outline"
+                      >
+                        需重启
+                      </Badge>
                       {changed && (
                         <Badge variant="outline" className="text-[10px]">
                           已修改

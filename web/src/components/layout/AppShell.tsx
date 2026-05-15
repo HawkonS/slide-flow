@@ -50,7 +50,7 @@ const systemNav: NavItem[] = [
 ];
 
 const superAdminNav: NavItem[] = [
-  { to: "/admin/config", label: "系统配置", icon: SlidersHorizontal },
+  { to: "/admin/system", label: "系统管理", icon: SlidersHorizontal },
 ];
 
 const manageNav: NavItem[] = [

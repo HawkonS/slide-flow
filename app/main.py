@@ -6,19 +6,23 @@ import copy
 import io
 import json
 import logging
+import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import tempfile
 import threading
 import time
 import urllib.request
 import uuid
 import zipfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
 
+import psutil
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
@@ -32,6 +36,7 @@ from pydantic import BaseModel
 from app.config import (
     CONFIG_GROUPS,
     CONFIG_META,
+    PROPERTIES_FILE,
     _coerce_value,
     read_config_view,
     reload_settings,
@@ -1213,6 +1218,222 @@ def api_admin_config_get(
     return {"config": config, "groups": CONFIG_GROUPS}
 
 
+# ==================== 系统管理 API ====================
+
+@app.get("/api/admin/system/status")
+def api_admin_system_status(
+    _: sqlite3.Row = Depends(require_super_admin),
+) -> dict[str, Any]:
+    """获取系统运行状态（仅超级管理员）。集成 manage_service.sh 服务管理。"""
+    # 获取当前进程信息
+    backend_pid = os.getpid()
+    backend_port = settings.port
+    frontend_port = settings.web_port
+    
+    # 尝试获取前端进程（通过端口查找）
+    frontend_pid = None
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f"tcp:{frontend_port}"],
+            capture_output=True,
+            text=True,
+            timeout=2
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            frontend_pid = int(result.stdout.strip().split('\n')[0])
+    except Exception:
+        pass
+    
+    # 计算运行时长
+    try:
+        process_start_time = psutil.Process(backend_pid).create_time()
+        uptime_seconds = int(time.time() - process_start_time)
+        start_time = datetime.fromtimestamp(process_start_time).isoformat()
+    except Exception:
+        uptime_seconds = 0
+        start_time = datetime.now().isoformat()
+    
+    # 检查 systemd 服务状态
+    service_name = "slide-flow"
+    service_status = "unknown"
+    service_enabled = "unknown"
+    
+    try:
+        # 检查服务是否运行
+        result = subprocess.run(
+            ["systemctl", "is-active", "--quiet", service_name],
+            capture_output=True,
+            timeout=2
+        )
+        service_status = "running" if result.returncode == 0 else "stopped"
+        
+        # 检查是否开机自启
+        result = subprocess.run(
+            ["systemctl", "is-enabled", "--quiet", service_name],
+            capture_output=True,
+            timeout=2
+        )
+        service_enabled = "enabled" if result.returncode == 0 else "disabled"
+    except Exception:
+        # 如果没有 systemd 或权限不足，使用进程检测
+        service_status = "running" if frontend_pid else "direct_mode"
+    
+    return {
+        "uptime_seconds": uptime_seconds,
+        "backend_pid": backend_pid,
+        "backend_port": backend_port,
+        "frontend_pid": frontend_pid,
+        "frontend_port": frontend_port,
+        "start_time": start_time,
+        "config_file": str(PROPERTIES_FILE),
+        "log_dir": str(settings.log_dir),
+        "service_name": service_name,
+        "service_status": service_status,
+        "service_enabled": service_enabled,
+        "mode": "systemd" if service_status in ["running", "stopped"] else "direct",
+    }
+
+
+@app.post("/api/admin/system/shutdown")
+def api_admin_system_shutdown(
+    _: sqlite3.Row = Depends(require_super_admin),
+) -> dict[str, Any]:
+    """关闭系统服务（仅超级管理员）。使用 manage_service.sh 脚本。"""
+    
+    def do_shutdown():
+        """在后台执行关闭操作"""
+        time.sleep(1)  # 给API响应一些时间返回
+        try:
+            manage_script = settings.root_dir / "tools" / "manage_service.sh"
+            if manage_script.exists():
+                # 使用 manage_service.sh 停止服务
+                subprocess.run(
+                    ["bash", str(manage_script), "stop"],
+                    timeout=60,
+                    cwd=str(settings.root_dir)
+                )
+            else:
+                # 回退到 stop.sh
+                stop_script = settings.root_dir / "stop.sh"
+                subprocess.run(
+                    ["bash", str(stop_script)],
+                    timeout=30,
+                    cwd=str(settings.root_dir)
+                )
+        except Exception as e:
+            logger.error(f"关闭服务失败: {e}")
+    
+    # 在后台线程执行关闭
+    threading.Thread(target=do_shutdown, daemon=True).start()
+    
+    return {"message": "关闭指令已发送"}
+
+
+@app.post("/api/admin/system/restart")
+def api_admin_system_restart(
+    _: sqlite3.Row = Depends(require_super_admin),
+) -> dict[str, Any]:
+    """重启系统服务（仅超级管理员）。使用 manage_service.sh 脚本。"""
+    
+    def do_restart():
+        """在后台执行重启操作"""
+        time.sleep(1)  # 给API响应一些时间返回
+        try:
+            manage_script = settings.root_dir / "tools" / "manage_service.sh"
+            if manage_script.exists():
+                # 使用 manage_service.sh 重启服务
+                subprocess.run(
+                    ["bash", str(manage_script), "restart"],
+                    timeout=60,
+                    cwd=str(settings.root_dir)
+                )
+            else:
+                # 回退到 stop.sh + start.sh
+                stop_script = settings.root_dir / "stop.sh"
+                start_script = settings.root_dir / "start.sh"
+                
+                subprocess.run(
+                    ["bash", str(stop_script)],
+                    timeout=30,
+                    cwd=str(settings.root_dir)
+                )
+                time.sleep(2)
+                
+                subprocess.Popen(
+                    ["bash", str(start_script)],
+                    cwd=str(settings.root_dir),
+                    start_new_session=True
+                )
+        except Exception as e:
+            logger.error(f"重启服务失败: {e}")
+    
+    # 在后台线程执行重启
+    threading.Thread(target=do_restart, daemon=True).start()
+    
+    return {"message": "重启指令已发送"}
+
+
+@app.get("/api/admin/system/logs")
+def api_admin_system_logs(
+    _: sqlite3.Row = Depends(require_super_admin),
+) -> list[dict[str, Any]]:
+    """获取日志文件列表（仅超级管理员）。"""
+    log_files = []
+    log_dir = settings.log_dir
+    
+    if not log_dir.exists():
+        return []
+    
+    for file_path in log_dir.iterdir():
+        if file_path.is_file() and file_path.suffix == '.log':
+            stat = file_path.stat()
+            log_files.append({
+                "filename": file_path.name,
+                "path": str(file_path),
+                "size_bytes": stat.st_size,
+                "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            })
+    
+    # 按修改时间倒序排列
+    log_files.sort(key=lambda x: x["modified"], reverse=True)
+    
+    return log_files
+
+
+@app.get("/api/admin/system/logs/{filename}")
+def api_admin_system_logs_download(
+    filename: str,
+    download: bool = False,
+    _: sqlite3.Row = Depends(require_super_admin),
+) -> FileResponse:
+    """下载日志文件（仅超级管理员）。"""
+    # 防止目录遍历攻击
+    if ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(400, "非法文件名")
+    
+    log_dir = settings.log_dir
+    file_path = log_dir / filename
+    
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(404, "日志文件不存在")
+    
+    # 确保文件在日志目录内
+    if not str(file_path.resolve()).startswith(str(log_dir.resolve())):
+        raise HTTPException(400, "非法文件路径")
+    
+    if download:
+        return FileResponse(
+            str(file_path),
+            media_type="application/octet-stream",
+            filename=filename
+        )
+    else:
+        return FileResponse(
+            str(file_path),
+            media_type="text/plain"
+        )
+
+
 class AdminConfigUpdatePayload(BaseModel):
     items: dict[str, str]
 
@@ -1222,7 +1443,7 @@ def api_admin_config_put(
     payload: AdminConfigUpdatePayload,
     _: sqlite3.Row = Depends(require_super_admin),
 ) -> dict[str, Any]:
-    """修改配置项（仅超级管理员）。可热加载项立即生效，其余需重启。"""
+    """修改配置项（仅超级管理员）。所有配置修改需重启服务后生效。"""
     invalid = [k for k in payload.items.keys() if k not in CONFIG_META]
     if invalid:
         raise HTTPException(400, f"未知配置项: {', '.join(invalid)}")
@@ -1240,18 +1461,10 @@ def api_admin_config_put(
 
     write_properties(payload.items)
 
-    applied: list[str] = []
-    pending: list[str] = []
-    for key in payload.items.keys():
-        if CONFIG_META[key]["hot_reload"]:
-            applied.append(key)
-        else:
-            pending.append(key)
+    # 所有配置都需要重启生效
+    pending: list[str] = list(payload.items.keys())
 
-    if applied:
-        reload_settings()
-
-    return {"applied": applied, "pending_restart": pending}
+    return {"applied": [], "pending_restart": pending}
 
 
 @app.get("/api/config")
