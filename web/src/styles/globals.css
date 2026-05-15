@@ -1,0 +1,104 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* 深浅底 + blue-500 主色 */
+    --background: 0 0% 100%;
+    --foreground: 222 47% 11%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+
+    /* blue-500 #3b82f6 */
+    --primary: 221 83% 53%;
+    --primary-foreground: 210 40% 98%;
+    --primary-weak: 214 100% 95%;
+
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 222 47% 11%;
+
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
+
+    --accent: 214 95% 93%;
+    --accent-foreground: 221 83% 40%;
+
+    /* red-600 */
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    /* emerald-600 */
+    --success: 160 84% 32%;
+    --success-foreground: 0 0% 100%;
+
+    /* amber-600 */
+    --warning: 32 95% 44%;
+    --warning-foreground: 0 0% 100%;
+
+    /* slate-200 */
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 221 83% 53%;
+
+    --radius: 0.75rem;
+  }
+
+  .dark {
+    --background: 222 47% 8%;
+    --foreground: 210 40% 96%;
+    --card: 222 47% 10%;
+    --card-foreground: 210 40% 96%;
+    --popover: 222 47% 10%;
+    --popover-foreground: 210 40% 96%;
+    --primary: 217 91% 60%;
+    --primary-foreground: 222 47% 11%;
+    --primary-weak: 222 47% 18%;
+    --secondary: 217 33% 17%;
+    --secondary-foreground: 210 40% 96%;
+    --muted: 217 33% 17%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 222 47% 18%;
+    --accent-foreground: 217 91% 75%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 160 70% 45%;
+    --success-foreground: 0 0% 100%;
+    --warning: 32 95% 55%;
+    --warning-foreground: 0 0% 100%;
+    --border: 217 33% 22%;
+    --input: 217 33% 22%;
+    --ring: 217 91% 60%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family:
+      -apple-system,
+      BlinkMacSystemFont,
+      "PingFang SC",
+      "Source Han Sans SC",
+      "Microsoft YaHei",
+      "Segoe UI",
+      Roboto,
+      "Helvetica Neue",
+      Arial,
+      sans-serif;
+    font-feature-settings: "tnum";
+    -webkit-font-smoothing: antialiased;
+  }
+}

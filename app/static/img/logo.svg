@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Slide Flow">
+  <rect width="128" height="128" rx="24" fill="#0f766e"/>
+  <path d="M30 34h68v42H30z" fill="#ffffff"/>
+  <path d="M42 48h44v8H42zm0 17h28v8H42z" fill="#0f766e"/>
+  <path d="M40 93h48" stroke="#f97316" stroke-width="8" stroke-linecap="round"/>
+  <path d="M64 76v17" stroke="#f97316" stroke-width="8" stroke-linecap="round"/>
+</svg>

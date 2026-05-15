@@ -1,0 +1,424 @@
+import * as React from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { TagInput } from "@/components/resource/TagInput";
+import { UserPicker } from "@/components/resource/UserPicker";
+import { ResourcePicker } from "@/components/show/ResourcePicker";
+import {
+  MANAGEMENT_SCOPE_OPTIONS,
+  RESOURCE_STATUS_FORM_OPTIONS,
+  SECRECY_LEVEL_FORM_OPTIONS,
+  VISIBILITY_SCOPE_OPTIONS,
+} from "@/lib/constants";
+import { api } from "@/lib/api";
+import { Show, parseTags, serializeTags, ShowResourceAccessible } from "@/lib/types";
+
+export interface ShowEditDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** 为 null 表示创建模式 */
+  show: Show | null;
+  tagSuggestions: string[];
+  subjectSuggestions: string[];
+}
+
+type ScopeValue = "public" | "partial" | "private";
+
+interface FormState {
+  name: string;
+  subject: string;
+  tagList: string[];
+  secrecy_level: "public" | "confidential" | "secret";
+  status: "active" | "disabled";
+  visibility_scope: ScopeValue;
+  management_scope: ScopeValue;
+  visible_user_ids: number[];
+  manage_user_ids: number[];
+  resource_ids: number[];
+}
+
+function defaultForm(show: Show | null): FormState {
+  if (!show) {
+    return {
+      name: "",
+      subject: "",
+      tagList: [],
+      secrecy_level: "public",
+      status: "active",
+      visibility_scope: "public",
+      management_scope: "private",
+      visible_user_ids: [],
+      manage_user_ids: [],
+      resource_ids: [],
+    };
+  }
+  return {
+    name: show.name,
+    subject: show.subject || "",
+    tagList: parseTags(show.tags),
+    secrecy_level: show.secrecy_level,
+    status: show.status,
+    visibility_scope: show.visibility_scope,
+    management_scope: show.management_scope,
+    visible_user_ids: show.visible_user_ids ?? [],
+    manage_user_ids: show.manage_user_ids ?? [],
+    resource_ids: show.resources
+      .filter((r): r is ShowResourceAccessible => r.accessible === true)
+      .map((r) => r.id),
+  };
+}
+
+export function ShowEditDialog({
+  open,
+  onOpenChange,
+  show,
+  tagSuggestions,
+  subjectSuggestions,
+}: ShowEditDialogProps) {
+  const isCreate = show == null;
+  const [form, setForm] = React.useState<FormState>(() => defaultForm(show));
+  const queryClient = useQueryClient();
+
+  React.useEffect(() => {
+    if (open) setForm(defaultForm(show));
+  }, [open, show]);
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      if (isCreate) {
+        return api("/api/shows", {
+          method: "POST",
+          json: {
+            name: form.name.trim(),
+            subject: form.subject.trim(),
+            tags: serializeTags(form.tagList),
+            status: form.status,
+            secrecy_level: form.secrecy_level,
+            visibility_scope: form.visibility_scope,
+            management_scope: form.management_scope,
+            visible_user_ids:
+              form.visibility_scope === "partial" ? form.visible_user_ids : [],
+            manage_user_ids:
+              form.management_scope === "partial" ? form.manage_user_ids : [],
+            resource_ids: form.resource_ids,
+          },
+        });
+      }
+
+      // 编辑：仅更新元数据
+      await api(`/api/shows/${show!.id}`, {
+        method: "PUT",
+        json: {
+          name: form.name.trim(),
+          subject: form.subject.trim(),
+          tags: serializeTags(form.tagList),
+          status: form.status,
+          secrecy_level: form.secrecy_level,
+          visibility_scope: form.visibility_scope,
+          management_scope: form.management_scope,
+          visible_user_ids:
+            form.visibility_scope === "partial" ? form.visible_user_ids : [],
+          manage_user_ids:
+            form.management_scope === "partial" ? form.manage_user_ids : [],
+        },
+      });
+
+      return { ok: true };
+    },
+    onSuccess: () => {
+      toast.success(isCreate ? "放映已创建" : "放映已更新");
+      queryClient.invalidateQueries({ queryKey: ["shows"] });
+      onOpenChange(false);
+    },
+    onError: (err: Error) => {
+      toast.error(err.message || "提交失败");
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async () => {
+      if (!show) throw new Error("放映不存在");
+      return api(`/api/shows/${show.id}`, { method: "DELETE" });
+    },
+    onSuccess: () => {
+      toast.success("放映已删除");
+      queryClient.invalidateQueries({ queryKey: ["shows"] });
+      onOpenChange(false);
+    },
+    onError: (err: Error) => {
+      toast.error(err.message || "删除失败");
+    },
+  });
+
+  const handleDelete = () => {
+    if (!show) return;
+    const ok = window.confirm(
+      `确定要删除放映「${show.name}」吗？此操作不可恢复。`,
+    );
+    if (!ok) return;
+    deleteMutation.mutate();
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!form.name.trim()) {
+      toast.error("请填写放映名称");
+      return;
+    }
+    if (form.visibility_scope === "partial" && form.visible_user_ids.length === 0) {
+      toast.error("可见范围为部分时请至少选择一位用户");
+      return;
+    }
+    if (form.management_scope === "partial" && form.manage_user_ids.length === 0) {
+      toast.error("管理范围为部分时请至少选择一位用户");
+      return;
+    }
+    mutation.mutate();
+  };
+
+  const ownerId = show?.owner_id;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="flex max-h-[90vh] max-w-6xl flex-col overflow-hidden">
+        <DialogHeader>
+          <DialogTitle>
+            {isCreate ? "创建放映" : "编辑信息"}
+          </DialogTitle>
+          <DialogDescription>
+            {isCreate
+              ? "创建新的放映，选择要包含的资源并配置元数据与访问范围"
+              : "修改放映的元数据与访问范围"}
+          </DialogDescription>
+        </DialogHeader>
+
+        <form
+          id="show-edit-form"
+          onSubmit={handleSubmit}
+          className="grid min-h-0 flex-1 gap-4 overflow-y-auto px-0.5 pb-1"
+        >
+          {/* 名称 */}
+          <div className="grid gap-1.5">
+            <Label htmlFor="show-name">放映名称</Label>
+            <Input
+              id="show-name"
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              required
+            />
+          </div>
+
+          {/* 主体 + 密级 + 状态 */}
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div className="grid gap-1.5">
+              <Label htmlFor="show-subject">主体</Label>
+              <Input
+                id="show-subject"
+                list="show-subject-list"
+                value={form.subject}
+                onChange={(e) => setForm({ ...form, subject: e.target.value })}
+              />
+              <datalist id="show-subject-list">
+                {subjectSuggestions.map((s) => (
+                  <option key={s} value={s} />
+                ))}
+              </datalist>
+            </div>
+
+            <div className="grid gap-1.5">
+              <Label>密级</Label>
+              <Select
+                value={form.secrecy_level}
+                onValueChange={(v) =>
+                  setForm({ ...form, secrecy_level: v as FormState["secrecy_level"] })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {SECRECY_LEVEL_FORM_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="grid gap-1.5">
+              <Label>状态</Label>
+              <Select
+                value={form.status}
+                onValueChange={(v) =>
+                  setForm({ ...form, status: v as FormState["status"] })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {RESOURCE_STATUS_FORM_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {/* 标签 */}
+          <div className="grid gap-1.5">
+            <Label>标签</Label>
+            <TagInput
+              value={form.tagList}
+              onChange={(list) => setForm({ ...form, tagList: list })}
+              suggestions={tagSuggestions}
+            />
+          </div>
+
+          {/* 可见 / 管理 范围 */}
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-1.5">
+              <Label>可见范围</Label>
+              <Select
+                value={form.visibility_scope}
+                onValueChange={(v) =>
+                  setForm({ ...form, visibility_scope: v as ScopeValue })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {VISIBILITY_SCOPE_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-1.5">
+              <Label>管理范围</Label>
+              <Select
+                value={form.management_scope}
+                onValueChange={(v) =>
+                  setForm({ ...form, management_scope: v as ScopeValue })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {MANAGEMENT_SCOPE_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {form.visibility_scope === "partial" && (
+            <div className="grid gap-1.5">
+              <Label className="text-xs text-muted-foreground">
+                可见用户（必选至少 1 人）
+              </Label>
+              <UserPicker
+                value={form.visible_user_ids}
+                onChange={(ids) => setForm({ ...form, visible_user_ids: ids })}
+                excludeIds={ownerId ? [ownerId] : undefined}
+              />
+            </div>
+          )}
+          {form.management_scope === "partial" && (
+            <div className="grid gap-1.5">
+              <Label className="text-xs text-muted-foreground">
+                可管理用户（必选至少 1 人）
+              </Label>
+              <UserPicker
+                value={form.manage_user_ids}
+                onChange={(ids) => setForm({ ...form, manage_user_ids: ids })}
+                excludeIds={ownerId ? [ownerId] : undefined}
+              />
+            </div>
+          )}
+
+          {/* 选择资源（仅创建模式） */}
+          {isCreate && (
+            <div className="grid gap-1.5">
+              <Label>选择资源</Label>
+              {/* 固定高度容器：让 ResourcePicker 内部独立滚动，chips/分页栏始终可见 */}
+              <div className="h-[52vh] min-h-[420px] overflow-hidden">
+                <ResourcePicker
+                  value={form.resource_ids}
+                  onChange={(ids) => setForm({ ...form, resource_ids: ids })}
+                  className="h-full"
+                />
+              </div>
+            </div>
+          )}
+        </form>
+
+        {/* Footer 作为 Dialog 直接子项，贴底不滚动；dialog 在此下边紧贴结束 */}
+        <DialogFooter className="flex shrink-0 flex-col-reverse gap-3 border-t bg-background px-0.5 pt-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+          {!isCreate && show?.can_manage ? (
+            <div className="flex flex-wrap items-center gap-1">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-8 px-2 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                disabled={deleteMutation.isPending}
+                onClick={handleDelete}
+              >
+                删除放映
+              </Button>
+            </div>
+          ) : (
+            <span className="hidden sm:block" />
+          )}
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              disabled={deleteMutation.isPending}
+            >
+              取消
+            </Button>
+            <Button
+              type="submit"
+              form="show-edit-form"
+              disabled={mutation.isPending || deleteMutation.isPending}
+            >
+              {mutation.isPending ? "提交中…" : isCreate ? "创建" : "保存"}
+            </Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
