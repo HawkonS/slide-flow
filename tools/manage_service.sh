@@ -190,6 +190,101 @@ check_systemd || exit 1
 check_run_script || exit 1
 check_config
 
+# 支持命令行参数模式（供 API 调用）
+if [ -n "${1:-}" ]; then
+    case "$1" in
+        start)
+            if is_installed; then
+                if systemctl is-active --quiet "$SERVICE_NAME"; then
+                    echo "服务已经在运行中"
+                    exit 0
+                fi
+                systemctl start "$SERVICE_NAME"
+                sleep 2
+                if systemctl is-active --quiet "$SERVICE_NAME"; then
+                    echo "服务已成功启动"
+                    exit 0
+                else
+                    echo "启动失败" >&2
+                    journalctl -u "$SERVICE_NAME" -n 10 --no-pager >&2
+                    exit 1
+                fi
+            else
+                echo "服务未安装，正在自动安装..."
+                install_service
+                exit $?
+            fi
+            ;;
+        stop)
+            if is_installed; then
+                if ! systemctl is-active --quiet "$SERVICE_NAME"; then
+                    echo "服务已经是停止状态"
+                    exit 0
+                fi
+                systemctl stop "$SERVICE_NAME"
+                echo "服务已停止"
+                exit 0
+            else
+                echo "服务未安装，尝试直接停止进程..."
+                if [ -f "$STOP_SCRIPT" ]; then
+                    bash "$STOP_SCRIPT"
+                    exit $?
+                else
+                    echo "停止脚本不存在" >&2
+                    exit 1
+                fi
+            fi
+            ;;
+        restart)
+            if is_installed; then
+                systemctl restart "$SERVICE_NAME"
+                echo "服务已重启"
+                exit 0
+            else
+                echo "服务未安装，使用 stop.sh + start.sh 重启..."
+                if [ -f "$STOP_SCRIPT" ] && [ -f "$RUN_SCRIPT" ]; then
+                    bash "$STOP_SCRIPT"
+                    sleep 2
+                    bash "$RUN_SCRIPT" &
+                    echo "服务已重启"
+                    exit 0
+                else
+                    echo "启动或停止脚本不存在" >&2
+                    exit 1
+                fi
+            fi
+            ;;
+        status)
+            if is_installed; then
+                systemctl status "$SERVICE_NAME" --no-pager
+            else
+                echo "服务未安装"
+                exit 1
+            fi
+            ;;
+        install)
+            install_service
+            exit $?
+            ;;
+        uninstall)
+            if is_installed; then
+                uninstall_service
+                exit $?
+            else
+                echo "服务未安装"
+                exit 1
+            fi
+            ;;
+        *)
+            echo "未知命令: $1" >&2
+            echo "用法: $0 {start|stop|restart|status|install|uninstall}" >&2
+            exit 1
+            ;;
+    esac
+fi
+
+# 交互式模式
+
 if ! is_installed; then
     echo -e "${YELLOW}服务 '$SERVICE_NAME' 尚未在 systemd 中配置。${NC}"
     read -e -p "是否立即自动配置？(yes/no): " choice
