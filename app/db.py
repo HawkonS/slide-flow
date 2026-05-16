@@ -304,6 +304,19 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_tasks_owner ON tasks(owner_id);
             CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 
+            CREATE TABLE IF NOT EXISTS download_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                track_code TEXT NOT NULL UNIQUE,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                show_id INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
+                download_type TEXT NOT NULL CHECK(download_type IN ('pdf', 'pptx_images', 'pptx', 'pptx_fonts', 'zip', 'zip_fonts')),
+                client_ip TEXT NOT NULL DEFAULT '',
+                downloaded_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_download_records_track_code ON download_records(track_code);
+            CREATE INDEX IF NOT EXISTS idx_download_records_downloaded_at ON download_records(downloaded_at);
+
             """
         )
 

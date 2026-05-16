@@ -17,6 +17,7 @@ import { AdminTemplatesPage } from "@/pages/admin/AdminTemplatesPage";
 import { AdminFontsPage } from "@/pages/admin/AdminFontsPage";
 import { AdminLinksPage } from "@/pages/admin/AdminLinksPage";
 import { AdminSystemPage } from "@/pages/admin/AdminSystemPage";
+import { AdminDownloadsPage } from "@/pages/admin/DownloadRecordsTab";
 import { PresenterPage } from "@/pages/present/PresenterPage";
 import LinkSharePage from "@/pages/present/LinkSharePage";
 import ResourceManagePage from "@/pages/manage/ResourceManagePage";
@@ -98,6 +99,14 @@ export const router = createBrowserRouter([
           <RequireSuperAdmin>
             <AdminSystemPage />
           </RequireSuperAdmin>
+        ),
+      },
+      {
+        path: "/manage/downloads",
+        element: (
+          <RequireAdmin>
+            <AdminDownloadsPage />
+          </RequireAdmin>
         ),
       },
       {

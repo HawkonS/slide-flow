@@ -8,8 +8,10 @@ import json
 import logging
 import os
 import re
+import random
 import shutil
 import sqlite3
+import string
 import subprocess
 import tempfile
 import threading
@@ -635,6 +637,29 @@ def require_super_admin(user: sqlite3.Row = Depends(require_user)) -> sqlite3.Ro
     if not is_super_admin(user):
         raise HTTPException(403, "需要超级管理员权限")
     return user
+
+
+def _generate_track_code(db: sqlite3.Connection) -> str:
+    """生成唯一的6位追踪码（大小写字母+数字）"""
+    chars = string.ascii_letters + string.digits
+    for _ in range(100):
+        code = ''.join(random.choices(chars, k=6))
+        exists = db.execute("SELECT 1 FROM download_records WHERE track_code = ?", (code,)).fetchone()
+        if not exists:
+            return code
+    raise RuntimeError("无法生成唯一追踪码")
+
+
+def _record_download(db: sqlite3.Connection, user: sqlite3.Row, request: Request, show_id: int, download_type: str) -> str:
+    """记录下载并返回追踪码"""
+    track_code = _generate_track_code(db)
+    client_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or (request.client.host if request.client else "")
+    db.execute(
+        "INSERT INTO download_records (track_code, user_id, show_id, download_type, client_ip, downloaded_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (track_code, user["id"], show_id, download_type, client_ip, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    )
+    db.commit()
+    return track_code
 
 
 def _safe_abs(stored_path: str | None) -> Path | None:
@@ -1745,6 +1770,65 @@ def list_users(
 ) -> dict[str, Any]:
     rows = db.execute("SELECT * FROM users ORDER BY id").fetchall()
     return {"users": [_serialize_user(row) for row in rows]}
+
+
+@app.get("/api/admin/download-records")
+def list_download_records(
+    track_code: str = Query(""),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    user: sqlite3.Row = Depends(require_admin),
+    db: sqlite3.Connection = Depends(db_dep),
+):
+    """查询下载记录（管理员）"""
+    base_query = """
+        FROM download_records dr
+        LEFT JOIN users u ON dr.user_id = u.id
+        LEFT JOIN shows s ON dr.show_id = s.id
+    """
+    conditions = []
+    params = []
+
+    if track_code.strip():
+        conditions.append("dr.track_code = ?")
+        params.append(track_code.strip())
+
+    where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+
+    # 总数
+    count_row = db.execute(f"SELECT COUNT(*) as total {base_query}{where_clause}", params).fetchone()
+    total = count_row["total"]
+
+    # 分页数据
+    offset = (page - 1) * page_size
+    rows = db.execute(f"""
+        SELECT dr.id, dr.track_code, dr.download_type, dr.client_ip, dr.downloaded_at,
+               u.name as user_name, u.username as user_username,
+               s.name as show_name, s.id as show_id
+        {base_query}{where_clause}
+        ORDER BY dr.downloaded_at DESC
+        LIMIT ? OFFSET ?
+    """, params + [page_size, offset]).fetchall()
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "items": [
+            {
+                "id": r["id"],
+                "track_code": r["track_code"],
+                "user_name": r["user_name"] or "已删除用户",
+                "user_username": r["user_username"] or "",
+                "show_name": r["show_name"] or "已删除放映组",
+                "show_id": r["show_id"],
+                "download_type": r["download_type"],
+                "client_ip": r["client_ip"],
+                "downloaded_at": r["downloaded_at"],
+            }
+            for r in rows
+        ],
+    }
 
 
 @app.post("/api/admin/users")
@@ -3953,6 +4037,7 @@ def update_show_remark(
 @app.get("/api/shows/{show_id}/download/pdf")
 def download_show_pdf(
     show_id: int,
+    request: Request,
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> FileResponse:
@@ -3992,6 +4077,7 @@ def download_show_pdf(
     first.save(tmp_path, "PDF", save_all=True, append_images=rest)
     for img in images:
         img.close()
+    _record_download(db, user, request, show_id, "pdf")
     return FileResponse(
         tmp_path,
         media_type="application/pdf",
@@ -4002,6 +4088,7 @@ def download_show_pdf(
 @app.get("/api/shows/{show_id}/download/pptx-images")
 def download_show_pptx_images(
     show_id: int,
+    request: Request,
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> FileResponse:
@@ -4043,6 +4130,7 @@ def download_show_pptx_images(
         tmp_path.unlink(missing_ok=True)
         logger.exception("生成纯图 PPTX 失败 show_id=%s", show_id)
         raise HTTPException(500, f"生成纯图 PPT 失败：{exc}") from exc
+    _record_download(db, user, request, show_id, "pptx_images")
     return FileResponse(
         tmp_path,
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -4140,6 +4228,7 @@ def show_fonts(
 @app.get("/api/shows/{show_id}/download/pptx")
 def download_show_pptx(
     show_id: int,
+    request: Request,
     with_fonts: bool = Query(False),
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
@@ -4165,11 +4254,13 @@ def download_show_pptx(
     tmp.close()
     merge_pptx_files(input_paths, merged_path, hidden_flags=hidden_flags)
     if not with_fonts:
+        _record_download(db, user, request, show_id, "pptx")
         return FileResponse(
             merged_path,
             media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
             headers={"Content-Disposition": _content_disposition(f"{row['name']}.pptx")},
         )
+    _record_download(db, user, request, show_id, "pptx_fonts")
     agg = _aggregate_show_fonts(db, items)
     fonts, _ = _build_fonts_bundle(db, agg["font_names"])
     zip_tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
@@ -4191,6 +4282,7 @@ def download_show_pptx(
 @app.get("/api/shows/{show_id}/download/zip")
 def download_show_zip(
     show_id: int,
+    request: Request,
     with_fonts: bool = Query(False),
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
@@ -4226,6 +4318,7 @@ def download_show_zip(
             fonts, _ = _build_fonts_bundle(db, agg["font_names"])
             _write_fonts_into_zip(zf, fonts, agg["missing_fonts"])
     filename = f"{row['name']}_with_fonts.zip" if with_fonts else f"{row['name']}.zip"
+    _record_download(db, user, request, show_id, "zip_fonts" if with_fonts else "zip")
     return FileResponse(
         tmp_path,
         media_type="application/zip",

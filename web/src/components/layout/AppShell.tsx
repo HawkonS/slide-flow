@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
+  Download,
   FolderOpen,
   HardDrive,
   Home,
@@ -57,6 +58,10 @@ const manageNav: NavItem[] = [
   { to: "/manage/resources", label: "资源管理", icon: Settings },
   { to: "/manage/tasks", label: "任务管理", icon: ListTodo },
   { to: "/manage/offline-cache", label: "离线缓存", icon: HardDrive },
+];
+
+const manageAdminNav: NavItem[] = [
+  { to: "/manage/downloads", label: "下载记录", icon: Download },
 ];
 
 function NavItemLink({ item }: { item: NavItem }) {
@@ -117,6 +122,12 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
               <NavItemLink item={item} />
             </div>
           ))}
+          {(user?.role === "admin" || user?.role === "super_admin") &&
+            manageAdminNav.map((item) => (
+              <div key={item.to} onClick={onNavigate}>
+                <NavItemLink item={item} />
+              </div>
+            ))}
         </div>
       </div>
 
