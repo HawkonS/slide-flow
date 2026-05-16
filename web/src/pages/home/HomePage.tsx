@@ -9,7 +9,9 @@ import {
 } from "lucide-react";
 
 import { ResourceCard } from "@/components/resource/ResourceCard";
+import { ResourceDetailDialog } from "@/components/resource/ResourceDetailDialog";
 import { ShowCard } from "@/components/show/ShowCard";
+import { ShowDetailDialog } from "@/components/show/ShowDetailDialog";
 import { OfflineCacheBanner } from "@/components/home/OfflineCacheBanner";
 import { StatCard } from "@/components/home/StatCard";
 import { api } from "@/lib/api";
@@ -45,6 +47,9 @@ export function HomePage() {
 
   const pinnedShows = pins?.shows ?? [];
   const pinnedResources = pins?.resources ?? [];
+
+  const [detailResource, setDetailResource] = React.useState<Resource | null>(null);
+  const [detailShow, setDetailShow] = React.useState<Show | null>(null);
 
   const greeting = user?.name || user?.username || "你好";
 
@@ -125,7 +130,7 @@ export function HomePage() {
         ) : (
           <div className="grid grid-cols-2 content-start gap-x-4 gap-y-5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
             {pinnedShows.map((s) => (
-              <ShowCard key={s.id} show={s} />
+              <ShowCard key={s.id} show={s} onOpen={(x) => setDetailShow(x)} />
             ))}
           </div>
         )}
@@ -151,11 +156,29 @@ export function HomePage() {
         ) : (
           <div className="grid grid-cols-2 content-start gap-x-4 gap-y-5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
             {pinnedResources.map((r) => (
-              <ResourceCard key={r.id} resource={r} />
+              <ResourceCard key={r.id} resource={r} onOpen={(x) => setDetailResource(x)} />
             ))}
           </div>
         )}
       </section>
+
+      {/* 资源详情弹窗 */}
+      <ResourceDetailDialog
+        open={detailResource != null}
+        onOpenChange={(open) => {
+          if (!open) setDetailResource(null);
+        }}
+        resource={detailResource}
+      />
+
+      {/* 放映详情弹窗 */}
+      <ShowDetailDialog
+        open={detailShow != null}
+        onOpenChange={(open) => {
+          if (!open) setDetailShow(null);
+        }}
+        show={detailShow}
+      />
     </div>
   );
 }

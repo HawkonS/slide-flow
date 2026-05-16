@@ -60,7 +60,7 @@ export function ShowCard({ show, onOpen, onEdit, onDuplicate, onIterate, onDelet
     try {
       if (show.is_pinned) {
         await api(`/api/me/pins/shows/${show.id}`, { method: "DELETE" });
-        toast.success("已从首页移除");
+        toast.success("已取消置顶");
       } else {
         await api(`/api/me/pins/shows/${show.id}`, { method: "POST" });
         toast.success("已置顶到首页");
@@ -149,7 +149,7 @@ export function ShowCard({ show, onOpen, onEdit, onDuplicate, onIterate, onDelet
                 <DropdownMenuItem onSelect={() => handleTogglePin()}>
                   {show.is_pinned ? (
                     <>
-                      <PinOff className="mr-2 h-4 w-4" /> 从首页移除
+                      <PinOff className="mr-2 h-4 w-4" /> 取消置顶
                     </>
                   ) : (
                     <>
