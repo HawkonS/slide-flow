@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Download, FileText } from "lucide-react";
+import { Download, FileText, Image as ImageIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -21,6 +21,7 @@ import {
   downloadWithProgress,
   fetchShowFonts,
   LocalFontInfo,
+  showImagesPptxDownloadUrl,
   showPdfDownloadUrl,
   showPptxDownloadUrl,
   showZipDownloadUrl,
@@ -93,6 +94,9 @@ export function ShowDownloadDialog({ open, onOpenChange, show }: ShowDownloadDia
 
   const runPdf = () => runDownload(showPdfDownloadUrl(show.id), `${show.name}.pdf`);
 
+  const runImagesPpt = () =>
+    runDownload(showImagesPptxDownloadUrl(show.id), `${show.name}_纯图.pptx`);
+
   const runPpt = (withFonts: boolean) => {
     if (mode === "merged") {
       const url = showPptxDownloadUrl(show.id, withFonts);
@@ -145,6 +149,28 @@ export function ShowDownloadDialog({ open, onOpenChange, show }: ShowDownloadDia
             >
               <Download className="mr-1.5 h-4 w-4" />
               下载 PDF
+            </Button>
+          </section>
+
+          {/* 纯图 PPT 独立卡片 */}
+          <section className="flex items-center gap-4 rounded-lg border p-4">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+              <ImageIcon className="h-5 w-5" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium">纯图 PPT</div>
+              <div className="text-xs text-muted-foreground">
+                将每张高清预览图生成一页 PPTX，不受本机字体影响
+              </div>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={runImagesPpt}
+              disabled={progress != null}
+            >
+              <Download className="mr-1.5 h-4 w-4" />
+              下载纯图 PPT
             </Button>
           </section>
 

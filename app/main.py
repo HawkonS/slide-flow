@@ -62,7 +62,7 @@ from app.core.permissions import (
     is_admin,
     is_super_admin,
 )
-from app.core.ppt import detect_ppt_fonts, merge_pptx_files, slide_count, split_pptx_to_single_pages
+from app.core.ppt import build_image_pptx, detect_ppt_fonts, merge_pptx_files, slide_count, split_pptx_to_single_pages
 from app.core.security import create_present_token, create_session_token, hash_password, read_session_token, verify_password, verify_present_token
 from app.core.storage import copy_into, safe_filename, save_upload, unique_child_dir
 from app.db import get_db, init_db, known_font_aliases, now_iso
@@ -3996,6 +3996,57 @@ def download_show_pdf(
         tmp_path,
         media_type="application/pdf",
         headers={"Content-Disposition": _content_disposition(f"{row['name']}.pdf")},
+    )
+
+
+@app.get("/api/shows/{show_id}/download/pptx-images")
+def download_show_pptx_images(
+    show_id: int,
+    user: sqlite3.Row = Depends(require_user),
+    db: sqlite3.Connection = Depends(db_dep),
+) -> FileResponse:
+    """将放映组中所有可见资源的高清预览图生成为 PPTX，每张图一页。"""
+    row = _show_row(db, show_id)
+    if not can_view_show(db, row, user):
+        raise HTTPException(403, "无可见权限")
+    sr_rows = db.execute(
+        """
+        SELECT sr.resource_id, sr.version_no, r.name
+        FROM show_resources sr
+        JOIN resources r ON r.id = sr.resource_id
+        WHERE sr.show_id = ?
+        ORDER BY sr.sort_order
+        """,
+        (show_id,),
+    ).fetchall()
+    image_paths: list[Path] = []
+    for sr in sr_rows:
+        resource = db.execute("SELECT * FROM resources WHERE id = ?", (sr["resource_id"],)).fetchone()
+        if resource is None or not can_view_resource(db, resource, user):
+            continue
+        version_row = db.execute(
+            "SELECT png_path FROM resource_versions WHERE resource_id = ? AND version_no = ?",
+            (sr["resource_id"], sr["version_no"]),
+        ).fetchone()
+        if version_row and version_row["png_path"]:
+            path = _safe_abs(version_row["png_path"])
+            if path and path.exists():
+                image_paths.append(path)
+    if not image_paths:
+        raise HTTPException(404, "没有可下载的预览图")
+    tmp = tempfile.NamedTemporaryFile(suffix=".pptx", delete=False)
+    tmp_path = Path(tmp.name)
+    tmp.close()
+    try:
+        build_image_pptx(image_paths, tmp_path)
+    except Exception as exc:
+        tmp_path.unlink(missing_ok=True)
+        logger.exception("生成纯图 PPTX 失败 show_id=%s", show_id)
+        raise HTTPException(500, f"生成纯图 PPT 失败：{exc}") from exc
+    return FileResponse(
+        tmp_path,
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        headers={"Content-Disposition": _content_disposition(f"{row['name']}_纯图.pptx")},
     )
 
 

@@ -166,6 +166,11 @@ export function showPdfDownloadUrl(showId: number): string {
   return `/api/shows/${showId}/download/pdf`;
 }
 
+/** 放映纯图 PPT 下载 URL（每张高清预览图一页） */
+export function showImagesPptxDownloadUrl(showId: number): string {
+  return `/api/shows/${showId}/download/pptx-images`;
+}
+
 /** 放映合并 PPTX 下载 URL，可选带上字体包 */
 export function showPptxDownloadUrl(showId: number, withFonts: boolean): string {
   return `/api/shows/${showId}/download/pptx${withFonts ? "?with_fonts=true" : ""}`;

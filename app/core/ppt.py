@@ -1547,3 +1547,265 @@ def _merge_pptx_into(
         )
         next_master_id += 1
 
+
+# ---------------------------------------------------------------------------
+# Build a PPTX from a list of images (one image per slide)
+# ---------------------------------------------------------------------------
+
+# 16:9 宽屏主流幻灯片尺寸（13.333" x 7.5"，单位 EMU）
+_IMG_SLIDE_W_EMU = 12192000
+_IMG_SLIDE_H_EMU = 6858000
+
+_IMG_EXT_TO_CT = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".bmp": "image/bmp",
+}
+
+_IMG_PPTX_ROOT_RELS = b"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+</Relationships>"""
+
+_IMG_PPTX_THEME = b"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Office">
+<a:themeElements>
+<a:clrScheme name="Office">
+<a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1>
+<a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1>
+<a:dk2><a:srgbClr val="44546A"/></a:dk2>
+<a:lt2><a:srgbClr val="E7E6E6"/></a:lt2>
+<a:accent1><a:srgbClr val="4472C4"/></a:accent1>
+<a:accent2><a:srgbClr val="ED7D31"/></a:accent2>
+<a:accent3><a:srgbClr val="A5A5A5"/></a:accent3>
+<a:accent4><a:srgbClr val="FFC000"/></a:accent4>
+<a:accent5><a:srgbClr val="5B9BD5"/></a:accent5>
+<a:accent6><a:srgbClr val="70AD47"/></a:accent6>
+<a:hlink><a:srgbClr val="0563C1"/></a:hlink>
+<a:folHlink><a:srgbClr val="954F72"/></a:folHlink>
+</a:clrScheme>
+<a:fontScheme name="Office">
+<a:majorFont><a:latin typeface="Calibri Light"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont>
+<a:minorFont><a:latin typeface="Calibri"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont>
+</a:fontScheme>
+<a:fmtScheme name="Office">
+<a:fillStyleLst>
+<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>
+<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>
+<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>
+</a:fillStyleLst>
+<a:lnStyleLst>
+<a:ln w="6350" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/></a:ln>
+<a:ln w="12700" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/></a:ln>
+<a:ln w="19050" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/></a:ln>
+</a:lnStyleLst>
+<a:effectStyleLst>
+<a:effectStyle><a:effectLst/></a:effectStyle>
+<a:effectStyle><a:effectLst/></a:effectStyle>
+<a:effectStyle><a:effectLst/></a:effectStyle>
+</a:effectStyleLst>
+<a:bgFillStyleLst>
+<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>
+<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>
+<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>
+</a:bgFillStyleLst>
+</a:fmtScheme>
+</a:themeElements>
+</a:theme>"""
+
+_IMG_PPTX_MASTER = b"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sldMaster xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+<p:cSld>
+<p:bg><p:bgPr><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill><a:effectLst/></p:bgPr></p:bg>
+<p:spTree>
+<p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
+<p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>
+</p:spTree>
+</p:cSld>
+<p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/>
+<p:sldLayoutIdLst><p:sldLayoutId id="2147483649" r:id="rId1"/></p:sldLayoutIdLst>
+</p:sldMaster>"""
+
+_IMG_PPTX_MASTER_RELS = b"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="../theme/theme1.xml"/>
+</Relationships>"""
+
+_IMG_PPTX_LAYOUT = b"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sldLayout xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" type="blank" preserve="1">
+<p:cSld name="\xe7\xa9\xba\xe7\x99\xbd">
+<p:spTree>
+<p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
+<p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>
+</p:spTree>
+</p:cSld>
+<p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr>
+</p:sldLayout>"""
+
+_IMG_PPTX_LAYOUT_RELS = b"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="../slideMasters/slideMaster1.xml"/>
+</Relationships>"""
+
+
+def _build_image_slide_xml() -> bytes:
+    """生成幻灯片 XML：不插入图片，改为在幻灯片背景中以图片填充全页。"""
+    return (
+        b"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
+        b"<p:sld xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\""
+        b" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\""
+        b" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\">"
+        b"<p:cSld>"
+        b"<p:bg><p:bgPr>"
+        b"<a:blipFill dpi=\"0\" rotWithShape=\"1\">"
+        b"<a:blip r:embed=\"rId2\"/>"
+        b"<a:srcRect/>"
+        b"<a:stretch><a:fillRect/></a:stretch>"
+        b"</a:blipFill>"
+        b"<a:effectLst/>"
+        b"</p:bgPr></p:bg>"
+        b"<p:spTree>"
+        b"<p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>"
+        b"<p:grpSpPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"0\" cy=\"0\"/>"
+        b"<a:chOff x=\"0\" y=\"0\"/><a:chExt cx=\"0\" cy=\"0\"/></a:xfrm></p:grpSpPr>"
+        b"</p:spTree></p:cSld>"
+        b"<p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr>"
+        b"</p:sld>"
+    )
+
+
+def _build_image_slide_rels(image_target: str) -> bytes:
+    return (
+        b"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
+        b"<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+        b"<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout\" Target=\"../slideLayouts/slideLayout1.xml\"/>"
+        + f"<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"{image_target}\"/>".encode("utf-8")
+        + b"</Relationships>"
+    )
+
+
+def _read_image_size(path: Path) -> tuple[int, int]:
+    """读取图片像素尺寸，失败时返回 16:9 占位尺寸。保留为其他调用点备用。"""
+    try:
+        from PIL import Image as _PILImage  # 延迟导入，避免循环依赖
+        with _PILImage.open(path) as img:
+            return int(img.width), int(img.height)
+    except Exception:
+        return 1600, 900
+
+
+def build_image_pptx(image_paths: list[Path], output_path: Path) -> None:
+    """以一组图片构建一个纯图 PPTX，每张图作为一页。
+
+    每页以“图片填充”的形式将图片作为幻灯片背景填满全页，不插入独立的图片对象；
+    幻灯片尺寸采用 16:9 宽屏，母版为纯白背景。
+    仅依赖 zipfile 与字符串，不引入 python-pptx 等额外依赖。
+    """
+    if not image_paths:
+        raise ValueError("image_paths must not be empty")
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    paths = [Path(p) for p in image_paths]
+
+    files: dict[str, bytes] = {}
+    files["_rels/.rels"] = _IMG_PPTX_ROOT_RELS
+    files["ppt/theme/theme1.xml"] = _IMG_PPTX_THEME
+    files["ppt/slideMasters/slideMaster1.xml"] = _IMG_PPTX_MASTER
+    files["ppt/slideMasters/_rels/slideMaster1.xml.rels"] = _IMG_PPTX_MASTER_RELS
+    files["ppt/slideLayouts/slideLayout1.xml"] = _IMG_PPTX_LAYOUT
+    files["ppt/slideLayouts/_rels/slideLayout1.xml.rels"] = _IMG_PPTX_LAYOUT_RELS
+
+    slide_id_lst: list[str] = []
+    pres_rels: list[str] = []
+    ct_overrides: list[str] = []
+    used_exts: set[str] = set()
+
+    pres_rels.append(
+        '<Relationship Id="rIdMaster1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="slideMasters/slideMaster1.xml"/>'
+    )
+    pres_rels.append(
+        '<Relationship Id="rIdTheme1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/>'
+    )
+
+    slide_w = _IMG_SLIDE_W_EMU
+    slide_h = _IMG_SLIDE_H_EMU
+
+    for index, img_path in enumerate(paths, start=1):
+        ext = img_path.suffix.lower() or ".png"
+        if ext not in _IMG_EXT_TO_CT:
+            ext = ".png"
+        used_exts.add(ext)
+        media_name = f"image{index}{ext}"
+        try:
+            img_bytes = img_path.read_bytes()
+        except OSError as exc:
+            raise ValueError(f"无法读取图片: {img_path}") from exc
+        files[f"ppt/media/{media_name}"] = img_bytes
+
+        slide_xml = _build_image_slide_xml()
+        slide_rels_xml = _build_image_slide_rels(f"../media/{media_name}")
+        files[f"ppt/slides/slide{index}.xml"] = slide_xml
+        files[f"ppt/slides/_rels/slide{index}.xml.rels"] = slide_rels_xml
+
+        slide_rid = f"rIdSlide{index}"
+        slide_id_lst.append(
+            f'<p:sldId id="{255 + index + 1}" r:id="{slide_rid}"/>'
+        )
+        pres_rels.append(
+            f'<Relationship Id="{slide_rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide{index}.xml"/>'
+        )
+        ct_overrides.append(
+            f'<Override PartName="/ppt/slides/slide{index}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>'
+        )
+
+    presentation_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+        ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+        ' xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" saveSubsetFonts="1">'
+        '<p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rIdMaster1"/></p:sldMasterIdLst>'
+        f'<p:sldIdLst>{"".join(slide_id_lst)}</p:sldIdLst>'
+        f'<p:sldSz cx="{slide_w}" cy="{slide_h}"/>'
+        '<p:notesSz cx="6858000" cy="9144000"/>'
+        '</p:presentation>'
+    ).encode("utf-8")
+    files["ppt/presentation.xml"] = presentation_xml
+
+    pres_rels_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        + "".join(pres_rels)
+        + '</Relationships>'
+    ).encode("utf-8")
+    files["ppt/_rels/presentation.xml.rels"] = pres_rels_xml
+
+    default_exts = ['<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
+                    '<Default Extension="xml" ContentType="application/xml"/>']
+    for ext in sorted(used_exts):
+        ct = _IMG_EXT_TO_CT.get(ext)
+        if not ct:
+            continue
+        default_exts.append(f'<Default Extension="{ext.lstrip(".")}" ContentType="{ct}"/>')
+
+    content_types_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        + "".join(default_exts)
+        + '<Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>'
+        '<Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/>'
+        '<Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/>'
+        '<Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>'
+        + "".join(ct_overrides)
+        + '</Types>'
+    ).encode("utf-8")
+    files["[Content_Types].xml"] = content_types_xml
+
+    with zipfile.ZipFile(output_path, "w") as zf:
+        for name, data in files.items():
+            ext = Path(name).suffix.lower()
+            compress_type = zipfile.ZIP_STORED if ext in _PRECOMPRESSED_EXTS else zipfile.ZIP_DEFLATED
+            zf.writestr(zipfile.ZipInfo(name), data, compress_type=compress_type)
+
