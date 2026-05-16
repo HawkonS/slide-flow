@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import logging
 import posixpath
 import re
@@ -21,6 +22,9 @@ PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 PKG_CT_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
 SLIDE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide"
 SLIDE_MASTER_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster"
+SLIDE_LAYOUT_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout"
+THEME_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme"
+IMAGE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
 
 ET.register_namespace("a", A_NS)
 ET.register_namespace("p", P_NS)
@@ -747,6 +751,259 @@ def _suffix_part_name(part: str, tag: str) -> str:
     return f"{parent}/{new_name}" if parent else new_name
 
 
+def _read_rels_root(files: dict[str, bytes], part: str) -> ET.Element | None:
+    """Parse the .rels file for a given part. Returns None if missing or invalid."""
+    data = files.get(_rels_path_for(part))
+    if not data:
+        return None
+    try:
+        return ET.fromstring(data)
+    except ET.ParseError:
+        return None
+
+
+def _master_group_signature(
+    files: dict[str, bytes], master_part: str
+) -> tuple[str, dict[str, str], set[str]]:
+    """Compute a content-based fingerprint for a slideMaster group.
+
+    A "master group" is the slideMaster part plus everything it owns: theme,
+    every slideLayout it references, and any media referenced from the master
+    or its layouts. Two master groups with identical bytes (under this
+    canonicalization) share the same group fingerprint, which lets the merger
+    deduplicate masters across source PPTX files generated from a common
+    template.
+
+    Returns:
+      group_fp: SHA-256 hex digest covering master + theme + master media +
+                each layout's per-layout fingerprint.
+      layout_fps: mapping of layout zip path -> per-layout fingerprint, used
+                  to pair source layouts with their counterparts in the
+                  shared master group.
+      owned_parts: set of zip paths considered private to this master group
+                   (master xml + .rels, theme xml + .rels, layouts + .rels,
+                   plus media referenced exclusively from these parts).
+    """
+    owned: set[str] = set()
+    layout_fps: dict[str, str] = {}
+    h = hashlib.sha256()
+
+    h.update(b"M:")
+    h.update(files.get(master_part, b""))
+    owned.add(master_part)
+    master_rels_path = _rels_path_for(master_part)
+    if master_rels_path in files:
+        owned.add(master_rels_path)
+
+    layout_parts: list[str] = []
+    theme_part: str | None = None
+    master_media: list[str] = []
+    master_rels_root = _read_rels_root(files, master_part)
+    if master_rels_root is not None:
+        for rel in master_rels_root:
+            if rel.attrib.get("TargetMode", "Internal") == "External":
+                continue
+            ttype = rel.attrib.get("Type", "")
+            target = rel.attrib.get("Target", "")
+            dep = _resolve_target(master_part, target)
+            if dep not in files:
+                continue
+            if ttype == SLIDE_LAYOUT_REL_TYPE:
+                layout_parts.append(dep)
+            elif ttype == THEME_REL_TYPE:
+                theme_part = dep
+            elif ttype == IMAGE_REL_TYPE or "/media/" in dep:
+                master_media.append(dep)
+
+    if theme_part is not None:
+        h.update(b"T:")
+        h.update(files.get(theme_part, b""))
+        owned.add(theme_part)
+        theme_rels_path = _rels_path_for(theme_part)
+        if theme_rels_path in files:
+            owned.add(theme_rels_path)
+        theme_rels_root = _read_rels_root(files, theme_part)
+        if theme_rels_root is not None:
+            theme_media: list[str] = []
+            for rel in theme_rels_root:
+                if rel.attrib.get("TargetMode", "Internal") == "External":
+                    continue
+                target = rel.attrib.get("Target", "")
+                dep = _resolve_target(theme_part, target)
+                if dep in files:
+                    theme_media.append(dep)
+            for m in sorted(theme_media):
+                h.update(b"TM:")
+                h.update(files.get(m, b""))
+                owned.add(m)
+
+    for m in sorted(master_media):
+        h.update(b"MM:")
+        h.update(files.get(m, b""))
+        owned.add(m)
+
+    # Layouts: preserve source order so layout pairing is stable across same-template files.
+    for lp in layout_parts:
+        lp_h = hashlib.sha256()
+        lp_h.update(b"L:")
+        lp_h.update(files.get(lp, b""))
+        owned.add(lp)
+        lp_rels_path = _rels_path_for(lp)
+        if lp_rels_path in files:
+            owned.add(lp_rels_path)
+        lp_rels_root = _read_rels_root(files, lp)
+        if lp_rels_root is not None:
+            extra_media: list[str] = []
+            for rel in lp_rels_root:
+                if rel.attrib.get("TargetMode", "Internal") == "External":
+                    continue
+                ttype = rel.attrib.get("Type", "")
+                target = rel.attrib.get("Target", "")
+                dep = _resolve_target(lp, target)
+                if dep not in files:
+                    continue
+                # Skip the back-reference to the master itself; it would only add noise.
+                if ttype == SLIDE_MASTER_REL_TYPE:
+                    continue
+                extra_media.append(dep)
+            for m in sorted(extra_media):
+                lp_h.update(b"LM:")
+                lp_h.update(files.get(m, b""))
+                owned.add(m)
+        lp_fp = lp_h.hexdigest()
+        layout_fps[lp] = lp_fp
+        h.update(b"LFP:")
+        h.update(lp_fp.encode("ascii"))
+
+    return h.hexdigest(), layout_fps, owned
+
+
+def _is_blank_master(files: dict[str, bytes], master_part: str) -> bool:
+    """A master is considered 'blank' if its .rels has no image/media references.
+
+    This means no LOGO, no background image, etc.  Text and placeholders are OK.
+    """
+    rels_root = _read_rels_root(files, master_part)
+    if rels_root is None:
+        return True
+    for rel in rels_root:
+        if rel.attrib.get("TargetMode", "Internal") == "External":
+            continue
+        ttype = rel.attrib.get("Type", "")
+        target = rel.attrib.get("Target", "")
+        if ttype == IMAGE_REL_TYPE or "/media/" in target:
+            return False
+    return True
+
+
+def _ensure_default_content_type(
+    content_types_root: ET.Element, ext: str, src_files: dict[str, bytes], src_part: str
+) -> None:
+    """Ensure a Default entry for `ext` exists in [Content_Types].xml."""
+    for child in content_types_root:
+        if _local_name(child.tag) == "Default" and child.attrib.get("Extension", "").lower() == ext:
+            return
+    # Derive content type from source's [Content_Types].xml
+    src_ct_data = src_files.get("[Content_Types].xml", b"<Types/>")
+    try:
+        src_ct_root = ET.fromstring(src_ct_data)
+    except ET.ParseError:
+        return
+    for child in src_ct_root:
+        if _local_name(child.tag) == "Default" and child.attrib.get("Extension", "").lower() == ext:
+            ET.SubElement(
+                content_types_root,
+                f"{{{PKG_CT_NS}}}Default",
+                {"Extension": ext, "ContentType": child.attrib.get("ContentType", "")},
+            )
+            return
+
+
+def _add_override_content_type(
+    content_types_root: ET.Element, new_part: str, src_files: dict[str, bytes], src_part: str
+) -> None:
+    """Add an Override entry for `new_part` using the content type of `src_part`."""
+    pn = "/" + new_part
+    for child in content_types_root:
+        if _local_name(child.tag) == "Override" and child.attrib.get("PartName", "") == pn:
+            return
+    # Look up source part's content type
+    src_ct_data = src_files.get("[Content_Types].xml", b"<Types/>")
+    try:
+        src_ct_root = ET.fromstring(src_ct_data)
+    except ET.ParseError:
+        return
+    src_pn = "/" + src_part
+    for child in src_ct_root:
+        if _local_name(child.tag) == "Override" and child.attrib.get("PartName", "") == src_pn:
+            ET.SubElement(
+                content_types_root,
+                f"{{{PKG_CT_NS}}}Override",
+                {"PartName": pn, "ContentType": child.attrib.get("ContentType", "")},
+            )
+            return
+
+
+def _attach_layout_to_master(
+    merged_files: dict[str, bytes], master_part: str, layout_part: str
+) -> None:
+    """Add a slideLayout relationship to an existing master's .rels and update its sldLayoutIdLst."""
+    # --- Update master's .rels ---
+    master_rels_path = _rels_path_for(master_part)
+    rels_data = merged_files.get(master_rels_path)
+    if rels_data:
+        rels_root = ET.fromstring(rels_data)
+    else:
+        rels_root = ET.Element(f"{{{PKG_REL_NS}}}Relationships")
+
+    # Allocate next rId
+    max_rid = 0
+    for rel in rels_root:
+        m = re.match(r"rId(\d+)$", rel.attrib.get("Id", ""))
+        if m:
+            max_rid = max(max_rid, int(m.group(1)))
+    new_rid = f"rId{max_rid + 1}"
+    ET.SubElement(
+        rels_root,
+        f"{{{PKG_REL_NS}}}Relationship",
+        {
+            "Id": new_rid,
+            "Type": SLIDE_LAYOUT_REL_TYPE,
+            "Target": _make_relative(master_part, layout_part),
+        },
+    )
+    merged_files[master_rels_path] = _serialize_rels_xml(rels_root)
+
+    # --- Update master XML's <p:sldLayoutIdLst> ---
+    master_xml_data = merged_files.get(master_part)
+    if not master_xml_data:
+        return
+    master_root = ET.fromstring(master_xml_data)
+    # Ensure proper namespace registrations for serialization
+    ET.register_namespace("a", A_NS)
+    ET.register_namespace("p", P_NS)
+    ET.register_namespace("r", R_NS)
+
+    layout_id_list = master_root.find(f"{{{P_NS}}}sldLayoutIdLst")
+    if layout_id_list is None:
+        # Insert sldLayoutIdLst as the first child (standard position)
+        layout_id_list = ET.Element(f"{{{P_NS}}}sldLayoutIdLst")
+        master_root.insert(0, layout_id_list)
+
+    # Allocate next layout id (these are unique within the master)
+    max_lid = 2147483648
+    for lid_elem in layout_id_list:
+        lid_val = lid_elem.attrib.get("id", "")
+        if lid_val.isdigit():
+            max_lid = max(max_lid, int(lid_val))
+    ET.SubElement(
+        layout_id_list,
+        f"{{{P_NS}}}sldLayoutId",
+        {"id": str(max_lid + 1), f"{{{R_NS}}}id": new_rid},
+    )
+    merged_files[master_part] = ET.tostring(master_root, encoding="utf-8", xml_declaration=True)
+
+
 def _serialize_pres_xml(root: ET.Element) -> bytes:
     ET.register_namespace("a", A_NS)
     ET.register_namespace("p", P_NS)
@@ -895,6 +1152,33 @@ def merge_pptx_files(input_paths: list[Path], output_path: Path, *, hidden_flags
     pres_rels_root = ET.fromstring(merged_files["ppt/_rels/presentation.xml.rels"])
     content_types_root = ET.fromstring(merged_files.get("[Content_Types].xml", b"<Types/>"))
 
+    # Build master group fingerprint registry from the base file
+    master_group_index: dict[str, str] = {}  # group_fp -> master_part in merged
+    master_layout_index: dict[str, dict[str, str]] = {}  # group_fp -> {layout_fp -> layout_part}
+    # Blank-master merging state: all blank masters collapse into one shared master.
+    # {"master_part": str|None, "layout_fps": {layout_fp -> layout_part_in_merged}}
+    blank_master_state: dict = {"master_part": None, "layout_fps": {}}
+
+    for rel in pres_rels_root:
+        if rel.attrib.get("Type") != SLIDE_MASTER_REL_TYPE:
+            continue
+        if rel.attrib.get("TargetMode", "Internal") == "External":
+            continue
+        base_master = _resolve_target("ppt/presentation.xml", rel.attrib.get("Target", ""))
+        if base_master not in merged_files:
+            continue
+        group_fp, layout_fps, _ = _master_group_signature(merged_files, base_master)
+        master_group_index.setdefault(group_fp, base_master)
+        if group_fp not in master_layout_index:
+            master_layout_index[group_fp] = {}
+        for lp, lp_fp in layout_fps.items():
+            master_layout_index[group_fp].setdefault(lp_fp, lp)
+        # Register blank master if applicable
+        if blank_master_state["master_part"] is None and _is_blank_master(merged_files, base_master):
+            blank_master_state["master_part"] = base_master
+            for lp, lp_fp in layout_fps.items():
+                blank_master_state["layout_fps"].setdefault(lp_fp, lp)
+
     for idx, src_path in enumerate(paths[1:], start=2):
         _merge_pptx_into(
             src_path,
@@ -903,6 +1187,9 @@ def merge_pptx_files(input_paths: list[Path], output_path: Path, *, hidden_flags
             presentation_root=presentation_root,
             pres_rels_root=pres_rels_root,
             content_types_root=content_types_root,
+            master_group_index=master_group_index,
+            master_layout_index=master_layout_index,
+            blank_master_state=blank_master_state,
         )
 
     merged_files["ppt/presentation.xml"] = _serialize_pres_xml(presentation_root)
@@ -926,6 +1213,9 @@ def _merge_pptx_into(
     presentation_root: ET.Element,
     pres_rels_root: ET.Element,
     content_types_root: ET.Element,
+    master_group_index: dict[str, str],
+    master_layout_index: dict[str, dict[str, str]],
+    blank_master_state: dict,
 ) -> None:
     src_files: dict[str, bytes] = {}
     with zipfile.ZipFile(src_path) as zf:
@@ -985,17 +1275,130 @@ def _merge_pptx_into(
             visit(slide_part)
             slide_src_parts.append(slide_part)
 
-    # Also pull in slide masters referenced from source presentation
+    # Snapshot of parts already required by slides (used to avoid dropping shared deps)
+    slide_required: set[str] = set(rename_map.keys())
+
+    # Also pull in slide masters referenced from source presentation, with dedup
     master_src_parts: list[str] = []
+    layout_redirect: dict[str, str] = {}  # src_layout_part -> base_layout_part (in merged)
+    master_redirect: dict[str, str] = {}  # src_master_part -> base_master_part (in merged)
+
     for rel in src_pres_rels_root:
         if rel.attrib.get("Type") != SLIDE_MASTER_REL_TYPE:
             continue
         if rel.attrib.get("TargetMode", "Internal") == "External":
             continue
         master_part = _resolve_target("ppt/presentation.xml", rel.attrib.get("Target", ""))
-        if master_part in src_files:
-            visit(master_part)
-            master_src_parts.append(master_part)
+        if master_part not in src_files:
+            continue
+
+        group_fp, layout_fps, owned_parts = _master_group_signature(src_files, master_part)
+
+        if group_fp in master_group_index:
+            # This master group already exists in the merged output -- reuse it.
+            base_master_part = master_group_index[group_fp]
+            base_layout_fps = master_layout_index.get(group_fp, {})
+            per_master_layout_redirects: dict[str, str] = {}
+            unmatched = False
+            for lp, lp_fp in layout_fps.items():
+                base_lp = base_layout_fps.get(lp_fp)
+                if base_lp is None:
+                    unmatched = True
+                    break
+                per_master_layout_redirects[lp] = base_lp
+
+            if not unmatched:
+                # Successfully paired all layouts -- dedup this master.
+                master_redirect[master_part] = base_master_part
+                layout_redirect.update(per_master_layout_redirects)
+                # Remove owned parts from rename_map unless they're also needed by slides.
+                for op in owned_parts:
+                    if op not in slide_required:
+                        rename_map.pop(op, None)
+                continue  # skip visit + skip master_src_parts
+            else:
+                logging.warning(
+                    "PPTX merge: master group %s matched but layout fingerprint missing; "
+                    "copying full master from %s",
+                    group_fp[:12], src_path,
+                )
+
+        # --- Blank-master merging: if both the source master and the shared
+        #     blank master are media-free, merge their layouts into one master.
+        if _is_blank_master(src_files, master_part) and blank_master_state["master_part"] is not None:
+            base_blank = blank_master_state["master_part"]
+            existing_layout_fps = blank_master_state["layout_fps"]
+            master_redirect[master_part] = base_blank
+            # Process each layout under this blank master
+            for src_lp, lp_fp in layout_fps.items():
+                if lp_fp in existing_layout_fps:
+                    # Layout already exists in shared blank master -- redirect
+                    layout_redirect[src_lp] = existing_layout_fps[lp_fp]
+                else:
+                    # New layout: copy it into merged and attach to shared blank master
+                    new_lp = _suffix_part_name(src_lp, source_tag)
+                    merged_files[new_lp] = src_files[src_lp]
+                    # Process layout's own .rels (rewrite master back-ref + copy deps)
+                    lp_rels_data = src_files.get(_rels_path_for(src_lp))
+                    if lp_rels_data:
+                        try:
+                            lp_rels_root = ET.fromstring(lp_rels_data)
+                        except ET.ParseError:
+                            lp_rels_root = None
+                        if lp_rels_root is not None:
+                            for lrel in lp_rels_root:
+                                if lrel.attrib.get("TargetMode", "Internal") == "External":
+                                    continue
+                                lttype = lrel.attrib.get("Type", "")
+                                ltarget = lrel.attrib.get("Target", "")
+                                ldep = _resolve_target(src_lp, ltarget)
+                                if lttype == SLIDE_MASTER_REL_TYPE:
+                                    # Rewrite back-reference to shared blank master
+                                    lrel.attrib["Target"] = _make_relative(new_lp, base_blank)
+                                elif ldep in src_files:
+                                    # Copy dependency (media etc.) with _srcN suffix
+                                    new_dep = _suffix_part_name(ldep, source_tag)
+                                    if new_dep not in merged_files:
+                                        merged_files[new_dep] = src_files[ldep]
+                                        # Ensure content type
+                                        dep_ext = Path(new_dep).suffix.lstrip(".").lower()
+                                        if dep_ext:
+                                            _ensure_default_content_type(
+                                                content_types_root, dep_ext, src_files, src_lp
+                                            )
+                                    lrel.attrib["Target"] = _make_relative(new_lp, new_dep)
+                            merged_files[_rels_path_for(new_lp)] = _serialize_rels_xml(lp_rels_root)
+                    # Add Override entry in [Content_Types].xml for the new layout
+                    _add_override_content_type(content_types_root, new_lp, src_files, src_lp)
+                    # Attach new layout to the shared blank master's .rels
+                    _attach_layout_to_master(merged_files, base_blank, new_lp)
+                    # Register for future dedup
+                    existing_layout_fps[lp_fp] = new_lp
+                    layout_redirect[src_lp] = new_lp
+            # Drop owned parts that are not needed by slides
+            for op in owned_parts:
+                if op not in slide_required:
+                    rename_map.pop(op, None)
+            continue  # skip visit + skip master_src_parts
+
+        # Default: copy this master and register it for future dedup
+        visit(master_part)
+        master_src_parts.append(master_part)
+        new_master_part = rename_map.get(master_part, "")
+        master_group_index.setdefault(group_fp, new_master_part)
+        if group_fp not in master_layout_index:
+            master_layout_index[group_fp] = {}
+        for lp, lp_fp in layout_fps.items():
+            new_lp = rename_map.get(lp)
+            if new_lp:
+                master_layout_index[group_fp].setdefault(lp_fp, new_lp)
+        # If this is a blank master and no shared blank exists yet, register it
+        if blank_master_state["master_part"] is None and _is_blank_master(src_files, master_part):
+            blank_master_state["master_part"] = new_master_part
+            for lp, lp_fp in layout_fps.items():
+                new_lp_path = rename_map.get(lp)
+                if new_lp_path:
+                    blank_master_state["layout_fps"].setdefault(lp_fp, new_lp_path)
 
     # Copy each collected part under its new name, rewriting its rels to point to renamed targets
     for src_part, new_part in rename_map.items():
@@ -1012,6 +1415,11 @@ def _merge_pptx_into(
                 continue
             target = rel.attrib.get("Target", "")
             dep = _resolve_target(src_part, target)
+            # Check if this dep should redirect to a shared master/layout part
+            redirect = layout_redirect.get(dep) or master_redirect.get(dep)
+            if redirect is not None:
+                rel.attrib["Target"] = _make_relative(new_part, redirect)
+                continue
             new_dep = rename_map.get(dep)
             if new_dep:
                 rel.attrib["Target"] = _make_relative(new_part, new_dep)
