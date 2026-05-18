@@ -48,18 +48,30 @@ def _serialize_resource(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.
         (int(row["id"]),),
     ).fetchone()
     
+    version_id = current_version["id"] if current_version else None
+    png_path = current_version["png_path"] if current_version else None
+    resource_id = int(row["id"])
+    
     return {
-        "id": row["id"],
+        "id": resource_id,
         "name": row["name"],
         "resource_type": row["resource_type"],
         "subject": row["subject"],
         "tags": row["tags"],
         "status": row["status"],
+        "secrecy_level": row["secrecy_level"],
         "visibility_scope": row["visibility_scope"],
         "management_scope": row["management_scope"],
         "owner_id": row["owner_id"],
         "owner": {"id": owner["id"], "name": owner["name"], "username": owner["username"]} if owner else None,
         "current_version": current_version["version_no"] if current_version else 1,
+        "current": {
+            "id": version_id,
+            "version_no": current_version["version_no"] if current_version else 1,
+            "preview_url": f"/api/resources/{resource_id}/preview-thumb?version_id={version_id}" if png_path else None,
+            "original_preview_url": f"/api/resources/{resource_id}/preview?version_id={version_id}" if png_path else None,
+        } if current_version else None,
+        "can_manage": True,  # 简化版，在置顶列表中说明可以管理
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "is_pinned": True,  # 在置顶列表中，所以一定是 True
@@ -70,17 +82,64 @@ def _serialize_show(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row)
     """序列化演示数据（完整版）"""
     owner = db.execute("SELECT id, name, username FROM users WHERE id = ?", (row["owner_id"],)).fetchone()
     
+    # 获取演示关联的资源
+    resource_rows = db.execute(
+        """
+        SELECT sr.resource_id, sr.version_no, sr.is_hidden, r.name as resource_name
+        FROM show_resources sr
+        LEFT JOIN resources r ON r.id = sr.resource_id
+        WHERE sr.show_id = ?
+        ORDER BY sr.sort_order
+        """,
+        (int(row["id"]),),
+    ).fetchall()
+    
+    resources = []
+    for sr in resource_rows:
+        if sr["resource_id"]:
+            resource_id = int(sr["resource_id"])
+            version_no = int(sr["version_no"])
+            
+            # 获取版本信息用于生成预览图 URL
+            version_row = db.execute(
+                "SELECT id, png_path FROM resource_versions WHERE resource_id = ? AND version_no = ?",
+                (resource_id, version_no),
+            ).fetchone()
+            
+            version_id = version_row["id"] if version_row else None
+            png_path = version_row["png_path"] if version_row else None
+            
+            # 获取资源的密级
+            resource_row = db.execute(
+                "SELECT secrecy_level FROM resources WHERE id = ?",
+                (resource_id,),
+            ).fetchone()
+            
+            resources.append({
+                "id": resource_id,
+                "name": sr["resource_name"],
+                "version_no": version_no,
+                "is_hidden": bool(sr["is_hidden"]),
+                "secrecy_level": resource_row["secrecy_level"] if resource_row else "public",
+                "accessible": True,
+                "preview_url": f"/api/resources/{resource_id}/preview-thumb?version_id={version_id}" if png_path else None,
+                "original_preview_url": f"/api/resources/{resource_id}/preview?version_id={version_id}" if png_path else None,
+            })
+    
     return {
         "id": row["id"],
         "name": row["name"],
         "subject": row["subject"],
         "tags": row["tags"],
         "status": row["status"],
+        "secrecy_level": row["secrecy_level"],
         "visibility_scope": row["visibility_scope"],
         "management_scope": row["management_scope"],
         "owner_id": row["owner_id"],
         "owner": {"id": owner["id"], "name": owner["name"], "username": owner["username"]} if owner else None,
-        "current_version": row["current_version"],
+        "version_no": row["version_no"] if "version_no" in row.keys() else 1,
+        "resources": resources,  # 必须包含 resources 字段
+        "can_manage": True,  # 简化版，实际需要根据权限判断
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "is_pinned": True,  # 在置顶列表中，所以一定是 True
