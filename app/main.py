@@ -93,6 +93,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 注册模块化路由
+from app.routers import pages, config, system, auth, user_center, users, fonts, links
+
+app.include_router(pages.router, prefix="/api", tags=["pages"])
+app.include_router(config.router, prefix="/api", tags=["config"])
+app.include_router(system.router, prefix="/api", tags=["system"])
+app.include_router(auth.router, prefix="/api", tags=["auth"])
+app.include_router(user_center.router, prefix="/api", tags=["user_center"])
+app.include_router(users.router, prefix="/api", tags=["users"])
+app.include_router(fonts.router, prefix="/api", tags=["fonts"])
+app.include_router(links.router, prefix="/api", tags=["links"])
+
 logger = logging.getLogger(__name__)
 
 
@@ -1224,390 +1236,17 @@ def _serialize_link(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row)
     }
 
 
-@app.get("/api/admin/config")
-def api_admin_config_get(
-    _: sqlite3.Row = Depends(require_super_admin),
-) -> dict[str, Any]:
-    """读取全部可管理的配置项及其元数据（仅超级管理员）。"""
-    values = read_config_view()
-    config: dict[str, dict[str, Any]] = {}
-    for key, meta in CONFIG_META.items():
-        config[key] = {
-            "value": values.get(key, ""),
-            "label": meta["label"],
-            "group": meta["group"],
-            "hot_reload": meta["hot_reload"],
-            "type": meta["type"],
-            "desc": meta["desc"],
-        }
-    return {"config": config, "groups": CONFIG_GROUPS}
+# ==================== 系统配置和系统管理 API ====================
+# 已迁移到 app/routers/config.py 和 app/routers/system.py
 
 
-# ==================== 系统管理 API ====================
 
-@app.get("/api/admin/system/status")
-def api_admin_system_status(
-    _: sqlite3.Row = Depends(require_super_admin),
-) -> dict[str, Any]:
-    """获取系统运行状态（仅超级管理员）。集成 manage_service.sh 服务管理。"""
-    # 获取当前进程信息
-    backend_pid = os.getpid()
-    backend_port = settings.port
-    frontend_port = settings.web_port
-    
-    # 尝试获取前端进程（通过端口查找）
-    frontend_pid = None
-    try:
-        result = subprocess.run(
-            ["lsof", "-ti", f"tcp:{frontend_port}"],
-            capture_output=True,
-            text=True,
-            timeout=2
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            frontend_pid = int(result.stdout.strip().split('\n')[0])
-    except Exception:
-        pass
-    
-    # 计算运行时长
-    try:
-        process_start_time = psutil.Process(backend_pid).create_time()
-        uptime_seconds = int(time.time() - process_start_time)
-        start_time = datetime.fromtimestamp(process_start_time).isoformat()
-    except Exception:
-        uptime_seconds = 0
-        start_time = datetime.now().isoformat()
-    
-    # 检查 systemd 服务状态
-    service_name = "slide-flow"
-    service_status = "unknown"
-    service_enabled = "unknown"
-    
-    try:
-        # 检查服务是否运行
-        result = subprocess.run(
-            ["systemctl", "is-active", "--quiet", service_name],
-            capture_output=True,
-            timeout=2
-        )
-        service_status = "running" if result.returncode == 0 else "stopped"
-        
-        # 检查是否开机自启
-        result = subprocess.run(
-            ["systemctl", "is-enabled", "--quiet", service_name],
-            capture_output=True,
-            timeout=2
-        )
-        service_enabled = "enabled" if result.returncode == 0 else "disabled"
-    except Exception:
-        # 如果没有 systemd 或权限不足，使用进程检测
-        service_status = "running" if frontend_pid else "direct_mode"
-    
-    return {
-        "uptime_seconds": uptime_seconds,
-        "backend_pid": backend_pid,
-        "backend_port": backend_port,
-        "frontend_pid": frontend_pid,
-        "frontend_port": frontend_port,
-        "start_time": start_time,
-        "config_file": str(PROPERTIES_FILE),
-        "log_dir": str(settings.log_dir),
-        "service_name": service_name,
-        "service_status": service_status,
-        "service_enabled": service_enabled,
-        "mode": "systemd" if service_status in ["running", "stopped"] else "direct",
-    }
+# ==================== 认证 API ====================
+# 已迁移到 app/routers/auth.py
 
 
-@app.post("/api/admin/system/shutdown")
-def api_admin_system_shutdown(
-    _: sqlite3.Row = Depends(require_super_admin),
-) -> dict[str, Any]:
-    """关闭系统服务（仅超级管理员）。使用 manage_service.sh 脚本。"""
-    
-    def do_shutdown():
-        """在后台执行关闭操作"""
-        time.sleep(1)  # 给API响应一些时间返回
-        try:
-            manage_script = settings.root_dir / "tools" / "manage_service.sh"
-            if manage_script.exists():
-                # 使用 manage_service.sh 停止服务
-                subprocess.run(
-                    ["bash", str(manage_script), "stop"],
-                    timeout=60,
-                    cwd=str(settings.root_dir)
-                )
-            else:
-                # 回退到 stop.sh
-                stop_script = settings.root_dir / "stop.sh"
-                subprocess.run(
-                    ["bash", str(stop_script)],
-                    timeout=30,
-                    cwd=str(settings.root_dir)
-                )
-        except Exception as e:
-            logger.error(f"关闭服务失败: {e}")
-    
-    # 在后台线程执行关闭
-    threading.Thread(target=do_shutdown, daemon=True).start()
-    
-    return {"message": "关闭指令已发送"}
-
-
-@app.post("/api/admin/system/restart")
-def api_admin_system_restart(
-    _: sqlite3.Row = Depends(require_super_admin),
-) -> dict[str, Any]:
-    """重启系统服务（仅超级管理员）。使用 manage_service.sh 脚本。"""
-    
-    def do_restart():
-        """在后台执行重启操作"""
-        time.sleep(1)  # 给API响应一些时间返回
-        try:
-            manage_script = settings.root_dir / "tools" / "manage_service.sh"
-            if manage_script.exists():
-                # 使用 manage_service.sh 重启服务
-                subprocess.run(
-                    ["bash", str(manage_script), "restart"],
-                    timeout=60,
-                    cwd=str(settings.root_dir)
-                )
-            else:
-                # 回退到 stop.sh + start.sh
-                stop_script = settings.root_dir / "stop.sh"
-                start_script = settings.root_dir / "start.sh"
-                
-                subprocess.run(
-                    ["bash", str(stop_script)],
-                    timeout=30,
-                    cwd=str(settings.root_dir)
-                )
-                time.sleep(2)
-                
-                subprocess.Popen(
-                    ["bash", str(start_script)],
-                    cwd=str(settings.root_dir),
-                    start_new_session=True
-                )
-        except Exception as e:
-            logger.error(f"重启服务失败: {e}")
-    
-    # 在后台线程执行重启
-    threading.Thread(target=do_restart, daemon=True).start()
-    
-    return {"message": "重启指令已发送"}
-
-
-@app.post("/api/admin/system/upgrade")
-def api_admin_system_upgrade(
-    _: sqlite3.Row = Depends(require_super_admin),
-) -> dict[str, Any]:
-    """系统升级：从 Git 拉取最新代码并重启（仅超级管理员）。使用 update.sh 脚本。"""
-    
-    def do_upgrade():
-        """在后台执行升级操作"""
-        time.sleep(2)  # 给API响应一些时间返回
-        try:
-            update_script = settings.root_dir / "tools" / "update.sh"
-            if not update_script.exists():
-                logger.error("更新脚本不存在: %s", update_script)
-                return
-            
-            # 使用 Popen 启动 update.sh，完全独立于当前进程
-            subprocess.Popen(
-                ["bash", str(update_script)],
-                cwd=str(settings.root_dir),
-                start_new_session=True,  # 创建新的会话，完全独立
-                stdout=open(str(settings.log_dir / "upgrade.log"), "w"),
-                stderr=subprocess.STDOUT
-            )
-            logger.info("系统升级进程已启动")
-        except Exception as e:
-            logger.error("系统升级异常: %s", e)
-    
-    # 在后台线程执行升级
-    threading.Thread(target=do_upgrade, daemon=True).start()
-    
-    return {"message": "系统升级指令已发送，请等待 1-2 分钟"}
-
-
-@app.get("/api/admin/system/logs")
-def api_admin_system_logs(
-    _: sqlite3.Row = Depends(require_super_admin),
-) -> list[dict[str, Any]]:
-    """获取日志文件列表（仅超级管理员）。"""
-    log_files = []
-    log_dir = settings.log_dir
-    
-    if not log_dir.exists():
-        return []
-    
-    for file_path in log_dir.iterdir():
-        if file_path.is_file() and file_path.suffix == '.log':
-            stat = file_path.stat()
-            log_files.append({
-                "filename": file_path.name,
-                "path": str(file_path),
-                "size_bytes": stat.st_size,
-                "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-            })
-    
-    # 按修改时间倒序排列
-    log_files.sort(key=lambda x: x["modified"], reverse=True)
-    
-    return log_files
-
-
-@app.get("/api/admin/system/logs/{filename}")
-def api_admin_system_logs_download(
-    filename: str,
-    download: bool = False,
-    _: sqlite3.Row = Depends(require_super_admin),
-) -> FileResponse:
-    """下载日志文件（仅超级管理员）。"""
-    # 防止目录遍历攻击
-    if ".." in filename or "/" in filename or "\\" in filename:
-        raise HTTPException(400, "非法文件名")
-    
-    log_dir = settings.log_dir
-    file_path = log_dir / filename
-    
-    if not file_path.exists() or not file_path.is_file():
-        raise HTTPException(404, "日志文件不存在")
-    
-    # 确保文件在日志目录内
-    if not str(file_path.resolve()).startswith(str(log_dir.resolve())):
-        raise HTTPException(400, "非法文件路径")
-    
-    if download:
-        return FileResponse(
-            str(file_path),
-            media_type="application/octet-stream",
-            filename=filename
-        )
-    else:
-        return FileResponse(
-            str(file_path),
-            media_type="text/plain"
-        )
-
-
-class AdminConfigUpdatePayload(BaseModel):
-    items: dict[str, str]
-
-
-@app.put("/api/admin/config")
-def api_admin_config_put(
-    payload: AdminConfigUpdatePayload,
-    _: sqlite3.Row = Depends(require_super_admin),
-) -> dict[str, Any]:
-    """修改配置项（仅超级管理员）。所有配置修改需重启服务后生效。"""
-    invalid = [k for k in payload.items.keys() if k not in CONFIG_META]
-    if invalid:
-        raise HTTPException(400, f"未知配置项: {', '.join(invalid)}")
-
-    # 类型校验
-    for key, raw in payload.items.items():
-        meta = CONFIG_META[key]
-        try:
-            _coerce_value(raw, meta["type"])
-        except Exception:
-            raise HTTPException(400, f"配置项 {key} 类型不正确，应为 {meta['type']}")
-
-    if not payload.items:
-        return {"applied": [], "pending_restart": []}
-
-    write_properties(payload.items)
-
-    # 所有配置都需要重启生效
-    pending: list[str] = list(payload.items.keys())
-
-    return {"applied": [], "pending_restart": pending}
-
-
-@app.get("/api/config")
-def api_config() -> dict[str, Any]:
-    logo_path = settings.logo_svg_path.lstrip("/")
-    if logo_path.startswith("app/static/"):
-        logo_url = "/static/" + logo_path.removeprefix("app/static/")
-    elif logo_path.startswith("static/"):
-        logo_url = "/" + logo_path
-    else:
-        logo_url = "/" + logo_path
-    return {
-        "site_name": settings.site_name,
-        "port": settings.port,
-        "startup_script": settings.startup_script,
-        "logo_svg_path": logo_url,
-        "default_filter_status": settings.default_filter_status,
-        "default_filter_subject": settings.default_filter_subject,
-    }
-
-
-@app.post("/api/auth/login")
-def login(payload: LoginPayload, response: Response, db: sqlite3.Connection = Depends(db_dep)) -> dict[str, Any]:
-    user = db.execute("SELECT * FROM users WHERE username = ?", (payload.username,)).fetchone()
-    if user is None or not verify_password(payload.password, user["password_hash"]):
-        raise HTTPException(401, "用户名或密码错误")
-    token = create_session_token(int(user["id"]), settings.secret_key, ttl_seconds=settings.session_ttl_hours * 3600)
-    response.set_cookie(
-        SESSION_COOKIE,
-        token,
-        httponly=True,
-        samesite="lax",
-        max_age=settings.session_ttl_hours * 3600,
-    )
-    return {"user": _serialize_user(user)}
-
-
-@app.post("/api/auth/logout")
-def logout(response: Response) -> dict[str, bool]:
-    response.delete_cookie(SESSION_COOKIE)
-    return {"ok": True}
-
-
-@app.get("/api/me")
-def me(user: sqlite3.Row = Depends(require_user)) -> dict[str, Any]:
-    return {"user": _serialize_user(user)}
-
-
-@app.get("/api/user/preferences")
-def get_user_preferences(
-    user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    rows = db.execute(
-        "SELECT pref_key, pref_value FROM user_preferences WHERE user_id = ?",
-        (int(user["id"]),),
-    ).fetchall()
-    preferences: dict[str, str] = {}
-    for row in rows:
-        preferences[row["pref_key"]] = row["pref_value"]
-    return {"preferences": preferences}
-
-
-@app.put("/api/user/preferences")
-def update_user_preferences(
-    payload: UserPreferencesPayload,
-    user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    user_id = int(user["id"])
-    ts = now_iso()
-    for key, value in payload.preferences.items():
-        db.execute(
-            """
-            INSERT INTO user_preferences (user_id, pref_key, pref_value, updated_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(user_id, pref_key) DO UPDATE SET
-                pref_value = excluded.pref_value,
-                updated_at = excluded.updated_at
-            """,
-            (user_id, key, value, ts),
-        )
-    db.commit()
-    return get_user_preferences(user, db)
-
+# ==================== 用户管理 API ====================
+# 已迁移到 app/routers/users.py 和 app/routers/user_center.py
 
 @app.get("/api/users/options")
 def user_options(
@@ -1616,9 +1255,6 @@ def user_options(
 ) -> dict[str, Any]:
     rows = db.execute("SELECT id, name, username, role FROM users ORDER BY role, name").fetchall()
     return {"users": [_row_to_dict(row) for row in rows]}
-
-
-@app.get("/api/me/personal-remarks")
 def my_personal_remark_summary(
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
@@ -1638,9 +1274,6 @@ def my_personal_remark_summary(
 
 
 # ────────────────────────────── 首页置顶 / 概览 ──────────────────────────────
-
-
-@app.post("/api/me/pins/resources/{resource_id}")
 def pin_resource(
     resource_id: int,
     user: sqlite3.Row = Depends(require_user),
@@ -1655,9 +1288,6 @@ def pin_resource(
     )
     db.commit()
     return {"ok": True, "is_pinned": True}
-
-
-@app.delete("/api/me/pins/resources/{resource_id}")
 def unpin_resource(
     resource_id: int,
     user: sqlite3.Row = Depends(require_user),
@@ -1669,9 +1299,6 @@ def unpin_resource(
     )
     db.commit()
     return {"ok": True, "is_pinned": False}
-
-
-@app.post("/api/me/pins/shows/{show_id}")
 def pin_show(
     show_id: int,
     user: sqlite3.Row = Depends(require_user),
@@ -1686,9 +1313,6 @@ def pin_show(
     )
     db.commit()
     return {"ok": True, "is_pinned": True}
-
-
-@app.delete("/api/me/pins/shows/{show_id}")
 def unpin_show(
     show_id: int,
     user: sqlite3.Row = Depends(require_user),
@@ -1739,9 +1363,6 @@ def list_my_pins(
         shows.append(_serialize_show(db, row, user))
 
     return {"resources": resources, "shows": shows}
-
-
-@app.get("/api/me/home/stats")
 def my_home_stats(
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
@@ -1794,9 +1415,6 @@ def my_home_stats(
         "templates": {"total": templates_total},
         "fonts": {"total": fonts_total},
     }
-
-
-@app.get("/api/admin/users")
 def list_users(
     _: sqlite3.Row = Depends(require_admin),
     db: sqlite3.Connection = Depends(db_dep),
@@ -1862,9 +1480,6 @@ def list_download_records(
             for r in rows
         ],
     }
-
-
-@app.post("/api/admin/users")
 def create_user(
     payload: UserPayload,
     admin: sqlite3.Row = Depends(require_admin),
@@ -1948,9 +1563,6 @@ def delete_user(
     db.execute("DELETE FROM users WHERE id = ?", (user_id,))
     db.commit()
     return {"ok": True}
-
-
-@app.post("/api/admin/users/bulk-delete")
 def bulk_delete_users(
     payload: UserDeletePayload,
     admin: sqlite3.Row = Depends(require_admin),
@@ -3355,9 +2967,6 @@ def download_resource(
         media_type="application/zip",
         headers={"Content-Disposition": _content_disposition(f"{filename_base}_with_fonts.zip")},
     )
-
-
-@app.get("/api/fonts")
 def list_fonts(
     _: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
@@ -3378,42 +2987,6 @@ def list_fonts(
             }
         )
     return {"fonts": items}
-
-
-@app.post("/api/fonts/upload")
-async def upload_font(
-    font_file: UploadFile = File(...),
-    user: sqlite3.Row = Depends(require_admin),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    target_dir = settings.fonts_dir
-    path = await save_upload(font_file, target_dir, "font_")
-    valid, names = validate_font_file(path)
-    if not valid:
-        path.unlink(missing_ok=True)
-        raise HTTPException(400, "只能上传可解析的字体文件（TTF/OTF/TTC/OTC）")
-    aliases = sorted({name.strip() for name in names if name and name.strip()}, key=str.lower)
-    display = aliases[0] if aliases else Path(font_file.filename or path.name).stem
-    ts = now_iso()
-    db.execute(
-        """
-        INSERT INTO fonts (family_name, aliases, file_name, file_path, uploaded_by, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            display,
-            json.dumps(aliases, ensure_ascii=False),
-            font_file.filename or path.name,
-            settings.store_path(path),
-            user["id"],
-            ts,
-        ),
-    )
-    db.commit()
-    return {"ok": True, "family": display, "aliases": aliases}
-
-
-@app.delete("/api/admin/fonts/{font_id}")
 def delete_font(
     font_id: int,
     _: sqlite3.Row = Depends(require_admin),
@@ -3428,9 +3001,6 @@ def delete_font(
     if path is not None:
         path.unlink(missing_ok=True)
     return {"ok": True, "deleted": 1}
-
-
-@app.post("/api/admin/fonts/bulk-delete")
 def bulk_delete_fonts(
     payload: FontDeletePayload,
     _: sqlite3.Row = Depends(require_admin),
@@ -3450,9 +3020,6 @@ def bulk_delete_fonts(
         if path is not None:
             path.unlink(missing_ok=True)
     return {"ok": True, "deleted": len(rows)}
-
-
-@app.get("/api/fonts/{font_id}/download")
 def download_uploaded_font(
     font_id: int,
     _: sqlite3.Row = Depends(require_user),
@@ -4531,34 +4098,6 @@ def get_show_offline_version(
         "name": latest_row["name"],
         "resource_versions": {str(r["resource_id"]): r["version_no"] for r in sr_rows},
     }
-
-
-@app.post("/api/auth/verify-offline")
-async def verify_offline_auth(
-    request: Request,
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, bool]:
-    try:
-        body = await request.json()
-    except Exception:
-        return {"valid": False}
-    username = body.get("username")
-    password = body.get("password")
-    show_id = body.get("show_id")
-    if not username or not password or show_id is None:
-        return {"valid": False}
-    user_row = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
-    if user_row is None or not verify_password(password, user_row["password_hash"]):
-        return {"valid": False}
-    show_row = db.execute("SELECT * FROM shows WHERE id = ?", (show_id,)).fetchone()
-    if show_row is None or not can_view_show(db, show_row, user_row):
-        return {"valid": False}
-    return {"valid": True}
-
-
-# ---------- 放映会话图片签名 API ----------
-
-
 @app.post("/api/shows/{show_id}/present-session")
 def create_present_session(
     show_id: int,
@@ -4598,8 +4137,6 @@ def slide_image(
 
 
 # ---------- links ----------
-
-@app.get("/api/links")
 def list_links(
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
@@ -4607,9 +4144,6 @@ def list_links(
     rows = db.execute("SELECT * FROM links ORDER BY sort_order ASC, updated_at DESC, id DESC").fetchall()
     links = [_serialize_link(db, row, user) for row in rows if can_view_link(db, row, user)]
     return {"links": links}
-
-
-@app.post("/api/links")
 def create_link(
     payload: LinkCreatePayload,
     user: sqlite3.Row = Depends(require_user),
@@ -4631,9 +4165,6 @@ def create_link(
     db.commit()
     row = _link_row(db, link_id)
     return {"link": _serialize_link(db, row, user)}
-
-
-@app.put("/api/links/{link_id}")
 def update_link(
     link_id: int,
     payload: LinkUpdatePayload,
@@ -4657,9 +4188,6 @@ def update_link(
     _set_link_scope_users(db, "link_management", link_id, payload.manage_user_ids)
     db.commit()
     return {"link": _serialize_link(db, _link_row(db, link_id), user)}
-
-
-@app.delete("/api/links/{link_id}")
 def delete_link(
     link_id: int,
     user: sqlite3.Row = Depends(require_user),
@@ -4671,9 +4199,6 @@ def delete_link(
     db.execute("DELETE FROM links WHERE id = ?", (link_id,))
     db.commit()
     return {"ok": True, "deleted": 1}
-
-
-@app.post("/api/admin/links/bulk-delete")
 def bulk_delete_links(
     payload: LinkDeletePayload,
     _: sqlite3.Row = Depends(require_admin),
@@ -4689,9 +4214,6 @@ def bulk_delete_links(
     db.execute(f"DELETE FROM links WHERE id IN ({placeholders})", link_ids)
     db.commit()
     return {"ok": True, "deleted": len(rows)}
-
-
-@app.put("/api/admin/links/order")
 def reorder_links(
     payload: LinkOrderPayload,
     _: sqlite3.Row = Depends(require_admin),
@@ -4716,9 +4238,6 @@ def reorder_links(
         )
     db.commit()
     return {"ok": True, "ordered": len(link_ids)}
-
-
-@app.get("/api/links/my-selection")
 def get_my_link_selection(
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
@@ -4733,9 +4252,6 @@ def get_my_link_selection(
     ).fetchall()
     links = [_serialize_link(db, row, user) for row in rows if can_view_link(db, row, user)]
     return {"links": links}
-
-
-@app.get("/api/links/admin/defaults")
 def get_default_link_selection(
     user: sqlite3.Row = Depends(require_super_admin),
     db: sqlite3.Connection = Depends(db_dep),
@@ -4749,9 +4265,6 @@ def get_default_link_selection(
     ).fetchall()
     links = [_serialize_link(db, row, user) for row in rows]
     return {"links": links}
-
-
-@app.put("/api/links/admin/defaults")
 def set_default_link_selection(
     payload: LinkSelectionPayload,
     user: sqlite3.Row = Depends(require_super_admin),
