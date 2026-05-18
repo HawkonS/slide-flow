@@ -1398,6 +1398,39 @@ def api_admin_system_restart(
     return {"message": "重启指令已发送"}
 
 
+@app.post("/api/admin/system/upgrade")
+def api_admin_system_upgrade(
+    _: sqlite3.Row = Depends(require_super_admin),
+) -> dict[str, Any]:
+    """系统升级：从 Git 拉取最新代码并重启（仅超级管理员）。使用 update.sh 脚本。"""
+    
+    def do_upgrade():
+        """在后台执行升级操作"""
+        time.sleep(2)  # 给API响应一些时间返回
+        try:
+            update_script = settings.root_dir / "tools" / "update.sh"
+            if not update_script.exists():
+                logger.error("更新脚本不存在: %s", update_script)
+                return
+            
+            # 使用 Popen 启动 update.sh，完全独立于当前进程
+            subprocess.Popen(
+                ["bash", str(update_script)],
+                cwd=str(settings.root_dir),
+                start_new_session=True,  # 创建新的会话，完全独立
+                stdout=open(str(settings.log_dir / "upgrade.log"), "w"),
+                stderr=subprocess.STDOUT
+            )
+            logger.info("系统升级进程已启动")
+        except Exception as e:
+            logger.error("系统升级异常: %s", e)
+    
+    # 在后台线程执行升级
+    threading.Thread(target=do_upgrade, daemon=True).start()
+    
+    return {"message": "系统升级指令已发送，请等待 1-2 分钟"}
+
+
 @app.get("/api/admin/system/logs")
 def api_admin_system_logs(
     _: sqlite3.Row = Depends(require_super_admin),

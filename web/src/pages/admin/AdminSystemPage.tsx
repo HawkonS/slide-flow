@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Loader2, Power, RotateCw, Download, Server, Clock, HardDrive } from "lucide-react";
+import { Loader2, Power, RotateCw, Download, Server, Clock, HardDrive, ArrowUpCircle } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -65,6 +65,14 @@ function RuntimeTab() {
     onError: (err: Error) => toast.error(err.message || "重启失败"),
   });
 
+  const upgradeMut = useMutation({
+    mutationFn: async () => api("/api/admin/system/upgrade", { method: "POST" }),
+    onSuccess: () => {
+      toast.success("系统升级中，请等待 1-2 分钟后刷新页面");
+    },
+    onError: (err: Error) => toast.error(err.message || "升级失败"),
+  });
+
   const handleShutdown = () => {
     if (window.confirm("确定要关闭系统吗？这将停止所有服务。")) {
       shutdownMut.mutate();
@@ -74,6 +82,18 @@ function RuntimeTab() {
   const handleRestart = () => {
     if (window.confirm("确定要重启系统吗？服务将短暂中断。")) {
       restartMut.mutate();
+    }
+  };
+
+  const handleUpgrade = () => {
+    if (window.confirm(
+      "确定要升级系统吗？\n\n" +
+      "此操作将：\n" +
+      "1. 从 Git 仓库拉取最新代码\n" +
+      "2. 自动重启服务\n\n" +
+      "升级期间服务将中断 1-2 分钟，确定继续吗？"
+    )) {
+      upgradeMut.mutate();
     }
   };
 
@@ -218,7 +238,20 @@ function RuntimeTab() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="flex gap-3">
+          <div className="flex flex-wrap gap-3">
+            <Button
+              variant="default"
+              onClick={handleUpgrade}
+              disabled={upgradeMut.isPending}
+              className="bg-blue-600 hover:bg-blue-700"
+            >
+              {upgradeMut.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <ArrowUpCircle className="mr-2 h-4 w-4" />
+              )}
+              系统升级
+            </Button>
             <Button
               variant="outline"
               onClick={handleRestart}
