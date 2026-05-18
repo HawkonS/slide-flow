@@ -35,42 +35,55 @@ def _show_row(db: sqlite3.Connection, show_id: int) -> sqlite3.Row:
 
 
 def _serialize_resource(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row) -> dict[str, Any]:
-    """序列化资源数据（简化版）"""
-    from app.main import _version_row
-    
+    """序列化资源数据（完整版）"""
     owner = db.execute("SELECT id, name, username FROM users WHERE id = ?", (row["owner_id"],)).fetchone()
-    current_version = _version_row(db, int(row["id"]))
+    
+    # 获取当前版本
+    current_version = db.execute(
+        """
+        SELECT v.* FROM resource_versions v
+        JOIN resources r ON r.id = v.resource_id AND r.current_version = v.version_no
+        WHERE r.id = ?
+        """,
+        (int(row["id"]),),
+    ).fetchone()
     
     return {
         "id": row["id"],
         "name": row["name"],
-        "owner_id": row["owner_id"],
-        "owner_name": owner["name"] if owner else "",
         "resource_type": row["resource_type"],
         "subject": row["subject"],
         "tags": row["tags"],
         "status": row["status"],
+        "visibility_scope": row["visibility_scope"],
+        "management_scope": row["management_scope"],
+        "owner_id": row["owner_id"],
+        "owner": {"id": owner["id"], "name": owner["name"], "username": owner["username"]} if owner else None,
         "current_version": current_version["version_no"] if current_version else 1,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
+        "is_pinned": True,  # 在置顶列表中，所以一定是 True
     }
 
 
 def _serialize_show(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row) -> dict[str, Any]:
-    """序列化演示数据（简化版）"""
+    """序列化演示数据（完整版）"""
     owner = db.execute("SELECT id, name, username FROM users WHERE id = ?", (row["owner_id"],)).fetchone()
     
     return {
         "id": row["id"],
         "name": row["name"],
-        "owner_id": row["owner_id"],
-        "owner_name": owner["name"] if owner else "",
         "subject": row["subject"],
         "tags": row["tags"],
         "status": row["status"],
+        "visibility_scope": row["visibility_scope"],
+        "management_scope": row["management_scope"],
+        "owner_id": row["owner_id"],
+        "owner": {"id": owner["id"], "name": owner["name"], "username": owner["username"]} if owner else None,
         "current_version": row["current_version"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
+        "is_pinned": True,  # 在置顶列表中，所以一定是 True
     }
 
 
