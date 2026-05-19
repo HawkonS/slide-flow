@@ -15,6 +15,7 @@ import {
   TabsTrigger,
 } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 interface ConfigItem {
   value: string;
@@ -150,14 +151,22 @@ export function AdminConfigPage() {
   }
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-4">
-      <div className="flex flex-col gap-1">
-        <h1 className="text-xl font-semibold">配置管理</h1>
-        <p className="text-sm text-muted-foreground">
-          直接读写 <code className="rounded bg-muted px-1.5 py-0.5 text-xs">slide_flow.properties</code>
-          。所有配置修改需重启服务后生效。
-        </p>
-      </div>
+    <div className="flex flex-col gap-6">
+      {/* 页头 */}
+      <header className="flex items-end justify-between gap-4">
+        <div className="space-y-1">
+          <h1 className="text-2xl font-semibold tracking-tight">配置管理</h1>
+          <p className="text-xs text-muted-foreground">
+            直接读写 <code className="rounded bg-muted px-1.5 py-0.5 text-xs">slide_flow.properties</code>
+            。所有配置修改需重启服务后生效。
+          </p>
+        </div>
+        {dirtyKeys.length > 0 && (
+          <span className="inline-flex h-6 items-center rounded-full bg-primary/10 px-2.5 text-xs text-primary">
+            已修改 {dirtyKeys.length} 项
+          </span>
+        )}
+      </header>
 
       <Tabs defaultValue={data.groups[0]?.key} className="w-full">
         <TabsList className="h-auto flex-wrap justify-start gap-1 bg-muted/60 p-1">
@@ -169,126 +178,141 @@ export function AdminConfigPage() {
         </TabsList>
 
         {data.groups.map((g) => (
-          <TabsContent key={g.key} value={g.key} className="mt-4">
-            <div className="flex flex-col gap-4">
-              {(groupedKeys[g.key] || []).map((key) => {
-                const item = data.config[key];
-                const value = draft[key] ?? "";
-                const valid = isValidValue(value, item.type);
-                const changed = value !== item.value;
-                return (
-                  <div
-                    key={key}
-                    className="rounded-md border bg-card p-4 shadow-sm"
-                  >
-                    <div className="mb-2 flex flex-wrap items-center gap-2">
-                      <Label className="text-sm font-medium">{item.label}</Label>
-                      <code className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                        {key}
-                      </code>
-                      <Badge
-                        className="border-amber-500/40 bg-amber-100 text-[10px] text-amber-800 hover:bg-amber-100"
-                        variant="outline"
-                      >
-                        需重启
-                      </Badge>
-                      {changed && (
-                        <Badge variant="outline" className="text-[10px]">
-                          已修改
-                        </Badge>
+          <TabsContent key={g.key} value={g.key} className="mt-6">
+            <div className="rounded-lg border bg-card">
+              <div className="divide-y divide-border">
+                {(groupedKeys[g.key] || []).map((key, index) => {
+                  const item = data.config[key];
+                  const value = draft[key] ?? "";
+                  const valid = isValidValue(value, item.type);
+                  const changed = value !== item.value;
+                  return (
+                    <div
+                      key={key}
+                      className={cn(
+                        "flex flex-col gap-3 p-5 transition-colors hover:bg-muted/30",
+                        index === 0 && "rounded-t-lg",
+                        index === (groupedKeys[g.key] || []).length - 1 && "rounded-b-lg"
                       )}
-                    </div>
-                    <div className="max-w-xl">
-                      {item.type === "bool" ? (
-                        <div className="flex items-center gap-2">
-                          <Switch
-                            checked={value === "true" || value === "1"}
-                            onCheckedChange={(checked) =>
-                              setDraft((prev) => ({
-                                ...prev,
-                                [key]: checked ? "true" : "false",
-                              }))
-                            }
-                          />
-                          <span className="text-sm text-muted-foreground">
-                            {value === "true" || value === "1" ? "已启用" : "已关闭"}
-                          </span>
+                    >
+                      <div className="flex flex-wrap items-start gap-2">
+                        <Label className="text-sm font-medium">{item.label}</Label>
+                        <div className="flex items-center gap-1.5">
+                          <code className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                            {key}
+                          </code>
+                          {item.hot_reload === false && (
+                            <Badge
+                              variant="outline"
+                              className="border-amber-500/40 bg-amber-50 text-[10px] text-amber-700 hover:bg-amber-50 dark:bg-amber-950/30 dark:text-amber-400"
+                            >
+                              需重启
+                            </Badge>
+                          )}
+                          {changed && (
+                            <Badge variant="secondary" className="text-[10px]">
+                              已修改
+                            </Badge>
+                          )}
                         </div>
-                      ) : (
-                        <Input
-                          type={item.type === "int" || item.type === "float" ? "text" : "text"}
-                          value={value}
-                          onChange={(e) =>
-                            setDraft((prev) => ({
-                              ...prev,
-                              [key]: e.target.value,
-                            }))
-                          }
-                          className={!valid ? "border-destructive" : undefined}
-                        />
-                      )}
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <div className="max-w-xl">
+                          {item.type === "bool" ? (
+                            <div className="flex items-center gap-2">
+                              <Switch
+                                checked={value === "true" || value === "1"}
+                                onCheckedChange={(checked) =>
+                                  setDraft((prev) => ({
+                                    ...prev,
+                                    [key]: checked ? "true" : "false",
+                                  }))
+                                }
+                              />
+                              <span className="text-sm text-muted-foreground">
+                                {value === "true" || value === "1" ? "已启用" : "已关闭"}
+                              </span>
+                            </div>
+                          ) : (
+                            <Input
+                              type={item.type === "int" || item.type === "float" ? "text" : "text"}
+                              value={value}
+                              onChange={(e) =>
+                                setDraft((prev) => ({
+                                  ...prev,
+                                  [key]: e.target.value,
+                                }))
+                              }
+                              className={cn(
+                                "max-w-md",
+                                !valid && "border-destructive focus-visible:ring-destructive"
+                              )}
+                            />
+                          )}
+                        </div>
+                        <div className="flex items-start gap-3">
+                          {item.desc && (
+                            <p className="text-xs text-muted-foreground flex-1">
+                              {item.desc}
+                            </p>
+                          )}
+                          {!valid && (
+                            <p className="text-xs text-destructive shrink-0">
+                              值类型不正确，应为 {item.type}
+                            </p>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                    {item.desc && (
-                      <div className="mt-2 text-xs text-muted-foreground">
-                        {item.desc}
-                      </div>
-                    )}
-                    {!valid && (
-                      <div className="mt-1 text-xs text-destructive">
-                        值类型不正确，应为 {item.type}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
           </TabsContent>
         ))}
       </Tabs>
 
-      <div className="sticky bottom-0 z-10 flex items-center justify-between rounded-md border bg-card/95 px-4 py-3 shadow-sm backdrop-blur">
-        <div className="text-sm text-muted-foreground">
-          {dirtyKeys.length > 0 ? (
-            <>
-              已修改 <span className="font-medium text-foreground">{dirtyKeys.length}</span> 项
-              {invalidKeys.length > 0 && (
-                <span className="ml-2 text-destructive">
-                  其中 {invalidKeys.length} 项无效
-                </span>
-              )}
-            </>
-          ) : (
-            "尚未修改任何配置"
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleReset}
-            disabled={dirtyKeys.length === 0 || saveMut.isPending}
-          >
-            <RotateCcw className="mr-1.5 h-4 w-4" />
-            重置为当前值
-          </Button>
-          <Button
-            size="sm"
-            onClick={handleSave}
-            disabled={
-              dirtyKeys.length === 0 ||
-              invalidKeys.length > 0 ||
-              saveMut.isPending
-            }
-          >
-            {saveMut.isPending ? (
-              <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+      {/* 底部操作栏 */}
+      {dirtyKeys.length > 0 && (
+        <div className="sticky bottom-0 z-10 flex items-center justify-between rounded-lg border bg-card/95 px-5 py-3 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/60">
+          <div className="text-sm text-muted-foreground">
+            {invalidKeys.length > 0 ? (
+              <span className="text-destructive">
+                存在 {invalidKeys.length} 项无效配置
+              </span>
             ) : (
-              <Save className="mr-1.5 h-4 w-4" />
+              <span>已修改 <span className="font-medium text-foreground">{dirtyKeys.length}</span> 项配置</span>
             )}
-            保存
-          </Button>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleReset}
+              disabled={dirtyKeys.length === 0 || saveMut.isPending}
+            >
+              <RotateCcw className="mr-1.5 h-4 w-4" />
+              重置
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleSave}
+              disabled={
+                dirtyKeys.length === 0 ||
+                invalidKeys.length > 0 ||
+                saveMut.isPending
+              }
+            >
+              {saveMut.isPending ? (
+                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+              ) : (
+                <Save className="mr-1.5 h-4 w-4" />
+              )}
+              保存更改
+            </Button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

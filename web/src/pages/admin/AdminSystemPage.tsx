@@ -375,13 +375,16 @@ function LogTab() {
 
 export function AdminSystemPage() {
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-4">
-      <div className="flex flex-col gap-1">
-        <h1 className="text-xl font-semibold">系统管理</h1>
-        <p className="text-sm text-muted-foreground">
-          管理系统运行状态、配置文件和日志文件
-        </p>
-      </div>
+    <div className="flex h-full flex-col gap-8">
+      {/* 页头 */}
+      <header className="flex items-end justify-between gap-4">
+        <div className="space-y-1">
+          <h1 className="text-2xl font-semibold tracking-tight">系统管理</h1>
+          <p className="text-xs text-muted-foreground">
+            管理系统运行状态、配置文件和日志文件
+          </p>
+        </div>
+      </header>
 
       <Tabs defaultValue="runtime" className="w-full">
         <TabsList className="h-auto flex-wrap justify-start gap-1 bg-muted/60 p-1">
