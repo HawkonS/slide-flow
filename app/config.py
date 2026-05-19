@@ -30,6 +30,7 @@ CONFIG_META: dict[str, dict[str, Any]] = {
     "server.port": {"label": "后端服务端口", "group": "server", "hot_reload": False, "type": "int", "desc": "主 API 服务端口，修改后需重启"},
     "server.web_port": {"label": "前端服务端口", "group": "server", "hot_reload": False, "type": "int", "desc": "前端开发/代理端口，修改后需重启"},
     "server.workers": {"label": "工作进程数", "group": "server", "hot_reload": False, "type": "int", "desc": "Uvicorn worker 数量"},
+    "server.allowed_host": {"label": "允许的访问域名", "group": "server", "hot_reload": False, "type": "str", "desc": "Vite 开发服务器允许访问的域名，多个域名用逗号分隔"},
     # 安全
     "security.secret_key": {"label": "会话签名密钥", "group": "security", "hot_reload": False, "type": "str", "desc": "会话/演示令牌签名密钥，修改后现有会话会失效"},
     "security.default_password": {"label": "默认密码", "group": "security", "hot_reload": True, "type": "str", "desc": "新建用户及首次初始化使用的默认密码"},
@@ -78,6 +79,7 @@ _PROP_TO_ATTR: dict[str, str] = {
     "server.port": "port",
     "server.web_port": "web_port",
     "server.workers": "workers",
+    "server.allowed_host": "allowed_host",
     "security.secret_key": "secret_key",
     "security.default_password": "default_password",
     "security.session_ttl_hours": "session_ttl_hours",
@@ -123,6 +125,7 @@ class Settings:
     web_port: int = 5173
     workers: int = 4
     startup_script: str = "start.sh"
+    allowed_host: str = ""
 
     # 安全配置
     secret_key: str = "slide-flow-local-dev-secret"
@@ -295,6 +298,7 @@ def load_settings() -> Settings:
     port = int(props.get("server.port", "8088"))
     web_port = int(props.get("server.web_port", "5173"))
     workers = int(props.get("server.workers", "4"))
+    allowed_host = props.get("server.allowed_host", "")
     startup_script = props.get("startup.script", "start.sh")
 
     # 安全配置
@@ -343,6 +347,7 @@ def load_settings() -> Settings:
         web_port=web_port,
         workers=workers,
         startup_script=startup_script,
+        allowed_host=allowed_host,
         secret_key=secret_key,
         default_password=default_password,
         session_ttl_hours=session_ttl_hours,
