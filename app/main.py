@@ -1801,47 +1801,82 @@ def list_templates(
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
-    rows = db.execute(
-        """
-        SELECT * FROM templates
-        ORDER BY
-            subject_order ASC,
-            subject COLLATE NOCASE,
-            series_order ASC,
-            series COLLATE NOCASE,
-            sort_order ASC,
-            platform COLLATE NOCASE,
-            CASE template_type
+    uid = int(user["id"])
+    # ── 可见性 SQL 条件 ──
+    params: dict[str, Any] = {"vis_uid": uid}
+    if is_super_admin(user):
+        vis_cond = "1=1"
+    else:
+        vis_cond = (
+            "(t.owner_id = :vis_uid"
+            " OR t.visibility_scope = 'public'"
+            " OR (t.visibility_scope = 'partial' AND t.id IN"
+            " (SELECT template_id FROM template_visibility WHERE user_id = :vis_uid)))"
+        )
+
+    where_parts = [vis_cond]
+
+    # 筛选
+    q = search.strip()
+    if q:
+        where_parts.append(
+            "(LOWER(COALESCE(t.name, '')) LIKE :fl_q"
+            " OR LOWER(COALESCE(t.subject, '')) LIKE :fl_q"
+            " OR LOWER(COALESCE(t.series, '')) LIKE :fl_q)"
+        )
+        params["fl_q"] = f"%{q.lower()}%"
+    if subject and subject != "all":
+        where_parts.append("COALESCE(t.subject, '') = :fl_subject")
+        params["fl_subject"] = subject
+    if series and series != "all":
+        where_parts.append("COALESCE(t.series, '') = :fl_series")
+        params["fl_series"] = series
+    if template_type and template_type != "all":
+        where_parts.append("COALESCE(t.template_type, '') = :fl_type")
+        params["fl_type"] = template_type
+    if platform and platform != "all":
+        where_parts.append("COALESCE(t.platform, '') = :fl_platform")
+        params["fl_platform"] = platform
+
+    where_clause = " AND ".join(where_parts)
+    base_sql = f"SELECT t.* FROM templates t WHERE {where_clause}"
+
+    order_sql = """t.subject_order ASC,
+            t.subject COLLATE NOCASE,
+            t.series_order ASC,
+            t.series COLLATE NOCASE,
+            t.sort_order ASC,
+            t.platform COLLATE NOCASE,
+            CASE t.template_type
                 WHEN 'cover' THEN 1
                 WHEN 'catalog' THEN 2
                 WHEN 'content' THEN 3
                 ELSE 4
             END,
-            ratio DESC,
-            updated_at DESC,
-            id DESC
-        """
-    ).fetchall()
-    visible = [row for row in rows if can_view_template(db, row, user)]
-    # 筛选
-    q = search.strip().lower()
-    if q:
-        visible = [r for r in visible if q in (r["name"] or "").lower() or q in (r["subject"] or "").lower() or q in (r["series"] or "").lower()]
-    if subject and subject != "all":
-        visible = [r for r in visible if (r["subject"] or "") == subject]
-    if series and series != "all":
-        visible = [r for r in visible if (r["series"] or "") == series]
-    if template_type and template_type != "all":
-        visible = [r for r in visible if (r["template_type"] or "") == template_type]
-    if platform and platform != "all":
-        visible = [r for r in visible if (r["platform"] or "") == platform]
+            t.ratio DESC,
+            t.updated_at DESC,
+            t.id DESC"""
+
     # 收集筛选项
-    all_subjects = sorted({r["subject"] for r in visible if r["subject"]})
-    all_series = sorted({r["series"] for r in visible if r["series"]})
-    total = len(visible)
+    facet_rows = db.execute(
+        f"SELECT t.subject, t.series FROM templates t WHERE {where_clause}",
+        params,
+    ).fetchall()
+    all_subjects = sorted({fr["subject"] for fr in facet_rows if fr["subject"]})
+    all_series = sorted({fr["series"] for fr in facet_rows if fr["series"]})
+
+    # 总数
+    total: int = db.execute(
+        f"SELECT COUNT(*) FROM templates t WHERE {where_clause}", params,
+    ).fetchone()[0]
+
+    # 分页
     offset = (page - 1) * page_size
-    page_items = visible[offset:offset + page_size]
-    templates = [_serialize_template(db, row, user) for row in page_items]
+    page_rows = db.execute(
+        f"{base_sql} ORDER BY {order_sql} LIMIT :lim OFFSET :off",
+        {**params, "lim": page_size, "off": offset},
+    ).fetchall()
+    templates = [_serialize_template(db, row, user) for row in page_rows]
     return {
         "items": templates,
         "total": total,
@@ -2134,35 +2169,39 @@ def list_resources(
 ) -> dict[str, Any]:
     if resource_type != "asset":
         raise HTTPException(400, "模板请使用 /api/templates")
-    rows = db.execute(
-        "SELECT * FROM resources WHERE resource_type = ?",
-        (resource_type,),
-    ).fetchall()
-    visible = [r for r in rows if can_view_resource(db, r, user)]
-    # manageable_only 过滤
-    if manageable_only:
-        visible = [r for r in visible if can_manage_resource(db, r, user)]
+    # SQL 级分页：可见性 + 筛选 + 排序全部下推到 SQL
+    where_clause, order_sql, params = _build_resource_query_sql(
+        user, manageable_only=manageable_only,
+        search=search, tag=tag, tags=tags, tags_mode=tags_mode,
+        subject=subject, status=status, secrecy=secrecy,
+        permission=permission, remark_common=remark_common,
+        remark_personal=remark_personal, sort=sort,
+    )
     # 收集可见资源的标签/主体（用于前端筛选下拉）
+    facet_rows = db.execute(
+        f"SELECT r.tags, r.subject FROM resources r WHERE {where_clause}",
+        params,
+    ).fetchall()
     all_tags_set: set[str] = set()
     all_subjects_set: set[str] = set()
-    for row in visible:
-        all_tags_set.update(_row_tag_set(row))
-        if row["subject"]:
-            all_subjects_set.add(row["subject"])
+    for fr in facet_rows:
+        all_tags_set.update(_parse_csv(fr["tags"] or ""))
+        if fr["subject"]:
+            all_subjects_set.add(fr["subject"])
     all_tags = sorted(all_tags_set)
     all_subjects = sorted(all_subjects_set)
-    # 筛选 + 排序
-    filtered = _apply_pick_filters(
-        db, visible, user,
-        search=search, subject=subject, status=status, secrecy=secrecy,
-        permission=permission, remark_common=remark_common,
-        remark_personal=remark_personal, tag=tag, tags=tags, tags_mode=tags_mode,
-        sort=sort,
-    )
-    total = len(filtered)
+    # 总数
+    total: int = db.execute(
+        f"SELECT COUNT(*) FROM resources r WHERE {where_clause}",
+        params,
+    ).fetchone()[0]
+    # 分页取当前页
     offset = (page - 1) * page_size
-    page_items = filtered[offset:offset + page_size]
-    items = [_serialize_resource_lite(db, row, user) for row in page_items]
+    page_rows = db.execute(
+        f"SELECT r.* FROM resources r WHERE {where_clause} ORDER BY {order_sql} LIMIT :lim OFFSET :off",
+        {**params, "lim": page_size, "off": offset},
+    ).fetchall()
+    items = [_serialize_resource_lite(db, row, user) for row in page_rows]
     return {
         "items": items,
         "total": total,
@@ -2190,6 +2229,184 @@ def _parse_csv(value: str) -> list[str]:
 def _row_tag_set(row: sqlite3.Row) -> set[str]:
     """提取资源行的标签集合（去空白）"""
     return {t for t in _parse_csv(row["tags"] or "")}
+
+
+# ── SQL 级分页辅助函数 ──
+
+
+def _resource_visibility_sql(
+    user: sqlite3.Row,
+    alias: str = "r",
+    manageable_only: bool = False,
+) -> tuple[str, dict[str, Any]]:
+    """构建资源可见性 + 可管理性 SQL WHERE 片段。
+
+    将 Python 层的 can_view_resource / can_manage_resource 判定
+    完全下推到 SQL，避免全表加载到内存。
+    """
+    uid = int(user["id"])
+    params: dict[str, Any] = {"vis_uid": uid}
+
+    if is_super_admin(user):
+        cond = "1=1"
+    else:
+        cond = (
+            f"({alias}.owner_id = :vis_uid"
+            f" OR {alias}.visibility_scope = 'public'"
+            f" OR ({alias}.visibility_scope = 'partial' AND {alias}.id IN"
+            f" (SELECT resource_id FROM resource_visibility WHERE user_id = :vis_uid)))"
+        )
+
+    if manageable_only:
+        params["mgmt_uid"] = uid
+        if not is_super_admin(user):
+            cond += (
+                f" AND ({alias}.owner_id = :mgmt_uid"
+                f" OR {alias}.management_scope = 'public'"
+                f" OR ({alias}.management_scope = 'partial' AND {alias}.id IN"
+                f" (SELECT resource_id FROM resource_management WHERE user_id = :mgmt_uid)))"
+            )
+
+    return cond, params
+
+
+def _csv_tag_sql_match(
+    column: str, tag: str, param_name: str
+) -> tuple[str, dict[str, str]]:
+    """CSV 存储的标签字段的 SQL 精确子串匹配。
+
+    用 ',col,' LIKE '%,tag,%' 模式避免 'java' 误匹配 'javascript'。
+    """
+    return (
+        f"(',' || COALESCE({column}, '') || ',') LIKE :{param_name}",
+        {param_name: f"%,{tag},%"},
+    )
+
+
+def _build_resource_query_sql(
+    user: sqlite3.Row,
+    *,
+    manageable_only: bool = False,
+    search: str = "",
+    tag: str = "",
+    tags: str = "",
+    tags_mode: str = "any",
+    subject: str = "",
+    status: str = "all",
+    secrecy: str = "all",
+    permission: str = "all",
+    remark_common: str = "all",
+    remark_personal: str = "all",
+    sort: str = "updated_desc",
+) -> tuple[str, str, dict[str, Any]]:
+    """构建资源列表 SQL WHERE 条件 + 排序。
+
+    返回 (where_clause, order_sql, params_dict)。
+    调用方自行拼接 SELECT / COUNT 语句。
+    """
+    vis_cond, params = _resource_visibility_sql(user, "r", manageable_only)
+
+    where_parts = ["r.resource_type = 'asset'", vis_cond]
+
+    # ── 标量筛选 ──
+    if status and status != "all":
+        where_parts.append("COALESCE(r.status, 'active') = :fl_status")
+        params["fl_status"] = status
+    if subject and subject != "all":
+        where_parts.append("COALESCE(r.subject, '') = :fl_subject")
+        params["fl_subject"] = subject
+    if secrecy and secrecy != "all":
+        where_parts.append("COALESCE(r.secrecy_level, '') = :fl_secrecy")
+        params["fl_secrecy"] = secrecy
+
+    # permission 筛选
+    if permission == "created":
+        where_parts.append("r.owner_id = :perm_uid")
+        params["perm_uid"] = int(user["id"])
+    elif permission == "managed":
+        m_uid = int(user["id"])
+        if not is_super_admin(user):
+            where_parts.append(
+                "(r.owner_id = :m_uid"
+                " OR r.management_scope = 'public'"
+                " OR (r.management_scope = 'partial' AND r.id IN"
+                " (SELECT resource_id FROM resource_management WHERE user_id = :m_uid)))"
+            )
+            params["m_uid"] = m_uid
+
+    # 搜索
+    q = search.strip()
+    if q:
+        where_parts.append(
+            "(LOWER(COALESCE(r.name, '')) LIKE :fl_q"
+            " OR LOWER(COALESCE(r.subject, '')) LIKE :fl_q)"
+        )
+        params["fl_q"] = f"%{q.lower()}%"
+
+    # 标签筛选
+    tag_list = _parse_csv(tags)
+    if not tag_list and tag.strip():
+        tag_list = [tag.strip()]
+    if tag_list:
+        mode = (tags_mode or "any").lower()
+        if mode == "all":
+            for i, t in enumerate(tag_list):
+                clause, tp = _csv_tag_sql_match("r.tags", t, f"tg{i}")
+                where_parts.append(clause)
+                params.update(tp)
+        else:
+            or_parts = []
+            for i, t in enumerate(tag_list):
+                clause, tp = _csv_tag_sql_match("r.tags", t, f"tg{i}")
+                or_parts.append(clause)
+                params.update(tp)
+            where_parts.append(f"({' OR '.join(or_parts)})")
+
+    # 通用备注筛选
+    if remark_common == "has":
+        where_parts.append(
+            "EXISTS (SELECT 1 FROM resource_versions rv"
+            " WHERE rv.resource_id = r.id AND rv.version_no = r.current_version"
+            " AND rv.common_remark_html IS NOT NULL"
+            " AND TRIM(REPLACE(REPLACE(rv.common_remark_html, '<', ' '), '>', ' ')) != '')"
+        )
+    elif remark_common == "none":
+        where_parts.append(
+            "NOT EXISTS (SELECT 1 FROM resource_versions rv"
+            " WHERE rv.resource_id = r.id AND rv.version_no = r.current_version"
+            " AND rv.common_remark_html IS NOT NULL"
+            " AND TRIM(REPLACE(REPLACE(rv.common_remark_html, '<', ' '), '>', ' ')) != '')"
+        )
+
+    # 个人备注筛选
+    if remark_personal == "has":
+        where_parts.append(
+            "EXISTS (SELECT 1 FROM personal_remarks pr"
+            " WHERE pr.resource_id = r.id AND pr.user_id = :pr_uid"
+            " AND TRIM(REPLACE(REPLACE(pr.content_html, '<', ' '), '>', ' ')) != '')"
+        )
+        params["pr_uid"] = int(user["id"])
+    elif remark_personal == "none":
+        where_parts.append(
+            "NOT EXISTS (SELECT 1 FROM personal_remarks pr"
+            " WHERE pr.resource_id = r.id AND pr.user_id = :pr_uid"
+            " AND TRIM(REPLACE(REPLACE(pr.content_html, '<', ' '), '>', ' ')) != '')"
+        )
+        params["pr_uid"] = int(user["id"])
+
+    where_clause = " AND ".join(where_parts)
+
+    # 排序
+    sort_key = sort if sort in _PICK_SORT_KEYS else "updated_desc"
+    if sort_key.startswith("name"):
+        order = "LOWER(COALESCE(r.name, ''))"
+        order += " DESC" if sort_key.endswith("_desc") else " ASC"
+    elif sort_key.startswith("created"):
+        order = "COALESCE(r.created_at, '') DESC, r.id DESC" if sort_key.endswith("_desc") else "COALESCE(r.created_at, '') ASC, r.id ASC"
+    else:
+        order = "COALESCE(r.updated_at, '') DESC, r.id DESC" if sort_key.endswith("_desc") else "COALESCE(r.updated_at, '') ASC, r.id ASC"
+
+    return where_clause, order, params
 
 
 _PICK_SORT_KEYS = {
@@ -2304,38 +2521,38 @@ def pick_resources(
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
-    """轻量级资源选择接口：分页 + 多维筛选 + 排序，返回最小数据集"""
-    rows = db.execute(
-        "SELECT * FROM resources WHERE resource_type = 'asset'",
+    """轻量级资源选择接口：SQL 级分页 + 多维筛选 + 排序，返回最小数据集"""
+    where_clause, order_sql, params = _build_resource_query_sql(
+        user, search=search, tag=tag, tags=tags, tags_mode=tags_mode,
+        subject=subject, status=status, secrecy=secrecy,
+        permission=permission, remark_common=remark_common,
+        remark_personal=remark_personal, sort=sort,
+    )
+    # 收集可见资源的标签/主体（用于前端筛选下拉）
+    facet_rows = db.execute(
+        f"SELECT r.tags, r.subject FROM resources r WHERE {where_clause}", params,
     ).fetchall()
-    visible = [row for row in rows if can_view_resource(db, row, user)]
-
-    # 收集可见资源的标签 / 主体（用于前端筛选下拉）
     all_tags_set: set[str] = set()
     all_subjects_set: set[str] = set()
-    for row in visible:
-        all_tags_set.update(_row_tag_set(row))
-        if row["subject"]:
-            all_subjects_set.add(row["subject"])
+    for fr in facet_rows:
+        all_tags_set.update(_parse_csv(fr["tags"] or ""))
+        if fr["subject"]:
+            all_subjects_set.add(fr["subject"])
     all_tags = sorted(all_tags_set)
     all_subjects = sorted(all_subjects_set)
-
-    filtered = _apply_pick_filters(
-        db, visible, user,
-        search=search, subject=subject, status=status, secrecy=secrecy,
-        permission=permission, remark_common=remark_common,
-        remark_personal=remark_personal, tag=tag, tags=tags, tags_mode=tags_mode,
-        sort=sort,
-    )
-
-    total = len(filtered)
+    # 总数
+    total: int = db.execute(
+        f"SELECT COUNT(*) FROM resources r WHERE {where_clause}", params,
+    ).fetchone()[0]
+    # 分页取当前页
     offset = (page - 1) * page_size
-    page_items = filtered[offset:offset + page_size]
-
+    page_rows = db.execute(
+        f"SELECT r.* FROM resources r WHERE {where_clause} ORDER BY {order_sql} LIMIT :lim OFFSET :off",
+        {**params, "lim": page_size, "off": offset},
+    ).fetchall()
     # 构造轻量结果
     items = []
-    for row in page_items:
-        # 获取当前版本的缩略图
+    for row in page_rows:
         ver = db.execute(
             "SELECT id, png_path FROM resource_versions WHERE resource_id = ? AND version_no = ?",
             (row["id"], row["current_version"]),
@@ -2352,7 +2569,6 @@ def pick_resources(
             "created_at": row["created_at"],
             "preview_url": preview_url,
         })
-
     return {
         "items": items,
         "total": total,
@@ -2379,19 +2595,17 @@ def pick_resources_all_ids(
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
-    """返回当前筛选条件下所有资源的 ID 列表（用于全部全选），与 /pick 同套筛选逻辑"""
-    rows = db.execute(
-        "SELECT * FROM resources WHERE resource_type = 'asset'",
-    ).fetchall()
-    visible = [row for row in rows if can_view_resource(db, row, user)]
-    filtered = _apply_pick_filters(
-        db, visible, user,
-        search=search, subject=subject, status=status, secrecy=secrecy,
+    """返回当前筛选条件下所有资源的 ID 列表（用于全部全选），SQL 级筛选"""
+    where_clause, _, params = _build_resource_query_sql(
+        user, search=search, tag=tag, tags=tags, tags_mode=tags_mode,
+        subject=subject, status=status, secrecy=secrecy,
         permission=permission, remark_common=remark_common,
-        remark_personal=remark_personal, tag=tag, tags=tags, tags_mode=tags_mode,
-        sort=sort,
+        remark_personal=remark_personal, sort=sort,
     )
-    return {"ids": [int(r["id"]) for r in filtered]}
+    rows = db.execute(
+        f"SELECT r.id FROM resources r WHERE {where_clause}", params,
+    ).fetchall()
+    return {"ids": [int(r["id"]) for r in rows]}
 
 
 @app.post("/api/resources")
@@ -3247,67 +3461,135 @@ def list_shows(
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
-    rows = db.execute("SELECT * FROM shows ORDER BY updated_at DESC, id DESC").fetchall()
-    visible = [row for row in rows if can_view_show(db, row, user)]
-    # series_id 查询时返回完整数据（用于版本切换等场景）
+    uid = int(user["id"])
+    super_admin = is_super_admin(user)
+
+    # ── 可见性 SQL 条件 ──
+    vis_params: dict[str, Any] = {"vis_uid": uid}
+    if super_admin:
+        vis_cond = "1=1"
+    else:
+        vis_cond = (
+            "(s.owner_id = :vis_uid"
+            " OR s.visibility_scope = 'public'"
+            " OR (s.visibility_scope = 'partial' AND s.id IN"
+            " (SELECT show_id FROM show_visibility WHERE user_id = :vis_uid)))"
+        )
+
+    # ── series_id 查询：返回完整数据（用于版本切换） ──
     if series_id is not None:
-        shows = [_serialize_show(db, row, user) for row in visible if row["series_id"] == series_id]
+        rows = db.execute(
+            f"SELECT s.* FROM shows s WHERE s.series_id = :sid AND {vis_cond}",
+            {**vis_params, "sid": series_id},
+        ).fetchall()
+        shows = [_serialize_show(db, row, user) for row in rows]
         return {"shows": shows}
-    # 每个series只保留version_no最大的版本
-    best: dict[str, sqlite3.Row] = {}
-    for row in visible:
-        sid = row["series_id"]
-        if sid not in best or (row["version_no"] is not None and (best[sid]["version_no"] is None or row["version_no"] > best[sid]["version_no"])):
-            best[sid] = row
-    deduped = list(best.values())
-    # 收集标签/主体
-    all_tags_set: set[str] = set()
-    all_subjects_set: set[str] = set()
-    for row in deduped:
-        for t in _parse_csv(row["tags"] or ""):
-            all_tags_set.add(t)
-        if row["subject"]:
-            all_subjects_set.add(row["subject"])
-    all_tags = sorted(all_tags_set)
-    all_subjects = sorted(all_subjects_set)
-    # 筛选
-    result = deduped
+
+    # ── CTE：可见 + 每个 series 只保留最大 version_no ──
+    cte = f"""
+        WITH visible AS (
+            SELECT s.* FROM shows s WHERE {vis_cond}
+        ),
+        deduped AS (
+            SELECT v.* FROM visible v
+            INNER JOIN (
+                SELECT series_id, MAX(COALESCE(version_no, 0)) AS max_ver
+                FROM visible GROUP BY series_id
+            ) g ON v.series_id = g.series_id
+               AND COALESCE(v.version_no, 0) = g.max_ver
+        )
+    """
+
+    # ── 筛选 WHERE 片段 ──
+    where_parts: list[str] = []
+    params: dict[str, Any] = {}
+
     if status and status != "all":
-        result = [r for r in result if (r["status"] or "active") == status]
+        where_parts.append("COALESCE(status, 'active') = :fl_status")
+        params["fl_status"] = status
     if subject and subject != "all":
-        result = [r for r in result if (r["subject"] or "") == subject]
+        where_parts.append("COALESCE(subject, '') = :fl_subject")
+        params["fl_subject"] = subject
     if secrecy and secrecy != "all":
-        result = [r for r in result if (r["secrecy_level"] or "") == secrecy]
+        where_parts.append("COALESCE(secrecy_level, '') = :fl_secrecy")
+        params["fl_secrecy"] = secrecy
     if permission == "created":
-        uid = int(user["id"])
-        result = [r for r in result if int(r["owner_id"]) == uid]
+        where_parts.append("owner_id = :perm_uid")
+        params["perm_uid"] = uid
     elif permission == "managed":
-        result = [r for r in result if can_manage_show(db, r, user)]
-    q = search.strip().lower()
+        if not super_admin:
+            where_parts.append(
+                "(owner_id = :m_uid"
+                " OR management_scope = 'public'"
+                " OR (management_scope = 'partial' AND id IN"
+                " (SELECT show_id FROM show_management WHERE user_id = :m_uid)))"
+            )
+            params["m_uid"] = uid
+    q = search.strip()
     if q:
-        result = [r for r in result if q in (r["name"] or "").lower() or q in (r["subject"] or "").lower()]
+        where_parts.append(
+            "(LOWER(COALESCE(name, '')) LIKE :fl_q"
+            " OR LOWER(COALESCE(subject, '')) LIKE :fl_q)"
+        )
+        params["fl_q"] = f"%{q.lower()}%"
     tag_list = _parse_csv(tags)
     if not tag_list and tag.strip():
         tag_list = [tag.strip()]
     if tag_list:
         mode = (tags_mode or "any").lower()
-        wanted = set(tag_list)
         if mode == "all":
-            result = [r for r in result if wanted.issubset({t for t in _parse_csv(r["tags"] or "")})]
+            for i, t in enumerate(tag_list):
+                clause, tp = _csv_tag_sql_match("tags", t, f"stg{i}")
+                where_parts.append(clause)
+                params.update(tp)
         else:
-            result = [r for r in result if wanted & {t for t in _parse_csv(r["tags"] or "")}]
+            or_parts = []
+            for i, t in enumerate(tag_list):
+                clause, tp = _csv_tag_sql_match("tags", t, f"stg{i}")
+                or_parts.append(clause)
+                params.update(tp)
+            where_parts.append(f"({' OR '.join(or_parts)})")
+
+    filter_sql = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
     # 排序
     sort_key = sort if sort in _PICK_SORT_KEYS else "updated_desc"
     if sort_key.startswith("name"):
-        result.sort(key=lambda r: (r["name"] or "").lower(), reverse=sort_key.endswith("_desc"))
+        order = "LOWER(COALESCE(name, '')) DESC" if sort_key.endswith("_desc") else "LOWER(COALESCE(name, '')) ASC"
     elif sort_key.startswith("created"):
-        result.sort(key=lambda r: (r["created_at"] or "", int(r["id"])), reverse=sort_key.endswith("_desc"))
+        order = "COALESCE(created_at, '') DESC, id DESC" if sort_key.endswith("_desc") else "COALESCE(created_at, '') ASC, id ASC"
     else:
-        result.sort(key=lambda r: (r["updated_at"] or "", int(r["id"])), reverse=sort_key.endswith("_desc"))
-    total = len(result)
+        order = "COALESCE(updated_at, '') DESC, id DESC" if sort_key.endswith("_desc") else "COALESCE(updated_at, '') ASC, id ASC"
+
+    all_params = {**vis_params, **params}
+
+    # 收集标签/主体
+    facet_rows = db.execute(
+        f"{cte} SELECT tags, subject FROM deduped{filter_sql}",
+        all_params,
+    ).fetchall()
+    all_tags_set: set[str] = set()
+    all_subjects_set: set[str] = set()
+    for fr in facet_rows:
+        all_tags_set.update(_parse_csv(fr["tags"] or ""))
+        if fr["subject"]:
+            all_subjects_set.add(fr["subject"])
+    all_tags = sorted(all_tags_set)
+    all_subjects = sorted(all_subjects_set)
+
+    # 总数
+    total: int = db.execute(
+        f"{cte} SELECT COUNT(*) FROM deduped{filter_sql}",
+        all_params,
+    ).fetchone()[0]
+
+    # 分页
     offset = (page - 1) * page_size
-    page_items = result[offset:offset + page_size]
-    items = [_serialize_show_lite(db, row, user) for row in page_items]
+    page_rows = db.execute(
+        f"{cte} SELECT * FROM deduped{filter_sql} ORDER BY {order} LIMIT :lim OFFSET :off",
+        {**all_params, "lim": page_size, "off": offset},
+    ).fetchall()
+    items = [_serialize_show_lite(db, row, user) for row in page_rows]
     return {
         "items": items,
         "total": total,
