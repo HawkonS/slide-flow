@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
+  ChevronRight,
   Download,
   FolderOpen,
   HardDrive,
@@ -32,10 +33,6 @@ type NavItem = {
   label: string;
   icon: React.ElementType;
 };
-
-const homeNav: NavItem[] = [
-  { to: "/home", label: "用户首页", icon: Home },
-];
 
 const materialNav: NavItem[] = [
   { to: "/resources", label: "资源仓库", icon: FolderOpen },
@@ -85,80 +82,136 @@ function NavItemLink({ item }: { item: NavItem }) {
   );
 }
 
+function CollapsibleSection({
+  title,
+  children,
+  defaultOpen = true,
+  forceOpen,
+}: {
+  title: string;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+  forceOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+
+  useEffect(() => {
+    if (forceOpen) setOpen(true);
+  }, [forceOpen]);
+
+  return (
+    <div className="px-3">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <ChevronRight
+          className={cn(
+            "h-3 w-3 shrink-0 transition-transform duration-200",
+            open && "rotate-90",
+          )}
+        />
+        {title}
+      </button>
+      {open && <div className="mt-0.5 flex flex-col gap-0.5">{children}</div>}
+    </div>
+  );
+}
+
+function SectionLabel({ title }: { title: string }) {
+  return (
+    <div className="px-3">
+      <div className="px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+        {title}
+      </div>
+    </div>
+  );
+}
+
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const { user } = useAuth();
+  const location = useLocation();
   const versionCommit = useSiteConfig((s) => s.versionCommit);
   const versionUpdatedAt = useSiteConfig((s) => s.versionUpdatedAt);
 
+  const isAdmin = user?.role === "admin" || user?.role === "super_admin";
+  const isHomeActive = location.pathname.startsWith("/home");
+  const isOnSystemRoute = location.pathname.startsWith("/admin");
+
   return (
     <div className="flex h-full flex-col">
-      {/* 首页 */}
-      <div className="px-3 py-3">
-        {homeNav.map((item) => (
-          <div key={item.to} onClick={onNavigate}>
-            <NavItemLink item={item} />
-          </div>
-        ))}
-      </div>
-
-      {/* 素材 */}
-      <div className="mt-2 px-3">
-        <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-          素材
-        </div>
-        <div className="flex flex-col gap-1.5">
-          {materialNav.map((item) => (
-            <div key={item.to} onClick={onNavigate}>
-              <NavItemLink item={item} />
-            </div>
-          ))}
+      {/* 常驻首页 */}
+      <div className="shrink-0 px-3 pt-3 pb-1">
+        <div onClick={onNavigate}>
+          <NavLink
+            to="/home"
+            className={cn(
+              "flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors",
+              isHomeActive
+                ? "bg-[hsl(var(--primary-weak))] font-medium text-primary"
+                : "text-foreground/70 hover:bg-accent hover:text-foreground",
+            )}
+          >
+            <Home className="h-4 w-4 shrink-0" />
+            <span>首页</span>
+          </NavLink>
         </div>
       </div>
 
-      {/* 维护 */}
-      <div className="mt-4 px-3">
-        <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-          维护
-        </div>
-        <div className="flex flex-col gap-1.5">
-          {manageNav.map((item) => (
-            <div key={item.to} onClick={onNavigate}>
-              <NavItemLink item={item} />
-            </div>
-          ))}
-          {(user?.role === "admin" || user?.role === "super_admin") &&
-            manageAdminNav.map((item) => (
+      {/* 中部可滚动区域 */}
+      <div className="flex-1 overflow-y-auto scrollbar-hide">
+        {/* 素材 - 始终展开 */}
+        <div className="mt-1">
+          <SectionLabel title="素材" />
+          <div className="mt-0.5 flex flex-col gap-0.5 px-3">
+            {materialNav.map((item) => (
               <div key={item.to} onClick={onNavigate}>
                 <NavItemLink item={item} />
               </div>
             ))}
-        </div>
-      </div>
-
-      {/* 系统 */}
-      {(user?.role === "admin" || user?.role === "super_admin") && (
-        <div className="mt-4 px-3">
-          <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-            系统
           </div>
-          <div className="flex flex-col gap-1.5">
-            {systemNav.map((item) => (
+        </div>
+
+        {/* 维护 - 始终展开 */}
+        <div className="mt-3">
+          <SectionLabel title="维护" />
+          <div className="mt-0.5 flex flex-col gap-0.5 px-3">
+            {manageNav.map((item) => (
               <div key={item.to} onClick={onNavigate}>
                 <NavItemLink item={item} />
               </div>
             ))}
-            {user?.role === "super_admin" &&
-              superAdminNav.map((item) => (
+            {isAdmin &&
+              manageAdminNav.map((item) => (
                 <div key={item.to} onClick={onNavigate}>
                   <NavItemLink item={item} />
                 </div>
               ))}
           </div>
         </div>
-      )}
 
-      {/* 底部版本号 */}
-      <div className="mt-auto px-3 py-4 text-center text-xs text-muted-foreground">
+        {/* 系统 - 默认折叠 */}
+        {isAdmin && (
+          <div className="mt-3">
+            <CollapsibleSection title="系统" defaultOpen={false} forceOpen={isOnSystemRoute}>
+              {systemNav.map((item) => (
+                <div key={item.to} onClick={onNavigate}>
+                  <NavItemLink item={item} />
+                </div>
+              ))}
+              {user?.role === "super_admin" &&
+                superAdminNav.map((item) => (
+                  <div key={item.to} onClick={onNavigate}>
+                    <NavItemLink item={item} />
+                  </div>
+                ))}
+            </CollapsibleSection>
+          </div>
+        )}
+      </div>
+
+      {/* 底部版本号 - 固定不动 */}
+      <div className="shrink-0 px-3 py-3 text-center text-[11px] leading-relaxed text-muted-foreground/70">
         {versionCommit && <div>{versionCommit}</div>}
         {versionUpdatedAt && <div>最后更新: {versionUpdatedAt}</div>}
       </div>
@@ -256,7 +309,7 @@ export function AppShell() {
       {/* 下方内容区 */}
       <div className="flex flex-1 overflow-hidden">
         {/* 桌面端固定 Sidebar */}
-        <aside className="hidden w-56 shrink-0 flex-col overflow-y-auto border-r bg-card md:flex">
+        <aside className="hidden w-56 shrink-0 flex-col overflow-y-auto border-r bg-card md:flex scrollbar-hide">
           <SidebarContent />
         </aside>
 
