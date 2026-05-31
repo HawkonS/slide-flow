@@ -67,9 +67,11 @@ def create_user(
 
     # 确定密码和是否需要强制修改
     must_change_pwd = 0
+    plain_password: str | None = None
     if payload.need_change_pwd:
         # 生成随机密码，首次登录强制修改
         password = secrets.token_urlsafe(16)
+        plain_password = password
         must_change_pwd = 1
     elif payload.password:
         password = payload.password
@@ -90,7 +92,10 @@ def create_user(
         raise HTTPException(400, "用户名已存在") from None
     
     user = db.execute("SELECT * FROM users WHERE username = ?", (payload.username,)).fetchone()
-    return {"user": _serialize_user(user)}
+    resp: dict[str, Any] = {"user": _serialize_user(user)}
+    if plain_password:
+        resp["plain_password"] = plain_password
+    return resp
 
 
 @router.put("/admin/users/{user_id}")

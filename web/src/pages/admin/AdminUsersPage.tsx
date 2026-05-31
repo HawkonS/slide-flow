@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRightLeft, Check, ChevronDown, Loader2, Pencil, Search, Trash2, UserPlus, X } from "lucide-react";
+import { ArrowRightLeft, Check, ChevronDown, Copy, Loader2, Pencil, Search, Trash2, UserPlus, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -496,6 +496,7 @@ function UserFormDialog({
   const [feishu, setFeishu] = React.useState("");
   const [role, setRole] = React.useState<UserRole>("user");
   const [loading, setLoading] = React.useState(false);
+  const [generatedPwd, setGeneratedPwd] = React.useState("");
 
   React.useEffect(() => {
     if (open) {
@@ -506,6 +507,7 @@ function UserFormDialog({
       setFeishu(user?.feishu_id || "");
       setRole((user?.role as UserRole) || "user");
       setLoading(false);
+      setGeneratedPwd("");
     }
   }, [open, user]);
 
@@ -514,30 +516,35 @@ function UserFormDialog({
       toast.error("姓名和用户名必填");
       return;
     }
-    if (!editing && !useRandomPwd && !password) {
-      toast.error("请输入密码或选择自动生成随机密码");
-      return;
-    }
     setLoading(true);
     try {
-      await api(editing ? `/api/admin/users/${user!.id}` : "/api/admin/users", {
-        method: editing ? "PUT" : "POST",
-        json: {
-          name: name.trim(),
-          username: username.trim(),
-          password: useRandomPwd ? null : password || null,
-          feishu_id: feishu.trim(),
-          role,
-          need_change_pwd: !editing && useRandomPwd,
+      const res = await api<{ user: AdminUser; plain_password?: string }>(
+        editing ? `/api/admin/users/${user!.id}` : "/api/admin/users",
+        {
+          method: editing ? "PUT" : "POST",
+          json: {
+            name: name.trim(),
+            username: username.trim(),
+            password: useRandomPwd ? null : password || null,
+            feishu_id: feishu.trim(),
+            role,
+            need_change_pwd: !editing && useRandomPwd,
+          },
         },
-      });
-      toast.success(
-        !editing && useRandomPwd
-          ? "用户已创建，随机密码已生成，首次登录将强制修改密码"
-          : "用户已保存"
       );
+
+      if (!editing && useRandomPwd && res.plain_password) {
+        // 展示随机密码弹窗
+        setGeneratedPwd(res.plain_password);
+      } else if (!editing && !password && !useRandomPwd) {
+        toast.success("用户已创建，密码为系统默认密码");
+      } else {
+        toast.success("用户已保存");
+      }
       onSuccess();
-      onOpenChange(false);
+      if (!(useRandomPwd && res.plain_password)) {
+        onOpenChange(false);
+      }
     } catch (err) {
       toast.error((err as Error).message || "保存失败");
     } finally {
@@ -545,72 +552,131 @@ function UserFormDialog({
     }
   };
 
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text).then(
+      () => toast.success("已复制到剪贴板"),
+      () => toast.error("复制失败，请手动复制"),
+    );
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) setGeneratedPwd("");
+        onOpenChange(o);
+      }}
+    >
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>{editing ? "编辑用户" : "新增用户"}</DialogTitle>
         </DialogHeader>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div className="space-y-1.5">
-            <Label>姓名</Label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} />
-          </div>
-          <div className="space-y-1.5">
-            <Label>用户名</Label>
-            <Input value={username} onChange={(e) => setUsername(e.target.value)} />
-          </div>
-          <div className="space-y-1.5">
-            <Label>密码{editing ? "（留空不修改）" : ""}</Label>
-            <Input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              disabled={!editing && useRandomPwd}
-              placeholder={!editing && useRandomPwd ? "将自动生成随机密码" : ""}
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label>飞书 ID</Label>
-            <Input value={feishu} onChange={(e) => setFeishu(e.target.value)} />
-          </div>
-          <div className="space-y-1.5 sm:col-span-2">
-            <Label>角色</Label>
-            <Select value={role} onValueChange={(v) => setRole(v as UserRole)}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {USER_ROLE_OPTIONS.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>
-                    {o.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          {!editing && (
-            <div className="flex items-center space-x-2 sm:col-span-2">
-              <Checkbox
-                id="useRandomPwd"
-                checked={useRandomPwd}
-                onCheckedChange={(checked) => setUseRandomPwd(!!checked)}
-              />
-              <Label htmlFor="useRandomPwd" className="cursor-pointer text-sm">
-                自动生成随机密码，首次登录强制修改
-              </Label>
+
+        {generatedPwd ? (
+          /* 随机密码展示视图 */
+          <div className="space-y-4">
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-4 dark:border-amber-800/50 dark:bg-amber-950/30">
+              <p className="mb-2 text-sm font-medium text-amber-800 dark:text-amber-300">
+                随机密码已生成，请妥善保存并告知用户：
+              </p>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 rounded bg-white px-3 py-2 text-sm font-mono select-all dark:bg-gray-800">
+                  {generatedPwd}
+                </code>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => copyToClipboard(generatedPwd)}
+                >
+                  <Copy className="mr-1 h-3.5 w-3.5" />
+                  复制
+                </Button>
+              </div>
             </div>
-          )}
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>
-            取消
-          </Button>
-          <Button onClick={submit} disabled={loading}>
-            {loading && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
-            保存
-          </Button>
-        </DialogFooter>
+            <p className="text-xs text-muted-foreground">
+              用户首次登录时将被强制要求修改密码。
+            </p>
+            <DialogFooter>
+              <Button
+                onClick={() => {
+                  setGeneratedPwd("");
+                  onOpenChange(false);
+                }}
+              >
+                完成
+              </Button>
+            </DialogFooter>
+          </div>
+        ) : (
+          /* 表单视图 */
+          <>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label>姓名</Label>
+                <Input value={name} onChange={(e) => setName(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>用户名</Label>
+                <Input value={username} onChange={(e) => setUsername(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>
+                  密码
+                  {editing
+                    ? "（留空不修改）"
+                    : "（留空使用系统默认密码）"}
+                </Label>
+                <Input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  disabled={!editing && useRandomPwd}
+                  placeholder={!editing && useRandomPwd ? "将自动生成随机密码" : ""}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>飞书 ID</Label>
+                <Input value={feishu} onChange={(e) => setFeishu(e.target.value)} />
+              </div>
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label>角色</Label>
+                <Select value={role} onValueChange={(v) => setRole(v as UserRole)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {USER_ROLE_OPTIONS.map((o) => (
+                      <SelectItem key={o.value} value={o.value}>
+                        {o.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {!editing && (
+                <div className="flex items-center space-x-2 sm:col-span-2">
+                  <Checkbox
+                    id="useRandomPwd"
+                    checked={useRandomPwd}
+                    onCheckedChange={(checked) => setUseRandomPwd(!!checked)}
+                  />
+                  <Label htmlFor="useRandomPwd" className="cursor-pointer text-sm">
+                    自动生成随机密码，首次登录强制修改
+                  </Label>
+                </div>
+              )}
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>
+                取消
+              </Button>
+              <Button onClick={submit} disabled={loading}>
+                {loading && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+                保存
+              </Button>
+            </DialogFooter>
+          </>
+        )}
       </DialogContent>
     </Dialog>
   );
