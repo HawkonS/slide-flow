@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Check,
   ChevronDown,
@@ -48,16 +48,13 @@ import {
   RESOURCE_STATUS_OPTIONS,
   SECRECY_BADGE_TONE,
 } from "@/lib/constants";
-import { parseTags, Resource } from "@/lib/types";
+import { parseTags, Resource, serializeTags } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useManageResourceFilters } from "@/stores/manage-resource-filters";
 import { BatchEditDialog } from "@/components/manage/BatchEditDialog";
+import { usePaginatedQuery } from "@/lib/use-paginated-query";
 
 /* ---------- types ---------- */
-
-interface ResourceListResponse {
-  resources: Resource[];
-}
 
 interface Option {
   value: string;
@@ -71,33 +68,68 @@ export default function ResourceManagePage() {
   const filters = useManageResourceFilters();
   const queryClient = useQueryClient();
 
-  /* ---- Data loading ---- */
-  const { data, isLoading, isError, error } = useQuery({
-    queryKey: ["resources", "asset"],
-    queryFn: async () =>
-      api<ResourceListResponse>("/api/resources", { params: { resource_type: "asset" } }),
-  });
+  /* ---- Pagination ---- */
+  const contentRef = React.useRef<HTMLDivElement>(null);
+  const [pageSize, setPageSize] = React.useState(20);
+  React.useEffect(() => {
+    const el = contentRef.current;
+    if (!el) return;
+    const compute = () => {
+      const H = el.clientHeight;
+      if (!H) return;
+      const headerH = 45;
+      const rowH = 56;
+      const rows = Math.max(5, Math.floor((H - headerH) / rowH));
+      setPageSize((prev) => (prev === rows ? prev : rows));
+    };
+    compute();
+    const ro = new ResizeObserver(compute);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const [page, setPage] = React.useState(1);
 
-  const allResources = data?.resources ?? [];
-  // Only keep resources the user can manage
-  const manageableResources = React.useMemo(
-    () => allResources.filter((r) => r.can_manage),
-    [allResources],
+  /* ---- Build API params ---- */
+  const apiParams = React.useMemo(
+    () => ({
+      resource_type: "asset" as const,
+      manageable_only: true,
+      search: filters.query.trim() || undefined,
+      subject: filters.subject !== "all" ? filters.subject : undefined,
+      status: filters.status !== "all" ? filters.status : undefined,
+      secrecy: filters.secrecy !== "all" ? filters.secrecy : undefined,
+      permission: filters.ownership !== "all" ? filters.ownership : undefined,
+      tags: filters.tags.length > 0 ? serializeTags(filters.tags) : undefined,
+      tags_mode: filters.tagsMode,
+    }),
+    [filters],
   );
 
-  /* ---- Derive subjects / tags from manageable resources ---- */
-  const { subjects, tags } = React.useMemo(() => {
-    const subjectSet = new Set<string>();
-    const tagSet = new Set<string>();
-    manageableResources.forEach((r) => {
-      if (r.subject) subjectSet.add(r.subject.trim());
-      parseTags(r.tags).forEach((t) => tagSet.add(t));
-    });
-    return {
-      subjects: Array.from(subjectSet),
-      tags: Array.from(tagSet).sort((a, b) => a.localeCompare(b, "zh-Hans-CN")),
-    };
-  }, [manageableResources]);
+  const {
+    items: resources,
+    total,
+    totalPages,
+    allTags: tags,
+    allSubjects: subjects,
+    isLoading,
+    isError,
+    error,
+  } = usePaginatedQuery<Resource>({
+    url: "/api/resources",
+    queryKeyPrefix: "manage-resources",
+    params: apiParams,
+    page,
+    pageSize,
+  });
+
+  // 筛选变化时重置页码
+  React.useEffect(() => {
+    setPage(1);
+  }, [apiParams]);
+
+  React.useEffect(() => {
+    if (page > totalPages) setPage(1);
+  }, [page, totalPages]);
 
   const subjectOptions = React.useMemo<Option[]>(() => {
     const set = new Set<string>([DEFAULT_RESOURCE_SUBJECT, ...subjects.filter(Boolean)]);
@@ -108,53 +140,6 @@ export default function ResourceManagePage() {
     });
     return [{ value: "all", label: "全部" }, ...sorted.map((x) => ({ value: x, label: x }))];
   }, [subjects]);
-
-  /* ---- Filtering ---- */
-  const filtered = React.useMemo(() => {
-    const q = filters.query.trim().toLowerCase();
-    return manageableResources.filter((r) => {
-      // Tags
-      const rTags = new Set(parseTags(r.tags));
-      if (filters.tags.length > 0) {
-        if (filters.tagsMode === "all") {
-          if (!filters.tags.every((t) => rTags.has(t))) return false;
-        } else {
-          if (!filters.tags.some((t) => rTags.has(t))) return false;
-        }
-      }
-      // Subject
-      const subject = r.subject || DEFAULT_RESOURCE_SUBJECT;
-      if (filters.subject !== "all" && subject !== filters.subject) return false;
-      // Ownership
-      if (filters.ownership === "created" && r.owner_id !== user?.id) return false;
-      if (filters.ownership === "managed" && !r.can_manage) return false;
-      // Status
-      if (filters.status !== "all" && r.status !== filters.status) return false;
-      // Secrecy
-      if (filters.secrecy !== "all" && r.secrecy_level !== filters.secrecy) return false;
-
-      // Search
-      if (q) {
-        const hay = [
-          r.name,
-          r.subject || "",
-          r.owner?.name || "",
-          r.owner?.username || "",
-        ]
-          .join(" ")
-          .toLowerCase();
-        const idStr = r.id.toString();
-        // Pure number query matches exact ID; otherwise fuzzy match including ID substring
-        const isNumeric = /^\d+$/.test(q);
-        if (isNumeric) {
-          if (idStr !== q && !hay.includes(q)) return false;
-        } else {
-          if (!hay.includes(q) && !idStr.includes(q)) return false;
-        }
-      }
-      return true;
-    });
-  }, [manageableResources, filters, user?.id]);
 
   const filterDirtyCount = [
     filters.status !== "all",
@@ -222,28 +207,28 @@ export default function ResourceManagePage() {
     if (checked) {
       setSelectedIds((prev) => {
         const next = new Set(prev);
-        pageItems.forEach((r) => next.add(r.id));
+        resources.forEach((r) => next.add(r.id));
         return next;
       });
     } else {
       setSelectedIds((prev) => {
         const next = new Set(prev);
-        pageItems.forEach((r) => next.delete(r.id));
+        resources.forEach((r) => next.delete(r.id));
         return next;
       });
     }
   };
-  // Keep selection in sync with filtered results
+  // Keep selection in sync with current page items
   React.useEffect(() => {
     setSelectedIds((prev) => {
-      const filteredIdSet = new Set(filtered.map((r) => r.id));
+      const pageIdSet = new Set(resources.map((r) => r.id));
       const next = new Set<number>();
       prev.forEach((id) => {
-        if (filteredIdSet.has(id)) next.add(id);
+        if (pageIdSet.has(id)) next.add(id);
       });
       return next;
     });
-  }, [filtered]);
+  }, [resources]);
 
   /* ---- Batch edit ---- */
   const [batchEditOpen, setBatchEditOpen] = React.useState(false);
@@ -259,46 +244,16 @@ export default function ResourceManagePage() {
     onSuccess: () => {
       toast.success("批量删除成功");
       setSelectedIds(new Set());
-      queryClient.invalidateQueries({ queryKey: ["resources", "asset"] });
+      queryClient.invalidateQueries({ queryKey: ["manage-resources"] });
       setDeleteDialogOpen(false);
     },
     onError: (err: Error) => toast.error(err.message || "删除失败"),
   });
 
-  /* ---- Pagination ---- */
-  const contentRef = React.useRef<HTMLDivElement>(null);
-  const [pageSize, setPageSize] = React.useState(20);
-  React.useEffect(() => {
-    const el = contentRef.current;
-    if (!el) return;
-    const compute = () => {
-      const H = el.clientHeight;
-      if (!H) return;
-      const headerH = 45;
-      const rowH = 56; // compact row height
-      const rows = Math.max(5, Math.floor((H - headerH) / rowH));
-      setPageSize((prev) => (prev === rows ? prev : rows));
-    };
-    compute();
-    const ro = new ResizeObserver(compute);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-  const [page, setPage] = React.useState(1);
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  React.useEffect(() => {
-    if (page > totalPages) setPage(1);
-  }, [page, totalPages]);
-  React.useEffect(() => {
-    setPage(1);
-  }, [filters.query, filters.ownership, filters.status, filters.subject, filters.secrecy, filters.tags.length]);
-  const pageStart = (page - 1) * pageSize;
-  const pageItems = filtered.slice(pageStart, pageStart + pageSize);
-
   const allPageSelected =
-    pageItems.length > 0 && pageItems.every((r) => selectedIds.has(r.id));
+    resources.length > 0 && resources.every((r) => selectedIds.has(r.id));
   const somePageSelected =
-    pageItems.some((r) => selectedIds.has(r.id)) && !allPageSelected;
+    resources.some((r) => selectedIds.has(r.id)) && !allPageSelected;
 
   /* ---- Helper: format date ---- */
   function formatDate(d: string) {
@@ -313,6 +268,8 @@ export default function ResourceManagePage() {
     }
   }
 
+  const pageStart = (page - 1) * pageSize;
+
   return (
     <div className="flex h-full flex-col gap-4">
       {/* 页头 */}
@@ -320,9 +277,7 @@ export default function ResourceManagePage() {
         <div className="flex items-center gap-1.5">
           <h1 className="text-xl font-semibold tracking-tight">资源管理</h1>
           <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
-            {filtered.length === manageableResources.length
-              ? `共 ${manageableResources.length} 条`
-              : `筛选后 ${filtered.length} / ${manageableResources.length} 条`}
+            {total > 0 ? `共 ${total} 条` : "共 0 条"}
           </span>
         </div>
       </header>
@@ -345,21 +300,18 @@ export default function ResourceManagePage() {
           />
         </div>
 
-        {/* 筛选（分组下拉） */}
         <FilterGroupChip
           groups={filterGroups}
           dirtyCount={filterDirtyCount}
           onReset={() => filters.reset()}
         />
 
-        {/* 主体（独立 chip，可扩展） */}
         <SubjectFilterChip
           options={subjectOptions}
           value={filters.subject}
           onChange={(v) => filters.setSubject(v)}
         />
 
-        {/* 标签（独立 chip） */}
         <TagFilterChip
           label="标签"
           emptyText="暂无标签"
@@ -371,7 +323,6 @@ export default function ResourceManagePage() {
           onChangeMode={(v) => filters.setTagsMode(v)}
         />
 
-        {/* 重置 */}
         {isDirty && (
           <Button
             variant="ghost"
@@ -414,7 +365,7 @@ export default function ResourceManagePage() {
         </div>
       </div>
 
-      {/* 内容区：筛选栏(顶部) → 表格(中间可滚动) → 分页(底部固定) */}
+      {/* 内容区 */}
       <div className="min-h-0 flex-1 flex flex-col gap-0">
         <div ref={contentRef} className="min-h-0 flex-1 overflow-auto">
         {isLoading ? (
@@ -423,13 +374,11 @@ export default function ResourceManagePage() {
           </div>
         ) : isError ? (
           <div className="rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
-            加载失败：{(error as Error)?.message || "未知错误"}
+            加载失败：{error?.message || "未知错误"}
           </div>
-        ) : filtered.length === 0 ? (
+        ) : resources.length === 0 ? (
           <div className="rounded-md border border-dashed py-16 text-center text-sm text-muted-foreground">
-            {manageableResources.length === 0
-              ? "暂无可管理的资源"
-              : "没有匹配的资源"}
+            没有匹配的资源
           </div>
         ) : (
           <div className="overflow-hidden rounded-md border bg-card">
@@ -458,10 +407,6 @@ export default function ResourceManagePage() {
                             <Check className="mr-2 h-3.5 w-3.5" />
                             全选本页
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => setSelectedIds(new Set(filtered.map((r) => r.id)))}>
-                            <Check className="mr-2 h-3.5 w-3.5" />
-                            选择全部 ({filtered.length})
-                          </DropdownMenuItem>
                           <DropdownMenuItem onClick={() => setSelectedIds(new Set())}>
                             <X className="mr-2 h-3.5 w-3.5" />
                             取消选择
@@ -482,7 +427,7 @@ export default function ResourceManagePage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {pageItems.map((r) => {
+                {resources.map((r) => {
                   const preview =
                     r.current?.preview_url || r.current?.original_preview_url || null;
                   const rTags = parseTags(r.tags);
@@ -586,12 +531,12 @@ export default function ResourceManagePage() {
         )}
       </div>
 
-        {/* 分页条 - 固定底部 */}
-        {!isLoading && !isError && filtered.length > 0 && (
+        {/* 分页条 */}
+        {!isLoading && !isError && resources.length > 0 && (
           <div className="flex shrink-0 items-center justify-between border-t pt-3 text-sm text-muted-foreground">
             <span>
-              显示 {pageStart + 1}-{Math.min(pageStart + pageSize, filtered.length)}，共{" "}
-              {filtered.length} 条
+              显示 {pageStart + 1}-{Math.min(pageStart + pageSize, total)}，共{" "}
+              {total} 条
             </span>
             <div className="flex items-center gap-2">
               <Button
@@ -625,7 +570,7 @@ export default function ResourceManagePage() {
         resourceIds={Array.from(selectedIds)}
         onSuccess={() => {
           setSelectedIds(new Set());
-          queryClient.invalidateQueries({ queryKey: ["resources", "asset"] });
+          queryClient.invalidateQueries({ queryKey: ["manage-resources"] });
         }}
       />
 
@@ -676,5 +621,3 @@ export default function ResourceManagePage() {
     </div>
   );
 }
-
-/* ---------- filterGroups 配置 ---------- */

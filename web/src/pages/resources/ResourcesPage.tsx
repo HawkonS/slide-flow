@@ -12,122 +12,68 @@ import { ResourceFilters } from "@/components/resource/ResourceFilters";
 import { ResourceNewVersionDialog } from "@/components/resource/ResourceNewVersionDialog";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { DEFAULT_RESOURCE_SUBJECT } from "@/lib/constants";
-import { sortListItems } from "@/lib/sort";
-import { parseTags, Resource, ResourceVersion } from "@/lib/types";
+import { serializeTags } from "@/lib/types";
+import { Resource, ResourceVersion } from "@/lib/types";
 import { useResponsiveGrid } from "@/lib/use-grid-layout";
 import { useResourceFilters } from "@/stores/resource-filters";
-
-interface ResourceListResponse {
-  resources: Resource[];
-}
-
-interface PersonalRemarkSummaryResponse {
-  resource_ids: number[];
-}
+import { usePaginatedQuery } from "@/lib/use-paginated-query";
 
 export function ResourcesPage() {
   const { user } = useAuth();
   const filters = useResourceFilters();
   const queryClient = useQueryClient();
 
-  const { data, isLoading, isError, error } = useQuery({
-    queryKey: ["resources", "asset"],
-    queryFn: async () =>
-      api<ResourceListResponse>("/api/resources", { params: { resource_type: "asset" } }),
-  });
-
-  // 有非空个人备注的资源 id 集合（后端汇总，不依赖资源列表的 has_personal_remark 字段）
-  const { data: remarkSummary } = useQuery({
-    queryKey: ["me", "personal-remarks", "summary"],
-    queryFn: async () => api<PersonalRemarkSummaryResponse>("/api/me/personal-remarks"),
-    staleTime: 30_000,
-  });
-  const personalRemarkSet = React.useMemo(
-    () => new Set<number>(remarkSummary?.resource_ids ?? []),
-    [remarkSummary],
-  );
-
-  const resources = data?.resources ?? [];
-
-  const { subjects, tags } = React.useMemo(() => {
-    const subjectSet = new Set<string>();
-    const tagSet = new Set<string>();
-    resources.forEach((r) => {
-      if (r.subject) subjectSet.add(r.subject.trim());
-      parseTags(r.tags).forEach((t) => tagSet.add(t));
-    });
-    return {
-      subjects: Array.from(subjectSet),
-      tags: Array.from(tagSet).sort((a, b) => a.localeCompare(b, "zh-Hans-CN")),
-    };
-  }, [resources]);
-
-  const filtered = React.useMemo(() => {
-    const q = filters.query.trim().toLowerCase();
-    const list = resources.filter((r) => {
-      const rTags = new Set(parseTags(r.tags));
-
-      if (filters.tags.length > 0) {
-        if (filters.tagsMode === "all") {
-          if (!filters.tags.every((t) => rTags.has(t))) return false;
-        } else {
-          if (!filters.tags.some((t) => rTags.has(t))) return false;
-        }
-      }
-
-      const subject = r.subject || DEFAULT_RESOURCE_SUBJECT;
-      if (filters.subject !== "all" && subject !== filters.subject) return false;
-
-      if (filters.status !== "all" && r.status !== filters.status) return false;
-      if (filters.secrecy !== "all" && r.secrecy_level !== filters.secrecy) return false;
-
-      if (filters.permission === "created") {
-        if (!user || r.owner_id !== user.id) return false;
-      } else if (filters.permission === "managed") {
-        if (!r.can_manage) return false;
-      }
-
-      if (filters.remarkCommon !== "all") {
-        const plain = (r.current?.common_remark_html || "").replace(/<[^>]*>/g, "").trim();
-        const has = plain.length > 0;
-        if (filters.remarkCommon === "has" && !has) return false;
-        if (filters.remarkCommon === "none" && has) return false;
-      }
-      if (filters.remarkPersonal !== "all") {
-        const has = personalRemarkSet.has(r.id) || !!r.has_personal_remark;
-        if (filters.remarkPersonal === "has" && !has) return false;
-        if (filters.remarkPersonal === "none" && has) return false;
-      }
-
-      if (q) {
-        const hay = [
-          r.name,
-          r.subject || "",
-          r.owner?.name || "",
-          r.owner?.username || "",
-        ]
-          .join(" ")
-          .toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
-      return true;
-    });
-    return sortListItems(list, filters.sort);
-  }, [resources, filters, user, personalRemarkSet]);
-
-  // 分页：列数与每页大小由共享 hook 按容器宽度连续计算，pageSize = cols × rows
+  // 分页：列数与每页大小由共享 hook 按容器宽度连续计算
   const contentRef = React.useRef<HTMLDivElement>(null);
   const { pageSize, gridStyle } = useResponsiveGrid(contentRef);
   const [page, setPage] = React.useState(1);
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+
+  // 构建后端查询参数
+  const apiParams = React.useMemo(
+    () => ({
+      resource_type: "asset" as const,
+      search: filters.query.trim() || undefined,
+      subject: filters.subject !== "all" ? filters.subject : undefined,
+      status: filters.status !== "all" ? filters.status : undefined,
+      secrecy: filters.secrecy !== "all" ? filters.secrecy : undefined,
+      permission: filters.permission !== "all" ? filters.permission : undefined,
+      remark_common: filters.remarkCommon !== "all" ? filters.remarkCommon : undefined,
+      remark_personal: filters.remarkPersonal !== "all" ? filters.remarkPersonal : undefined,
+      tags: filters.tags.length > 0 ? serializeTags(filters.tags) : undefined,
+      tags_mode: filters.tagsMode,
+      sort: filters.sort,
+    }),
+    [filters],
+  );
+
+  const {
+    items: resources,
+    total,
+    totalPages,
+    allTags: tags,
+    allSubjects: subjects,
+    isLoading,
+    isError,
+    error,
+  } = usePaginatedQuery<Resource>({
+    url: "/api/resources",
+    queryKeyPrefix: "resources",
+    params: apiParams,
+    page,
+    pageSize,
+  });
+
+  // 筛选变化时重置页码
+  React.useEffect(() => {
+    setPage(1);
+  }, [apiParams]);
+
   React.useEffect(() => {
     if (page > totalPages) setPage(1);
   }, [page, totalPages]);
-  const pageStart = (page - 1) * pageSize;
-  const pageItems = filtered.slice(pageStart, pageStart + pageSize);
 
-  const [detailResource, setDetailResource] = React.useState<Resource | null>(null);
+  // 详情按需加载
+  const [detailResourceId, setDetailResourceId] = React.useState<number | null>(null);
   const [editResource, setEditResource] = React.useState<Resource | null>(null);
   const [newVersionResource, setNewVersionResource] = React.useState<Resource | null>(null);
   const [createOpen, setCreateOpen] = React.useState(false);
@@ -138,21 +84,47 @@ export function ResourcesPage() {
     { resource: Resource; version: ResourceVersion } | null
   >(null);
 
-  const handleEdit = (r: Resource) => {
-    setEditResource(r);
-    setEditOpen(true);
-    setDetailResource(null);
+  // 按需加载完整资源数据（用于详情/编辑/新版本弹窗）
+  const { data: fullResourceData } = useQuery({
+    queryKey: ["resources", detailResourceId],
+    queryFn: async () => {
+      const res = await api<{ resource: Resource }>(`/api/resources/${detailResourceId}`);
+      return res.resource;
+    },
+    enabled: detailResourceId != null,
+  });
+  const detailResource = detailResourceId != null ? fullResourceData ?? null : null;
+
+  const fetchFullResource = React.useCallback(async (r: Resource): Promise<Resource> => {
+    // 如果已有完整数据（含 versions），直接返回
+    if (r.versions) return r;
+    const res = await api<{ resource: Resource }>(`/api/resources/${r.id}`);
+    return res.resource;
+  }, []);
+
+  const handleOpenDetail = (r: Resource) => {
+    setDetailResourceId(r.id);
   };
 
-  const handleNewVersion = (r: Resource) => {
-    setNewVersionResource(r);
+  const handleEdit = async (r: Resource) => {
+    const full = await fetchFullResource(r);
+    setEditResource(full);
+    setEditOpen(true);
+    setDetailResourceId(null);
+  };
+
+  const handleNewVersion = async (r: Resource) => {
+    const full = await fetchFullResource(r);
+    setNewVersionResource(full);
     setNewVersionOpen(true);
-    setDetailResource(null);
+    setDetailResourceId(null);
   };
 
   const handleDownload = (r: Resource, version: ResourceVersion) => {
     setDownloadCtx({ resource: r, version });
   };
+
+  const pageStart = (page - 1) * pageSize;
 
   return (
     <div className="flex h-full flex-col gap-4">
@@ -161,9 +133,7 @@ export function ResourcesPage() {
         <div className="flex items-center gap-1.5">
           <h1 className="text-xl font-semibold tracking-tight">资源仓库</h1>
           <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
-            {filtered.length === resources.length
-              ? `共 ${resources.length} 条`
-              : `筛选后 ${filtered.length} / ${resources.length} 条`}
+            {total > 0 ? `共 ${total} 条` : "共 0 条"}
           </span>
         </div>
       </header>
@@ -196,7 +166,7 @@ export function ResourcesPage() {
         }
       />
 
-      {/* 内容区：flex-1 撑满剩余空间，grid 行均匀分布 */}
+      {/* 内容区 */}
       <div ref={contentRef} className="min-h-0 flex-1 overflow-auto">
         {isLoading ? (
           <div className="flex items-center justify-center py-16 text-muted-foreground">
@@ -204,19 +174,19 @@ export function ResourcesPage() {
           </div>
         ) : isError ? (
           <div className="rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
-            加载失败：{(error as Error)?.message || "未知错误"}
+            加载失败：{error?.message || "未知错误"}
           </div>
-        ) : filtered.length === 0 ? (
+        ) : resources.length === 0 ? (
           <div className="rounded-md border border-dashed py-16 text-center text-sm text-muted-foreground">
             没有匹配的资源
           </div>
         ) : (
           <div className="grid content-start" style={gridStyle}>
-            {pageItems.map((r) => (
+            {resources.map((r) => (
               <ResourceCard
                 key={r.id}
                 resource={r}
-                onOpen={(x) => setDetailResource(x)}
+                onOpen={handleOpenDetail}
                 onEdit={handleEdit}
                 onNewVersion={handleNewVersion}
                 onDownload={(x) => handleDownload(x, x.current)}
@@ -226,12 +196,12 @@ export function ResourcesPage() {
         )}
       </div>
 
-      {/* 分页条：粘底常驻（有数据时显示） */}
-      {!isLoading && !isError && filtered.length > 0 && (
+      {/* 分页条 */}
+      {!isLoading && !isError && resources.length > 0 && (
         <div className="flex shrink-0 items-center justify-between border-t pt-3 text-sm text-muted-foreground">
           <span>
-            显示 {pageStart + 1}-{Math.min(pageStart + pageSize, filtered.length)}，共{" "}
-            {filtered.length} 条
+            显示 {pageStart + 1}-{Math.min(pageStart + pageSize, total)}，共{" "}
+            {total} 条
           </span>
           <div className="flex items-center gap-2">
             <Button
@@ -258,9 +228,9 @@ export function ResourcesPage() {
       )}
 
       <ResourceDetailDialog
-        open={detailResource != null}
+        open={detailResourceId != null}
         onOpenChange={(open) => {
-          if (!open) setDetailResource(null);
+          if (!open) setDetailResourceId(null);
         }}
         resource={detailResource}
         onEdit={handleEdit}
@@ -309,7 +279,7 @@ export function ResourcesPage() {
         open={batchSplitOpen}
         onOpenChange={setBatchSplitOpen}
         onSuccess={() => {
-          queryClient.invalidateQueries({ queryKey: ["resources", "asset"] });
+          queryClient.invalidateQueries({ queryKey: ["resources"] });
         }}
       />
     </div>

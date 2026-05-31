@@ -11,99 +11,95 @@ import { ShowUpgradeDialog } from "@/components/show/ShowUpgradeDialog";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { toast } from "sonner";
-import { DEFAULT_RESOURCE_SUBJECT } from "@/lib/constants";
-import { sortListItems } from "@/lib/sort";
-import { parseTags, Show } from "@/lib/types";
+import { serializeTags, Show } from "@/lib/types";
 import { useResponsiveGrid } from "@/lib/use-grid-layout";
 import { useShowFilters } from "@/stores/show-filters";
-
-interface ShowListResponse {
-  shows: Show[];
-}
+import { usePaginatedQuery } from "@/lib/use-paginated-query";
 
 export function ShowsPage() {
   const { user } = useAuth();
   const filters = useShowFilters();
   const queryClient = useQueryClient();
 
-  const { data, isLoading, isError, error } = useQuery({
-    queryKey: ["shows"],
-    queryFn: async () => api<ShowListResponse>("/api/shows"),
-  });
-
-  const shows = data?.shows ?? [];
-
-  const { subjects, tags } = React.useMemo(() => {
-    const subjectSet = new Set<string>();
-    const tagSet = new Set<string>();
-    shows.forEach((s) => {
-      if (s.subject) subjectSet.add(s.subject.trim());
-      parseTags(s.tags).forEach((t) => tagSet.add(t));
-    });
-    return {
-      subjects: Array.from(subjectSet),
-      tags: Array.from(tagSet).sort((a, b) => a.localeCompare(b, "zh-Hans-CN")),
-    };
-  }, [shows]);
-
-  const filtered = React.useMemo(() => {
-    const q = filters.query.trim().toLowerCase();
-    const list = shows.filter((s) => {
-      const sTags = new Set(parseTags(s.tags));
-
-      if (filters.tags.length > 0) {
-        if (filters.tagsMode === "all") {
-          if (!filters.tags.every((t) => sTags.has(t))) return false;
-        } else {
-          if (!filters.tags.some((t) => sTags.has(t))) return false;
-        }
-      }
-
-      const subject = s.subject || DEFAULT_RESOURCE_SUBJECT;
-      if (filters.subject !== "all" && subject !== filters.subject) return false;
-
-      if (filters.status !== "all" && s.status !== filters.status) return false;
-      if (filters.secrecy !== "all" && s.secrecy_level !== filters.secrecy) return false;
-
-      if (filters.permission === "created") {
-        if (!user || s.owner_id !== user.id) return false;
-      } else if (filters.permission === "managed") {
-        if (!s.can_manage) return false;
-      }
-
-      if (q) {
-        const hay = [
-          s.name,
-          s.subject || "",
-          s.owner?.name || "",
-          s.owner?.username || "",
-        ]
-          .join(" ")
-          .toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
-      return true;
-    });
-    return sortListItems(list, filters.sort);
-  }, [shows, filters, user]);
-
-  // 分页：列数与每页大小由共享 hook 按容器宽度连续计算，pageSize = cols × rows
+  // 分页
   const contentRef = React.useRef<HTMLDivElement>(null);
   const { pageSize, gridStyle } = useResponsiveGrid(contentRef);
   const [page, setPage] = React.useState(1);
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+
+  // 构建后端查询参数
+  const apiParams = React.useMemo(
+    () => ({
+      search: filters.query.trim() || undefined,
+      subject: filters.subject !== "all" ? filters.subject : undefined,
+      status: filters.status !== "all" ? filters.status : undefined,
+      secrecy: filters.secrecy !== "all" ? filters.secrecy : undefined,
+      permission: filters.permission !== "all" ? filters.permission : undefined,
+      tags: filters.tags.length > 0 ? serializeTags(filters.tags) : undefined,
+      tags_mode: filters.tagsMode,
+      sort: filters.sort,
+    }),
+    [filters],
+  );
+
+  const {
+    items: shows,
+    total,
+    totalPages,
+    allTags: tags,
+    allSubjects: subjects,
+    isLoading,
+    isError,
+    error,
+  } = usePaginatedQuery<Show>({
+    url: "/api/shows",
+    queryKeyPrefix: "shows",
+    params: apiParams,
+    page,
+    pageSize,
+  });
+
+  // 筛选变化时重置页码
+  React.useEffect(() => {
+    setPage(1);
+  }, [apiParams]);
+
   React.useEffect(() => {
     if (page > totalPages) setPage(1);
   }, [page, totalPages]);
-  const pageStart = (page - 1) * pageSize;
-  const pageItems = filtered.slice(pageStart, pageStart + pageSize);
 
-  // 对话框状态预留
-  const [detailShow, setDetailShow] = React.useState<Show | null>(null);
+  // 详情按需加载（完整数据含所有资源）
+  const [detailShowId, setDetailShowId] = React.useState<number | null>(null);
   const [editShow, setEditShow] = React.useState<Show | null>(null);
   const [createOpen, setCreateOpen] = React.useState(false);
   const [editOpen, setEditOpen] = React.useState(false);
   const [iterateShow, setIterateShow] = React.useState<Show | null>(null);
+
+  const { data: fullShowData } = useQuery({
+    queryKey: ["shows", detailShowId],
+    queryFn: async () => {
+      const res = await api<{ show: Show }>(`/api/shows/${detailShowId}`);
+      return res.show;
+    },
+    enabled: detailShowId != null,
+  });
+  const detailShow = detailShowId != null ? fullShowData ?? null : null;
+
+  const fetchFullShow = React.useCallback(async (s: Show): Promise<Show> => {
+    if (s.resources?.length && s.visible_user_ids) return s;
+    const res = await api<{ show: Show }>(`/api/shows/${s.id}`);
+    return res.show;
+  }, []);
+
+  const handleOpenDetail = (s: Show) => {
+    setDetailShowId(s.id);
+  };
+
+  const handleEdit = async (s: Show) => {
+    const full = await fetchFullShow(s);
+    setEditShow(full);
+    setEditOpen(true);
+    setDetailShowId(null);
+  };
 
   const handleDelete = async (show: Show) => {
     if (!window.confirm(`确定要删除放映「${show.name}」吗？此操作不可撤销。`)) return;
@@ -115,6 +111,8 @@ export function ShowsPage() {
     }
   };
 
+  const pageStart = (page - 1) * pageSize;
+
   return (
     <div className="flex h-full flex-col gap-4">
       {/* 页头 */}
@@ -122,9 +120,7 @@ export function ShowsPage() {
         <div className="flex items-center gap-1.5">
           <h1 className="text-xl font-semibold tracking-tight">放映仓库</h1>
           <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
-            {filtered.length === shows.length
-              ? `共 ${shows.length} 条`
-              : `筛选后 ${filtered.length} / ${shows.length} 条`}
+            {total > 0 ? `共 ${total} 条` : "共 0 条"}
           </span>
         </div>
       </header>
@@ -146,7 +142,7 @@ export function ShowsPage() {
         }
       />
 
-      {/* 内容区：flex-1 撑满剩余空间，grid 行均匀分布 */}
+      {/* 内容区 */}
       <div ref={contentRef} className="min-h-0 flex-1 overflow-auto">
         {isLoading ? (
           <div className="flex items-center justify-center py-16 text-muted-foreground">
@@ -154,23 +150,20 @@ export function ShowsPage() {
           </div>
         ) : isError ? (
           <div className="rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
-            加载失败：{(error as Error)?.message || "未知错误"}
+            加载失败：{error?.message || "未知错误"}
           </div>
-        ) : filtered.length === 0 ? (
+        ) : shows.length === 0 ? (
           <div className="rounded-md border border-dashed py-16 text-center text-sm text-muted-foreground">
             没有匹配的放映
           </div>
         ) : (
           <div className="grid content-start" style={gridStyle}>
-            {pageItems.map((s) => (
+            {shows.map((s) => (
               <ShowCard
                 key={s.id}
                 show={s}
-                onOpen={(x) => setDetailShow(x)}
-                onEdit={(x) => {
-                  setEditShow(x);
-                  setEditOpen(true);
-                }}
+                onOpen={handleOpenDetail}
+                onEdit={handleEdit}
                 onDuplicate={(s) => {
                   const newName = window.prompt("请输入副本名称", `${s.name} - 副本`);
                   if (newName?.trim()) {
@@ -190,12 +183,12 @@ export function ShowsPage() {
         )}
       </div>
 
-      {/* 分页条：粘底常驻（有数据时显示） */}
-      {!isLoading && !isError && filtered.length > 0 && (
+      {/* 分页条 */}
+      {!isLoading && !isError && shows.length > 0 && (
         <div className="flex shrink-0 items-center justify-between border-t pt-3 text-sm text-muted-foreground">
           <span>
-            显示 {pageStart + 1}-{Math.min(pageStart + pageSize, filtered.length)}，共{" "}
-            {filtered.length} 条
+            显示 {pageStart + 1}-{Math.min(pageStart + pageSize, total)}，共{" "}
+            {total} 条
           </span>
           <div className="flex items-center gap-2">
             <Button
@@ -241,15 +234,15 @@ export function ShowsPage() {
       />
 
       <ShowDetailDialog
-        open={detailShow != null}
+        open={detailShowId != null}
         onOpenChange={(open) => {
-          if (!open) setDetailShow(null);
+          if (!open) setDetailShowId(null);
         }}
         show={detailShow}
         onEdit={(s) => {
           setEditShow(s);
           setEditOpen(true);
-          setDetailShow(null);
+          setDetailShowId(null);
         }}
         onDuplicate={(s) => {
           const newName = window.prompt("请输入副本名称", `${s.name} - 副本`);
@@ -258,27 +251,23 @@ export function ShowsPage() {
               .then(() => {
                 toast.success("副本已创建");
                 queryClient.invalidateQueries({ queryKey: ["shows"] });
-                setDetailShow(null);
+                setDetailShowId(null);
               })
               .catch((err: Error) => toast.error(err.message || "创建副本失败"));
           }
         }}
         onIterate={(s) => {
           setIterateShow(s);
-          setDetailShow(null);
+          setDetailShowId(null);
         }}
         onSwitchVersion={async (showId: number) => {
-          // 从已有数据中查找，或重新 fetch
-          const found = shows.find((s) => s.id === showId);
-          if (found) {
-            setDetailShow(found);
-          } else {
-            try {
-              const res = await api<{ show: Show }>(`/api/shows/${showId}`);
-              setDetailShow(res.show);
-            } catch {
-              toast.error("加载版本详情失败");
-            }
+          try {
+            const res = await api<{ show: Show }>(`/api/shows/${showId}`);
+            setDetailShowId(null);
+            // 使用 setTimeout 确保先关闭当前详情再打开新的
+            setTimeout(() => setDetailShowId(showId), 0);
+          } catch {
+            toast.error("加载版本详情失败");
           }
         }}
       />

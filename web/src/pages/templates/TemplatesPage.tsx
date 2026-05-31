@@ -1,5 +1,4 @@
 import * as React from "react";
-import { useQuery } from "@tanstack/react-query";
 import { Check, Download, ImageOff, Loader2, X } from "lucide-react";
 import { toast } from "sonner";
 
@@ -13,7 +12,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { api } from "@/lib/api";
 import {
   TEMPLATE_PLATFORM_LABEL,
   TEMPLATE_TYPE_LABEL,
@@ -25,25 +23,29 @@ import {
 } from "@/lib/fonts";
 import { TemplateItem } from "@/lib/types";
 import { useResponsiveGrid } from "@/lib/use-grid-layout";
+import { usePaginatedQuery } from "@/lib/use-paginated-query";
 import { cn } from "@/lib/utils";
 
-interface TemplateListResponse {
-  templates: TemplateItem[];
-}
-
 export function TemplatesPage() {
-  const { data, isLoading, isError, error } = useQuery({
-    queryKey: ["templates"],
-    queryFn: async () => api<TemplateListResponse>("/api/templates"),
-  });
-
   const [detail, setDetail] = React.useState<TemplateItem | null>(null);
 
-  // 列数由共享 hook 按容器宽度连续计算（所有系列共享同一个外层宽度）
+  // 列数由共享 hook 按容器宽度连续计算
   const contentRef = React.useRef<HTMLDivElement>(null);
   const { gridStyle } = useResponsiveGrid(contentRef);
 
-  const templates = data?.templates ?? [];
+  const {
+    items: templates,
+    total,
+    isLoading,
+    isError,
+    error,
+  } = usePaginatedQuery<TemplateItem>({
+    url: "/api/templates",
+    queryKeyPrefix: "templates",
+    params: {},
+    page: 1,
+    pageSize: 500,
+  });
 
   // 主体 → 系列 → 模板数组
   const grouped = React.useMemo(() => {
@@ -68,7 +70,7 @@ export function TemplatesPage() {
         <div className="flex items-center gap-1.5">
           <h1 className="text-xl font-semibold tracking-tight">模板仓库</h1>
           <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
-            {templates.length} 个模板
+            {total} 个模板
           </span>
         </div>
       </header>
@@ -79,7 +81,7 @@ export function TemplatesPage() {
         </div>
       ) : isError ? (
         <div className="rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
-          加载失败：{(error as Error)?.message || "未知错误"}
+          加载失败：{error?.message || "未知错误"}
         </div>
       ) : grouped.length === 0 ? (
         <div className="rounded-md border border-dashed py-16 text-center text-sm text-muted-foreground">

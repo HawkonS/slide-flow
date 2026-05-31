@@ -64,7 +64,8 @@ import { TemplateItem, UserOption, VisibilityScope } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 interface TemplateListResponse {
-  templates: TemplateItem[];
+  items: TemplateItem[];
+  total: number;
 }
 
 interface UserOptionsResponse {
@@ -84,7 +85,7 @@ export function AdminTemplatesPage() {
   const [sortOpen, setSortOpen] = React.useState(false);
   const [selected, setSelected] = React.useState<Set<number>>(new Set());
 
-  const templates = data?.templates ?? [];
+  const templates = data?.items ?? [];
   const filtered = React.useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return templates;

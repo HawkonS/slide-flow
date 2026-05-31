@@ -35,7 +35,7 @@ export interface ResourceCardProps {
 }
 
 interface ShowListResponse {
-  shows: Show[];
+  items: Show[];
 }
 
 export function ResourceCard({
@@ -61,7 +61,7 @@ export function ResourceCard({
   });
 
   const manageableShows = React.useMemo(() => {
-    return showsData?.shows?.filter((s) => s.can_manage) ?? [];
+    return showsData?.items?.filter((s) => s.can_manage) ?? [];
   }, [showsData]);
 
   const isInShow = React.useCallback(

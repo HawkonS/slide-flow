@@ -61,12 +61,13 @@ export interface Resource {
   updated_at: string;
 
   owner: { id: number; username: string; name: string | null } | null;
-  updated_by: { id: number; username: string; name: string | null } | null;
+  updated_by?: { id: number; username: string; name: string | null } | null;
   can_manage: boolean;
-  visible_user_ids: number[];
-  manage_user_ids: number[];
+  visible_user_ids?: number[];
+  manage_user_ids?: number[];
   current: ResourceVersion;
-  versions: ResourceVersion[];
+  /** 仅在详情接口返回，列表接口不包含 */
+  versions?: ResourceVersion[];
   /** 当前用户在该资源的任一版本下是否有个人备注 */
   has_personal_remark?: boolean;
   /** 当前用户是否已将该资源添加到首页 */
@@ -190,7 +191,7 @@ export interface Show {
   name: string;
   owner_id: number;
   owner: { id: number; username: string; name: string | null } | null;
-  updated_by: { id: number; username: string; name: string | null } | null;
+  updated_by?: { id: number; username: string; name: string | null } | null;
   subject: string | null;
   tags: string;
   status: ResourceStatus;
@@ -198,12 +199,13 @@ export interface Show {
   management_scope: VisibilityScope;
   secrecy_level: SecrecyLevel;
   can_manage: boolean;
-  visible_user_ids: number[];
-  manage_user_ids: number[];
+  visible_user_ids?: number[];
+  manage_user_ids?: number[];
+  /** 列表接口仅返回前2个资源预览 */
   resources: ShowResource[];
   series_id: string;
   version_no: number;
-  change_note: string;
+  change_note?: string;
   has_other_versions: boolean;
   created_at: string;
   updated_at: string;

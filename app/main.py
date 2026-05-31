@@ -1026,6 +1026,37 @@ def _serialize_resource(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.
     return payload
 
 
+def _serialize_resource_lite(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row) -> dict[str, Any]:
+    """轻量级资源序列化：仅返回列表展示所需字段，不加载版本历史"""
+    owner = db.execute("SELECT id, name, username FROM users WHERE id = ?", (row["owner_id"],)).fetchone()
+    payload = _row_to_dict(row)
+    # 获取当前版本缩略图
+    ver = db.execute(
+        "SELECT id, png_path FROM resource_versions WHERE resource_id = ? AND version_no = ?",
+        (row["id"], row["current_version"]),
+    ).fetchone()
+    current = None
+    if ver:
+        vid = ver["id"]
+        current = {
+            "id": vid,
+            "version_no": int(row["current_version"]),
+            "preview_url": f"/api/resources/{row['id']}/preview-thumb?version_id={vid}" if ver["png_path"] else None,
+            "original_preview_url": f"/api/resources/{row['id']}/preview?version_id={vid}" if ver["png_path"] else None,
+        }
+    payload.update(
+        {
+            "owner": _row_to_dict(owner) if owner else None,
+            "can_manage": can_manage_resource(db, row, user)
+            and not (row["resource_type"] == "template" and not is_admin(user)),
+            "current": current,
+            "has_personal_remark": _has_personal_remark(db, int(row["id"]), int(user["id"])),
+            "is_pinned": _is_resource_pinned(db, int(row["id"]), int(user["id"])),
+        }
+    )
+    return payload
+
+
 def _serialize_template(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row) -> dict[str, Any]:
     owner = db.execute("SELECT id, name, username FROM users WHERE id = ?", (row["owner_id"],)).fetchone()
     font_names = _json_loads(row["font_names"], []) if "font_names" in row.keys() else []
@@ -1199,6 +1230,41 @@ def _serialize_show(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row)
         "can_manage": can_manage_show(db, row, user),
         "visible_user_ids": visible_user_ids,
         "manage_user_ids": manage_user_ids,
+        "resources": resources,
+        "is_pinned": _is_show_pinned(db, int(row["id"]), int(user["id"])),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def _serialize_show_lite(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row) -> dict[str, Any]:
+    """轻量级放映序列化：仅返回列表展示所需字段，资源只取前2个预览"""
+    owner = db.execute("SELECT id, name, username FROM users WHERE id = ?", (row["owner_id"],)).fetchone()
+    sr_rows = db.execute(
+        "SELECT resource_id, version_no FROM show_resources WHERE show_id = ? ORDER BY sort_order LIMIT 2",
+        (row["id"],),
+    ).fetchall()
+    resources = []
+    for sr in sr_rows:
+        sres = _serialize_show_resource(db, int(sr["resource_id"]), int(sr["version_no"]), user)
+        if sres is not None:
+            resources.append(sres)
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "owner_id": row["owner_id"],
+        "owner": _row_to_dict(owner) if owner else None,
+        "subject": row["subject"],
+        "tags": row["tags"],
+        "status": row["status"],
+        "secrecy_level": row["secrecy_level"],
+        "series_id": row["series_id"],
+        "version_no": row["version_no"],
+        "has_other_versions": db.execute(
+            "SELECT COUNT(*) FROM shows WHERE series_id = ? AND id != ?",
+            (row["series_id"], row["id"]),
+        ).fetchone()[0] > 0,
+        "can_manage": can_manage_show(db, row, user),
         "resources": resources,
         "is_pinned": _is_show_pinned(db, int(row["id"]), int(user["id"])),
         "created_at": row["created_at"],
@@ -1725,6 +1791,13 @@ def reorder_templates(
 
 @app.get("/api/templates")
 def list_templates(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(200, ge=1, le=500),
+    search: str = Query(""),
+    subject: str = Query(""),
+    series: str = Query(""),
+    template_type: str = Query(""),
+    platform: str = Query(""),
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
@@ -1749,8 +1822,34 @@ def list_templates(
             id DESC
         """
     ).fetchall()
-    templates = [_serialize_template(db, row, user) for row in rows if can_view_template(db, row, user)]
-    return {"templates": templates}
+    visible = [row for row in rows if can_view_template(db, row, user)]
+    # 筛选
+    q = search.strip().lower()
+    if q:
+        visible = [r for r in visible if q in (r["name"] or "").lower() or q in (r["subject"] or "").lower() or q in (r["series"] or "").lower()]
+    if subject and subject != "all":
+        visible = [r for r in visible if (r["subject"] or "") == subject]
+    if series and series != "all":
+        visible = [r for r in visible if (r["series"] or "") == series]
+    if template_type and template_type != "all":
+        visible = [r for r in visible if (r["template_type"] or "") == template_type]
+    if platform and platform != "all":
+        visible = [r for r in visible if (r["platform"] or "") == platform]
+    # 收集筛选项
+    all_subjects = sorted({r["subject"] for r in visible if r["subject"]})
+    all_series = sorted({r["series"] for r in visible if r["series"]})
+    total = len(visible)
+    offset = (page - 1) * page_size
+    page_items = visible[offset:offset + page_size]
+    templates = [_serialize_template(db, row, user) for row in page_items]
+    return {
+        "items": templates,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "all_subjects": all_subjects,
+        "all_series": all_series,
+    }
 
 
 @app.post("/api/templates")
@@ -2016,17 +2115,62 @@ def download_template(
 @app.get("/api/resources")
 def list_resources(
     resource_type: str = Query("asset"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(30, ge=1, le=200),
+    search: str = Query(""),
+    tag: str = Query(""),
+    tags: str = Query(""),
+    tags_mode: str = Query("any"),
+    subject: str = Query(""),
+    status: str = Query("all"),
+    secrecy: str = Query("all"),
+    permission: str = Query("all"),
+    remark_common: str = Query("all"),
+    remark_personal: str = Query("all"),
+    sort: str = Query("updated_desc"),
+    manageable_only: bool = Query(False),
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
     if resource_type != "asset":
         raise HTTPException(400, "模板请使用 /api/templates")
     rows = db.execute(
-        "SELECT * FROM resources WHERE resource_type = ? ORDER BY updated_at DESC, id DESC",
+        "SELECT * FROM resources WHERE resource_type = ?",
         (resource_type,),
     ).fetchall()
-    resources = [_serialize_resource(db, row, user) for row in rows if can_view_resource(db, row, user)]
-    return {"resources": resources}
+    visible = [r for r in rows if can_view_resource(db, r, user)]
+    # manageable_only 过滤
+    if manageable_only:
+        visible = [r for r in visible if can_manage_resource(db, r, user)]
+    # 收集可见资源的标签/主体（用于前端筛选下拉）
+    all_tags_set: set[str] = set()
+    all_subjects_set: set[str] = set()
+    for row in visible:
+        all_tags_set.update(_row_tag_set(row))
+        if row["subject"]:
+            all_subjects_set.add(row["subject"])
+    all_tags = sorted(all_tags_set)
+    all_subjects = sorted(all_subjects_set)
+    # 筛选 + 排序
+    filtered = _apply_pick_filters(
+        db, visible, user,
+        search=search, subject=subject, status=status, secrecy=secrecy,
+        permission=permission, remark_common=remark_common,
+        remark_personal=remark_personal, tag=tag, tags=tags, tags_mode=tags_mode,
+        sort=sort,
+    )
+    total = len(filtered)
+    offset = (page - 1) * page_size
+    page_items = filtered[offset:offset + page_size]
+    items = [_serialize_resource_lite(db, row, user) for row in page_items]
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "all_tags": all_tags,
+        "all_subjects": all_subjects,
+    }
 
 
 def _parse_csv(value: str) -> list[str]:
@@ -3089,22 +3233,89 @@ def download_uploaded_font(
 @app.get("/api/shows")
 def list_shows(
     series_id: str | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(30, ge=1, le=200),
+    search: str = Query(""),
+    tag: str = Query(""),
+    tags: str = Query(""),
+    tags_mode: str = Query("any"),
+    subject: str = Query(""),
+    status: str = Query("all"),
+    secrecy: str = Query("all"),
+    permission: str = Query("all"),
+    sort: str = Query("updated_desc"),
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
     rows = db.execute("SELECT * FROM shows ORDER BY updated_at DESC, id DESC").fetchall()
     visible = [row for row in rows if can_view_show(db, row, user)]
+    # series_id 查询时返回完整数据（用于版本切换等场景）
     if series_id is not None:
         shows = [_serialize_show(db, row, user) for row in visible if row["series_id"] == series_id]
+        return {"shows": shows}
+    # 每个series只保留version_no最大的版本
+    best: dict[str, sqlite3.Row] = {}
+    for row in visible:
+        sid = row["series_id"]
+        if sid not in best or (row["version_no"] is not None and (best[sid]["version_no"] is None or row["version_no"] > best[sid]["version_no"])):
+            best[sid] = row
+    deduped = list(best.values())
+    # 收集标签/主体
+    all_tags_set: set[str] = set()
+    all_subjects_set: set[str] = set()
+    for row in deduped:
+        for t in _parse_csv(row["tags"] or ""):
+            all_tags_set.add(t)
+        if row["subject"]:
+            all_subjects_set.add(row["subject"])
+    all_tags = sorted(all_tags_set)
+    all_subjects = sorted(all_subjects_set)
+    # 筛选
+    result = deduped
+    if status and status != "all":
+        result = [r for r in result if (r["status"] or "active") == status]
+    if subject and subject != "all":
+        result = [r for r in result if (r["subject"] or "") == subject]
+    if secrecy and secrecy != "all":
+        result = [r for r in result if (r["secrecy_level"] or "") == secrecy]
+    if permission == "created":
+        uid = int(user["id"])
+        result = [r for r in result if int(r["owner_id"]) == uid]
+    elif permission == "managed":
+        result = [r for r in result if can_manage_show(db, r, user)]
+    q = search.strip().lower()
+    if q:
+        result = [r for r in result if q in (r["name"] or "").lower() or q in (r["subject"] or "").lower()]
+    tag_list = _parse_csv(tags)
+    if not tag_list and tag.strip():
+        tag_list = [tag.strip()]
+    if tag_list:
+        mode = (tags_mode or "any").lower()
+        wanted = set(tag_list)
+        if mode == "all":
+            result = [r for r in result if wanted.issubset({t for t in _parse_csv(r["tags"] or "")})]
+        else:
+            result = [r for r in result if wanted & {t for t in _parse_csv(r["tags"] or "")}]
+    # 排序
+    sort_key = sort if sort in _PICK_SORT_KEYS else "updated_desc"
+    if sort_key.startswith("name"):
+        result.sort(key=lambda r: (r["name"] or "").lower(), reverse=sort_key.endswith("_desc"))
+    elif sort_key.startswith("created"):
+        result.sort(key=lambda r: (r["created_at"] or "", int(r["id"])), reverse=sort_key.endswith("_desc"))
     else:
-        # 每个series只保留version_no最大的版本
-        best: dict[str, sqlite3.Row] = {}
-        for row in visible:
-            sid = row["series_id"]
-            if sid not in best or (row["version_no"] is not None and (best[sid]["version_no"] is None or row["version_no"] > best[sid]["version_no"])):
-                best[sid] = row
-        shows = [_serialize_show(db, row, user) for row in best.values()]
-    return {"shows": shows}
+        result.sort(key=lambda r: (r["updated_at"] or "", int(r["id"])), reverse=sort_key.endswith("_desc"))
+    total = len(result)
+    offset = (page - 1) * page_size
+    page_items = result[offset:offset + page_size]
+    items = [_serialize_show_lite(db, row, user) for row in page_items]
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "all_tags": all_tags,
+        "all_subjects": all_subjects,
+    }
 
 
 @app.post("/api/shows")
