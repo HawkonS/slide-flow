@@ -85,4 +85,6 @@ def api_config() -> dict[str, Any]:
         "logo_svg_path": logo_url,
         "default_filter_status": settings.default_filter_status,
         "default_filter_subject": settings.default_filter_subject,
+        "feishu_sso_enabled": settings.feishu_sso_enabled,
+        "feishu_app_id": settings.feishu_app_id if settings.feishu_sso_enabled else "",
     }

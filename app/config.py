@@ -61,6 +61,10 @@ CONFIG_META: dict[str, dict[str, Any]] = {
     # 外观
     "logo.svg.path": {"label": "Logo 路径", "group": "appearance", "hot_reload": True, "type": "str", "desc": "Logo SVG 文件路径"},
     "web.https": {"label": "前端启用 HTTPS", "group": "appearance", "hot_reload": True, "type": "bool", "desc": "前端是否启用 HTTPS"},
+    # 飞书 SSO
+    "feishu.sso_enabled": {"label": "启用飞书 SSO", "group": "feishu", "hot_reload": True, "type": "bool", "desc": "是否启用飞书单点登录"},
+    "feishu.app_id": {"label": "飞书 App ID", "group": "feishu", "hot_reload": True, "type": "str", "desc": "飞书自建应用的 App ID"},
+    "feishu.app_secret": {"label": "飞书 App Secret", "group": "feishu", "hot_reload": True, "type": "str", "desc": "飞书自建应用的 App Secret"},
 }
 
 CONFIG_GROUPS: list[dict[str, str]] = [
@@ -71,6 +75,7 @@ CONFIG_GROUPS: list[dict[str, str]] = [
     {"key": "app", "label": "应用配置"},
     {"key": "admin", "label": "管理后台"},
     {"key": "appearance", "label": "外观配置"},
+    {"key": "feishu", "label": "飞书 SSO"},
 ]
 
 # 配置项 key -> Settings 属性名
@@ -104,6 +109,9 @@ _PROP_TO_ATTR: dict[str, str] = {
     "admin.route_prefix": "admin_route_prefix",
     "logo.svg.path": "logo_svg_path",
     "web.https": "web_https",
+    "feishu.sso_enabled": "feishu_sso_enabled",
+    "feishu.app_id": "feishu_app_id",
+    "feishu.app_secret": "feishu_app_secret",
 }
 
 
@@ -162,6 +170,11 @@ class Settings:
     # 外观
     logo_svg_path: str = "app/static/img/logo.svg"
     web_https: bool = True
+
+    # 飞书 SSO
+    feishu_sso_enabled: bool = False
+    feishu_app_id: str = ""
+    feishu_app_secret: str = ""
 
     # 数据库路径（派生）
     db_path: Path = field(default_factory=lambda: ROOT_DIR / "data" / "db" / "slide_flow.db")
@@ -337,6 +350,11 @@ def load_settings() -> Settings:
     logo_svg_path = props.get("logo.svg.path", "app/static/img/logo.svg")
     web_https = _parse_bool(props.get("web.https", "true"))
 
+    # 飞书 SSO
+    feishu_sso_enabled = _parse_bool(props.get("feishu.sso_enabled", "false"))
+    feishu_app_id = props.get("feishu.app_id", "")
+    feishu_app_secret = props.get("feishu.app_secret", "")
+
     # 数据库路径
     db_path = db_dir / "slide_flow.db"
 
@@ -372,6 +390,9 @@ def load_settings() -> Settings:
         admin_route_prefix=admin_route_prefix,
         logo_svg_path=logo_svg_path,
         web_https=web_https,
+        feishu_sso_enabled=feishu_sso_enabled,
+        feishu_app_id=feishu_app_id,
+        feishu_app_secret=feishu_app_secret,
         db_path=db_path,
     )
     s.ensure_dirs()

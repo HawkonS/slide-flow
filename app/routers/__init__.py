@@ -10,6 +10,7 @@ from app.routers import (
     users,
     fonts,
     links,
+    feishu_auth,
 )
 
 __all__ = [
@@ -21,4 +22,5 @@ __all__ = [
     "users",
     "fonts",
     "links",
+    "feishu_auth",
 ]
