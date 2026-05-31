@@ -2,16 +2,20 @@
 配置管理路由模块
 处理系统配置的读取和更新
 """
+import json
+import logging
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.config import CONFIG_GROUPS, CONFIG_META, PROPERTIES_FILE, _coerce_value, read_config_view, write_properties
+from app.config import CONFIG_GROUPS, CONFIG_META, PROPERTIES_FILE, ROOT_DIR, _coerce_value, read_config_view, settings, write_properties
 from app.core.permissions import require_super_admin
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class AdminConfigUpdatePayload(BaseModel):
@@ -88,3 +92,19 @@ def api_config() -> dict[str, Any]:
         "feishu_sso_enabled": settings.feishu_sso_enabled,
         "feishu_app_id": settings.feishu_app_id if settings.feishu_sso_enabled else "",
     }
+
+
+@router.get("/version")
+def api_version() -> dict[str, str]:
+    """获取版本信息（无需登录）"""
+    version_file: Path = ROOT_DIR / "data" / ".version_info"
+    if version_file.exists():
+        try:
+            data = json.loads(version_file.read_text(encoding="utf-8"))
+            return {
+                "commit": data.get("commit", "unknown"),
+                "updated_at": data.get("updated_at", ""),
+            }
+        except Exception as e:
+            logger.warning("读取版本文件失败: %s", e)
+    return {"commit": "unknown", "updated_at": ""}

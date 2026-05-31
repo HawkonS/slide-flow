@@ -62,6 +62,16 @@ if ! git reset --hard "$REMOTE_BRANCH"; then
 fi
 log_info "代码已更新到最新版本"
 
+# 写入版本信息文件（commit hash + 更新时间）
+VERSION_FILE="$PROJECT_ROOT/data/.version_info"
+COMMIT_HASH="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+UPDATE_TIME="$(date '+%Y-%m-%d %H:%M:%S')"
+mkdir -p "$PROJECT_ROOT/data"
+cat > "$VERSION_FILE" <<EOF
+{"commit": "$COMMIT_HASH", "updated_at": "$UPDATE_TIME"}
+EOF
+log_info "版本信息: $COMMIT_HASH ($UPDATE_TIME)"
+
 # ============================================================
 # Step 2 - 读取配置（用于重启方式选择和 sudo 密码）
 # ============================================================

@@ -87,6 +87,8 @@ function NavItemLink({ item }: { item: NavItem }) {
 
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const { user } = useAuth();
+  const versionCommit = useSiteConfig((s) => s.versionCommit);
+  const versionUpdatedAt = useSiteConfig((s) => s.versionUpdatedAt);
 
   return (
     <div className="flex h-full flex-col">
@@ -157,8 +159,8 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
 
       {/* 底部版本号 */}
       <div className="mt-auto px-3 py-4 text-center text-xs text-muted-foreground">
-        <div>v1.0.0</div>
-        <div>最后更新: 2026-05-10</div>
+        {versionCommit && <div>{versionCommit}</div>}
+        {versionUpdatedAt && <div>最后更新: {versionUpdatedAt}</div>}
       </div>
     </div>
   );

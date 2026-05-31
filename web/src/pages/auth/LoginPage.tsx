@@ -36,6 +36,8 @@ export function LoginPage() {
 
   const siteName = useSiteConfig((s) => s.siteName);
   const logoSvgPath = useSiteConfig((s) => s.logoSvgPath);
+  const versionCommit = useSiteConfig((s) => s.versionCommit);
+  const versionUpdatedAt = useSiteConfig((s) => s.versionUpdatedAt);
 
   // 加载站点配置（站点名称、浏览器标题）
   useEffect(() => {
@@ -169,7 +171,7 @@ export function LoginPage() {
       </div>
 
       {/* ── 右侧表单区 ── */}
-      <div className="flex flex-1 flex-col items-center justify-center bg-white px-6 py-12">
+      <div className="relative flex flex-1 flex-col items-center justify-center bg-white px-6 py-12">
         {/* 移动端顶部 Logo */}
         <div className="mb-10 flex flex-col items-center gap-3 lg:hidden">
           <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 shadow-sm">
@@ -283,6 +285,14 @@ export function LoginPage() {
             </>
           )}
         </div>
+
+        {/* 右下角版本信息 */}
+        {(versionCommit || versionUpdatedAt) && (
+          <div className="absolute bottom-4 right-6 text-right text-xs text-slate-400">
+            {versionCommit && <div>{versionCommit}</div>}
+            {versionUpdatedAt && <div>最后更新: {versionUpdatedAt}</div>}
+          </div>
+        )}
       </div>
     </div>
   );

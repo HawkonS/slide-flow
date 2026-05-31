@@ -42,6 +42,16 @@ export function App() {
         }
       })
       .catch(() => { /* ignore */ });
+
+    // 加载版本信息
+    fetch("/api/version")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((v) => {
+        if (v) {
+          useSiteConfig.getState().setVersion(v.commit || "", v.updated_at || "");
+        }
+      })
+      .catch(() => { /* ignore */ });
   }, []);
 
   return (
