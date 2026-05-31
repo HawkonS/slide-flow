@@ -48,6 +48,7 @@ class UserPayload(BaseModel):
     password: str | None = None
     feishu_id: str = ""
     role: str = "user"
+    need_change_pwd: bool = False
 
 
 class MetadataPayload(BaseModel):
@@ -231,6 +232,11 @@ class UserPreferencesPayload(BaseModel):
     preferences: dict[str, str] = {}
 
 
+class ChangePasswordPayload(BaseModel):
+    old_password: str
+    new_password: str
+
+
 # ==================== 工具函数 ====================
 
 def db_dep():
@@ -252,12 +258,14 @@ def _serialize_user(row: sqlite3.Row | None) -> dict[str, Any] | None:
     """序列化用户数据"""
     if row is None:
         return None
+    keys = row.keys()
     return {
         "id": row["id"],
         "name": row["name"],
         "username": row["username"],
         "role": row["role"],
         "feishu_id": row["feishu_id"],
+        "must_change_pwd": bool(row["must_change_pwd"]) if "must_change_pwd" in keys else False,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }

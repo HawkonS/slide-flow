@@ -538,6 +538,11 @@ def ensure_schema(db: sqlite3.Connection) -> None:
                 (index * 10, link_row["id"]),
             )
 
+    # users 表：添加 must_change_pwd 列
+    user_columns = {row["name"] for row in db.execute("PRAGMA table_info(users)").fetchall()}
+    if "must_change_pwd" not in user_columns:
+        db.execute("ALTER TABLE users ADD COLUMN must_change_pwd INTEGER NOT NULL DEFAULT 0")
+
     # download_records 表：将 user_id 改为可空（允许删除用户时保留下载记录）
     dr_columns = {row["name"]: row for row in db.execute("PRAGMA table_info(download_records)").fetchall()}
     if "user_id" in dr_columns and dr_columns["user_id"]["notnull"]:

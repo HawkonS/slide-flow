@@ -15,6 +15,7 @@ export interface CurrentUser {
   display_name?: string | null;
   role: UserRole;
   feishu_id?: string | null;
+  must_change_pwd?: boolean;
 }
 
 export interface UserOption {
@@ -114,6 +115,7 @@ export interface AdminUser {
   name: string | null;
   feishu_id: string | null;
   role: UserRole;
+  must_change_pwd?: boolean;
   created_at: string;
   updated_at: string;
 }

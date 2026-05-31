@@ -269,7 +269,16 @@ export function AdminUsersPage() {
                       />
                     </TableCell>
                     <TableCell>{u.name || "-"}</TableCell>
-                    <TableCell>{u.username}</TableCell>
+                    <TableCell>
+                      <span className="inline-flex items-center gap-1.5">
+                        {u.username}
+                        {u.must_change_pwd && (
+                          <Badge variant="outline" className="border-amber-400 text-amber-600 text-[10px] px-1 py-0">
+                            需改密
+                          </Badge>
+                        )}
+                      </span>
+                    </TableCell>
                     <TableCell>
                       <Badge
                         className="whitespace-nowrap"
@@ -483,6 +492,7 @@ function UserFormDialog({
   const [name, setName] = React.useState("");
   const [username, setUsername] = React.useState("");
   const [password, setPassword] = React.useState("");
+  const [useRandomPwd, setUseRandomPwd] = React.useState(false);
   const [feishu, setFeishu] = React.useState("");
   const [role, setRole] = React.useState<UserRole>("user");
   const [loading, setLoading] = React.useState(false);
@@ -492,6 +502,7 @@ function UserFormDialog({
       setName(user?.name || "");
       setUsername(user?.username || "");
       setPassword("");
+      setUseRandomPwd(false);
       setFeishu(user?.feishu_id || "");
       setRole((user?.role as UserRole) || "user");
       setLoading(false);
@@ -503,8 +514,8 @@ function UserFormDialog({
       toast.error("姓名和用户名必填");
       return;
     }
-    if (!editing && !password) {
-      toast.error("新增用户必须设置密码");
+    if (!editing && !useRandomPwd && !password) {
+      toast.error("请输入密码或选择自动生成随机密码");
       return;
     }
     setLoading(true);
@@ -514,12 +525,17 @@ function UserFormDialog({
         json: {
           name: name.trim(),
           username: username.trim(),
-          password: password || null,
+          password: useRandomPwd ? null : password || null,
           feishu_id: feishu.trim(),
           role,
+          need_change_pwd: !editing && useRandomPwd,
         },
       });
-      toast.success("用户已保存");
+      toast.success(
+        !editing && useRandomPwd
+          ? "用户已创建，随机密码已生成，首次登录将强制修改密码"
+          : "用户已保存"
+      );
       onSuccess();
       onOpenChange(false);
     } catch (err) {
@@ -550,6 +566,8 @@ function UserFormDialog({
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              disabled={!editing && useRandomPwd}
+              placeholder={!editing && useRandomPwd ? "将自动生成随机密码" : ""}
             />
           </div>
           <div className="space-y-1.5">
@@ -571,6 +589,18 @@ function UserFormDialog({
               </SelectContent>
             </Select>
           </div>
+          {!editing && (
+            <div className="flex items-center space-x-2 sm:col-span-2">
+              <Checkbox
+                id="useRandomPwd"
+                checked={useRandomPwd}
+                onCheckedChange={(checked) => setUseRandomPwd(!!checked)}
+              />
+              <Label htmlFor="useRandomPwd" className="cursor-pointer text-sm">
+                自动生成随机密码，首次登录强制修改
+              </Label>
+            </div>
+          )}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>

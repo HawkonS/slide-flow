@@ -19,6 +19,7 @@ import {
 
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
+import { ForceChangePassword } from "@/components/common/ForceChangePassword";
 import {
   SheetRoot,
   SheetTrigger,
@@ -258,6 +259,9 @@ export function AppShell() {
           <Outlet />
         </main>
       </div>
+
+      {/* 强制修改密码弹窗 */}
+      <ForceChangePassword />
     </div>
   );
 }

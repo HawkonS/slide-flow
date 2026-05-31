@@ -3,6 +3,7 @@
 处理管理员对用户的 CRUD 操作
 """
 import sqlite3
+import secrets
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -17,6 +18,7 @@ from app.core.permissions import (
     is_super_admin,
 )
 from app.core.security import hash_password
+from app.config import settings
 from app.db import now_iso
 from app.routers.dependencies import (
     UserPayload,
@@ -62,17 +64,26 @@ def create_user(
         raise HTTPException(400, "角色不正确")
     if payload.role == ROLE_SUPER_ADMIN and not is_super_admin(admin):
         raise HTTPException(403, "只有超级管理员能创建超级管理员")
-    if not payload.password:
-        raise HTTPException(400, "新用户需要设置密码")
+
+    # 确定密码和是否需要强制修改
+    must_change_pwd = 0
+    if payload.need_change_pwd:
+        # 生成随机密码，首次登录强制修改
+        password = secrets.token_urlsafe(16)
+        must_change_pwd = 1
+    elif payload.password:
+        password = payload.password
+    else:
+        password = settings.default_password
     
     ts = now_iso()
     try:
         db.execute(
             """
-            INSERT INTO users (name, username, password_hash, feishu_id, role, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO users (name, username, password_hash, feishu_id, role, must_change_pwd, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (payload.name, payload.username, hash_password(payload.password), payload.feishu_id, payload.role, ts, ts),
+            (payload.name, payload.username, hash_password(password), payload.feishu_id, payload.role, must_change_pwd, ts, ts),
         )
         db.commit()
     except sqlite3.IntegrityError:

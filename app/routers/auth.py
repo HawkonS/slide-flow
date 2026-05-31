@@ -8,9 +8,10 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Response
 
 from app.core.permissions import require_user
-from app.core.security import create_session_token, verify_password
+from app.core.security import create_session_token, hash_password, verify_password
 from app.db import now_iso
 from app.routers.dependencies import (
+    ChangePasswordPayload,
     LoginPayload,
     UserPreferencesPayload,
     SESSION_COOKIE,
@@ -123,3 +124,25 @@ def update_user_preferences(
         )
     db.commit()
     return get_user_preferences(user, db)
+
+
+@router.put("/auth/change-password")
+def change_password(
+    payload: ChangePasswordPayload,
+    user: sqlite3.Row = Depends(require_user),
+    db: sqlite3.Connection = Depends(db_dep),
+) -> dict[str, Any]:
+    """修改当前用户密码"""
+    if not verify_password(payload.old_password, user["password_hash"]):
+        raise HTTPException(400, "原密码不正确")
+    if len(payload.new_password) < 6:
+        raise HTTPException(400, "新密码长度不能少于 6 位")
+    user_id = int(user["id"])
+    ts = now_iso()
+    db.execute(
+        "UPDATE users SET password_hash = ?, must_change_pwd = 0, updated_at = ? WHERE id = ?",
+        (hash_password(payload.new_password), ts, user_id),
+    )
+    db.commit()
+    updated = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    return {"user": _serialize_user(updated)}
