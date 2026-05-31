@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRightLeft, Check, ChevronDown, Copy, Loader2, Pencil, Search, Trash2, UserPlus, X } from "lucide-react";
+import { ArrowRightLeft, Check, ChevronDown, Copy, KeyRound, Loader2, Pencil, Search, Shield, Trash2, User, UserPlus, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -15,6 +15,7 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -441,14 +442,30 @@ function TransferDeleteDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>转移数据并删除用户</DialogTitle>
+          <DialogTitle className="flex items-center gap-2">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-destructive/10 text-destructive">
+              <ArrowRightLeft className="h-4 w-4" />
+            </span>
+            转移数据并删除用户
+          </DialogTitle>
+          <DialogDescription>
+            将该用户的关联数据转移给另一位用户后删除账号。
+          </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
-          <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800/50 dark:bg-amber-950/30 dark:text-amber-300">
-            此操作将把用户 <strong>{sourceUser?.name || sourceUser?.username}</strong> 的所有关联数据（资源、放映、模板、任务等）转移给另一个用户，然后删除该账号。下载记录将保留但不再关联该用户。
+          <div className="flex items-start gap-3 rounded-lg border border-amber-300/60 bg-amber-50 p-4 dark:border-amber-800/50 dark:bg-amber-950/30">
+            <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-amber-200/70 text-amber-700 dark:bg-amber-800/50 dark:text-amber-300">
+              <X className="h-3 w-3" />
+            </span>
+            <p className="text-sm leading-relaxed text-amber-800 dark:text-amber-300">
+              用户 <strong>{sourceUser?.name || sourceUser?.username}</strong> 的所有关联数据（资源、放映、模板、任务等）将转移给接收者，然后删除该账号。下载记录将保留但不再关联。
+            </p>
           </div>
-          <div className="space-y-1.5">
-            <Label>接收数据的用户</Label>
+          <div className="rounded-lg border bg-muted/20 p-4">
+            <div className="mb-3 flex items-center gap-2 text-sm font-medium">
+              <User className="h-4 w-4 text-muted-foreground" />
+              接收数据的用户
+            </div>
             <Select value={targetId} onValueChange={setTargetId}>
               <SelectTrigger>
                 <SelectValue placeholder="请选择…" />
@@ -567,35 +584,47 @@ function UserFormDialog({
         onOpenChange(o);
       }}
     >
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>{editing ? "编辑用户" : "新增用户"}</DialogTitle>
+          <DialogTitle className="flex items-center gap-2">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              {editing ? <Pencil className="h-4 w-4" /> : <UserPlus className="h-4 w-4" />}
+            </span>
+            {editing ? "编辑用户" : "新增用户"}
+          </DialogTitle>
+          <DialogDescription>
+            {editing
+              ? "修改用户的基本信息与角色权限"
+              : "创建一个新用户账号并分配角色"}
+          </DialogDescription>
         </DialogHeader>
 
         {generatedPwd ? (
           /* 随机密码展示视图 */
           <div className="space-y-4">
-            <div className="rounded-md border border-amber-200 bg-amber-50 p-4 dark:border-amber-800/50 dark:bg-amber-950/30">
-              <p className="mb-2 text-sm font-medium text-amber-800 dark:text-amber-300">
-                随机密码已生成，请妥善保存并告知用户：
+            <div className="rounded-lg border border-emerald-300/60 bg-emerald-50 p-5 dark:border-emerald-800/50 dark:bg-emerald-950/30">
+              <div className="mb-3 flex items-center gap-2 text-sm font-medium text-emerald-800 dark:text-emerald-300">
+                <KeyRound className="h-4 w-4" />
+                随机密码已生成
+              </div>
+              <p className="mb-3 text-xs leading-relaxed text-emerald-700 dark:text-emerald-400">
+                请妥善保存以下密码并告知用户，用户首次登录时将被强制要求修改。
               </p>
               <div className="flex items-center gap-2">
-                <code className="flex-1 rounded bg-white px-3 py-2 text-sm font-mono select-all dark:bg-gray-800">
+                <code className="flex-1 rounded-md border border-emerald-200 bg-white px-3 py-2.5 text-sm font-mono font-semibold tracking-wide select-all dark:border-emerald-800 dark:bg-gray-900">
                   {generatedPwd}
                 </code>
                 <Button
                   variant="outline"
                   size="sm"
+                  className="shrink-0"
                   onClick={() => copyToClipboard(generatedPwd)}
                 >
-                  <Copy className="mr-1 h-3.5 w-3.5" />
+                  <Copy className="mr-1.5 h-3.5 w-3.5" />
                   复制
                 </Button>
               </div>
             </div>
-            <p className="text-xs text-muted-foreground">
-              用户首次登录时将被强制要求修改密码。
-            </p>
             <DialogFooter>
               <Button
                 onClick={() => {
@@ -610,61 +639,110 @@ function UserFormDialog({
         ) : (
           /* 表单视图 */
           <>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label>姓名</Label>
-                <Input value={name} onChange={(e) => setName(e.target.value)} />
-              </div>
-              <div className="space-y-1.5">
-                <Label>用户名</Label>
-                <Input value={username} onChange={(e) => setUsername(e.target.value)} />
-              </div>
-              <div className="space-y-1.5">
-                <Label>
-                  密码
-                  {editing
-                    ? "（留空不修改）"
-                    : "（留空使用系统默认密码）"}
-                </Label>
-                <Input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  disabled={!editing && useRandomPwd}
-                  placeholder={!editing && useRandomPwd ? "将自动生成随机密码" : ""}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>飞书 ID</Label>
-                <Input value={feishu} onChange={(e) => setFeishu(e.target.value)} />
-              </div>
-              <div className="space-y-1.5 sm:col-span-2">
-                <Label>角色</Label>
-                <Select value={role} onValueChange={(v) => setRole(v as UserRole)}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {USER_ROLE_OPTIONS.map((o) => (
-                      <SelectItem key={o.value} value={o.value}>
-                        {o.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              {!editing && (
-                <div className="flex items-center space-x-2 sm:col-span-2">
-                  <Checkbox
-                    id="useRandomPwd"
-                    checked={useRandomPwd}
-                    onCheckedChange={(checked) => setUseRandomPwd(!!checked)}
-                  />
-                  <Label htmlFor="useRandomPwd" className="cursor-pointer text-sm">
-                    自动生成随机密码，首次登录强制修改
-                  </Label>
+            <div className="grid gap-4">
+              {/* 基本信息 */}
+              <section className="rounded-lg border bg-muted/20 p-4">
+                <div className="mb-3 flex items-center gap-2 text-sm font-medium">
+                  <User className="h-4 w-4 text-muted-foreground" />
+                  基本信息
                 </div>
-              )}
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="user-name">姓名</Label>
+                    <Input
+                      id="user-name"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder="输入用户姓名"
+                    />
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="user-username">用户名</Label>
+                    <Input
+                      id="user-username"
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value)}
+                      placeholder="登录使用的用户名"
+                    />
+                  </div>
+                </div>
+              </section>
+
+              {/* 安全设置 */}
+              <section className="rounded-lg border bg-muted/20 p-4">
+                <div className="mb-3 flex items-center gap-2 text-sm font-medium">
+                  <KeyRound className="h-4 w-4 text-muted-foreground" />
+                  密码设置
+                </div>
+                <div className="grid gap-3">
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="user-password">
+                      密码
+                      <span className="ml-1 text-xs text-muted-foreground">
+                        {editing ? "（留空不修改）" : "（留空使用系统默认密码）"}
+                      </span>
+                    </Label>
+                    <Input
+                      id="user-password"
+                      type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      disabled={!editing && useRandomPwd}
+                      placeholder={!editing && useRandomPwd ? "将自动生成随机密码" : "输入密码"}
+                    />
+                  </div>
+                  {!editing && (
+                    <div className="flex items-center gap-2.5 rounded-md border border-dashed px-3 py-2.5">
+                      <Checkbox
+                        id="useRandomPwd"
+                        checked={useRandomPwd}
+                        onCheckedChange={(checked) => setUseRandomPwd(!!checked)}
+                      />
+                      <Label htmlFor="useRandomPwd" className="cursor-pointer text-sm leading-tight">
+                        自动生成随机密码
+                        <span className="block text-xs text-muted-foreground">首次登录时强制要求修改密码</span>
+                      </Label>
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              {/* 角色与飞书 */}
+              <section className="rounded-lg border bg-muted/20 p-4">
+                <div className="mb-3 flex items-center gap-2 text-sm font-medium">
+                  <Shield className="h-4 w-4 text-muted-foreground" />
+                  角色与集成
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="grid gap-1.5">
+                    <Label>角色</Label>
+                    <Select value={role} onValueChange={(v) => setRole(v as UserRole)}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {USER_ROLE_OPTIONS.map((o) => (
+                          <SelectItem key={o.value} value={o.value}>
+                            {o.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="user-feishu">
+                      飞书 ID
+                      <span className="ml-1 text-xs text-muted-foreground">（可选）</span>
+                    </Label>
+                    <Input
+                      id="user-feishu"
+                      value={feishu}
+                      onChange={(e) => setFeishu(e.target.value)}
+                      placeholder="关联飞书账号"
+                    />
+                  </div>
+                </div>
+              </section>
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>
@@ -672,7 +750,7 @@ function UserFormDialog({
               </Button>
               <Button onClick={submit} disabled={loading}>
                 {loading && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
-                保存
+                {editing ? "保存修改" : "创建用户"}
               </Button>
             </DialogFooter>
           </>
