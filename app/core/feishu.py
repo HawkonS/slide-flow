@@ -5,11 +5,35 @@
 from __future__ import annotations
 
 import logging
+import subprocess
+import sys
 from dataclasses import dataclass
 
-import httpx
-
 logger = logging.getLogger(__name__)
+
+
+def _ensure_httpx():
+    """确保 httpx 已安装，缺失时自动安装"""
+    try:
+        import httpx
+        return httpx
+    except ImportError:
+        logger.info("httpx 未安装，正在自动安装...")
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "httpx>=0.27"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            import httpx
+            logger.info("httpx 自动安装成功")
+            return httpx
+        except Exception as e:
+            logger.warning("httpx 自动安装失败: %s，飞书 SSO 功能不可用", e)
+            return None
+
+
+httpx = _ensure_httpx()
 
 FEISHU_BASE = "https://open.feishu.cn/open-apis"
 
@@ -40,8 +64,15 @@ def _check_response(data: dict, action: str) -> None:
         raise FeishuAPIError(code, msg)
 
 
+def _require_httpx() -> None:
+    """确保 httpx 可用，不可用时抛出明确异常"""
+    if httpx is None:
+        raise FeishuAPIError(-1, "httpx 依赖未安装，飞书 SSO 功能不可用。请运行: pip install httpx")
+
+
 def get_tenant_access_token(app_id: str, app_secret: str) -> str:
     """获取 tenant_access_token（应用级别令牌）"""
+    _require_httpx()
     url = f"{FEISHU_BASE}/auth/v3/tenant_access_token/internal"
     resp = httpx.post(url, json={"app_id": app_id, "app_secret": app_secret}, timeout=10)
     resp.raise_for_status()
@@ -58,6 +89,7 @@ def get_user_access_token(app_access_token: str, code: str) -> str:
     用授权码换取 user_access_token。
     此处使用 app_access_token（通过 tenant_access_token 接口获取）来调用。
     """
+    _require_httpx()
     url = f"{FEISHU_BASE}/authen/v1/oidc/access_token"
     headers = {"Authorization": f"Bearer {app_access_token}"}
     resp = httpx.post(
@@ -78,6 +110,7 @@ def get_user_access_token(app_access_token: str, code: str) -> str:
 
 def get_user_info(user_access_token: str) -> FeishuUserInfo:
     """获取当前授权用户的基本信息"""
+    _require_httpx()
     url = f"{FEISHU_BASE}/authen/v1/user_info"
     headers = {"Authorization": f"Bearer {user_access_token}"}
     resp = httpx.get(url, headers=headers, timeout=10)

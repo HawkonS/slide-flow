@@ -94,7 +94,7 @@ app.add_middleware(
 )
 
 # 注册模块化路由
-from app.routers import pages, config, system, auth, user_center, users, fonts, links, feishu_auth
+from app.routers import pages, config, system, auth, user_center, users, fonts, links
 
 app.include_router(pages.router, prefix="/api", tags=["pages"])
 app.include_router(config.router, prefix="/api", tags=["config"])
@@ -104,7 +104,14 @@ app.include_router(user_center.router, prefix="/api", tags=["user_center"])
 app.include_router(users.router, prefix="/api", tags=["users"])
 app.include_router(fonts.router, prefix="/api", tags=["fonts"])
 app.include_router(links.router, prefix="/api", tags=["links"])
-app.include_router(feishu_auth.router, prefix="/api", tags=["feishu_auth"])
+
+# 飞书 SSO 模块：依赖缺失或初始化失败时优雅降级，不影响主应用启动
+try:
+    from app.routers import feishu_auth
+    app.include_router(feishu_auth.router, prefix="/api", tags=["feishu_auth"])
+except Exception as _feishu_err:
+    import logging as _logging
+    _logging.getLogger(__name__).warning("飞书 SSO 模块加载失败，已跳过注册: %s", _feishu_err)
 
 logger = logging.getLogger(__name__)
 
