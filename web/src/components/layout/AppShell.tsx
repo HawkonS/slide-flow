@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { useSiteConfig } from "@/stores/site-config";
 import { useAuth } from "@/lib/auth";
 import { ForceChangePassword } from "@/components/common/ForceChangePassword";
 import {
@@ -179,6 +180,9 @@ export function AppShell() {
       : user?.role === "admin"
         ? "系统管理员"
         : "系统用户";
+
+  const siteName = useSiteConfig((s) => s.siteName);
+  const logoSvgPath = useSiteConfig((s) => s.logoSvgPath);
         
   return (
     <div className="flex h-screen flex-col bg-background">
@@ -201,11 +205,11 @@ export function AppShell() {
                 {/* 移动端 Sheet 顶部 logo */}
                 <div className="flex items-center gap-2 border-b px-4 py-3">
                   <img
-                    src="/static/img/logo.svg"
+                    src={logoSvgPath}
                     alt="logo"
                     className="h-6 w-6"
                   />
-                  <span className="text-sm font-semibold">SlideFlow</span>
+                  <span className="text-sm font-semibold">{siteName}</span>
                 </div>
                 <div className="flex-1 overflow-y-auto py-2">
                   <SidebarContent onNavigate={() => setSheetOpen(false)} />
@@ -218,11 +222,11 @@ export function AppShell() {
         {/* Logo + 应用名（桌面端左侧，移动端居中） */}
         <div className="flex items-center gap-2 md:mr-auto">
           <img
-            src="/static/img/logo.svg"
+            src={logoSvgPath}
             alt="logo"
             className="hidden h-7 w-7 md:block"
           />
-          <span className="text-[15px] font-semibold md:ml-0">SlideFlow</span>
+          <span className="text-[15px] font-semibold md:ml-0">{siteName}</span>
         </div>
 
         {/* 右侧用户信息 */}

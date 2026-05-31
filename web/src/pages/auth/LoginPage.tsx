@@ -13,6 +13,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
+import { useSiteConfig } from "@/stores/site-config";
 
 const loginSchema = z.object({
   username: z.string().min(1, "请输入账号"),
@@ -33,6 +34,25 @@ export function LoginPage() {
   const [feishuConfig, setFeishuConfig] = useState<FeishuConfig | null>(null);
   const [feishuLogging, setFeishuLogging] = useState(false);
   const feishuCodeHandled = useRef(false);
+
+  const siteName = useSiteConfig((s) => s.siteName);
+  const logoSvgPath = useSiteConfig((s) => s.logoSvgPath);
+
+  // 加载站点配置（站点名称、浏览器标题）
+  useEffect(() => {
+    fetch("/api/config")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((config) => {
+        if (config?.site_name) {
+          useSiteConfig.getState().setSiteName(config.site_name);
+          document.title = config.site_name;
+        }
+        if (config?.logo_svg_path) {
+          useSiteConfig.getState().setLogoSvgPath(config.logo_svg_path);
+        }
+      })
+      .catch(() => { /* ignore */ });
+  }, []);
 
   const form = useForm<LoginForm>({
     resolver: zodResolver(loginSchema),
@@ -125,9 +145,9 @@ export function LoginPage() {
       <Card className="w-full max-w-sm shadow-lg">
         <CardHeader className="space-y-1 text-center">
           <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
-            <img src="/static/img/logo.svg" alt="logo" className="h-8 w-8" />
+            <img src={logoSvgPath} alt="logo" className="h-8 w-8" />
           </div>
-          <CardTitle className="text-xl">放映信息管理平台</CardTitle>
+          <CardTitle className="text-xl">{siteName}</CardTitle>
           <CardDescription>请登录后访问</CardDescription>
         </CardHeader>
         <CardContent>

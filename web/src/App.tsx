@@ -7,6 +7,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/toaster";
 import { useResourceFilters } from "@/stores/resource-filters";
 import { useManageResourceFilters } from "@/stores/manage-resource-filters";
+import { useSiteConfig } from "@/stores/site-config";
 
 export function App() {
   const [client] = useState(
@@ -30,6 +31,14 @@ export function App() {
         if (config) {
           useResourceFilters.getState().initDefaults(config);
           useManageResourceFilters.getState().initDefaults(config);
+          // 站点名称 & Logo
+          if (config.site_name) {
+            useSiteConfig.getState().setSiteName(config.site_name);
+            document.title = config.site_name;
+          }
+          if (config.logo_svg_path) {
+            useSiteConfig.getState().setLogoSvgPath(config.logo_svg_path);
+          }
         }
       })
       .catch(() => { /* ignore */ });
