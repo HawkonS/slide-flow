@@ -254,7 +254,7 @@ export function AppShell() {
       {/* 下方内容区 */}
       <div className="flex flex-1 overflow-hidden">
         {/* 桌面端固定 Sidebar */}
-        <aside className="hidden w-56 shrink-0 flex-col border-r bg-card md:flex">
+        <aside className="hidden w-56 shrink-0 flex-col overflow-y-auto border-r bg-card md:flex">
           <SidebarContent />
         </aside>
 
