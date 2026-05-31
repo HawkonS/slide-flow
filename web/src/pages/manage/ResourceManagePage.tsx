@@ -351,9 +351,17 @@ export default function ResourceManagePage() {
   };
   const toggleSelectAll = (checked: boolean) => {
     if (checked) {
-      setSelectedIds(new Set(filtered.map((r) => r.id)));
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        pageItems.forEach((r) => next.add(r.id));
+        return next;
+      });
     } else {
-      setSelectedIds(new Set());
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        pageItems.forEach((r) => next.delete(r.id));
+        return next;
+      });
     }
   };
   // Keep selection in sync with filtered results
