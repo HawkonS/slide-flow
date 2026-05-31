@@ -3,13 +3,12 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
-import { Loader2 } from "lucide-react";
+import { Loader2, Eye, EyeOff } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import type { CurrentUser } from "@/lib/types";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
@@ -138,54 +137,134 @@ export function LoginPage() {
     window.location.href = authUrl;
   }
 
+  const [showPassword, setShowPassword] = useState(false);
   const isProcessing = submitting || feishuLogging;
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-muted/30 via-background to-accent/40 p-6">
-      <Card className="w-full max-w-sm shadow-lg">
-        <CardHeader className="space-y-1 text-center">
-          <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
-            <img src={logoSvgPath} alt="logo" className="h-8 w-8" />
+    <div className="flex min-h-screen">
+      {/* ── 左侧品牌区（桌面端） ── */}
+      <div className="relative hidden overflow-hidden bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 lg:flex lg:w-[38%] lg:flex-col lg:items-center lg:justify-center">
+        {/* 装饰圆 */}
+        <div className="pointer-events-none absolute -left-20 -top-20 h-72 w-72 rounded-full bg-white/[0.04]" />
+        <div className="pointer-events-none absolute -bottom-32 -right-16 h-96 w-96 rounded-full bg-white/[0.03]" />
+        <div className="pointer-events-none absolute left-1/2 top-1/3 h-48 w-48 -translate-x-1/2 rounded-full bg-white/[0.02]" />
+
+        {/* 品牌内容 */}
+        <div className="relative z-10 flex flex-col items-center px-12 text-center">
+          <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-white/10 ring-1 ring-white/20 backdrop-blur-sm">
+            <img src={logoSvgPath} alt="logo" className="h-9 w-9" />
           </div>
-          <CardTitle className="text-xl">{siteName}</CardTitle>
-          <CardDescription>请登录后访问</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="username">账号</Label>
-              <Input id="username" autoComplete="username" {...form.register("username")} disabled={isProcessing} />
+          <h1 className="mb-3 text-2xl font-bold tracking-tight text-white">
+            {siteName}
+          </h1>
+          <p className="max-w-xs text-sm leading-relaxed text-slate-400">
+            企业级演示文稿资源管理平台，助力团队高效协作与内容分发
+          </p>
+        </div>
+
+        {/* 底部版权 */}
+        <p className="absolute bottom-6 text-xs text-slate-600">
+          &copy; {new Date().getFullYear()} {siteName}
+        </p>
+      </div>
+
+      {/* ── 右侧表单区 ── */}
+      <div className="flex flex-1 flex-col items-center justify-center bg-white px-6 py-12">
+        {/* 移动端顶部 Logo */}
+        <div className="mb-10 flex flex-col items-center gap-3 lg:hidden">
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 shadow-sm">
+            <img src={logoSvgPath} alt="logo" className="h-7 w-7" />
+          </div>
+          <span className="text-lg font-semibold tracking-tight text-slate-900">{siteName}</span>
+        </div>
+
+        <div className="w-full max-w-[360px]">
+          {/* 标题 */}
+          <div className="mb-8">
+            <h2 className="text-xl font-semibold tracking-tight text-slate-900">
+              欢迎回来
+            </h2>
+            <p className="mt-1.5 text-sm text-slate-500">请登录您的账号以继续</p>
+          </div>
+
+          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5">
+            {/* 账号 */}
+            <div className="space-y-1.5">
+              <Label htmlFor="username" className="text-sm font-medium text-slate-700">
+                账号
+              </Label>
+              <Input
+                id="username"
+                autoComplete="username"
+                {...form.register("username")}
+                disabled={isProcessing}
+                className="h-11 rounded-lg border-slate-200 transition-shadow focus-visible:ring-2"
+                placeholder="请输入账号"
+              />
               {form.formState.errors.username && (
-                <p className="text-xs text-destructive">{form.formState.errors.username.message}</p>
+                <p className="text-xs text-destructive">
+                  {form.formState.errors.username.message}
+                </p>
               )}
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="password">密码</Label>
-              <Input id="password" type="password" autoComplete="current-password" {...form.register("password")} disabled={isProcessing} />
+
+            {/* 密码 */}
+            <div className="space-y-1.5">
+              <Label htmlFor="password" className="text-sm font-medium text-slate-700">
+                密码
+              </Label>
+              <div className="relative">
+                <Input
+                  id="password"
+                  type={showPassword ? "text" : "password"}
+                  autoComplete="current-password"
+                  {...form.register("password")}
+                  disabled={isProcessing}
+                  className="h-11 rounded-lg border-slate-200 pr-10 transition-shadow focus-visible:ring-2"
+                  placeholder="请输入密码"
+                />
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onClick={() => setShowPassword((v) => !v)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                >
+                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
               {form.formState.errors.password && (
-                <p className="text-xs text-destructive">{form.formState.errors.password.message}</p>
+                <p className="text-xs text-destructive">
+                  {form.formState.errors.password.message}
+                </p>
               )}
             </div>
-            <Button type="submit" className="w-full" disabled={isProcessing}>
-              {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+
+            {/* 登录按钮 */}
+            <Button
+              type="submit"
+              className="h-11 w-full rounded-lg text-sm font-medium shadow-sm transition-colors"
+              disabled={isProcessing}
+            >
+              {submitting ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}
               登录
             </Button>
           </form>
 
+          {/* 飞书 SSO */}
           {feishuConfig && (
             <>
-              <div className="relative my-4">
+              <div className="relative my-6">
                 <div className="absolute inset-0 flex items-center">
-                  <span className="w-full border-t" />
+                  <span className="w-full border-t border-slate-200" />
                 </div>
-                <div className="relative flex justify-center text-xs uppercase">
-                  <span className="bg-card px-2 text-muted-foreground">或</span>
+                <div className="relative flex justify-center text-xs">
+                  <span className="bg-white px-3 text-slate-400">或</span>
                 </div>
               </div>
               <Button
                 type="button"
                 variant="outline"
-                className="w-full"
+                className="h-11 w-full rounded-lg border-slate-200"
                 onClick={handleFeishuLogin}
                 disabled={isProcessing}
               >
@@ -193,18 +272,18 @@ export function LoginPage() {
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 ) : (
                   <svg className="mr-2 h-4 w-4" viewBox="0 0 24 24" fill="none">
-                    <path d="M4.93 4.93l5.66 5.66-2.83 2.83-5.66-5.66a4 4 0 012.83-2.83z" fill="#3370FF"/>
-                    <path d="M19.07 4.93l-5.66 5.66 2.83 2.83 5.66-5.66a4 4 0 00-2.83-2.83z" fill="#3370FF"/>
-                    <path d="M4.93 19.07l5.66-5.66 2.83 2.83-5.66 5.66a4 4 0 01-2.83-2.83z" fill="#3370FF"/>
-                    <path d="M19.07 19.07l-5.66-5.66-2.83 2.83 5.66 5.66a4 4 0 002.83-2.83z" fill="#3370FF"/>
+                    <path d="M4.93 4.93l5.66 5.66-2.83 2.83-5.66-5.66a4 4 0 012.83-2.83z" fill="#3370FF" />
+                    <path d="M19.07 4.93l-5.66 5.66 2.83 2.83 5.66-5.66a4 4 0 00-2.83-2.83z" fill="#3370FF" />
+                    <path d="M4.93 19.07l5.66-5.66 2.83 2.83-5.66 5.66a4 4 0 01-2.83-2.83z" fill="#3370FF" />
+                    <path d="M19.07 19.07l-5.66-5.66-2.83 2.83 5.66 5.66a4 4 0 002.83-2.83z" fill="#3370FF" />
                   </svg>
                 )}
                 飞书登录
               </Button>
             </>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </div>
     </div>
   );
 }
