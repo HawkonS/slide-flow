@@ -199,7 +199,7 @@ if [ -n "${1:-}" ]; then
                     echo "服务已经在运行中"
                     exit 0
                 fi
-                systemctl start "$SERVICE_NAME"
+                eval "$SUDO_CMD systemctl start \"$SERVICE_NAME\""
                 sleep 2
                 if systemctl is-active --quiet "$SERVICE_NAME"; then
                     echo "服务已成功启动"
@@ -221,7 +221,7 @@ if [ -n "${1:-}" ]; then
                     echo "服务已经是停止状态"
                     exit 0
                 fi
-                systemctl stop "$SERVICE_NAME"
+                eval "$SUDO_CMD systemctl stop \"$SERVICE_NAME\""
                 echo "服务已停止"
                 exit 0
             else
@@ -237,7 +237,7 @@ if [ -n "${1:-}" ]; then
             ;;
         restart)
             if is_installed; then
-                systemctl restart "$SERVICE_NAME"
+                eval "$SUDO_CMD systemctl restart \"$SERVICE_NAME\""
                 echo "服务已重启"
                 exit 0
             else
@@ -256,7 +256,7 @@ if [ -n "${1:-}" ]; then
             ;;
         status)
             if is_installed; then
-                systemctl status "$SERVICE_NAME" --no-pager
+                systemctl status "$SERVICE_NAME" --no-pager 2>/dev/null || eval "$SUDO_CMD systemctl status \"$SERVICE_NAME\" --no-pager"
             else
                 echo "服务未安装"
                 exit 1
