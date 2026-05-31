@@ -107,6 +107,7 @@ export function LoginPage() {
       `https://open.feishu.cn/open-apis/authen/v1/authorize` +
       `?app_id=${encodeURIComponent(feishuConfig.app_id)}` +
       `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+      `&response_type=code` +
       `&state=${state}`;
     window.location.href = authUrl;
   }

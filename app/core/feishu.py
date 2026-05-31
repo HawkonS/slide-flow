@@ -59,9 +59,11 @@ def _check_response(data: dict, action: str) -> None:
     """检查飞书 API 响应的 code 字段"""
     code = data.get("code", -1)
     if code != 0:
-        msg = data.get("msg", "未知错误")
-        logger.error("飞书 %s 失败: code=%s msg=%s", action, code, msg)
-        raise FeishuAPIError(code, msg)
+        msg = data.get("msg", "") or data.get("error_description", "") or "未知错误"
+        error = data.get("error", "")
+        detail = f"{msg}" + (f" (error={error})" if error else "")
+        logger.error("飞书 %s 失败: code=%s detail=%s response=%s", action, code, detail, data)
+        raise FeishuAPIError(code, detail)
 
 
 def _require_httpx() -> None:
