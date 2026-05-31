@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronDown, Loader2, Pencil, Search, Trash2, UserPlus, X } from "lucide-react";
+import { ArrowRightLeft, Check, ChevronDown, Loader2, Pencil, Search, Trash2, UserPlus, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -54,6 +54,7 @@ export function AdminUsersPage() {
 
   const [editing, setEditing] = React.useState<AdminUser | null>(null);
   const [createOpen, setCreateOpen] = React.useState(false);
+  const [transferUser, setTransferUser] = React.useState<AdminUser | null>(null);
   const [query, setQuery] = React.useState("");
 
   const delMut = useMutation({
@@ -295,6 +296,15 @@ export function AdminUsersPage() {
                         <Button
                           variant="ghost"
                           size="sm"
+                          className="text-muted-foreground hover:text-primary"
+                          title="转移数据并删除"
+                          onClick={() => setTransferUser(u)}
+                        >
+                          <ArrowRightLeft className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
                           className="text-destructive hover:text-destructive"
                           onClick={() => {
                             if (window.confirm(`确认删除用户 ${u.username}？`)) {
@@ -359,7 +369,102 @@ export function AdminUsersPage() {
         user={editing}
         onSuccess={() => qc.invalidateQueries({ queryKey: ["admin", "users"] })}
       />
+      <TransferDeleteDialog
+        open={transferUser != null}
+        onOpenChange={(o) => {
+          if (!o) setTransferUser(null);
+        }}
+        sourceUser={transferUser}
+        allUsers={users.filter((u) => u.id !== transferUser?.id)}
+        onSuccess={() => {
+          qc.invalidateQueries({ queryKey: ["admin", "users"] });
+        }}
+      />
     </div>
+  );
+}
+
+function TransferDeleteDialog({
+  open,
+  onOpenChange,
+  sourceUser,
+  allUsers,
+  onSuccess,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  sourceUser: AdminUser | null;
+  allUsers: AdminUser[];
+  onSuccess: () => void;
+}) {
+  const [targetId, setTargetId] = React.useState("");
+  const [loading, setLoading] = React.useState(false);
+
+  React.useEffect(() => {
+    if (open) {
+      setTargetId("");
+      setLoading(false);
+    }
+  }, [open]);
+
+  const submit = async () => {
+    if (!targetId) {
+      toast.error("请选择接收数据的用户");
+      return;
+    }
+    setLoading(true);
+    try {
+      await api(`/api/admin/users/${sourceUser!.id}/transfer-and-delete`, {
+        method: "POST",
+        json: { target_user_id: Number(targetId) },
+      });
+      toast.success(`已将 ${sourceUser!.username} 的数据转移并删除用户`);
+      onSuccess();
+      onOpenChange(false);
+    } catch (err) {
+      toast.error((err as Error).message || "操作失败");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>转移数据并删除用户</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800/50 dark:bg-amber-950/30 dark:text-amber-300">
+            此操作将把用户 <strong>{sourceUser?.name || sourceUser?.username}</strong> 的所有关联数据（资源、放映、模板、任务等）转移给另一个用户，然后删除该账号。下载记录将保留但不再关联该用户。
+          </div>
+          <div className="space-y-1.5">
+            <Label>接收数据的用户</Label>
+            <Select value={targetId} onValueChange={setTargetId}>
+              <SelectTrigger>
+                <SelectValue placeholder="请选择…" />
+              </SelectTrigger>
+              <SelectContent>
+                {allUsers.map((u) => (
+                  <SelectItem key={u.id} value={String(u.id)}>
+                    {u.name || u.username}（{u.username}）
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>
+            取消
+          </Button>
+          <Button variant="destructive" onClick={submit} disabled={loading || !targetId}>
+            {loading && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+            确认转移并删除
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

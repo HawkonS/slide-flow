@@ -93,6 +93,10 @@ class UserDeletePayload(BaseModel):
     user_ids: list[int]
 
 
+class UserTransferDeletePayload(BaseModel):
+    target_user_id: int
+
+
 class TaskDeletePayload(BaseModel):
     task_ids: list[int]
 

@@ -307,7 +307,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS download_records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 track_code TEXT NOT NULL UNIQUE,
-                user_id INTEGER NOT NULL REFERENCES users(id),
+                user_id INTEGER REFERENCES users(id),
                 show_id INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
                 download_type TEXT NOT NULL CHECK(download_type IN ('pdf', 'pptx_images', 'pptx', 'pptx_fonts', 'zip', 'zip_fonts')),
                 client_ip TEXT NOT NULL DEFAULT '',
@@ -537,6 +537,28 @@ def ensure_schema(db: sqlite3.Connection) -> None:
                 "UPDATE links SET sort_order = ? WHERE id = ?",
                 (index * 10, link_row["id"]),
             )
+
+    # download_records 表：将 user_id 改为可空（允许删除用户时保留下载记录）
+    dr_columns = {row["name"]: row for row in db.execute("PRAGMA table_info(download_records)").fetchall()}
+    if "user_id" in dr_columns and dr_columns["user_id"]["notnull"]:
+        db.executescript("""
+            PRAGMA foreign_keys = OFF;
+            CREATE TABLE download_records_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                track_code TEXT NOT NULL UNIQUE,
+                user_id INTEGER REFERENCES users(id),
+                show_id INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
+                download_type TEXT NOT NULL CHECK(download_type IN ('pdf', 'pptx_images', 'pptx', 'pptx_fonts', 'zip', 'zip_fonts')),
+                client_ip TEXT NOT NULL DEFAULT '',
+                downloaded_at TEXT NOT NULL
+            );
+            INSERT INTO download_records_new SELECT * FROM download_records;
+            DROP TABLE download_records;
+            ALTER TABLE download_records_new RENAME TO download_records;
+            CREATE INDEX IF NOT EXISTS idx_download_records_track_code ON download_records(track_code);
+            CREATE INDEX IF NOT EXISTS idx_download_records_downloaded_at ON download_records(downloaded_at);
+            PRAGMA foreign_keys = ON;
+        """)
 
 
 def _scope_user_ids(db: sqlite3.Connection, table: str, id_column: str, item_id: int) -> list[int]:

@@ -211,6 +211,10 @@ class UserDeletePayload(BaseModel):
     user_ids: list[int]
 
 
+class UserTransferDeletePayload(BaseModel):
+    target_user_id: int
+
+
 class TaskDeletePayload(BaseModel):
     task_ids: list[int]
 
@@ -1568,8 +1572,11 @@ def delete_user(
     target = db.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
     if target is not None and target["role"] == ROLE_SUPER_ADMIN and not is_super_admin(admin):
         raise HTTPException(403, "只有超级管理员能删除超级管理员账号")
-    db.execute("DELETE FROM users WHERE id = ?", (user_id,))
-    db.commit()
+    try:
+        db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        db.commit()
+    except sqlite3.IntegrityError:
+        raise HTTPException(400, "该用户关联了资源、放映、下载记录或任务等数据，无法直接删除。请先转移或删除相关数据后再试。") from None
     return {"ok": True}
 def bulk_delete_users(
     payload: UserDeletePayload,
@@ -1590,6 +1597,43 @@ def bulk_delete_users(
     db.execute(f"DELETE FROM users WHERE id IN ({placeholders})", user_ids)
     db.commit()
     return {"ok": True, "deleted": len(deleted_ids)}
+
+
+@app.post("/api/admin/users/{user_id}/transfer-and-delete")
+def transfer_and_delete_user(
+    user_id: int,
+    payload: UserTransferDeletePayload,
+    admin: sqlite3.Row = Depends(require_admin),
+    db: sqlite3.Connection = Depends(db_dep),
+) -> dict[str, Any]:
+    """将用户关联数据转移给目标用户后删除该用户"""
+    if user_id == int(admin["id"]):
+        raise HTTPException(400, "不能删除当前登录用户")
+    if user_id == payload.target_user_id:
+        raise HTTPException(400, "不能将数据转移给自己")
+    source = db.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+    if source is None:
+        raise HTTPException(404, "源用户不存在")
+    if source["role"] == ROLE_SUPER_ADMIN and not is_super_admin(admin):
+        raise HTTPException(403, "只有超级管理员能删除超级管理员账号")
+    target = db.execute("SELECT id FROM users WHERE id = ?", (payload.target_user_id,)).fetchone()
+    if target is None:
+        raise HTTPException(404, "目标用户不存在")
+    tid = payload.target_user_id
+    for table, col in [
+        ("resources", "owner_id"), ("resources", "updated_by"),
+        ("resource_versions", "created_by"), ("templates", "owner_id"),
+        ("fonts", "uploaded_by"), ("shows", "owner_id"), ("shows", "updated_by"),
+        ("links", "owner_id"), ("tasks", "owner_id"),
+    ]:
+        db.execute(f"UPDATE {table} SET {col} = ? WHERE {col} = ?", (tid, user_id))
+    db.execute("UPDATE download_records SET user_id = NULL WHERE user_id = ?", (user_id,))
+    try:
+        db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        db.commit()
+    except sqlite3.IntegrityError:
+        raise HTTPException(400, "数据转移后仍无法删除用户，请联系技术支持。") from None
+    return {"ok": True}
 
 
 @app.delete("/api/admin/templates/{template_id}")
