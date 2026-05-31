@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
@@ -32,6 +32,7 @@ export function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
   const [feishuConfig, setFeishuConfig] = useState<FeishuConfig | null>(null);
   const [feishuLogging, setFeishuLogging] = useState(false);
+  const feishuCodeHandled = useRef(false);
 
   const form = useForm<LoginForm>({
     resolver: zodResolver(loginSchema),
@@ -52,9 +53,14 @@ export function LoginPage() {
 
   // 处理飞书回调：URL 中包含 code 参数
   useEffect(() => {
+    // 防止 React StrictMode 下 useEffect 双重执行导致授权码被重复使用
+    if (feishuCodeHandled.current) return;
+
     const params = new URLSearchParams(location.search);
     const code = params.get("code");
     if (!code) return;
+
+    feishuCodeHandled.current = true;
 
     // 清除 URL 中的 code 和 state 参数
     const cleanUrl = window.location.pathname;
