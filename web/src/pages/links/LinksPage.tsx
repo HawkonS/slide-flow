@@ -11,6 +11,7 @@ import { LinkEditDialog } from "@/components/link/LinkEditDialog";
 import { fetchLinks, deleteLink } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { Link } from "@/lib/types";
+import { useResponsiveGrid } from "@/lib/use-grid-layout";
 
 export function LinksPage() {
   const { user } = useAuth();
@@ -59,6 +60,10 @@ export function LinksPage() {
       });
   };
 
+  // 列数由共享 hook 按容器宽度连续计算
+  const contentRef = React.useRef<HTMLDivElement>(null);
+  const { gridStyle } = useResponsiveGrid(contentRef);
+
   return (
     <div className="flex h-full flex-col gap-4">
       {/* 页头 */}
@@ -99,7 +104,7 @@ export function LinksPage() {
       </div>
 
       {/* 内容区 */}
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div ref={contentRef} className="min-h-0 flex-1 overflow-auto">
         {isLoading ? (
           <div className="flex items-center justify-center py-16 text-muted-foreground">
             <Loader2 className="mr-2 h-5 w-5 animate-spin" /> 加载中…
@@ -113,7 +118,7 @@ export function LinksPage() {
             {search ? "没有匹配的链接" : "暂无链接"}
           </div>
         ) : (
-          <div className="grid grid-cols-2 content-start gap-x-4 gap-y-5 min-[600px]:grid-cols-3 md:grid-cols-4 md:gap-x-5 md:gap-y-6 min-[1000px]:grid-cols-5 min-[1200px]:grid-cols-6 xl:gap-x-6 xl:gap-y-7">
+          <div className="grid content-start" style={gridStyle}>
             {filtered.map((l) => (
               <LinkCard
                 key={l.id}

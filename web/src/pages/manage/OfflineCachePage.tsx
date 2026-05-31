@@ -37,6 +37,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { api } from "@/lib/api";
+import { useResponsiveGrid } from "@/lib/use-grid-layout";
 import { cn } from "@/lib/utils";
 import {
   type OfflineManifest,
@@ -728,30 +729,8 @@ export default function OfflineCachePage() {
 
   // Pagination: dynamic grid sizing
   const contentRef = React.useRef<HTMLDivElement>(null);
-  const [grid, setGrid] = useState({ cols: 5, rows: 3 });
-  useEffect(() => {
-    const el = contentRef.current;
-    if (!el) return;
-    const compute = () => {
-      const W = el.clientWidth;
-      const H = el.clientHeight;
-      if (!W || !H) return;
-      const cols = Math.max(2, Math.min(6, Math.floor(W / 200)));
-      const gapX = W >= 1280 ? 24 : W >= 1024 ? 20 : 16;
-      const gapY = W >= 1280 ? 28 : W >= 1024 ? 24 : 20;
-      const titleH = 88;
-      const cardW = (W - gapX * (cols - 1)) / cols;
-      const cardH = (cardW * 9) / 16 + titleH;
-      const rows = Math.max(2, Math.min(4, Math.floor((H + gapY) / (cardH + gapY))));
-      setGrid((prev) => (prev.cols === cols && prev.rows === rows ? prev : { cols, rows }));
-    };
-    compute();
-    const ro = new ResizeObserver(compute);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
+  const { pageSize, gridStyle } = useResponsiveGrid(contentRef, { titleHeight: 88 });
 
-  const pageSize = Math.max(6, grid.cols * grid.rows);
   const [page, setPage] = useState(1);
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   useEffect(() => {
@@ -974,7 +953,7 @@ export default function OfflineCachePage() {
             {shows.length === 0 ? "暂无缓存仓库" : "没有匹配的缓存项"}
           </div>
         ) : (
-          <div className="grid grid-cols-2 content-start gap-x-4 gap-y-5 min-[600px]:grid-cols-3 md:grid-cols-4 md:gap-x-5 md:gap-y-6 min-[1000px]:grid-cols-5 min-[1200px]:grid-cols-6 xl:gap-x-6 xl:gap-y-7">
+          <div className="grid content-start" style={gridStyle}>
             {pageItems.map(([showId, entry]) => (
               <CacheCard
                 key={showId}

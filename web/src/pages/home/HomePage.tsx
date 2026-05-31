@@ -17,6 +17,7 @@ import { StatCard } from "@/components/home/StatCard";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import type { Resource, Show } from "@/lib/types";
+import { useResponsiveGrid } from "@/lib/use-grid-layout";
 
 interface HomeStats {
   resources: { total: number; mine: number };
@@ -53,8 +54,12 @@ export function HomePage() {
 
   const greeting = user?.name || user?.username || "你好";
 
+  // 列数由共享 hook 按页面宽度连续计算（首页不分页，只取 gridStyle）
+  const contentRef = React.useRef<HTMLDivElement>(null);
+  const { gridStyle } = useResponsiveGrid(contentRef);
+
   return (
-    <div className="flex h-full flex-col gap-4 overflow-auto pb-4">
+    <div ref={contentRef} className="flex h-full flex-col gap-4 overflow-auto pb-4">
       {/* 欢迎语 */}
       <header className="flex items-center gap-4">
         <h1 className="text-xl font-semibold tracking-tight">{greeting}，欢迎回来</h1>
@@ -123,7 +128,7 @@ export function HomePage() {
         ) : pinnedShows.length === 0 ? (
           <EmptyPinned hint="在放映仓库点击卡片右上角 ⋯ 选择「置顶首页」" />
         ) : (
-          <div className="grid grid-cols-2 content-start gap-x-4 gap-y-5 min-[600px]:grid-cols-3 md:grid-cols-4 min-[1000px]:grid-cols-5 min-[1200px]:grid-cols-6">
+          <div className="grid content-start" style={gridStyle}>
             {pinnedShows.map((s) => (
               <ShowCard key={s.id} show={s} onOpen={(x) => setDetailShow(x)} />
             ))}
@@ -149,7 +154,7 @@ export function HomePage() {
         ) : pinnedResources.length === 0 ? (
           <EmptyPinned hint="在资源仓库点击卡片右上角 ⋯ 选择「置顶首页」" />
         ) : (
-          <div className="grid grid-cols-2 content-start gap-x-4 gap-y-5 min-[600px]:grid-cols-3 md:grid-cols-4 min-[1000px]:grid-cols-5 min-[1200px]:grid-cols-6">
+          <div className="grid content-start" style={gridStyle}>
             {pinnedResources.map((r) => (
               <ResourceCard key={r.id} resource={r} onOpen={(x) => setDetailResource(x)} />
             ))}

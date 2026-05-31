@@ -24,6 +24,7 @@ import {
   LocalFontInfo,
 } from "@/lib/fonts";
 import { TemplateItem } from "@/lib/types";
+import { useResponsiveGrid } from "@/lib/use-grid-layout";
 import { cn } from "@/lib/utils";
 
 interface TemplateListResponse {
@@ -37,6 +38,10 @@ export function TemplatesPage() {
   });
 
   const [detail, setDetail] = React.useState<TemplateItem | null>(null);
+
+  // 列数由共享 hook 按容器宽度连续计算（所有系列共享同一个外层宽度）
+  const contentRef = React.useRef<HTMLDivElement>(null);
+  const { gridStyle } = useResponsiveGrid(contentRef);
 
   const templates = data?.templates ?? [];
 
@@ -81,7 +86,7 @@ export function TemplatesPage() {
           暂无模板
         </div>
       ) : (
-        <div className="flex flex-col gap-10 pb-4">
+        <div ref={contentRef} className="flex flex-col gap-10 pb-4">
           {grouped.map(({ subject, seriesList }) => {
             const subjectCount = seriesList.reduce((acc, s) => acc + s.items.length, 0);
             return (
@@ -100,7 +105,7 @@ export function TemplatesPage() {
                         <h3 className="text-sm font-medium text-foreground/80">{series}</h3>
                         <span className="text-xs text-muted-foreground">· {items.length}</span>
                       </div>
-                      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
+                      <div className="grid" style={gridStyle}>
                         {items.map((t) => (
                           <TemplateCard key={t.id} template={t} onClick={() => setDetail(t)} />
                         ))}

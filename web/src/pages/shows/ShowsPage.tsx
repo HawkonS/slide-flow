@@ -14,6 +14,7 @@ import { toast } from "sonner";
 import { DEFAULT_RESOURCE_SUBJECT } from "@/lib/constants";
 import { sortListItems } from "@/lib/sort";
 import { parseTags, Show } from "@/lib/types";
+import { useResponsiveGrid } from "@/lib/use-grid-layout";
 import { useShowFilters } from "@/stores/show-filters";
 
 interface ShowListResponse {
@@ -86,33 +87,9 @@ export function ShowsPage() {
     return sortListItems(list, filters.sort);
   }, [shows, filters, user]);
 
-  // 分页：根据内容区尺寸动态计算每页行数，让卡片等比放大；能放下 4 行就显示 4 行
+  // 分页：列数与每页大小由共享 hook 按容器宽度连续计算，pageSize = cols × rows
   const contentRef = React.useRef<HTMLDivElement>(null);
-  const [grid, setGrid] = React.useState({ cols: 5, rows: 3 });
-  React.useEffect(() => {
-    const el = contentRef.current;
-    if (!el) return;
-    const compute = () => {
-      const W = el.clientWidth;
-      const H = el.clientHeight;
-      if (!W || !H) return;
-      // 根据容器宽度自动计算列数：每 200px 增加一列，最少 2 列，最多 6 列
-      const cols = Math.max(2, Math.min(6, Math.floor(W / 200)));
-      // 与 gap-x/gap-y 响应式保持一致：xl:gap-x-6/gap-y-7，lg:gap-x-5/gap-y-6，默认 gap-x-4/gap-y-5
-      const gapX = W >= 1280 ? 24 : W >= 1024 ? 20 : 16;
-      const gapY = W >= 1280 ? 28 : W >= 1024 ? 24 : 20;
-      const titleH = 44; // 卡片标题区约 44px（px-3 py-2.5 + 单行 13px 文本）
-      const cardW = (W - gapX * (cols - 1)) / cols;
-      const cardH = (cardW * 9) / 16 + titleH;
-      const rows = Math.max(2, Math.min(4, Math.floor((H + gapY) / (cardH + gapY))));
-      setGrid((prev) => (prev.cols === cols && prev.rows === rows ? prev : { cols, rows }));
-    };
-    compute();
-    const ro = new ResizeObserver(compute);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-  const pageSize = Math.max(6, grid.cols * grid.rows);
+  const { pageSize, gridStyle } = useResponsiveGrid(contentRef);
   const [page, setPage] = React.useState(1);
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   React.useEffect(() => {
@@ -169,7 +146,7 @@ export function ShowsPage() {
         }
       />
 
-      {/* 内容区：占剩余空间，内部根据可视高度动态行数；卡片等比放大 */}
+      {/* 内容区：flex-1 撑满剩余空间，grid 行均匀分布 */}
       <div ref={contentRef} className="min-h-0 flex-1 overflow-auto">
         {isLoading ? (
           <div className="flex items-center justify-center py-16 text-muted-foreground">
@@ -184,7 +161,7 @@ export function ShowsPage() {
             没有匹配的放映
           </div>
         ) : (
-          <div className="grid grid-cols-2 content-start gap-x-4 gap-y-5 min-[600px]:grid-cols-3 md:grid-cols-4 md:gap-x-5 md:gap-y-6 min-[1000px]:grid-cols-5 min-[1200px]:grid-cols-6 xl:gap-x-6 xl:gap-y-7">
+          <div className="grid content-start" style={gridStyle}>
             {pageItems.map((s) => (
               <ShowCard
                 key={s.id}
