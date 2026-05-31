@@ -54,15 +54,10 @@ export function HomePage() {
   const greeting = user?.name || user?.username || "你好";
 
   return (
-    <div className="flex h-full flex-col gap-6 overflow-auto pb-6">
+    <div className="flex h-full flex-col gap-4 overflow-auto pb-4">
       {/* 欢迎语 */}
-      <header className="flex items-end justify-between gap-4">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">{greeting}，欢迎回来</h1>
-          <p className="text-xs text-muted-foreground">
-            这里聚合了你的置顶内容，方便随时打开。
-          </p>
-        </div>
+      <header className="flex items-center gap-4">
+        <h1 className="text-xl font-semibold tracking-tight">{greeting}，欢迎回来</h1>
       </header>
 
       {/* 离线缓存维护提示 */}
@@ -128,7 +123,7 @@ export function HomePage() {
         ) : pinnedShows.length === 0 ? (
           <EmptyPinned hint="在放映仓库点击卡片右上角 ⋯ 选择「置顶首页」" />
         ) : (
-          <div className="grid grid-cols-2 content-start gap-x-4 gap-y-5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+          <div className="grid grid-cols-2 content-start gap-x-4 gap-y-5 min-[600px]:grid-cols-3 md:grid-cols-4 min-[1000px]:grid-cols-5 min-[1200px]:grid-cols-6">
             {pinnedShows.map((s) => (
               <ShowCard key={s.id} show={s} onOpen={(x) => setDetailShow(x)} />
             ))}
@@ -154,7 +149,7 @@ export function HomePage() {
         ) : pinnedResources.length === 0 ? (
           <EmptyPinned hint="在资源仓库点击卡片右上角 ⋯ 选择「置顶首页」" />
         ) : (
-          <div className="grid grid-cols-2 content-start gap-x-4 gap-y-5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+          <div className="grid grid-cols-2 content-start gap-x-4 gap-y-5 min-[600px]:grid-cols-3 md:grid-cols-4 min-[1000px]:grid-cols-5 min-[1200px]:grid-cols-6">
             {pinnedResources.map((r) => (
               <ResourceCard key={r.id} resource={r} onOpen={(x) => setDetailResource(x)} />
             ))}

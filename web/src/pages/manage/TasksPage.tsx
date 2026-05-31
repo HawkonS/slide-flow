@@ -699,30 +699,21 @@ export default function TasksPage() {
   const showOwner = canManage;
 
   return (
-    <div className="flex h-full flex-col gap-6">
+    <div className="flex h-full flex-col gap-4">
       {/* 页头 */}
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-semibold tracking-tight">任务管理</h1>
-            {canManage ? (
-              <Badge variant="blue" className="gap-1 text-[11px]">
-                <ShieldCheck className="h-3 w-3" />
-                可维护
-              </Badge>
-            ) : (
-              <Badge variant="outline" className="gap-1 text-[11px] text-muted-foreground">
-                <Lock className="h-3 w-3" />
-                只读
-              </Badge>
-            )}
-          </div>
-          <p className="text-xs text-muted-foreground">
-            {canManage
-              ? "查看并管理拆分导入等异步任务，可取消进行中的任务。"
-              : "查看拆分导入等异步任务的执行状态，仅系统管理员可取消任务。"}
-          </p>
-        </div>
+      <header className="flex items-center gap-3">
+        <h1 className="text-xl font-semibold tracking-tight">任务管理</h1>
+        {canManage ? (
+          <Badge variant="blue" className="gap-1 text-[11px]">
+            <ShieldCheck className="h-3 w-3" />
+            可维护
+          </Badge>
+        ) : (
+          <Badge variant="outline" className="gap-1 text-[11px] text-muted-foreground">
+            <Lock className="h-3 w-3" />
+            只读
+          </Badge>
+        )}
       </header>
 
       {/* 状态筛选 */}

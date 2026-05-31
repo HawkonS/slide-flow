@@ -89,13 +89,10 @@ export function AdminDownloadsPage() {
   const pageStart = (page - 1) * pageSize;
 
   return (
-    <div className="flex h-full flex-col gap-8">
+    <div className="flex h-full flex-col gap-4">
       {/* 页头 */}
-      <header className="flex items-end justify-between gap-4">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">下载记录</h1>
-          <p className="text-xs text-muted-foreground">查询放映组下载追踪记录，通过追踪码反查下载详情。</p>
-        </div>
+      <header className="flex items-center gap-4">
+        <h1 className="text-xl font-semibold tracking-tight">下载记录</h1>
       </header>
 
       {/* 搜索栏 */}

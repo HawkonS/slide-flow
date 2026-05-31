@@ -29,7 +29,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { FilterGroupChip, SubjectFilterChip, TagFilterChip, type ChipOption, type FilterGroup } from "@/components/resource/filter-chips";
 import {
   Table,
   TableBody,
@@ -62,168 +62,6 @@ interface ResourceListResponse {
 interface Option {
   value: string;
   label: string;
-}
-
-/* ---------- FilterChip ---------- */
-
-function FilterChip({
-  label,
-  options,
-  value,
-  onChange,
-  baseValue,
-}: {
-  label: string;
-  options: readonly Option[];
-  value: string;
-  onChange: (v: string) => void;
-  /** 用于判定 "未筛选" 的基准值，默认取 options[0].value */
-  baseValue?: string;
-}) {
-  const current = options.find((o) => o.value === value) || options[0];
-  const base = baseValue ?? options[0]?.value;
-  const dirty = current?.value !== base;
-  return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className={cn(
-            "group inline-flex h-8 items-center gap-1.5 rounded-full border bg-background px-3 text-sm transition",
-            "hover:border-primary/40 hover:bg-primary/5",
-            dirty && "border-primary/30 bg-primary/5 text-primary",
-          )}
-        >
-          <span className={cn("text-muted-foreground", dirty && "text-primary/80")}>{label}</span>
-          <span className="font-medium">{current?.label ?? ""}</span>
-          <ChevronDown className={cn("h-3.5 w-3.5 opacity-60", dirty && "opacity-80")} />
-        </button>
-      </PopoverTrigger>
-      <PopoverContent className="w-48 p-1" align="start">
-        <div className="max-h-72 overflow-auto">
-          {options.map((opt) => {
-            const active = opt.value === value;
-            return (
-              <button
-                key={opt.value}
-                type="button"
-                onClick={() => onChange(opt.value)}
-                className={cn(
-                  "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm transition hover:bg-accent",
-                  active && "bg-primary/10 text-primary",
-                )}
-              >
-                <span className="truncate">{opt.label}</span>
-                {active && <Check className="h-3.5 w-3.5" />}
-              </button>
-            );
-          })}
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
-}
-
-function TagFilterChip({
-  label,
-  emptyText = "暂无数据",
-  tags,
-  selected,
-  mode,
-  onToggle,
-  onClear,
-  onChangeMode,
-}: {
-  label: string;
-  emptyText?: string;
-  tags: string[];
-  selected: string[];
-  mode: "any" | "all";
-  onToggle: (t: string) => void;
-  onClear: () => void;
-  onChangeMode: (v: "any" | "all") => void;
-}) {
-  const dirty = selected.length > 0;
-  const modeLabel = mode === "all" ? "与" : "或";
-  const summary =
-    selected.length === 0
-      ? "全部"
-      : selected.length === 1
-        ? selected[0]
-        : `${modeLabel} · 已选 ${selected.length} 项`;
-  return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className={cn(
-            "inline-flex h-8 items-center gap-1.5 rounded-full border bg-background px-3 text-sm transition",
-            "hover:border-primary/40 hover:bg-primary/5",
-            dirty && "border-primary/40 bg-primary/5 text-primary",
-          )}
-        >
-          <span className={cn("text-muted-foreground", dirty && "text-primary/80")}>{label}</span>
-          <span className="font-medium">{summary}</span>
-          <ChevronDown className={cn("h-3.5 w-3.5 opacity-60", dirty && "opacity-80")} />
-        </button>
-      </PopoverTrigger>
-      <PopoverContent className="w-60 p-1" align="start">
-        <div className="mb-1 border-b px-1 pb-2 pt-1">
-          <div className="mb-1 text-xs text-muted-foreground">匹配方式</div>
-          <div className="grid grid-cols-2 gap-1">
-            {([
-              { v: "all", label: "与（全部满足）" },
-              { v: "any", label: "或（任一满足）" },
-            ] as const).map((it) => {
-              const active = it.v === mode;
-              return (
-                <button
-                  key={it.v}
-                  type="button"
-                  onClick={() => onChangeMode(it.v)}
-                  className={cn(
-                    "h-7 rounded-md border text-xs transition",
-                    active
-                      ? "border-primary bg-primary/10 text-primary"
-                      : "bg-background hover:border-primary/40 hover:bg-primary/5",
-                  )}
-                >
-                  {it.label}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-        <div className="max-h-72 overflow-auto">
-          {tags.length === 0 ? (
-            <div className="px-2 py-4 text-center text-sm text-muted-foreground">{emptyText}</div>
-          ) : (
-            tags.map((tag) => {
-              const checked = selected.includes(tag);
-              return (
-                <button
-                  key={tag}
-                  type="button"
-                  onClick={() => onToggle(tag)}
-                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
-                >
-                  <Checkbox checked={checked} className="pointer-events-none" />
-                  <span className="flex-1 truncate text-left">{tag}</span>
-                </button>
-              );
-            })
-          )}
-        </div>
-        {selected.length > 0 && (
-          <div className="flex justify-end border-t pt-1">
-            <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={onClear}>
-              清空
-            </Button>
-          </div>
-        )}
-      </PopoverContent>
-    </Popover>
-  );
 }
 
 /* ---------- Main component ---------- */
@@ -318,12 +156,16 @@ export default function ResourceManagePage() {
     });
   }, [manageableResources, filters, user?.id]);
 
+  const filterDirtyCount = [
+    filters.status !== "all",
+    filters.secrecy !== "all",
+    filters.ownership !== "all",
+  ].filter(Boolean).length;
+
   const isDirty =
     filters.query.trim() !== "" ||
-    filters.ownership !== "all" ||
-    filters.status !== "all" ||
+    filterDirtyCount > 0 ||
     filters.subject !== "all" ||
-    filters.secrecy !== "all" ||
     filters.tags.length > 0;
 
   /* ---- Preview ---- */
@@ -337,6 +179,33 @@ export default function ResourceManagePage() {
       { value: "managed", label: "我管理的" },
     ],
     [],
+  );
+
+  const filterGroups = React.useMemo<FilterGroup[]>(
+    () => [
+      {
+        key: "status",
+        label: "状态",
+        options: RESOURCE_STATUS_OPTIONS,
+        value: filters.status,
+        onChange: (v) => filters.setStatus(v as typeof filters.status),
+      },
+      {
+        key: "secrecy",
+        label: "密级",
+        options: RESOURCE_SECRECY_OPTIONS,
+        value: filters.secrecy,
+        onChange: (v) => filters.setSecrecy(v as typeof filters.secrecy),
+      },
+      {
+        key: "ownership",
+        label: "权限",
+        options: OWNERSHIP_OPTIONS,
+        value: filters.ownership,
+        onChange: (v) => filters.setOwnership(v as typeof filters.ownership),
+      },
+    ],
+    [filters.status, filters.secrecy, filters.ownership, OWNERSHIP_OPTIONS, filters],
   );
 
   /* ---- Selection ---- */
@@ -445,64 +314,52 @@ export default function ResourceManagePage() {
   }
 
   return (
-    <div className="flex h-full flex-col gap-8">
+    <div className="flex h-full flex-col gap-4">
       {/* 页头 */}
-      <header className="flex items-end justify-between gap-4">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">资源管理</h1>
-          <p className="text-xs text-muted-foreground">
-            批量管理您有管理权限的资源，支持筛选、批量编辑与删除。
-          </p>
+      <header className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-1.5">
+          <h1 className="text-xl font-semibold tracking-tight">资源管理</h1>
+          <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
+            {filtered.length === manageableResources.length
+              ? `共 ${manageableResources.length} 条`
+              : `筛选后 ${filtered.length} / ${manageableResources.length} 条`}
+          </span>
         </div>
-        <span className="inline-flex h-6 items-center rounded-full bg-muted px-2.5 text-xs text-muted-foreground">
-          {filtered.length === manageableResources.length
-            ? `共 ${manageableResources.length} 条`
-            : `筛选后 ${filtered.length} / ${manageableResources.length} 条`}
-        </span>
       </header>
 
       {/* 筛选栏 */}
       <div className="flex flex-wrap items-center gap-2">
-        <div className="relative">
+        {/* 搜索 */}
+        <div className="relative min-w-0 flex-1 sm:flex-none">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <input
             value={filters.query}
             onChange={(e) => filters.setQuery(e.target.value)}
             placeholder="搜索名称、主体、所有者、ID"
             className={cn(
-              "h-8 w-56 rounded-full border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition",
+              "h-8 w-full sm:w-56 rounded-full border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition",
               "placeholder:text-muted-foreground",
               "focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
               filters.query.trim() !== "" && "border-primary/40 bg-primary/5",
             )}
           />
         </div>
-        <FilterChip
-          label="状态"
-          options={RESOURCE_STATUS_OPTIONS}
-          value={filters.status}
-          onChange={(v) => filters.setStatus(v as typeof filters.status)}
-          baseValue="all"
+
+        {/* 筛选（分组下拉） */}
+        <FilterGroupChip
+          groups={filterGroups}
+          dirtyCount={filterDirtyCount}
+          onReset={() => filters.reset()}
         />
-        <FilterChip
-          label="主体"
+
+        {/* 主体（独立 chip，可扩展） */}
+        <SubjectFilterChip
           options={subjectOptions}
           value={filters.subject}
           onChange={(v) => filters.setSubject(v)}
-          baseValue="all"
         />
-        <FilterChip
-          label="密级"
-          options={RESOURCE_SECRECY_OPTIONS}
-          value={filters.secrecy}
-          onChange={(v) => filters.setSecrecy(v as typeof filters.secrecy)}
-        />
-        <FilterChip
-          label="权限"
-          options={OWNERSHIP_OPTIONS}
-          value={filters.ownership}
-          onChange={(v) => filters.setOwnership(v as typeof filters.ownership)}
-        />
+
+        {/* 标签（独立 chip） */}
         <TagFilterChip
           label="标签"
           emptyText="暂无标签"
@@ -514,6 +371,7 @@ export default function ResourceManagePage() {
           onChangeMode={(v) => filters.setTagsMode(v)}
         />
 
+        {/* 重置 */}
         {isDirty && (
           <Button
             variant="ghost"
@@ -522,11 +380,11 @@ export default function ResourceManagePage() {
             className="h-8 gap-1 rounded-full text-xs text-muted-foreground hover:text-primary"
           >
             <RotateCcw className="h-3.5 w-3.5" />
-            重置筛选
+            重置
           </Button>
         )}
 
-        {/* 批量操作按钮 - 常驻显示 */}
+        {/* 批量操作按钮 */}
         <div className="ml-auto flex items-center gap-2">
           {selectedIds.size > 0 && (
             <span className="text-xs text-muted-foreground">
@@ -574,7 +432,7 @@ export default function ResourceManagePage() {
               : "没有匹配的资源"}
           </div>
         ) : (
-          <div className="rounded-md border bg-card">
+          <div className="overflow-hidden rounded-md border bg-card">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -818,3 +676,5 @@ export default function ResourceManagePage() {
     </div>
   );
 }
+
+/* ---------- filterGroups 配置 ---------- */

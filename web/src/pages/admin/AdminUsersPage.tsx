@@ -114,7 +114,7 @@ export function AdminUsersPage() {
       const H = el.clientHeight;
       if (!H) return;
       const headerH = 45;
-      const rowH = 57;
+      const rowH = 49;
       const rows = Math.max(5, Math.floor((H - headerH) / rowH));
       setPageSize((prev) => (prev === rows ? prev : rows));
     };
@@ -138,30 +138,29 @@ export function AdminUsersPage() {
   const someSelected = pageItemIds.some((id) => selected.has(id)) && !allSelected;
 
   return (
-    <div className="flex h-full flex-col gap-8">
+    <div className="flex h-full flex-col gap-4">
       {/* 页头 */}
       <header className="flex items-end justify-between gap-4">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">用户管理</h1>
-          <p className="text-xs text-muted-foreground">管理系统用户账号与角色权限。</p>
+        <div className="flex items-center gap-1.5">
+          <h1 className="text-xl font-semibold tracking-tight">用户管理</h1>
+          <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
+            {filtered.length === users.length
+              ? `共 ${users.length} 条`
+              : `筛选后 ${filtered.length} / ${users.length} 条`}
+          </span>
         </div>
-        <span className="inline-flex h-6 items-center rounded-full bg-muted px-2.5 text-xs text-muted-foreground">
-          {filtered.length === users.length
-            ? `共 ${users.length} 条`
-            : `筛选后 ${filtered.length} / ${users.length} 条`}
-        </span>
       </header>
 
       {/* 筛选行 */}
       <div className="flex flex-wrap items-center gap-2">
-        <div className="relative">
+        <div className="relative min-w-0 flex-1 sm:flex-none">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="搜索姓名、用户名、飞书 ID"
             className={cn(
-              "h-8 w-56 rounded-full border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition",
+              "h-8 w-full sm:w-56 rounded-full border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition",
               "placeholder:text-muted-foreground",
               "focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
               query.trim() !== "" && "border-primary/40 bg-primary/5",
@@ -187,15 +186,15 @@ export function AdminUsersPage() {
             <Trash2 className="h-3.5 w-3.5" />
             批量删除
           </Button>
+          <Button
+            size="sm"
+            className="h-8 gap-1.5 rounded-full px-3 text-sm"
+            onClick={() => setCreateOpen(true)}
+          >
+            <UserPlus className="h-3.5 w-3.5" />
+            新增用户
+          </Button>
         </div>
-        <Button
-          size="sm"
-          className="h-8 gap-1.5 rounded-full px-3 text-sm"
-          onClick={() => setCreateOpen(true)}
-        >
-          <UserPlus className="h-3.5 w-3.5" />
-          新增用户
-        </Button>
       </div>
 
       {/* 内容区 */}
@@ -213,7 +212,7 @@ export function AdminUsersPage() {
             暂无用户
           </div>
         ) : (
-          <div className="rounded-md border bg-card">
+          <div className="overflow-hidden rounded-md border bg-card">
             <Table>
               <TableHeader>
                 <TableRow>

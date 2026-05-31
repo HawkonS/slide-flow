@@ -60,20 +60,17 @@ export function LinksPage() {
   };
 
   return (
-    <div className="flex h-full flex-col gap-8">
+    <div className="flex h-full flex-col gap-4">
       {/* 页头 */}
-      <header className="flex items-end justify-between gap-4">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">链接仓库</h1>
-          <p className="text-xs text-muted-foreground">
-            管理和收藏常用链接，点击卡片即可在新标签页打开。
-          </p>
+      <header className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-1.5">
+          <h1 className="text-xl font-semibold tracking-tight">链接仓库</h1>
+          <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
+            {filtered.length === links.length
+              ? `共 ${links.length} 条`
+              : `筛选后 ${filtered.length} / ${links.length} 条`}
+          </span>
         </div>
-        <span className="inline-flex h-6 items-center rounded-full bg-muted px-2.5 text-xs text-muted-foreground">
-          {filtered.length === links.length
-            ? `共 ${links.length} 条`
-            : `筛选后 ${filtered.length} / ${links.length} 条`}
-        </span>
       </header>
 
       {/* 搜索 + 操作按钮 */}
@@ -116,7 +113,7 @@ export function LinksPage() {
             {search ? "没有匹配的链接" : "暂无链接"}
           </div>
         ) : (
-          <div className="grid grid-cols-2 content-start gap-x-4 gap-y-5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 lg:gap-x-5 lg:gap-y-6 xl:gap-x-6 xl:gap-y-7">
+          <div className="grid grid-cols-2 content-start gap-x-4 gap-y-5 min-[600px]:grid-cols-3 md:grid-cols-4 md:gap-x-5 md:gap-y-6 min-[1000px]:grid-cols-5 min-[1200px]:grid-cols-6 xl:gap-x-6 xl:gap-y-7">
             {filtered.map((l) => (
               <LinkCard
                 key={l.id}

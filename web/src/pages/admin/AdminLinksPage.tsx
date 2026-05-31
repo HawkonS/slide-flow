@@ -288,32 +288,29 @@ export function AdminLinksPage() {
   const someSelected = pageItemIds.some((id) => selected.has(id)) && !allSelected;
 
   return (
-    <div className="flex h-full flex-col gap-8">
+    <div className="flex h-full flex-col gap-4">
       {/* Header */}
-      <header className="flex items-end justify-between gap-4">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">链接管理</h1>
-          <p className="text-xs text-muted-foreground">
-            管理所有链接资源，配置演讲者默认快捷链接。
-          </p>
+      <header className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-1.5">
+          <h1 className="text-xl font-semibold tracking-tight">链接管理</h1>
+          <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
+            {filtered.length === links.length
+              ? `共 ${links.length} 条`
+              : `筛选后 ${filtered.length} / ${links.length} 条`}
+          </span>
         </div>
-        <span className="inline-flex h-6 items-center rounded-full bg-muted px-2.5 text-xs text-muted-foreground">
-          {filtered.length === links.length
-            ? `共 ${links.length} 条`
-            : `筛选后 ${filtered.length} / ${links.length} 条`}
-        </span>
       </header>
 
       {/* Filter row */}
       <div className="flex flex-wrap items-center gap-2">
-        <div className="relative">
+        <div className="relative min-w-0 flex-1 sm:flex-none">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="搜索链接名称、URL、所有者"
             className={cn(
-              "h-8 w-56 rounded-full border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition",
+              "h-8 w-full sm:w-56 rounded-full border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition",
               "placeholder:text-muted-foreground",
               "focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
               query.trim() !== "" && "border-primary/40 bg-primary/5",
@@ -390,7 +387,7 @@ export function AdminLinksPage() {
             暂无链接
           </div>
         ) : (
-          <div className="rounded-md border bg-card">
+          <div className="overflow-hidden rounded-md border bg-card">
             <Table>
               <TableHeader>
                 <TableRow>

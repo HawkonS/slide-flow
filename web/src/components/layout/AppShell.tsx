@@ -181,7 +181,7 @@ export function AppShell() {
         : "系统用户";
         
   return (
-    <div className="flex min-h-screen flex-col bg-background">
+    <div className="flex h-screen flex-col bg-background">
       {/* 顶部栏 */}
       <header className="flex h-14 shrink-0 items-center border-b bg-card px-4 md:px-6">
         {/* 移动端：汉堡按钮 */}
@@ -255,7 +255,7 @@ export function AppShell() {
         </aside>
 
         {/* 主内容 */}
-        <main className="flex-1 overflow-x-hidden overflow-y-auto px-4 py-5 md:px-6">
+        <main className="flex flex-1 flex-col min-h-0 overflow-x-hidden overflow-y-auto px-4 py-4 md:px-6 md:py-5">
           <Outlet />
         </main>
       </div>

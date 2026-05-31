@@ -11,17 +11,17 @@ import {
 import { cn } from "@/lib/utils";
 import { useResourceFilters } from "@/stores/resource-filters";
 import {
-  FilterChip,
-  RemarkFilterChip,
+  FilterGroupChip,
   SortFilterChip,
+  SubjectFilterChip,
   TagFilterChip,
   type ChipOption,
+  type FilterGroup,
 } from "./filter-chips";
 
 export interface ResourceFiltersProps {
   subjects: string[];
   tags: string[];
-  /** 右侧插槽：如"拆分导入 / 上传资源"按钮组 */
   actions?: React.ReactNode;
 }
 
@@ -34,65 +34,87 @@ export function ResourceFilters({ subjects, tags, actions }: ResourceFiltersProp
     return [{ value: "all", label: "全部" }, ...sorted.map((x) => ({ value: x, label: x }))];
   }, [subjects]);
 
+  const groups = React.useMemo<FilterGroup[]>(
+    () => [
+      {
+        key: "status",
+        label: "状态",
+        options: RESOURCE_STATUS_OPTIONS,
+        value: s.status,
+        onChange: (v) => s.setStatus(v as typeof s.status),
+      },
+      {
+        key: "secrecy",
+        label: "密级",
+        options: RESOURCE_SECRECY_OPTIONS,
+        value: s.secrecy,
+        onChange: (v) => s.setSecrecy(v as typeof s.secrecy),
+      },
+      {
+        key: "permission",
+        label: "权限",
+        options: RESOURCE_PERMISSION_OPTIONS,
+        value: s.permission,
+        onChange: (v) => s.setPermission(v as typeof s.permission),
+      },
+    ],
+    [s.status, s.secrecy, s.permission, s],
+  );
+
+  const filterDirtyCount = [
+    s.status !== "all",
+    s.secrecy !== "all",
+    s.permission !== "all",
+    s.remarkCommon !== "all",
+    s.remarkPersonal !== "all",
+  ].filter(Boolean).length;
+
   const isDirty =
     s.query.trim() !== "" ||
-    s.status !== "all" ||
+    filterDirtyCount > 0 ||
     s.subject !== "all" ||
-    s.secrecy !== "all" ||
-    s.permission !== "all" ||
-    s.remarkCommon !== "all" ||
-    s.remarkPersonal !== "all" ||
     s.tags.length > 0 ||
     s.sort !== DEFAULT_SORT_KEY;
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <div className="relative">
+      {/* 搜索 */}
+      <div className="relative min-w-0 flex-1 sm:flex-none">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
         <input
           value={s.query}
           onChange={(e) => s.setQuery(e.target.value)}
           placeholder="搜索标题、关键词"
           className={cn(
-            "h-8 w-56 rounded-full border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition",
+            "h-8 w-full sm:w-56 rounded-full border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition",
             "placeholder:text-muted-foreground",
             "focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
             s.query.trim() !== "" && "border-primary/40 bg-primary/5",
           )}
         />
       </div>
-      <FilterChip
-        label="状态"
-        options={RESOURCE_STATUS_OPTIONS}
-        value={s.status}
-        onChange={(v) => s.setStatus(v as typeof s.status)}
-        baseValue="all"
+
+      {/* 筛选（分组下拉） */}
+      <FilterGroupChip
+        groups={groups}
+        remark={{
+          common: s.remarkCommon,
+          personal: s.remarkPersonal,
+          onChangeCommon: (v) => s.setRemarkCommon(v),
+          onChangePersonal: (v) => s.setRemarkPersonal(v),
+        }}
+        dirtyCount={filterDirtyCount}
+        onReset={() => s.reset()}
       />
-      <FilterChip
-        label="主体"
+
+      {/* 主体（独立 chip，可扩展） */}
+      <SubjectFilterChip
         options={subjectOptions}
         value={s.subject}
         onChange={(v) => s.setSubject(v)}
-        baseValue="all"
       />
-      <FilterChip
-        label="密级"
-        options={RESOURCE_SECRECY_OPTIONS}
-        value={s.secrecy}
-        onChange={(v) => s.setSecrecy(v as typeof s.secrecy)}
-      />
-      <FilterChip
-        label="权限"
-        options={RESOURCE_PERMISSION_OPTIONS}
-        value={s.permission}
-        onChange={(v) => s.setPermission(v as typeof s.permission)}
-      />
-      <RemarkFilterChip
-        common={s.remarkCommon}
-        personal={s.remarkPersonal}
-        onChangeCommon={(v) => s.setRemarkCommon(v)}
-        onChangePersonal={(v) => s.setRemarkPersonal(v)}
-      />
+
+      {/* 标签（独立 chip） */}
       <TagFilterChip
         label="标签"
         emptyText="暂无标签"
@@ -103,12 +125,15 @@ export function ResourceFilters({ subjects, tags, actions }: ResourceFiltersProp
         onClear={() => s.setTags([])}
         onChangeMode={(v) => s.setTagsMode(v)}
       />
+
+      {/* 排序 */}
       <SortFilterChip
         value={s.sort}
         onChange={(v) => s.setSort(v)}
         baseValue={DEFAULT_SORT_KEY}
       />
 
+      {/* 重置 */}
       {isDirty && (
         <Button
           variant="ghost"
@@ -117,10 +142,11 @@ export function ResourceFilters({ subjects, tags, actions }: ResourceFiltersProp
           className="h-8 gap-1 rounded-full text-xs text-muted-foreground hover:text-primary"
         >
           <RotateCcw className="h-3.5 w-3.5" />
-          重置筛选
+          重置
         </Button>
       )}
 
+      {/* 操作按钮 */}
       {actions && <div className="ml-auto flex items-center gap-2">{actions}</div>}
     </div>
   );

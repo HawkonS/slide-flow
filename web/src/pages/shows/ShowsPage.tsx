@@ -96,8 +96,8 @@ export function ShowsPage() {
       const W = el.clientWidth;
       const H = el.clientHeight;
       if (!W || !H) return;
-      // 与 className 断点保持一致：sm:3 / md:4 / lg:5
-      const cols = W >= 1024 ? 5 : W >= 768 ? 4 : W >= 640 ? 3 : 2;
+      // 根据容器宽度自动计算列数：每 200px 增加一列，最少 2 列，最多 6 列
+      const cols = Math.max(2, Math.min(6, Math.floor(W / 200)));
       // 与 gap-x/gap-y 响应式保持一致：xl:gap-x-6/gap-y-7，lg:gap-x-5/gap-y-6，默认 gap-x-4/gap-y-5
       const gapX = W >= 1280 ? 24 : W >= 1024 ? 20 : 16;
       const gapY = W >= 1280 ? 28 : W >= 1024 ? 24 : 20;
@@ -139,20 +139,17 @@ export function ShowsPage() {
   };
 
   return (
-    <div className="flex h-full flex-col gap-8">
-      {/* 页头：与模板仓库一致的结构（左标题+描述，右总数徽章） */}
-      <header className="flex items-end justify-between gap-4">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">放映仓库</h1>
-          <p className="text-xs text-muted-foreground">
-            使用搜索与筛选快速定位放映组，点击卡片查看详情。
-          </p>
+    <div className="flex h-full flex-col gap-4">
+      {/* 页头 */}
+      <header className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-1.5">
+          <h1 className="text-xl font-semibold tracking-tight">放映仓库</h1>
+          <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
+            {filtered.length === shows.length
+              ? `共 ${shows.length} 条`
+              : `筛选后 ${filtered.length} / ${shows.length} 条`}
+          </span>
         </div>
-        <span className="inline-flex h-6 items-center rounded-full bg-muted px-2.5 text-xs text-muted-foreground">
-          {filtered.length === shows.length
-            ? `共 ${shows.length} 条`
-            : `筛选后 ${filtered.length} / ${shows.length} 条`}
-        </span>
       </header>
 
       <ShowFilters
@@ -187,7 +184,7 @@ export function ShowsPage() {
             没有匹配的放映
           </div>
         ) : (
-          <div className="grid grid-cols-2 content-start gap-x-4 gap-y-5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 lg:gap-x-5 lg:gap-y-6 xl:gap-x-6 xl:gap-y-7">
+          <div className="grid grid-cols-2 content-start gap-x-4 gap-y-5 min-[600px]:grid-cols-3 md:grid-cols-4 md:gap-x-5 md:gap-y-6 min-[1000px]:grid-cols-5 min-[1200px]:grid-cols-6 xl:gap-x-6 xl:gap-y-7">
             {pageItems.map((s) => (
               <ShowCard
                 key={s.id}

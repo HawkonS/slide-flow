@@ -58,17 +58,14 @@ export function TemplatesPage() {
   }, [templates]);
 
   return (
-    <div className="flex h-full flex-col gap-8">
-      <header className="flex items-end justify-between gap-4">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">模板仓库</h1>
-          <p className="text-xs text-muted-foreground">
-            按主体与系列分类，点击卡片查看详情并下载。
-          </p>
+    <div className="flex h-full flex-col gap-4">
+      <header className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-1.5">
+          <h1 className="text-xl font-semibold tracking-tight">模板仓库</h1>
+          <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
+            {templates.length} 个模板
+          </span>
         </div>
-        <span className="inline-flex h-6 items-center rounded-full bg-muted px-2.5 text-xs text-muted-foreground">
-          {templates.length} 个模板
-        </span>
       </header>
 
       {isLoading ? (

@@ -78,32 +78,29 @@ export function FontsPage() {
   };
 
   return (
-    <div className="flex h-full flex-col gap-8">
-      {/* 页头：与资源仓库/模板仓库一致（左标题+描述，右总数徽章） */}
-      <header className="flex items-end justify-between gap-4">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">字体仓库</h1>
-          <p className="text-xs text-muted-foreground">
-            字体由管理员统一上传维护，登录用户均可下载使用。
-          </p>
+    <div className="flex h-full flex-col gap-4">
+      {/* 页头 */}
+      <header className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-1.5">
+          <h1 className="text-xl font-semibold tracking-tight">字体仓库</h1>
+          <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
+            {filtered.length === fonts.length
+              ? `共 ${fonts.length} 条`
+              : `筛选后 ${filtered.length} / ${fonts.length} 条`}
+          </span>
         </div>
-        <span className="inline-flex h-6 items-center rounded-full bg-muted px-2.5 text-xs text-muted-foreground">
-          {filtered.length === fonts.length
-            ? `共 ${fonts.length} 条`
-            : `筛选后 ${filtered.length} / ${fonts.length} 条`}
-        </span>
       </header>
 
       {/* 筛选栏：仅保留搜索框，上传能力由管理员端承载 */}
       <div className="flex flex-wrap items-center gap-2">
-        <div className="relative">
+        <div className="relative min-w-0 flex-1 sm:flex-none">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="搜索字体、别名、文件名"
             className={cn(
-              "h-8 w-56 rounded-full border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition",
+              "h-8 w-full sm:w-56 rounded-full border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition",
               "placeholder:text-muted-foreground",
               "focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
               query.trim() !== "" && "border-primary/40 bg-primary/5",
@@ -127,7 +124,7 @@ export function FontsPage() {
             暂无字体
           </div>
         ) : (
-          <div className="rounded-md border bg-card">
+          <div className="overflow-hidden rounded-md border bg-card">
             <Table>
               <TableHeader>
                 <TableRow>

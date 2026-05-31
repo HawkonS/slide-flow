@@ -1,4 +1,4 @@
-import { Check, ChevronDown } from "lucide-react";
+import { Check, ChevronDown, RotateCcw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -424,6 +424,210 @@ export function SortFilterChip({
                 )}
               >
                 <span className="truncate">{it.label}</span>
+                {active && <Check className="h-3.5 w-3.5" />}
+              </button>
+            );
+          })}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/* ─────────────────────────────────────────────
+   筛选分组 chip：将多个单选维度合并为一个下拉面板
+   ───────────────────────────────────────────── */
+export interface FilterGroup {
+  key: string;
+  label: string;
+  options: readonly ChipOption[];
+  value: string;
+  onChange: (v: string) => void;
+}
+
+export interface FilterRemarkGroup {
+  common: RemarkState;
+  personal: RemarkState;
+  onChangeCommon: (v: RemarkState) => void;
+  onChangePersonal: (v: RemarkState) => void;
+}
+
+export function FilterGroupChip({
+  groups,
+  remark,
+  dirtyCount,
+  onReset,
+  compact = false,
+}: {
+  groups: FilterGroup[];
+  remark?: FilterRemarkGroup;
+  dirtyCount: number;
+  onReset: () => void;
+  compact?: boolean;
+}) {
+  const dirty = dirtyCount > 0;
+  const summary =
+    dirtyCount === 0
+      ? "全部"
+      : `${dirtyCount} 项已选`;
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            CHIP_TRIGGER_BASE,
+            compact ? CHIP_TRIGGER_COMPACT : CHIP_TRIGGER_NORMAL,
+            "hover:border-primary/40 hover:bg-primary/5",
+            dirty && "border-primary/40 bg-primary/5 text-primary",
+          )}
+        >
+          <span className={cn("text-muted-foreground", dirty && "text-primary/80")}>
+            属性
+          </span>
+          <span className="font-medium">{summary}</span>
+          <ChevronDown
+            className={cn(
+              compact ? CHIP_CHEVRON_COMPACT : CHIP_CHEVRON_NORMAL,
+              "opacity-60",
+              dirty && "opacity-80",
+            )}
+          />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="max-h-[70vh] w-64 overflow-y-auto p-2" align="start">
+        <div className="space-y-3">
+          {groups.map((group) => (
+            <FilterGroupSection
+              key={group.key}
+              label={group.label}
+              options={group.options}
+              value={group.value}
+              onChange={group.onChange}
+            />
+          ))}
+          {remark && (
+            <div>
+              <div className="mb-1 text-xs text-muted-foreground">备注</div>
+              <div className="space-y-1.5">
+                <RemarkGroup label="通用备注" value={remark.common} onChange={remark.onChangeCommon} />
+                <RemarkGroup label="个人备注" value={remark.personal} onChange={remark.onChangePersonal} />
+              </div>
+            </div>
+          )}
+        </div>
+        {dirty && (
+          <div className="mt-2 border-t pt-1.5">
+            <button
+              type="button"
+              onClick={onReset}
+              className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-accent hover:text-primary"
+            >
+              <RotateCcw className="h-3 w-3" />
+              重置
+            </button>
+          </div>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function FilterGroupSection({
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  label: string;
+  options: readonly ChipOption[];
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div>
+      <div className="mb-1 text-xs text-muted-foreground">{label}</div>
+      <div className="flex flex-wrap gap-1.5">
+        {options.map((opt) => {
+          const active = opt.value === value;
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => onChange(opt.value)}
+              className={cn(
+                "h-7 rounded-md border px-2.5 text-xs transition",
+                active
+                  ? "border-primary/40 bg-primary/10 font-medium text-primary"
+                  : "border-transparent bg-muted/50 hover:border-primary/30 hover:bg-primary/5",
+              )}
+            >
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────
+   主体 chip：动态扩展的单选下拉，列表样式
+   ───────────────────────────────────────────── */
+export function SubjectFilterChip({
+  options,
+  value,
+  onChange,
+  compact = false,
+}: {
+  options: readonly ChipOption[];
+  value: string;
+  onChange: (v: string) => void;
+  compact?: boolean;
+}) {
+  const current = options.find((o) => o.value === value) || options[0];
+  const dirty = value !== "all";
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            CHIP_TRIGGER_BASE,
+            compact ? CHIP_TRIGGER_COMPACT : CHIP_TRIGGER_NORMAL,
+            "hover:border-primary/40 hover:bg-primary/5",
+            dirty && "border-primary/40 bg-primary/5 text-primary",
+          )}
+        >
+          <span className={cn("text-muted-foreground", dirty && "text-primary/80")}>
+            主体
+          </span>
+          <span className="font-medium">{current?.label ?? "全部"}</span>
+          <ChevronDown
+            className={cn(
+              compact ? CHIP_CHEVRON_COMPACT : CHIP_CHEVRON_NORMAL,
+              "opacity-60",
+              dirty && "opacity-80",
+            )}
+          />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-48 p-1" align="start">
+        <div className="max-h-60 overflow-auto">
+          {options.map((opt) => {
+            const active = opt.value === value;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => onChange(opt.value)}
+                className={cn(
+                  "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm transition hover:bg-accent",
+                  active && "text-primary",
+                )}
+              >
+                <span className="truncate">{opt.label}</span>
                 {active && <Check className="h-3.5 w-3.5" />}
               </button>
             );

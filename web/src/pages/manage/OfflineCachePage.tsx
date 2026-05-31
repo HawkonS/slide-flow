@@ -736,7 +736,7 @@ export default function OfflineCachePage() {
       const W = el.clientWidth;
       const H = el.clientHeight;
       if (!W || !H) return;
-      const cols = W >= 1024 ? 5 : W >= 768 ? 4 : W >= 640 ? 3 : 2;
+      const cols = Math.max(2, Math.min(6, Math.floor(W / 200)));
       const gapX = W >= 1280 ? 24 : W >= 1024 ? 20 : 16;
       const gapY = W >= 1280 ? 28 : W >= 1024 ? 24 : 20;
       const titleH = 88;
@@ -839,42 +839,40 @@ export default function OfflineCachePage() {
   const updatesAvailableCount = Object.values(showUpdates).filter((s) => s.hasUpdate).length;
 
   return (
-    <div className="flex h-full flex-col gap-8">
+    <div className="flex h-full flex-col gap-4">
       {/* Page header */}
-      <header className="flex items-end justify-between gap-4">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">离线缓存</h1>
-          <p className="text-xs text-muted-foreground">
-            管理本地缓存的放映仓库，使用筛选快速定位。
-          </p>
-          <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+      <header className="flex items-center justify-between gap-4">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <div className="flex items-center gap-1.5">
+            <h1 className="text-xl font-semibold tracking-tight">离线缓存</h1>
+            <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
+              {filtered.length === shows.length
+                ? `共 ${shows.length} 条`
+                : `筛选后 ${filtered.length} / ${shows.length} 条`}
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <FolderOpen className="h-3.5 w-3.5" />
-            <span>当前缓存目录：</span>
             <span
               className="max-w-[420px] truncate font-medium text-foreground"
               title={dirHandle.name}
             >
               {dirHandle.name}
             </span>
-          </p>
+          </div>
         </div>
-        <span className="inline-flex h-6 items-center rounded-full bg-muted px-2.5 text-xs text-muted-foreground">
-          {filtered.length === shows.length
-            ? `共 ${shows.length} 条`
-            : `筛选后 ${filtered.length} / ${shows.length} 条`}
-        </span>
       </header>
 
       {/* Filters bar */}
       <div className="flex flex-wrap items-center gap-2">
-        <div className="relative">
+        <div className="relative min-w-0 flex-1 sm:flex-none">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <input
             value={filters.query}
             onChange={(e) => setFilters((f) => ({ ...f, query: e.target.value }))}
             placeholder="搜索名称、关键词"
             className={cn(
-              "h-8 w-56 rounded-full border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition",
+              "h-8 w-full sm:w-56 rounded-full border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition",
               "placeholder:text-muted-foreground",
               "focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
               filters.query.trim() !== "" && "border-primary/40 bg-primary/5",
@@ -976,7 +974,7 @@ export default function OfflineCachePage() {
             {shows.length === 0 ? "暂无缓存仓库" : "没有匹配的缓存项"}
           </div>
         ) : (
-          <div className="grid grid-cols-2 content-start gap-x-4 gap-y-5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 lg:gap-x-5 lg:gap-y-6 xl:gap-x-6 xl:gap-y-7">
+          <div className="grid grid-cols-2 content-start gap-x-4 gap-y-5 min-[600px]:grid-cols-3 md:grid-cols-4 md:gap-x-5 md:gap-y-6 min-[1000px]:grid-cols-5 min-[1200px]:grid-cols-6 xl:gap-x-6 xl:gap-y-7">
             {pageItems.map(([showId, entry]) => (
               <CacheCard
                 key={showId}
