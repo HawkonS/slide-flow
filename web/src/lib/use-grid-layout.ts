@@ -17,10 +17,14 @@ export interface ResponsiveGrid {
   gridStyle: GridStyle;
 }
 
-/** 列宽阈值：每 260px 一列，2 ≤ cols ≤ 5。
- *  W ≥ 520 → 2 列；≥ 780 → 3 列；≥ 1040 → 4 列；≥ 1300 → 5 列。
+/** 列宽阈值：每 240px 一列，2 ≤ cols ≤ 5。
+ *  高度加分：容器高度超过 650px 时，每多 1px 加 0.5，最多 +120。
+ *  这样矮屏（13" Mac ~600px 高）保持 4 列，高屏（14" Win ~840px）升至 5 列。
  */
-const COL_STEP = 260;
+const COL_STEP = 240;
+const HEIGHT_REF = 650;   // 高度加分基准线
+const HEIGHT_FACTOR = 0.5; // 每超出 1px 的加分系数
+const HEIGHT_BONUS_MAX = 120;
 const MIN_COLS = 2;
 const MAX_COLS = 5;
 const MIN_ROWS = 2;
@@ -50,7 +54,11 @@ function clamp(v: number, lo: number, hi: number) {
 }
 
 function computeGrid(W: number, H: number, titleH: number) {
-  const cols = clamp(Math.floor(W / COL_STEP), MIN_COLS, MAX_COLS);
+  // 高度加分：高屏容器获得更多列数
+  const hBonus = H > HEIGHT_REF
+    ? Math.min((H - HEIGHT_REF) * HEIGHT_FACTOR, HEIGHT_BONUS_MAX)
+    : 0;
+  const cols = clamp(Math.floor((W + hBonus) / COL_STEP), MIN_COLS, MAX_COLS);
   const gapX = computeGapX(W);
   const gapY = computeGapY(W);
   const cardW = (W - gapX * (cols - 1)) / cols;
@@ -60,7 +68,7 @@ function computeGrid(W: number, H: number, titleH: number) {
 }
 
 /**
- * 监听容器尺寸，按 260px 步进连续计算 2-5 列网格布局。
+ * 监听容器尺寸，按 240px 步进 + 高度加分连续计算 2-5 列网格布局。
  * 同时按高度估算行数，输出 pageSize = cols × rows，保证分页与渲染列数同源。
  */
 export function useResponsiveGrid(
