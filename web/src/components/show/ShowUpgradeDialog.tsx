@@ -10,6 +10,7 @@ import {
   GripVertical,
   Loader2,
   MessageSquareDiff,
+  Save,
   Shuffle,
   X,
 } from "lucide-react";
@@ -45,6 +46,46 @@ import {
   ShowResource,
   UpdateInfo,
 } from "@/lib/types";
+
+// ── 草稿暂存 (localStorage) ──
+const DRAFT_KEY_PREFIX = "show-iteration-draft-";
+
+interface IterationDraft {
+  activeTab: "upgrade" | "reorganize";
+  selectedIds: number[];
+  remarkDrafts: Record<string, string>;
+  changeNote: string;
+  name: string;
+  organizedResourceIds: number[];
+  savedAt: string;
+}
+
+function loadDraft(showId: number): IterationDraft | null {
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY_PREFIX + showId);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+function saveDraft(showId: number, draft: IterationDraft) {
+  localStorage.setItem(DRAFT_KEY_PREFIX + showId, JSON.stringify(draft));
+}
+
+function clearDraft(showId: number) {
+  localStorage.removeItem(DRAFT_KEY_PREFIX + showId);
+}
+
+/** 相对时间描述（如"3 分钟前"） */
+function relativeTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "刚刚";
+  if (mins < 60) return `${mins} 分钟前`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  const days = Math.floor(hours / 24);
+  return `${days} 天前`;
+}
 
 interface ShowUpgradeDialogProps {
   open: boolean;
@@ -91,26 +132,57 @@ export function ShowUpgradeDialog({
   const [organizedResources, setOrganizedResources] = React.useState<OrganizedResource[]>([]);
   const [draggingId, setDraggingId] = React.useState<number | null>(null);
 
+  // ── 草稿状态 ──
+  const [hasDraft, setHasDraft] = React.useState(false);
+  const [draftSavedAt, setDraftSavedAt] = React.useState<string | null>(null);
+
   // 初始化 organizedResources
   const initialOrganizedRef = React.useRef<OrganizedResource[]>([]);
 
-  // 打开或关闭对话框时重置状态
+  // 打开对话框时：优先恢复草稿，否则重置状态
   React.useEffect(() => {
     if (open && show) {
       setView("list");
       setDetailResourceId(null);
-      setSelectedIds(new Set());
-      setRemarkDrafts({});
-      setChangeNote("");
-      setName("");
-      setActiveTab("reorganize");
       setDraggingId(null);
-      // 初始化重新组织列表
-      const accessible = show.resources
-        .filter((r): r is Extract<ShowResource, { accessible: true }> => r.accessible === true)
-        .map((r) => ({ id: r.id, name: r.name, preview_url: r.preview_url }));
-      setOrganizedResources(accessible);
-      initialOrganizedRef.current = accessible;
+
+      const draft = loadDraft(show.id);
+      if (draft) {
+        // 恢复草稿
+        setActiveTab(draft.activeTab);
+        setSelectedIds(new Set(draft.selectedIds));
+        setRemarkDrafts(draft.remarkDrafts);
+        setChangeNote(draft.changeNote);
+        setName(draft.name);
+        setHasDraft(true);
+        setDraftSavedAt(draft.savedAt);
+        // 根据保存的 ID 列表从当前资源重建 organizedResources
+        const resourceMap = new Map<number, OrganizedResource>();
+        for (const r of show.resources) {
+          if (r.accessible === true) {
+            resourceMap.set(r.id, { id: r.id, name: r.name, preview_url: r.preview_url });
+          }
+        }
+        const restored = draft.organizedResourceIds
+          .map((id) => resourceMap.get(id))
+          .filter((r): r is OrganizedResource => r != null);
+        setOrganizedResources(restored);
+        initialOrganizedRef.current = restored;
+      } else {
+        // 无草稿：重置
+        setSelectedIds(new Set());
+        setRemarkDrafts({});
+        setChangeNote("");
+        setName("");
+        setActiveTab("reorganize");
+        setHasDraft(false);
+        setDraftSavedAt(null);
+        const accessible = show.resources
+          .filter((r): r is Extract<ShowResource, { accessible: true }> => r.accessible === true)
+          .map((r) => ({ id: r.id, name: r.name, preview_url: r.preview_url }));
+        setOrganizedResources(accessible);
+        initialOrganizedRef.current = accessible;
+      }
     }
   }, [open, show]);
 
@@ -147,14 +219,14 @@ export function ShowUpgradeDialog({
     }
   }, []);
 
-  // 首次获取到数据时默认全选
+  // 首次获取到数据时默认全选（仅在没有草稿恢复时生效）
   const initializedRef = React.useRef(false);
   React.useEffect(() => {
-    if (updates.length > 0 && !initializedRef.current) {
+    if (updates.length > 0 && !initializedRef.current && !hasDraft) {
       setSelectedIds(new Set(updates.map((u) => u.resource_id)));
       initializedRef.current = true;
     }
-  }, [updates]);
+  }, [updates, hasDraft]);
   React.useEffect(() => {
     if (!open) initializedRef.current = false;
   }, [open]);
@@ -178,6 +250,9 @@ export function ShowUpgradeDialog({
     },
     onSuccess: (result) => {
       onOpenChange(false);
+      if (show) clearDraft(show.id);
+      setHasDraft(false);
+      setDraftSavedAt(null);
       const count = result.upgraded?.length ?? 0;
       toast.success(`新版本创建成功，已升级 ${count} 个资源`);
       queryClient.invalidateQueries({ queryKey: ["shows"] });
@@ -203,6 +278,9 @@ export function ShowUpgradeDialog({
     },
     onSuccess: () => {
       onOpenChange(false);
+      if (show) clearDraft(show.id);
+      setHasDraft(false);
+      setDraftSavedAt(null);
       toast.success("迭代成功，新版本已创建");
       queryClient.invalidateQueries({ queryKey: ["shows"] });
       onSuccess?.();
@@ -377,10 +455,59 @@ export function ShowUpgradeDialog({
     }
   };
 
+  // ── 手动暂存草稿 ──
+  const handleSaveDraft = React.useCallback(() => {
+    if (!show) return;
+    const draft: IterationDraft = {
+      activeTab,
+      selectedIds: Array.from(selectedIds),
+      remarkDrafts,
+      changeNote,
+      name,
+      organizedResourceIds: organizedResources.map((r) => r.id),
+      savedAt: new Date().toISOString(),
+    };
+    saveDraft(show.id, draft);
+    setHasDraft(true);
+    setDraftSavedAt(draft.savedAt);
+    toast.success("草稿已暂存");
+  }, [show, activeTab, selectedIds, remarkDrafts, changeNote, name, organizedResources]);
+
+  // ── 点击遮罩/ESC 关闭时自动暂存草稿 ──
+  const handleOpenChange = React.useCallback(
+    (nextOpen: boolean) => {
+      if (!nextOpen && show) {
+        const hasContent =
+          changeNote.trim() !== "" ||
+          name.trim() !== "" ||
+          selectedIds.size > 0 ||
+          Object.keys(remarkDrafts).length > 0 ||
+          organizedResources.length > 0;
+        if (hasContent) {
+          const draft: IterationDraft = {
+            activeTab,
+            selectedIds: Array.from(selectedIds),
+            remarkDrafts,
+            changeNote,
+            name,
+            organizedResourceIds: organizedResources.map((r) => r.id),
+            savedAt: new Date().toISOString(),
+          };
+          saveDraft(show.id, draft);
+          setHasDraft(true);
+          setDraftSavedAt(draft.savedAt);
+          toast.success("草稿已自动暂存");
+        }
+      }
+      onOpenChange(nextOpen);
+    },
+    [show, onOpenChange, activeTab, selectedIds, remarkDrafts, changeNote, name, organizedResources],
+  );
+
   if (!show) return null;
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="flex h-[min(860px,92vh)] max-w-6xl flex-col gap-0 overflow-hidden p-0">
         {/* 标题栏 */}
         <DialogHeader className="shrink-0 border-b px-6 py-4">
@@ -390,6 +517,11 @@ export function ShowUpgradeDialog({
             <Badge variant="outline" className="ml-1 text-xs font-normal">
               基于 v{show.version_no}
             </Badge>
+            {hasDraft && draftSavedAt && (
+              <span className="text-xs text-amber-600">
+                有暂存草稿 ({relativeTime(draftSavedAt)})
+              </span>
+            )}
           </DialogTitle>
           <DialogDescription className="sr-only">
             创建放映的新版本，可选升级资源或重新组织资源
@@ -502,13 +634,19 @@ export function ShowUpgradeDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isPending}>
             取消
           </Button>
-          <Button
-            disabled={!changeNote.trim() || isPending}
-            onClick={handleSubmit}
-          >
-            {isPending && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
-            {getSubmitLabel()}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={handleSaveDraft} disabled={isPending}>
+              <Save className="mr-1.5 h-4 w-4" />
+              暂存
+            </Button>
+            <Button
+              disabled={!changeNote.trim() || isPending}
+              onClick={handleSubmit}
+            >
+              {isPending && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+              {getSubmitLabel()}
+            </Button>
+          </div>
         </div>
       </DialogContent>
     </Dialog>
