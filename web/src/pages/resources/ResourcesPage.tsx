@@ -15,18 +15,100 @@ import { useAuth } from "@/lib/auth";
 import { serializeTags } from "@/lib/types";
 import { Resource, ResourceVersion } from "@/lib/types";
 import { useResponsiveGrid } from "@/lib/use-grid-layout";
-import { useResourceFilters } from "@/stores/resource-filters";
+import { useEncodedUrlState } from "@/lib/use-encoded-url-state";
+import { useResourceFilters, markResourceFiltersUrlRestored } from "@/stores/resource-filters";
+import { DEFAULT_SORT_KEY, type SortKey } from "@/lib/constants";
 import { usePaginatedQuery } from "@/lib/use-paginated-query";
+
+/* ---- URL 持久化状态类型与默认值 ---- */
+interface ResourceUrlState {
+  q: string;
+  sub: string;
+  sec: string;
+  sta: string;
+  perm: string;
+  rc: string;
+  rp: string;
+  tags: string[];
+  tm: string;
+  sort: string;
+  p: number;
+}
+
+const URL_DEFAULTS: ResourceUrlState = {
+  q: "", sub: "all", sec: "all", sta: "all", perm: "all",
+  rc: "all", rp: "all", tags: [], tm: "all",
+  sort: DEFAULT_SORT_KEY, p: 1,
+};
 
 export function ResourcesPage() {
   const { user } = useAuth();
   const filters = useResourceFilters();
   const queryClient = useQueryClient();
 
-  // 分页：列数与每页大小由共享 hook 按容器宽度连续计算
+  // 列数与每页大小由共享 hook 按容器宽度连续计算
   const contentRef = React.useRef<HTMLDivElement>(null);
   const { pageSize, gridStyle } = useResponsiveGrid(contentRef);
-  const [page, setPage] = React.useState(1);
+
+  // 筛选 + 页码统一编码到 URL ?s=…
+  const [urlState, setUrlState] = useEncodedUrlState({ defaults: URL_DEFAULTS });
+
+  // URL → zustand store（仅首次挂载时同步）
+  const initialized = React.useRef(false);
+  if (!initialized.current) {
+    initialized.current = true;
+    const s = urlState;
+    filters.setQuery(s.q);
+    filters.setSubject(s.sub);
+    filters.setSecrecy(s.sec as "all" | "public" | "confidential" | "secret");
+    filters.setStatus(s.sta as "all" | "active" | "disabled");
+    filters.setPermission(s.perm as "all" | "created" | "managed" | "visible");
+    filters.setRemarkCommon(s.rc as "all" | "has" | "none");
+    filters.setRemarkPersonal(s.rp as "all" | "has" | "none");
+    filters.setTags(s.tags);
+    filters.setTagsMode(s.tm as "any" | "all");
+    filters.setSort(s.sort as SortKey);
+    // URL 中有状态时告诉 store 跳过 initDefaults 覆写
+    if (new URLSearchParams(window.location.search).has("s")) {
+      markResourceFiltersUrlRestored();
+    }
+  }
+
+  // zustand → URL（筛选变化时重置页码）
+  const prevFiltersKey = React.useRef("");
+  React.useEffect(() => {
+    const key = JSON.stringify({
+      q: filters.query, sub: filters.subject, sec: filters.secrecy,
+      sta: filters.status, perm: filters.permission,
+      rc: filters.remarkCommon, rp: filters.remarkPersonal,
+      tags: filters.tags, tm: filters.tagsMode, sort: filters.sort,
+    });
+    if (key === prevFiltersKey.current) return;
+    const filtersChanged = prevFiltersKey.current !== "";
+    prevFiltersKey.current = key;
+    setUrlState((prev) => ({
+      q: filters.query, sub: filters.subject, sec: filters.secrecy,
+      sta: filters.status, perm: filters.permission,
+      rc: filters.remarkCommon, rp: filters.remarkPersonal,
+      tags: filters.tags, tm: filters.tagsMode, sort: filters.sort,
+      p: filtersChanged ? 1 : prev.p,
+    }));
+  }, [
+    filters.query, filters.subject, filters.secrecy, filters.status,
+    filters.permission, filters.remarkCommon, filters.remarkPersonal,
+    filters.tags, filters.tagsMode, filters.sort, setUrlState,
+  ]);
+
+  const page = urlState.p;
+  const setPage = React.useCallback(
+    (action: React.SetStateAction<number>) => {
+      setUrlState((prev) => ({
+        ...prev,
+        p: typeof action === "function" ? action(prev.p) : action,
+      }));
+    },
+    [setUrlState],
+  );
 
   // 构建后端查询参数
   const apiParams = React.useMemo(
@@ -63,14 +145,10 @@ export function ResourcesPage() {
     pageSize,
   });
 
-  // 筛选变化时重置页码
+  // 页码越界检查
   React.useEffect(() => {
-    setPage(1);
-  }, [apiParams]);
-
-  React.useEffect(() => {
-    if (page > totalPages) setPage(1);
-  }, [page, totalPages]);
+    if (totalPages > 0 && page > totalPages) setPage(1);
+  }, [page, totalPages, setPage]);
 
   // 详情按需加载
   const [detailResourceId, setDetailResourceId] = React.useState<number | null>(null);

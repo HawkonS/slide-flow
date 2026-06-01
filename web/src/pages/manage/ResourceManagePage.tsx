@@ -50,9 +50,10 @@ import {
 } from "@/lib/constants";
 import { parseTags, Resource, serializeTags } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { useManageResourceFilters } from "@/stores/manage-resource-filters";
+import { useManageResourceFilters, markManageResourceFiltersUrlRestored } from "@/stores/manage-resource-filters";
 import { BatchEditDialog } from "@/components/manage/BatchEditDialog";
 import { usePaginatedQuery } from "@/lib/use-paginated-query";
+import { useEncodedUrlState } from "@/lib/use-encoded-url-state";
 
 /* ---------- types ---------- */
 
@@ -60,6 +61,25 @@ interface Option {
   value: string;
   label: string;
 }
+
+/* ---- URL 持久化状态类型与默认值 ---- */
+interface ManageUrlState {
+  q: string;
+  sub: string;
+  sec: string;
+  sta: string;
+  own: string;
+  rc: string;
+  rp: string;
+  tags: string[];
+  tm: string;
+  p: number;
+}
+
+const URL_DEFAULTS: ManageUrlState = {
+  q: "", sub: "all", sec: "all", sta: "all", own: "all",
+  rc: "all", rp: "all", tags: [], tm: "all", p: 1,
+};
 
 /* ---------- Main component ---------- */
 
@@ -87,7 +107,64 @@ export default function ResourceManagePage() {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-  const [page, setPage] = React.useState(1);
+
+  // 筛选 + 页码统一编码到 URL ?s=…
+  const [urlState, setUrlState] = useEncodedUrlState({ defaults: URL_DEFAULTS });
+
+  // URL → zustand store（仅首次挂载时同步）
+  const initialized = React.useRef(false);
+  if (!initialized.current) {
+    initialized.current = true;
+    const s = urlState;
+    filters.setQuery(s.q);
+    filters.setSubject(s.sub);
+    filters.setSecrecy(s.sec as "all" | "public" | "confidential" | "secret");
+    filters.setStatus(s.sta as "all" | "active" | "disabled");
+    filters.setOwnership(s.own as "all" | "created" | "managed");
+    filters.setRemarkCommon(s.rc as "all" | "has" | "none");
+    filters.setRemarkPersonal(s.rp as "all" | "has" | "none");
+    filters.setTags(s.tags);
+    filters.setTagsMode(s.tm as "any" | "all");
+    if (new URLSearchParams(window.location.search).has("s")) {
+      markManageResourceFiltersUrlRestored();
+    }
+  }
+
+  // zustand → URL（筛选变化时重置页码）
+  const prevFiltersKey = React.useRef("");
+  React.useEffect(() => {
+    const key = JSON.stringify({
+      q: filters.query, sub: filters.subject, sec: filters.secrecy,
+      sta: filters.status, own: filters.ownership,
+      rc: filters.remarkCommon, rp: filters.remarkPersonal,
+      tags: filters.tags, tm: filters.tagsMode,
+    });
+    if (key === prevFiltersKey.current) return;
+    const filtersChanged = prevFiltersKey.current !== "";
+    prevFiltersKey.current = key;
+    setUrlState((prev) => ({
+      q: filters.query, sub: filters.subject, sec: filters.secrecy,
+      sta: filters.status, own: filters.ownership,
+      rc: filters.remarkCommon, rp: filters.remarkPersonal,
+      tags: filters.tags, tm: filters.tagsMode,
+      p: filtersChanged ? 1 : prev.p,
+    }));
+  }, [
+    filters.query, filters.subject, filters.secrecy, filters.status,
+    filters.ownership, filters.remarkCommon, filters.remarkPersonal,
+    filters.tags, filters.tagsMode, setUrlState,
+  ]);
+
+  const page = urlState.p;
+  const setPage = React.useCallback(
+    (action: React.SetStateAction<number>) => {
+      setUrlState((prev) => ({
+        ...prev,
+        p: typeof action === "function" ? action(prev.p) : action,
+      }));
+    },
+    [setUrlState],
+  );
 
   /* ---- Build API params ---- */
   const apiParams = React.useMemo(
@@ -122,14 +199,10 @@ export default function ResourceManagePage() {
     pageSize,
   });
 
-  // 筛选变化时重置页码
+  // 页码越界检查
   React.useEffect(() => {
-    setPage(1);
-  }, [apiParams]);
-
-  React.useEffect(() => {
-    if (page > totalPages) setPage(1);
-  }, [page, totalPages]);
+    if (totalPages > 0 && page > totalPages) setPage(1);
+  }, [page, totalPages, setPage]);
 
   const subjectOptions = React.useMemo<Option[]>(() => {
     const set = new Set<string>([DEFAULT_RESOURCE_SUBJECT, ...subjects.filter(Boolean)]);

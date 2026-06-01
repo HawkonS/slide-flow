@@ -61,6 +61,7 @@ import {
 } from "@/lib/constants";
 import { downloadWithProgress } from "@/lib/fonts";
 import { TemplateItem, UserOption, VisibilityScope } from "@/lib/types";
+import { useUrlPage } from "@/lib/use-url-page";
 import { cn } from "@/lib/utils";
 
 interface TemplateListResponse {
@@ -168,7 +169,7 @@ export function AdminTemplatesPage() {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-  const [page, setPage] = React.useState(1);
+  const [page, setPage] = useUrlPage();
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   React.useEffect(() => {
     if (page > totalPages) setPage(1);

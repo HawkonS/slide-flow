@@ -40,6 +40,7 @@ import {
 import { DEFAULT_SORT_KEY, type SortKey } from "@/lib/constants";
 import { sortListItems } from "@/lib/sort";
 import { NETWORK_ENV_LABELS, Link, NetworkEnv } from "@/lib/types";
+import { useUrlPage } from "@/lib/use-url-page";
 import { cn } from "@/lib/utils";
 
 interface LinkListResponse {
@@ -273,7 +274,7 @@ export function AdminLinksPage() {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-  const [page, setPage] = React.useState(1);
+  const [page, setPage] = useUrlPage();
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   React.useEffect(() => {
     if (page > totalPages) setPage(1);

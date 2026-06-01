@@ -40,6 +40,7 @@ import {
 import { api } from "@/lib/api";
 import { USER_ROLE_LABEL, USER_ROLE_OPTIONS } from "@/lib/constants";
 import { AdminUser, UserRole } from "@/lib/types";
+import { useUrlPage } from "@/lib/use-url-page";
 import { cn } from "@/lib/utils";
 
 interface UsersResponse {
@@ -123,7 +124,7 @@ export function AdminUsersPage() {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-  const [page, setPage] = React.useState(1);
+  const [page, setPage] = useUrlPage();
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   React.useEffect(() => {
     if (page > totalPages) setPage(1);

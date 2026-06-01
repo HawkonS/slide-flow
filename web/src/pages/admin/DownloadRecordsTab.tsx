@@ -12,6 +12,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { api } from "@/lib/api";
+import { useUrlPage } from "@/lib/use-url-page";
 import { cn } from "@/lib/utils";
 
 // ==================== 类型定义 ====================
@@ -51,7 +52,7 @@ const DOWNLOAD_TYPE_LABEL: Record<string, string> = {
 export function AdminDownloadsPage() {
   const [trackCodeInput, setTrackCodeInput] = React.useState("");
   const [trackCode, setTrackCode] = React.useState("");
-  const [page, setPage] = React.useState(1);
+  const [page, setPage] = useUrlPage();
   const pageSize = 20;
 
   const { data, isLoading, isError, error } = useQuery({

@@ -88,7 +88,8 @@ export function TemplatesPage() {
           暂无模板
         </div>
       ) : (
-        <div ref={contentRef} className="flex flex-col gap-10 pb-4">
+        <div ref={contentRef} className="min-h-0 flex-1 overflow-auto">
+          <div className="flex flex-col gap-10 pb-4">
           {grouped.map(({ subject, seriesList }) => {
             const subjectCount = seriesList.reduce((acc, s) => acc + s.items.length, 0);
             return (
@@ -118,6 +119,7 @@ export function TemplatesPage() {
               </section>
             );
           })}
+          </div>
         </div>
       )}
 

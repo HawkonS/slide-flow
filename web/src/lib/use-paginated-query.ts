@@ -67,7 +67,7 @@ export function usePaginatedQuery<T>(
   });
 
   const total = data?.total ?? 0;
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const totalPages = data ? Math.max(1, Math.ceil(total / pageSize)) : 0;
 
   return {
     items: data?.items ?? [],

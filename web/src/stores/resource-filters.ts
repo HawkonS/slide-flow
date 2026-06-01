@@ -37,6 +37,9 @@ export interface ResourceFiltersState {
 // 保存配置默认值，用于 reset 时恢复
 let _defaultStatus: "all" | "active" | "disabled" = "all";
 let _defaultSubject: string = "all";
+// URL 状态已恢复时跳过 initDefaults 覆写
+let _urlRestored = false;
+export const markResourceFiltersUrlRestored = () => { _urlRestored = true; };
 
 export const useResourceFilters = create<ResourceFiltersState>((set) => ({
   query: "",
@@ -69,7 +72,10 @@ export const useResourceFilters = create<ResourceFiltersState>((set) => ({
     const subject = config.default_filter_subject || "all";
     _defaultStatus = status;
     _defaultSubject = subject;
-    set({ status, subject });
+    // URL 状态已恢复时跳过，避免配置默认值覆写用户保存的筛选
+    if (_urlRestored) return;
+    // 仅在实际值变化时才 set，避免无意义的引用变化触发下游 effect
+    set((s) => (s.status === status && s.subject === subject ? {} : { status, subject }));
   },
   reset: () =>
     set({

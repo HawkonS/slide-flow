@@ -15,6 +15,7 @@ import {
 import { api } from "@/lib/api";
 import { downloadWithProgress } from "@/lib/fonts";
 import { FontItem } from "@/lib/types";
+import { useUrlPage } from "@/lib/use-url-page";
 import { cn } from "@/lib/utils";
 
 interface FontListResponse {
@@ -57,7 +58,7 @@ export function FontsPage() {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-  const [page, setPage] = React.useState(1);
+  const [page, setPage] = useUrlPage();
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   React.useEffect(() => {
     if (page > totalPages) setPage(1);

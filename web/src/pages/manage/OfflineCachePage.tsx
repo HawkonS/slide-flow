@@ -38,6 +38,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { api } from "@/lib/api";
 import { useResponsiveGrid } from "@/lib/use-grid-layout";
+import { useUrlPage } from "@/lib/use-url-page";
 import { cn } from "@/lib/utils";
 import {
   type OfflineManifest,
@@ -731,7 +732,7 @@ export default function OfflineCachePage() {
   const contentRef = React.useRef<HTMLDivElement>(null);
   const { pageSize, gridStyle } = useResponsiveGrid(contentRef, { titleHeight: 88 });
 
-  const [page, setPage] = useState(1);
+  const [page, setPage] = useUrlPage();
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   useEffect(() => {
     if (page > totalPages) setPage(1);
