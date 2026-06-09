@@ -3383,7 +3383,7 @@ def list_shows(
         shows = [_serialize_show(db, row, user) for row in rows]
         return {"shows": shows}
 
-    # ── CTE：可见 + 每个 series 只保留最大 version_no ──
+    # ── CTE：可见 + 每个 series 只保留最大 version_no（同版本取最新 id） ──
     cte = f"""
         WITH visible AS (
             SELECT s.* FROM shows s WHERE {vis_cond}
@@ -3395,6 +3395,11 @@ def list_shows(
                 FROM visible GROUP BY series_id
             ) g ON v.series_id = g.series_id
                AND COALESCE(v.version_no, 0) = g.max_ver
+            WHERE v.id = (
+                SELECT MAX(v2.id) FROM visible v2
+                WHERE v2.series_id = v.series_id
+                  AND COALESCE(v2.version_no, 0) = g.max_ver
+            )
         )
     """
 
@@ -3660,12 +3665,13 @@ def duplicate_show(
     if not can_view_show(db, row, user):
         raise HTTPException(403, "无可见权限")
     ts = now_iso()
+    new_series_id = uuid.uuid4().hex[:10]
     db.execute(
         """
-        INSERT INTO shows (name, owner_id, subject, tags, status, visibility_scope, management_scope, secrecy_level, updated_by, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO shows (name, owner_id, subject, tags, status, visibility_scope, management_scope, secrecy_level, series_id, version_no, change_note, updated_by, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (payload.name, user["id"], row["subject"], row["tags"], row["status"], row["visibility_scope"], row["management_scope"], row["secrecy_level"], user["id"], ts, ts),
+        (payload.name, user["id"], row["subject"], row["tags"], row["status"], row["visibility_scope"], row["management_scope"], row["secrecy_level"], new_series_id, 1, "", user["id"], ts, ts),
     )
     new_show_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
     visible_ids = _show_scope_user_ids(db, "show_visibility", show_id)
