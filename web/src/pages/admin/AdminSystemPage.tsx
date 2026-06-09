@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Loader2, Power, RotateCw, Download, Server, Clock, HardDrive, ArrowUpCircle } from "lucide-react";
+import { Loader2, Power, RotateCw, Download, Server, Clock, HardDrive, ArrowUpCircle, CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -9,6 +9,40 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import { AdminConfigPage } from "./AdminConfigPage";
+
+// ==================== 升级遮罩 ====================
+
+type UpgradePhase = "upgrading" | "restarting" | "done";
+
+/**
+ * 升级中全屏遮罩：显示升级进度状态，轮询服务可用性，恢复后自动刷新。
+ */
+function UpgradeOverlay({ phase, elapsed }: { phase: UpgradePhase; elapsed: number }) {
+  const phaseText: Record<UpgradePhase, string> = {
+    upgrading: "正在拉取最新代码并升级...",
+    restarting: "服务重启中，请稍候...",
+    done: "升级完成，正在刷新页面...",
+  };
+
+  return (
+    <div className="fixed inset-0 z-[9999] flex flex-col items-center justify-center bg-background/95 backdrop-blur-sm">
+      <div className="flex flex-col items-center gap-5 text-center">
+        {phase === "done" ? (
+          <CheckCircle2 className="h-14 w-14 text-green-500" />
+        ) : (
+          <Loader2 className="h-14 w-14 animate-spin text-blue-500" />
+        )}
+        <div>
+          <h2 className="text-xl font-semibold">系统升级中</h2>
+          <p className="mt-2 text-sm text-muted-foreground">{phaseText[phase]}</p>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          已耗时 {elapsed} 秒 · 升级期间请勿关闭页面
+        </p>
+      </div>
+    </div>
+  );
+}
 
 // ==================== 运行状态 ====================
 
@@ -43,10 +77,67 @@ function formatUptime(seconds: number): string {
 }
 
 function RuntimeTab() {
+  // 升级状态：控制全屏遮罩和轮询逻辑
+  const [upgradeState, setUpgradeState] = React.useState<null | {
+    phase: UpgradePhase;
+    startTime: number;
+  }>(null);
+  const [elapsed, setElapsed] = React.useState(0);
+  const pollTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  const elapsedTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // 计时器：每秒更新已耗时
+  React.useEffect(() => {
+    if (!upgradeState) return;
+    setElapsed(0);
+    elapsedTimerRef.current = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - upgradeState.startTime) / 1000));
+    }, 1000);
+    return () => {
+      if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
+    };
+  }, [upgradeState]);
+
+  // 轮询逻辑：升级后每 4 秒探测服务是否恢复
+  React.useEffect(() => {
+    if (!upgradeState || upgradeState.phase === "done") return;
+
+    // 升级发起后等待 8 秒再开始轮询（给服务一点时间先停掉）
+    const startDelay = setTimeout(() => {
+      if (upgradeState.phase === "upgrading") {
+        setUpgradeState((s) => s ? { ...s, phase: "restarting" } : s);
+      }
+
+      pollTimerRef.current = setInterval(async () => {
+        try {
+          const res = await fetch("/api/admin/system/status", {
+            credentials: "include",
+            cache: "no-store",
+          });
+          if (res.ok) {
+            // 服务恢复
+            if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+            setUpgradeState((s) => s ? { ...s, phase: "done" } : s);
+            // 等待 1.5 秒让用户看到"完成"状态后刷新
+            setTimeout(() => window.location.reload(), 1500);
+          }
+        } catch {
+          // 网络错误/502，继续轮询
+        }
+      }, 4000);
+    }, 8000);
+
+    return () => {
+      clearTimeout(startDelay);
+      if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+    };
+  }, [upgradeState?.phase === "upgrading" ? upgradeState : null]); // eslint-disable-line
+
   const { data, isLoading, refetch } = useQuery({
     queryKey: ["system", "status"],
     queryFn: async () => api<SystemStatus>("/api/admin/system/status"),
     refetchInterval: 5000, // 每5秒刷新一次
+    enabled: !upgradeState, // 升级中暂停常规轮询
   });
 
   const shutdownMut = useMutation({
@@ -59,7 +150,6 @@ function RuntimeTab() {
     mutationFn: async () => api("/api/admin/system/restart", { method: "POST" }),
     onSuccess: () => {
       toast.success("系统重启指令已发送");
-      // 重启后刷新状态
       setTimeout(() => refetch(), 3000);
     },
     onError: (err: Error) => toast.error(err.message || "重启失败"),
@@ -68,7 +158,8 @@ function RuntimeTab() {
   const upgradeMut = useMutation({
     mutationFn: async () => api("/api/admin/system/upgrade", { method: "POST" }),
     onSuccess: () => {
-      toast.success("系统升级中，请等待 1-2 分钟后刷新页面");
+      // 显示升级遮罩，开始轮询
+      setUpgradeState({ phase: "upgrading", startTime: Date.now() });
     },
     onError: (err: Error) => toast.error(err.message || "升级失败"),
   });
@@ -91,11 +182,15 @@ function RuntimeTab() {
       "此操作将：\n" +
       "1. 从 Git 仓库拉取最新代码\n" +
       "2. 自动重启服务\n\n" +
-      "升级期间服务将中断 1-2 分钟，确定继续吗？"
+      "升级期间页面将显示升级进度，服务恢复后自动刷新，确定继续吗？"
     )) {
       upgradeMut.mutate();
     }
   };
+
+  if (upgradeState) {
+    return <UpgradeOverlay phase={upgradeState.phase} elapsed={elapsed} />;
+  }
 
   if (isLoading || !data) {
     return (
