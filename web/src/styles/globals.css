@@ -111,4 +111,8 @@
     font-feature-settings: "tnum";
     -webkit-font-smoothing: antialiased;
   }
+  button {
+    user-select: none;
+    -webkit-user-select: none;
+  }
 }
