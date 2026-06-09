@@ -64,7 +64,7 @@ from app.core.permissions import (
     is_admin,
     is_super_admin,
 )
-from app.core.ppt import build_image_pptx, detect_ppt_fonts, merge_pptx_files, slide_count, split_pptx_to_single_pages
+from app.core.ppt import build_image_pptx, detect_ppt_fonts, merge_pptx_files, slide_count, split_pptx_to_single_pages, add_watermark_to_image, add_watermark_to_pptx
 from app.core.security import create_present_token, create_session_token, hash_password, read_session_token, verify_password, verify_present_token
 from app.core.storage import copy_into, safe_filename, save_upload, unique_child_dir
 from app.db import get_db, init_db, known_font_aliases, now_iso
@@ -684,6 +684,62 @@ def _record_download(db: sqlite3.Connection, user: sqlite3.Row, request: Request
     )
     db.commit()
     return track_code
+
+
+def _compose_watermark_text(track_code: str, extra: str) -> str:
+    """组合追踪码与前端传入的水印文本，返回最终水印字符串。"""
+    parts = [f"追踪码: {track_code}"]
+    if extra and extra.strip():
+        parts.append(extra.strip())
+    return "  |  ".join(parts)
+
+
+# ── 放映下载缓存 ────────────────────────────────────────────────
+_DOWNLOAD_CACHE_DIR = settings.assets_dir / "downloads"
+_DOWNLOAD_CACHE_TTL = 24 * 3600  # 24 小时
+
+
+def _show_download_cache_key(show_id: int, dl_type: str, db: sqlite3.Connection) -> str:
+    """基于 show_id + 资源版本列表生成缓存文件名。"""
+    import hashlib
+    rows = db.execute(
+        "SELECT sr.resource_id, sr.version_no FROM show_resources sr WHERE sr.show_id = ? ORDER BY sr.sort_order",
+        (show_id,),
+    ).fetchall()
+    parts = [f"{r['resource_id']}v{r['version_no']}" for r in rows]
+    content_hash = hashlib.md5("|".join(parts).encode()).hexdigest()[:12]
+    return f"show_{show_id}_{dl_type}_{content_hash}"
+
+
+def _get_cached_download(cache_key: str, ext: str) -> Path | None:
+    """如果缓存命中且未过期，返回缓存文件路径；否则返回 None。"""
+    _DOWNLOAD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cached = _DOWNLOAD_CACHE_DIR / f"{cache_key}.{ext}"
+    if not cached.exists():
+        return None
+    age = time.time() - cached.stat().st_mtime
+    if age > _DOWNLOAD_CACHE_TTL:
+        cached.unlink(missing_ok=True)
+        return None
+    return cached
+
+
+def _save_to_cache(src: Path, cache_key: str, ext: str) -> Path:
+    """将生成的文件复制到缓存目录并返回缓存路径。"""
+    _DOWNLOAD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cached = _DOWNLOAD_CACHE_DIR / f"{cache_key}.{ext}"
+    shutil.copy2(src, cached)
+    return cached
+
+
+def _cleanup_expired_cache():
+    """清理过期的下载缓存文件。"""
+    if not _DOWNLOAD_CACHE_DIR.exists():
+        return
+    now = time.time()
+    for f in _DOWNLOAD_CACHE_DIR.iterdir():
+        if f.is_file() and (now - f.stat().st_mtime) > _DOWNLOAD_CACHE_TTL:
+            f.unlink(missing_ok=True)
 
 
 def _safe_abs(stored_path: str | None) -> Path | None:
@@ -4183,12 +4239,28 @@ def update_show_remark(
 def download_show_pdf(
     show_id: int,
     request: Request,
+    watermark: str = Query(""),
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> FileResponse:
     row = _show_row(db, show_id)
     if not can_view_show(db, row, user):
         raise HTTPException(403, "无可见权限")
+    track_code = _record_download(db, user, request, show_id, "pdf")
+    wm_text = _compose_watermark_text(track_code, watermark) if watermark else ""
+
+    # 无水印时尝试缓存命中
+    cache_key = ""
+    if not watermark:
+        cache_key = _show_download_cache_key(show_id, "pdf", db)
+        cached = _get_cached_download(cache_key, "pdf")
+        if cached:
+            return FileResponse(
+                cached,
+                media_type="application/pdf",
+                headers={"Content-Disposition": _content_disposition(f"{row['name']}.pdf")},
+            )
+
     sr_rows = db.execute(
         """
         SELECT sr.resource_id, sr.version_no, r.name
@@ -4211,7 +4283,10 @@ def download_show_pdf(
         if version_row and version_row["png_path"]:
             path = _safe_abs(version_row["png_path"])
             if path and path.exists():
-                images.append(Image.open(path).convert("RGB"))
+                img = Image.open(path).convert("RGB")
+                if wm_text:
+                    img = add_watermark_to_image(img, wm_text).convert("RGB")
+                images.append(img)
     if not images:
         raise HTTPException(404, "没有可下载的预览图")
     tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
@@ -4222,7 +4297,14 @@ def download_show_pdf(
     first.save(tmp_path, "PDF", save_all=True, append_images=rest)
     for img in images:
         img.close()
-    _record_download(db, user, request, show_id, "pdf")
+
+    # 无水印时写入缓存
+    if cache_key:
+        try:
+            _save_to_cache(tmp_path, cache_key, "pdf")
+        except Exception:
+            logger.warning("写入 PDF 下载缓存失败", exc_info=True)
+
     return FileResponse(
         tmp_path,
         media_type="application/pdf",
@@ -4234,6 +4316,7 @@ def download_show_pdf(
 def download_show_pptx_images(
     show_id: int,
     request: Request,
+    watermark: str = Query(""),
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> FileResponse:
@@ -4241,6 +4324,21 @@ def download_show_pptx_images(
     row = _show_row(db, show_id)
     if not can_view_show(db, row, user):
         raise HTTPException(403, "无可见权限")
+    track_code = _record_download(db, user, request, show_id, "pptx_images")
+    wm_text = _compose_watermark_text(track_code, watermark) if watermark else ""
+
+    # 无水印时尝试缓存命中
+    cache_key = ""
+    if not watermark:
+        cache_key = _show_download_cache_key(show_id, "pptx_images", db)
+        cached = _get_cached_download(cache_key, "pptx")
+        if cached:
+            return FileResponse(
+                cached,
+                media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                headers={"Content-Disposition": _content_disposition(f"{row['name']}_纯图.pptx")},
+            )
+
     sr_rows = db.execute(
         """
         SELECT sr.resource_id, sr.version_no, r.name
@@ -4271,11 +4369,23 @@ def download_show_pptx_images(
     tmp.close()
     try:
         build_image_pptx(image_paths, tmp_path)
+        if wm_text:
+            try:
+                add_watermark_to_pptx(tmp_path, wm_text)
+            except Exception:
+                logger.warning("纯图 PPT 水印添加失败，将跳过水印继续生成 show_id=%s", show_id, exc_info=True)
     except Exception as exc:
         tmp_path.unlink(missing_ok=True)
         logger.exception("生成纯图 PPTX 失败 show_id=%s", show_id)
         raise HTTPException(500, f"生成纯图 PPT 失败：{exc}") from exc
-    _record_download(db, user, request, show_id, "pptx_images")
+
+    # 无水印时写入缓存
+    if cache_key:
+        try:
+            _save_to_cache(tmp_path, cache_key, "pptx")
+        except Exception:
+            logger.warning("写入纯图 PPT 下载缓存失败", exc_info=True)
+
     return FileResponse(
         tmp_path,
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -4375,12 +4485,32 @@ def download_show_pptx(
     show_id: int,
     request: Request,
     with_fonts: bool = Query(False),
+    watermark: str = Query(""),
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> FileResponse:
     row = _show_row(db, show_id)
     if not can_view_show(db, row, user):
         raise HTTPException(403, "无可见权限")
+    track_code = _record_download(db, user, request, show_id, "pptx_fonts" if with_fonts else "pptx")
+    wm_text = _compose_watermark_text(track_code, watermark) if watermark else ""
+    dl_type = "pptx_fonts" if with_fonts else "pptx"
+
+    # 无水印时尝试缓存命中
+    cache_key = ""
+    if not watermark:
+        cache_key = _show_download_cache_key(show_id, dl_type, db)
+        cache_ext = "zip" if with_fonts else "pptx"
+        cached = _get_cached_download(cache_key, cache_ext)
+        if cached:
+            filename = f"{row['name']}_with_fonts.zip" if with_fonts else f"{row['name']}.pptx"
+            mime = "application/zip" if with_fonts else "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            return FileResponse(
+                cached,
+                media_type=mime,
+                headers={"Content-Disposition": _content_disposition(filename)},
+            )
+
     items = _collect_show_accessible_resources(db, show_id, user)
     input_paths: list[Path] = []
     hidden_flags: list[bool] = []
@@ -4398,14 +4528,20 @@ def download_show_pptx(
     merged_path = Path(tmp.name)
     tmp.close()
     merge_pptx_files(input_paths, merged_path, hidden_flags=hidden_flags)
+    if wm_text:
+        add_watermark_to_pptx(merged_path, wm_text)
     if not with_fonts:
-        _record_download(db, user, request, show_id, "pptx")
+        # 无水印时写入缓存
+        if cache_key:
+            try:
+                _save_to_cache(merged_path, cache_key, "pptx")
+            except Exception:
+                logger.warning("写入 PPTX 下载缓存失败", exc_info=True)
         return FileResponse(
             merged_path,
             media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
             headers={"Content-Disposition": _content_disposition(f"{row['name']}.pptx")},
         )
-    _record_download(db, user, request, show_id, "pptx_fonts")
     agg = _aggregate_show_fonts(db, items)
     fonts, _ = _build_fonts_bundle(db, agg["font_names"])
     zip_tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
@@ -4417,6 +4553,14 @@ def download_show_pptx(
             _write_fonts_into_zip(zf, fonts, agg["missing_fonts"])
     finally:
         merged_path.unlink(missing_ok=True)
+
+    # 无水印时写入缓存
+    if cache_key:
+        try:
+            _save_to_cache(zip_path, cache_key, "zip")
+        except Exception:
+            logger.warning("写入 PPTX+字体包下载缓存失败", exc_info=True)
+
     return FileResponse(
         zip_path,
         media_type="application/zip",
@@ -4429,12 +4573,15 @@ def download_show_zip(
     show_id: int,
     request: Request,
     with_fonts: bool = Query(False),
+    watermark: str = Query(""),
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> FileResponse:
     row = _show_row(db, show_id)
     if not can_view_show(db, row, user):
         raise HTTPException(403, "无可见权限")
+    track_code = _record_download(db, user, request, show_id, "zip_fonts" if with_fonts else "zip")
+    wm_text = _compose_watermark_text(track_code, watermark) if watermark else ""
     items = _collect_show_accessible_resources(db, show_id, user)
     written = 0
     tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
@@ -4448,7 +4595,19 @@ def download_show_zip(
             if not ppt_path or not ppt_path.exists():
                 continue
             arcname = f"{item['name']}_v{item['version_no']}.pptx"
-            zf.write(ppt_path, arcname)
+            if wm_text:
+                # 复制一份并加水印，然后加入 zip
+                wm_tmp = tempfile.NamedTemporaryFile(suffix=".pptx", delete=False)
+                wm_tmp_path = Path(wm_tmp.name)
+                wm_tmp.close()
+                try:
+                    shutil.copy2(ppt_path, wm_tmp_path)
+                    add_watermark_to_pptx(wm_tmp_path, wm_text)
+                    zf.write(wm_tmp_path, arcname)
+                finally:
+                    wm_tmp_path.unlink(missing_ok=True)
+            else:
+                zf.write(ppt_path, arcname)
             written += 1
         if not written:
             tmp_path.unlink(missing_ok=True)
@@ -4463,7 +4622,6 @@ def download_show_zip(
             fonts, _ = _build_fonts_bundle(db, agg["font_names"])
             _write_fonts_into_zip(zf, fonts, agg["missing_fonts"])
     filename = f"{row['name']}_with_fonts.zip" if with_fonts else f"{row['name']}.zip"
-    _record_download(db, user, request, show_id, "zip_fonts" if with_fonts else "zip")
     return FileResponse(
         tmp_path,
         media_type="application/zip",

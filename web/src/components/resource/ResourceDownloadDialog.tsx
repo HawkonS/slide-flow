@@ -99,15 +99,15 @@ export function ResourceDownloadDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl">
-        <DialogHeader>
+      <DialogContent className="max-w-xl max-h-[85vh] gap-0 overflow-hidden p-0">
+        <DialogHeader className="border-b px-6 py-4">
           <DialogTitle>下载</DialogTitle>
           <DialogDescription>
             根据本机字体决定是否一起打包字体
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
+        <div className="overflow-y-auto px-6 py-4 space-y-4">
           {/* 资源标题 */}
           <section className="space-y-1 text-sm">
             <div className="text-xs font-medium text-muted-foreground">资源标题</div>
@@ -156,12 +156,17 @@ export function ResourceDownloadDialog({
           <Separator />
 
           {/* 本机字体检测 */}
-          <FontCheckPanel local={local} />
+          <section>
+            <div className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              字体状态
+            </div>
+            <FontCheckPanel local={local} />
+          </section>
 
           <DownloadProgress progress={progress} />
         </div>
 
-        <DialogFooter className="gap-2">
+        <DialogFooter className="gap-2 border-t bg-muted/30 px-6 py-3">
           <Button
             variant="outline"
             onClick={() => onOpenChange(false)}

@@ -162,23 +162,37 @@ export function resourceDownloadUrl(
 }
 
 /** 放映 PDF 下载 URL */
-export function showPdfDownloadUrl(showId: number): string {
-  return `/api/shows/${showId}/download/pdf`;
+export function showPdfDownloadUrl(showId: number, watermark?: string): string {
+  const params = new URLSearchParams();
+  if (watermark) params.set("watermark", watermark);
+  const qs = params.toString();
+  return `/api/shows/${showId}/download/pdf${qs ? `?${qs}` : ""}`;
 }
 
 /** 放映纯图 PPT 下载 URL（每张高清预览图一页） */
-export function showImagesPptxDownloadUrl(showId: number): string {
-  return `/api/shows/${showId}/download/pptx-images`;
+export function showImagesPptxDownloadUrl(showId: number, watermark?: string): string {
+  const params = new URLSearchParams();
+  if (watermark) params.set("watermark", watermark);
+  const qs = params.toString();
+  return `/api/shows/${showId}/download/pptx-images${qs ? `?${qs}` : ""}`;
 }
 
 /** 放映合并 PPTX 下载 URL，可选带上字体包 */
-export function showPptxDownloadUrl(showId: number, withFonts: boolean): string {
-  return `/api/shows/${showId}/download/pptx${withFonts ? "?with_fonts=true" : ""}`;
+export function showPptxDownloadUrl(showId: number, withFonts: boolean, watermark?: string): string {
+  const params = new URLSearchParams();
+  if (withFonts) params.set("with_fonts", "true");
+  if (watermark) params.set("watermark", watermark);
+  const qs = params.toString();
+  return `/api/shows/${showId}/download/pptx${qs ? `?${qs}` : ""}`;
 }
 
 /** 放映逐个 PPT 压缩包下载 URL，可选带上字体包 */
-export function showZipDownloadUrl(showId: number, withFonts: boolean): string {
-  return `/api/shows/${showId}/download/zip${withFonts ? "?with_fonts=true" : ""}`;
+export function showZipDownloadUrl(showId: number, withFonts: boolean, watermark?: string): string {
+  const params = new URLSearchParams();
+  if (withFonts) params.set("with_fonts", "true");
+  if (watermark) params.set("watermark", watermark);
+  const qs = params.toString();
+  return `/api/shows/${showId}/download/zip${qs ? `?${qs}` : ""}`;
 }
 
 /** 拉取放映的聚合字体信息 */
@@ -188,12 +202,17 @@ export async function fetchShowFonts(showId: number): Promise<FontDetectSource> 
   return (await resp.json()) as FontDetectSource;
 }
 
+/** 下载阶段：generating = 服务端生成中；downloading = 文件传输中 */
+export type DownloadPhase = "generating" | "downloading";
+
 /** 通过 fetch 带进度拉取并触发浏览器下载 */
 export async function downloadWithProgress(
   url: string,
   fallbackName: string,
   onProgress?: (percent: number | null, bytes: number) => void,
+  onPhaseChange?: (phase: DownloadPhase) => void,
 ): Promise<void> {
+  onPhaseChange?.("generating");
   const response = await fetch(url, { credentials: "include" });
   if (!response.ok) {
     let detail = "下载失败";
@@ -205,6 +224,7 @@ export async function downloadWithProgress(
     }
     throw new Error(detail);
   }
+  onPhaseChange?.("downloading");
   const total = Number(response.headers.get("content-length") || 0);
   const reader = response.body?.getReader();
   if (!reader) {

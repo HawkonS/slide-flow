@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
@@ -32,7 +32,6 @@ export function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
   const [feishuConfig, setFeishuConfig] = useState<FeishuConfig | null>(null);
   const [feishuLogging, setFeishuLogging] = useState(false);
-  const feishuCodeHandled = useRef(false);
 
   const siteName = useSiteConfig((s) => s.siteName);
   const logoSvgPath = useSiteConfig((s) => s.logoSvgPath);
@@ -74,19 +73,33 @@ export function LoginPage() {
 
   // 处理飞书回调：URL 中包含 code 参数
   useEffect(() => {
-    // 防止 React StrictMode 下 useEffect 双重执行导致授权码被重复使用
-    if (feishuCodeHandled.current) return;
-
     const params = new URLSearchParams(location.search);
     const code = params.get("code");
+    const state = params.get("state");
     if (!code) return;
-
-    feishuCodeHandled.current = true;
-
+  
+    // 防止 React StrictMode 下 useEffect 双重执行导致授权码被重复使用
+    // 使用 sessionStorage 而非 useRef，因为 StrictMode 卸载重建组件时 ref 会重置
+    const codeKey = `feishu_code_used_${code}`;
+    if (sessionStorage.getItem(codeKey)) {
+      // 已处理过此 code，仅清理 URL
+      window.history.replaceState({}, "", window.location.pathname);
+      return;
+    }
+    sessionStorage.setItem(codeKey, "1");
+  
+    // 验证 state 参数防 CSRF
+    const savedState = sessionStorage.getItem("feishu_sso_state");
+    sessionStorage.removeItem("feishu_sso_state");
+    if (savedState && state !== savedState) {
+      toast.error("登录验证失败，请重试");
+      window.history.replaceState({}, "", window.location.pathname);
+      return;
+    }
+  
     // 清除 URL 中的 code 和 state 参数
-    const cleanUrl = window.location.pathname;
-    window.history.replaceState({}, "", cleanUrl);
-
+    window.history.replaceState({}, "", window.location.pathname);
+  
     setFeishuLogging(true);
     api<{ user: CurrentUser }>("/api/auth/feishu/callback", {
       method: "POST",
@@ -99,6 +112,8 @@ export function LoginPage() {
         navigate(from, { replace: true });
       })
       .catch((e) => {
+        // 授权码失败时清除标记，允许用户重新授权获取新 code
+        sessionStorage.removeItem(codeKey);
         toast.error(e instanceof Error ? e.message : "飞书登录失败");
       })
       .finally(() => setFeishuLogging(false));
