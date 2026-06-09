@@ -1000,7 +1000,7 @@ export default function OfflineCachePage() {
             >
               上一页
             </Button>
-            <span className="min-w-[52px] text-center text-foreground">
+            <span className="min-w-[52px] text-center text-foreground select-none">
               {page} / {totalPages}
             </span>
             <Button

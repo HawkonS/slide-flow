@@ -160,14 +160,6 @@ class LoginPayload(BaseModel):
     password: str
 
 
-class UserPayload(BaseModel):
-    name: str
-    username: str
-    password: str | None = None
-    feishu_id: str = ""
-    role: str = "user"
-
-
 class MetadataPayload(BaseModel):
     name: str
     subject: str = ""
@@ -205,14 +197,6 @@ class SplitUploadPayload(BaseModel):
 
 class FontDeletePayload(BaseModel):
     font_ids: list[int]
-
-
-class UserDeletePayload(BaseModel):
-    user_ids: list[int]
-
-
-class UserTransferDeletePayload(BaseModel):
-    target_user_id: int
 
 
 class TaskDeletePayload(BaseModel):
@@ -1614,148 +1598,6 @@ def list_download_records(
             for r in rows
         ],
     }
-def create_user(
-    payload: UserPayload,
-    admin: sqlite3.Row = Depends(require_admin),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    if payload.role not in {ROLE_SUPER_ADMIN, ROLE_ADMIN, ROLE_USER}:
-        raise HTTPException(400, "角色不正确")
-    if payload.role == ROLE_SUPER_ADMIN and not is_super_admin(admin):
-        raise HTTPException(403, "只有超级管理员能创建超级管理员")
-    if not payload.password:
-        raise HTTPException(400, "新用户需要设置密码")
-    ts = now_iso()
-    try:
-        db.execute(
-            """
-            INSERT INTO users (name, username, password_hash, feishu_id, role, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (payload.name, payload.username, hash_password(payload.password), payload.feishu_id, payload.role, ts, ts),
-        )
-        db.commit()
-    except sqlite3.IntegrityError:
-        raise HTTPException(400, "用户名已存在") from None
-    user = db.execute("SELECT * FROM users WHERE username = ?", (payload.username,)).fetchone()
-    return {"user": _serialize_user(user)}
-
-
-@app.put("/api/admin/users/{user_id}")
-def update_user(
-    user_id: int,
-    payload: UserPayload,
-    admin: sqlite3.Row = Depends(require_admin),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    if payload.role not in {ROLE_SUPER_ADMIN, ROLE_ADMIN, ROLE_USER}:
-        raise HTTPException(400, "角色不正确")
-    existing = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-    if existing is None:
-        raise HTTPException(404, "用户不存在")
-    # 超级管理员的身份只能由超级管理员授予/撤销
-    if not is_super_admin(admin):
-        if existing["role"] == ROLE_SUPER_ADMIN:
-            raise HTTPException(403, "只有超级管理员能修改超级管理员账号")
-        if payload.role == ROLE_SUPER_ADMIN:
-            raise HTTPException(403, "只有超级管理员能授予超级管理员角色")
-    if int(existing["id"]) == int(admin["id"]) and payload.role not in ADMIN_ROLES:
-        raise HTTPException(400, "不能取消自己的管理员角色")
-    if (
-        int(existing["id"]) == int(admin["id"])
-        and existing["role"] == ROLE_SUPER_ADMIN
-        and payload.role != ROLE_SUPER_ADMIN
-    ):
-        raise HTTPException(400, "不能取消自己的超级管理员角色")
-    fields: list[Any] = [payload.name, payload.username, payload.feishu_id, payload.role, now_iso()]
-    sql = "UPDATE users SET name = ?, username = ?, feishu_id = ?, role = ?, updated_at = ?"
-    if payload.password:
-        sql += ", password_hash = ?"
-        fields.append(hash_password(payload.password))
-    sql += " WHERE id = ?"
-    fields.append(user_id)
-    try:
-        db.execute(sql, fields)
-        db.commit()
-    except sqlite3.IntegrityError:
-        raise HTTPException(400, "用户名已存在") from None
-    user = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-    return {"user": _serialize_user(user)}
-
-
-@app.delete("/api/admin/users/{user_id}")
-def delete_user(
-    user_id: int,
-    admin: sqlite3.Row = Depends(require_admin),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, bool]:
-    if user_id == int(admin["id"]):
-        raise HTTPException(400, "不能删除当前登录用户")
-    target = db.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
-    if target is not None and target["role"] == ROLE_SUPER_ADMIN and not is_super_admin(admin):
-        raise HTTPException(403, "只有超级管理员能删除超级管理员账号")
-    try:
-        db.execute("DELETE FROM users WHERE id = ?", (user_id,))
-        db.commit()
-    except sqlite3.IntegrityError:
-        raise HTTPException(400, "该用户关联了资源、放映、下载记录或任务等数据，无法直接删除。请先转移或删除相关数据后再试。") from None
-    return {"ok": True}
-def bulk_delete_users(
-    payload: UserDeletePayload,
-    admin: sqlite3.Row = Depends(require_admin),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    user_ids = sorted({int(uid) for uid in payload.user_ids if int(uid) > 0})
-    if not user_ids:
-        raise HTTPException(400, "请选择要删除的用户")
-    current_user_id = int(admin["id"])
-    if current_user_id in user_ids:
-        raise HTTPException(400, "不能删除当前登录用户")
-    placeholders = ",".join("?" for _ in user_ids)
-    rows = db.execute(f"SELECT id FROM users WHERE id IN ({placeholders})", user_ids).fetchall()
-    if not rows:
-        raise HTTPException(404, "未找到可删除的用户")
-    deleted_ids = [int(row["id"]) for row in rows]
-    db.execute(f"DELETE FROM users WHERE id IN ({placeholders})", user_ids)
-    db.commit()
-    return {"ok": True, "deleted": len(deleted_ids)}
-
-
-@app.post("/api/admin/users/{user_id}/transfer-and-delete")
-def transfer_and_delete_user(
-    user_id: int,
-    payload: UserTransferDeletePayload,
-    admin: sqlite3.Row = Depends(require_admin),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    """将用户关联数据转移给目标用户后删除该用户"""
-    if user_id == int(admin["id"]):
-        raise HTTPException(400, "不能删除当前登录用户")
-    if user_id == payload.target_user_id:
-        raise HTTPException(400, "不能将数据转移给自己")
-    source = db.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
-    if source is None:
-        raise HTTPException(404, "源用户不存在")
-    if source["role"] == ROLE_SUPER_ADMIN and not is_super_admin(admin):
-        raise HTTPException(403, "只有超级管理员能删除超级管理员账号")
-    target = db.execute("SELECT id FROM users WHERE id = ?", (payload.target_user_id,)).fetchone()
-    if target is None:
-        raise HTTPException(404, "目标用户不存在")
-    tid = payload.target_user_id
-    for table, col in [
-        ("resources", "owner_id"), ("resources", "updated_by"),
-        ("resource_versions", "created_by"), ("templates", "owner_id"),
-        ("fonts", "uploaded_by"), ("shows", "owner_id"), ("shows", "updated_by"),
-        ("links", "owner_id"), ("tasks", "owner_id"),
-    ]:
-        db.execute(f"UPDATE {table} SET {col} = ? WHERE {col} = ?", (tid, user_id))
-    db.execute("UPDATE download_records SET user_id = NULL WHERE user_id = ?", (user_id,))
-    try:
-        db.execute("DELETE FROM users WHERE id = ?", (user_id,))
-        db.commit()
-    except sqlite3.IntegrityError:
-        raise HTTPException(400, "数据转移后仍无法删除用户，请联系技术支持。") from None
-    return {"ok": True}
 
 
 @app.delete("/api/admin/templates/{template_id}")

@@ -38,8 +38,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { USER_ROLE_LABEL, USER_ROLE_OPTIONS } from "@/lib/constants";
-import { AdminUser, UserRole } from "@/lib/types";
+import { AdminUser, UserRole, isSuperAdminRole } from "@/lib/types";
 import { useUrlPage } from "@/lib/use-url-page";
 import { cn } from "@/lib/utils";
 
@@ -350,7 +351,7 @@ export function AdminUsersPage() {
             >
               上一页
             </Button>
-            <span className="min-w-[52px] text-center text-foreground">
+            <span className="min-w-[52px] text-center text-foreground select-none">
               {page} / {totalPages}
             </span>
             <Button
@@ -506,6 +507,11 @@ function UserFormDialog({
   onSuccess: () => void;
 }) {
   const editing = !!user;
+  const { user: currentUser } = useAuth();
+  // 系统管理员不能授予/查看超级管理员角色
+  const roleOptions = isSuperAdminRole(currentUser?.role)
+    ? USER_ROLE_OPTIONS
+    : USER_ROLE_OPTIONS.filter((o) => o.value !== "super_admin");
   const [name, setName] = React.useState("");
   const [username, setUsername] = React.useState("");
   const [password, setPassword] = React.useState("");
@@ -721,7 +727,7 @@ function UserFormDialog({
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        {USER_ROLE_OPTIONS.map((o) => (
+                        {roleOptions.map((o) => (
                           <SelectItem key={o.value} value={o.value}>
                             {o.label}
                           </SelectItem>
