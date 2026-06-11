@@ -45,6 +45,48 @@ function UpgradeOverlay({ phase, elapsed }: { phase: UpgradePhase; elapsed: numb
   );
 }
 
+// ==================== 升级状态持久化 ====================
+
+const UPGRADE_STATE_KEY = "slideflow_upgrade_state";
+
+function saveUpgradeState(state: { phase: UpgradePhase; startTime: number }) {
+  try {
+    sessionStorage.setItem(UPGRADE_STATE_KEY, JSON.stringify(state));
+  } catch { /* ignore */ }
+}
+
+function loadUpgradeState(): { phase: UpgradePhase; startTime: number } | null {
+  try {
+    const raw = sessionStorage.getItem(UPGRADE_STATE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { phase: UpgradePhase; startTime: number };
+    // 超过 5 分钟自动过期，避免残留
+    if (Date.now() - parsed.startTime > 5 * 60 * 1000) {
+      sessionStorage.removeItem(UPGRADE_STATE_KEY);
+      return null;
+    }
+    // done 状态无需恢复
+    if (parsed.phase === "done") {
+      sessionStorage.removeItem(UPGRADE_STATE_KEY);
+      return null;
+    }
+    // 页面被刷新说明服务可能部分恢复，直接进入 restarting 轮询
+    if (parsed.phase === "upgrading") {
+      parsed.phase = "restarting";
+    }
+    return parsed;
+  } catch {
+    sessionStorage.removeItem(UPGRADE_STATE_KEY);
+    return null;
+  }
+}
+
+function clearUpgradeState() {
+  try {
+    sessionStorage.removeItem(UPGRADE_STATE_KEY);
+  } catch { /* ignore */ }
+}
+
 // ==================== 运行状态 ====================
 
 interface SystemStatus {
@@ -78,12 +120,19 @@ function formatUptime(seconds: number): string {
 }
 
 function RuntimeTab() {
-  // 升级状态：控制全屏遮罩和轮询逻辑
+  // 升级状态：控制全屏遮罩和轮询逻辑（从 sessionStorage 恢复，避免页面刷新丢失）
   const [upgradeState, setUpgradeState] = React.useState<null | {
     phase: UpgradePhase;
     startTime: number;
-  }>(null);
+  }>(() => loadUpgradeState());
   const [elapsed, setElapsed] = React.useState(0);
+
+  // 同步升级状态到 sessionStorage，确保页面刷新后能恢复
+  React.useEffect(() => {
+    if (upgradeState) {
+      saveUpgradeState(upgradeState);
+    }
+  }, [upgradeState?.phase, upgradeState?.startTime]);
   const pollTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
   const elapsedTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -122,6 +171,7 @@ function RuntimeTab() {
             // 服务恢复
             if (pollTimerRef.current) clearInterval(pollTimerRef.current);
             setUpgradeState((s) => s ? { ...s, phase: "done" } : s);
+            clearUpgradeState(); // 清除持久化状态
             // 等待 1.5 秒让用户看到"完成"状态后刷新
             setTimeout(() => window.location.reload(), 1500);
           }
