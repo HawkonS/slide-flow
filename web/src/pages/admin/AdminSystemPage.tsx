@@ -99,16 +99,19 @@ function RuntimeTab() {
     };
   }, [upgradeState]);
 
-  // 轮询逻辑：升级后每 4 秒探测服务是否恢复
+  // 轮询逻辑：升级/重启后探测服务是否恢复
   React.useEffect(() => {
     if (!upgradeState || upgradeState.phase === "done") return;
 
-    // 升级发起后等待 8 秒再开始轮询（给服务一点时间先停掉）
+    // 升级从 "upgrading" 开始需要等8秒；重启直接从 "restarting" 开始则等4秒
+    const initialDelay = upgradeState.phase === "upgrading" ? 8000 : 4000;
+
     const startDelay = setTimeout(() => {
       if (upgradeState.phase === "upgrading") {
         setUpgradeState((s) => s ? { ...s, phase: "restarting" } : s);
       }
 
+      // 每 3 秒轮询一次服务健康检查（使用原生 fetch，不经过 api() 以避免错误传播）
       pollTimerRef.current = setInterval(async () => {
         try {
           const res = await fetch("/api/admin/system/status", {
@@ -122,23 +125,24 @@ function RuntimeTab() {
             // 等待 1.5 秒让用户看到"完成"状态后刷新
             setTimeout(() => window.location.reload(), 1500);
           }
+          // 非 ok 响应（如 502）：静默忽略，继续轮询
         } catch {
-          // 网络错误/502，继续轮询
+          // 网络错误（服务完全不可达）：继续轮询
         }
-      }, 4000);
-    }, 8000);
+      }, 3000);
+    }, initialDelay);
 
     return () => {
       clearTimeout(startDelay);
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);
     };
-  }, [upgradeState?.phase === "upgrading" ? upgradeState : null]); // eslint-disable-line
+  }, [upgradeState?.phase]); // 依赖改为只看 phase 变化
 
-  const { data, isLoading, refetch } = useQuery({
+  const { data, isLoading } = useQuery({
     queryKey: ["system", "status"],
     queryFn: async () => api<SystemStatus>("/api/admin/system/status"),
-    refetchInterval: 5000, // 每5秒刷新一次
-    enabled: !upgradeState, // 升级中暂停常规轮询
+    refetchInterval: upgradeState ? false : 5000,
+    enabled: !upgradeState,
   });
 
   const shutdownMut = useMutation({
@@ -150,8 +154,8 @@ function RuntimeTab() {
   const restartMut = useMutation({
     mutationFn: async () => api("/api/admin/system/restart", { method: "POST" }),
     onSuccess: () => {
-      toast.success("系统重启指令已发送");
-      setTimeout(() => refetch(), 3000);
+      // 显示升级遮罩，进入重启轮询流程
+      setUpgradeState({ phase: "restarting", startTime: Date.now() });
     },
     onError: (err: Error) => toast.error(err.message || "重启失败"),
   });
