@@ -317,6 +317,16 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_download_records_track_code ON download_records(track_code);
             CREATE INDEX IF NOT EXISTS idx_download_records_downloaded_at ON download_records(downloaded_at);
 
+            CREATE TABLE IF NOT EXISTS tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                category TEXT NOT NULL DEFAULT '未分类',
+                label TEXT NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_by INTEGER NOT NULL REFERENCES users(id),
+                created_at TEXT NOT NULL
+            );
+
             """
         )
 

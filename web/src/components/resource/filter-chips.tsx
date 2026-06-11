@@ -1,10 +1,23 @@
-import { Check, ChevronDown, RotateCcw } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Check, ChevronDown, ChevronRight, RotateCcw, Search } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { type SortKey } from "@/lib/constants";
 import { cn } from "@/lib/utils";
+
+/** 解析标签为 { category, label }，无 `-` 时归入“未分类” */
+function parseTagCategory(tag: string): { category: string; label: string } {
+  const idx = tag.indexOf("-");
+  if (idx > 0) {
+    const cat = tag.slice(0, idx).trim();
+    const lab = tag.slice(idx + 1).trim();
+    if (cat && lab) return { category: cat, label: lab };
+  }
+  return { category: "未分类", label: tag };
+}
 
 export interface ChipOption {
   value: string;
@@ -174,26 +187,12 @@ export function TagFilterChip({
             })}
           </div>
         </div>
-        <div className="max-h-72 overflow-auto">
-          {tags.length === 0 ? (
-            <div className="px-2 py-4 text-center text-sm text-muted-foreground">{emptyText}</div>
-          ) : (
-            tags.map((tag) => {
-              const checked = selected.includes(tag);
-              return (
-                <button
-                  key={tag}
-                  type="button"
-                  onClick={() => onToggle(tag)}
-                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
-                >
-                  <Checkbox checked={checked} className="pointer-events-none" />
-                  <span className="flex-1 truncate text-left">{tag}</span>
-                </button>
-              );
-            })
-          )}
-        </div>
+        <TagFilterChipBody
+          tags={tags}
+          selected={selected}
+          onToggle={onToggle}
+          emptyText={emptyText}
+        />
         {selected.length > 0 && (
           <div className="flex justify-end border-t pt-1">
             <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={onClear}>
@@ -203,6 +202,118 @@ export function TagFilterChip({
         )}
       </PopoverContent>
     </Popover>
+  );
+}
+
+/** TagFilterChip 弹窗内容：搜索 + 按一级分类分组 + 折叠 */
+function TagFilterChipBody({
+  tags,
+  selected,
+  onToggle,
+  emptyText,
+}: {
+  tags: string[];
+  selected: string[];
+  onToggle: (t: string) => void;
+  emptyText: string;
+}) {
+  const [query, setQuery] = useState("");
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+
+  const groups = useMemo(() => {
+    const map = new Map<string, { tag: string; label: string }[]>();
+    for (const tag of tags) {
+      const { category, label } = parseTagCategory(tag);
+      const list = map.get(category);
+      if (list) list.push({ tag, label });
+      else map.set(category, [{ tag, label }]);
+    }
+    return Array.from(map.entries()).map(([category, items]) => ({ category, items }));
+  }, [tags]);
+
+  const q = query.trim().toLowerCase();
+  const filteredGroups = useMemo(() => {
+    if (!q) return groups;
+    return groups
+      .map((g) => ({
+        category: g.category,
+        items: g.items.filter((it) => it.tag.toLowerCase().includes(q)),
+      }))
+      .filter((g) => g.items.length > 0);
+  }, [groups, q]);
+
+  const toggleCollapse = (cat: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(cat)) next.delete(cat);
+      else next.add(cat);
+      return next;
+    });
+  };
+
+  return (
+    <>
+      <div className="mb-1 px-1 pt-1">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="搜索标签"
+            className="h-7 pl-7 text-xs"
+          />
+        </div>
+      </div>
+      <div className="max-h-72 overflow-auto">
+        {tags.length === 0 ? (
+          <div className="px-2 py-4 text-center text-sm text-muted-foreground">{emptyText}</div>
+        ) : filteredGroups.length === 0 ? (
+          <div className="px-2 py-4 text-center text-sm text-muted-foreground">无匹配标签</div>
+        ) : (
+          filteredGroups.map((g) => {
+            // 搜索时强制展开，便于查看匹配项
+            const isCollapsed = !q && collapsed.has(g.category);
+            return (
+              <div key={g.category} className="mb-1 last:mb-0">
+                <button
+                  type="button"
+                  onClick={() => !q && toggleCollapse(g.category)}
+                  disabled={!!q}
+                  className="flex w-full items-center justify-between rounded-sm px-2 py-1 text-xs text-muted-foreground transition hover:bg-accent disabled:cursor-default disabled:hover:bg-transparent"
+                >
+                  <span className="truncate">{g.category}</span>
+                  {!q && (
+                    isCollapsed ? (
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    ) : (
+                      <ChevronDown className="h-3.5 w-3.5" />
+                    )
+                  )}
+                </button>
+                {!isCollapsed && (
+                  <div>
+                    {g.items.map(({ tag, label }) => {
+                      const checked = selected.includes(tag);
+                      return (
+                        <button
+                          key={tag}
+                          type="button"
+                          onClick={() => onToggle(tag)}
+                          className="flex w-full items-center gap-2 rounded-sm py-1.5 pl-4 pr-2 text-sm hover:bg-accent"
+                        >
+                          <Checkbox checked={checked} className="pointer-events-none" />
+                          <span className="flex-1 truncate text-left">{label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
+    </>
   );
 }
 

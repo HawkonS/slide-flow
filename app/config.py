@@ -56,6 +56,7 @@ CONFIG_META: dict[str, dict[str, Any]] = {
     "app.slow_request_threshold": {"label": "慢请求阈值（秒）", "group": "app", "hot_reload": True, "type": "float", "desc": "超过该阈值的请求会被记录到慢请求日志"},
     "app.split_task_timeout": {"label": "拆分任务超时（秒）", "group": "app", "hot_reload": False, "type": "int", "desc": "PPT 拆分任务超时时间"},
     "app.max_concurrent_splits": {"label": "最大并发拆分数", "group": "app", "hot_reload": False, "type": "int", "desc": "最大并发的 PPT 拆分任务数"},
+    "app.user_custom_tags": {"label": "允许用户自定义标签", "group": "app", "hot_reload": True, "type": "bool", "desc": "开启后用户可自由创建标签；关闭后只能选择管理员预设标签"},
     # 管理后台
     "admin.route_prefix": {"label": "管理面板路由前缀", "group": "admin", "hot_reload": False, "type": "str", "desc": "管理面板路由前缀"},
     # 外观
@@ -106,6 +107,7 @@ _PROP_TO_ATTR: dict[str, str] = {
     "app.slow_request_threshold": "slow_request_threshold",
     "app.split_task_timeout": "split_task_timeout",
     "app.max_concurrent_splits": "max_concurrent_splits",
+    "app.user_custom_tags": "user_custom_tags",
     "admin.route_prefix": "admin_route_prefix",
     "logo.svg.path": "logo_svg_path",
     "web.https": "web_https",
@@ -163,6 +165,7 @@ class Settings:
     slow_request_threshold: float = 1.0
     split_task_timeout: int = 600
     max_concurrent_splits: int = 2
+    user_custom_tags: bool = False
 
     # 管理后台
     admin_route_prefix: str = "/admin"
@@ -342,6 +345,7 @@ def load_settings() -> Settings:
     slow_request_threshold = float(props.get("app.slow_request_threshold", "1.0"))
     split_task_timeout = int(props.get("app.split_task_timeout", "600"))
     max_concurrent_splits = int(props.get("app.max_concurrent_splits", "2"))
+    user_custom_tags = _parse_bool(props.get("app.user_custom_tags", "false"))
 
     # 管理后台
     admin_route_prefix = props.get("admin.route_prefix", "/admin")
@@ -387,6 +391,7 @@ def load_settings() -> Settings:
         slow_request_threshold=slow_request_threshold,
         split_task_timeout=split_task_timeout,
         max_concurrent_splits=max_concurrent_splits,
+        user_custom_tags=user_custom_tags,
         admin_route_prefix=admin_route_prefix,
         logo_svg_path=logo_svg_path,
         web_https=web_https,

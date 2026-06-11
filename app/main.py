@@ -94,7 +94,7 @@ app.add_middleware(
 )
 
 # 注册模块化路由
-from app.routers import pages, config, system, auth, user_center, users, fonts, links
+from app.routers import pages, config, system, auth, user_center, users, fonts, links, tags
 
 app.include_router(pages.router, prefix="/api", tags=["pages"])
 app.include_router(config.router, prefix="/api", tags=["config"])
@@ -104,6 +104,7 @@ app.include_router(user_center.router, prefix="/api", tags=["user_center"])
 app.include_router(users.router, prefix="/api", tags=["users"])
 app.include_router(fonts.router, prefix="/api", tags=["fonts"])
 app.include_router(links.router, prefix="/api", tags=["links"])
+app.include_router(tags.router, prefix="/api", tags=["tags"])
 
 # 飞书 SSO 模块：依赖缺失或初始化失败时优雅降级，不影响主应用启动
 try:

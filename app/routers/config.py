@@ -117,6 +117,7 @@ def api_config() -> dict[str, Any]:
         "feishu_app_id": settings.feishu_app_id if settings.feishu_sso_enabled else "",
         "nav_labels": nav_config["labels"],
         "nav_order": nav_config["order"],
+        "user_custom_tags": settings.user_custom_tags,
     }
 
 

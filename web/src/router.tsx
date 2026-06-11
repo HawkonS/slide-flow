@@ -23,6 +23,7 @@ import LinkSharePage from "@/pages/present/LinkSharePage";
 import ResourceManagePage from "@/pages/manage/ResourceManagePage";
 import TasksPage from '@/pages/manage/TasksPage';
 import OfflineCachePage from '@/pages/manage/OfflineCachePage';
+import TagManagePage from '@/pages/manage/TagManagePage';
 
 export const router = createBrowserRouter([
   { path: "/login", element: <LoginPage /> },
@@ -61,6 +62,14 @@ export const router = createBrowserRouter([
       { path: "/manage/resources", element: <ResourceManagePage /> },
       { path: "/manage/tasks", element: <TasksPage /> },
       { path: "/manage/offline-cache", element: <OfflineCachePage /> },
+      {
+        path: "/manage/tags",
+        element: (
+          <RequireAdmin>
+            <TagManagePage />
+          </RequireAdmin>
+        ),
+      },
       {
         path: "/admin/users",
         element: (

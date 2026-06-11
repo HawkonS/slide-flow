@@ -14,6 +14,7 @@ import {
   Monitor,
   Settings,
   SlidersHorizontal,
+  Tag,
   Type,
   Users,
 } from "lucide-react";
@@ -46,6 +47,7 @@ const NAV_ICONS: Record<string, React.ElementType> = {
   manage_tasks: ListTodo,
   manage_offline: HardDrive,
   manage_downloads: Download,
+  manage_tags: Tag,
   admin_users: Users,
   admin_templates: LayoutTemplate,
   admin_fonts: Type,
@@ -65,6 +67,7 @@ const DEFAULT_LABELS: Record<string, string> = {
   manage_tasks: "任务管理",
   manage_offline: "离线缓存",
   manage_downloads: "下载记录",
+  manage_tags: "标签管理",
   admin_users: "用户管理",
   admin_templates: "模板管理",
   admin_fonts: "字体管理",
@@ -89,6 +92,7 @@ const SECTION_MEMBERS: Record<string, { key: string; to: string }[]> = {
     { key: "manage_tasks", to: "/manage/tasks" },
     { key: "manage_offline", to: "/manage/offline-cache" },
     { key: "manage_downloads", to: "/manage/downloads" },
+    { key: "manage_tags", to: "/manage/tags" },
   ],
   system: [
     { key: "admin_users", to: "/admin/users" },
