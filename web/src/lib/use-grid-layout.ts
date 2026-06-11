@@ -35,6 +35,8 @@ const DEFAULT_TITLE_H = 44;
 export interface UseResponsiveGridOptions {
   /** 卡片标题区高度（px），用于估算行数。默认 44 。 */
   titleHeight?: number;
+  /** 从测量到的容器宽度中减去的偏移量（px），用于补偿 ref 与 grid 之间的祖先 padding，避免临界宽度下列数抖动。默认 0。 */
+  widthOffset?: number;
 }
 
 function computeGapX(W: number) {
@@ -76,13 +78,14 @@ export function useResponsiveGrid(
   options: UseResponsiveGridOptions = {},
 ): ResponsiveGrid {
   const titleH = options.titleHeight ?? DEFAULT_TITLE_H;
+  const widthOffset = options.widthOffset ?? 0;
   const [state, setState] = React.useState(() => computeGrid(1024, 720, titleH));
 
   React.useEffect(() => {
     const el = ref.current;
     if (!el) return;
     const compute = () => {
-      const W = el.clientWidth;
+      const W = Math.max(0, el.clientWidth - widthOffset);
       const H = el.clientHeight;
       if (!W || !H) return;
       const next = computeGrid(W, H, titleH);
@@ -99,7 +102,7 @@ export function useResponsiveGrid(
     const ro = new ResizeObserver(compute);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [ref, titleH]);
+  }, [ref, titleH, widthOffset]);
 
   const { cols, rows, gapX, gapY } = state;
   return React.useMemo<ResponsiveGrid>(

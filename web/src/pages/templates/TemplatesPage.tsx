@@ -31,8 +31,9 @@ export function TemplatesPage() {
   const [detail, setDetail] = React.useState<TemplateItem | null>(null);
 
   // 列数由共享 hook 按容器宽度连续计算
+  // widthOffset:16 用于补偿 grid 上层 `pl-4` 造成的实际可用宽度 -16 偏差，避免临界宽度下列数抖动
   const contentRef = React.useRef<HTMLDivElement>(null);
-  const { gridStyle } = useResponsiveGrid(contentRef);
+  const { gridStyle } = useResponsiveGrid(contentRef, { widthOffset: 16 });
 
   const {
     items: templates,
@@ -76,53 +77,54 @@ export function TemplatesPage() {
         </div>
       </header>
 
-      {isLoading ? (
-        <div className="flex items-center justify-center py-16 text-muted-foreground">
-          <Loader2 className="mr-2 h-5 w-5 animate-spin" /> 加载中…
-        </div>
-      ) : isError ? (
-        <div className="rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
-          加载失败：{error?.message || "未知错误"}
-        </div>
-      ) : grouped.length === 0 ? (
-        <div className="rounded-md border border-dashed py-16 text-center text-sm text-muted-foreground">
-          暂无模板
-        </div>
-      ) : (
-        <div ref={contentRef} className="min-h-0 flex-1 overflow-auto">
-          <div className="flex flex-col gap-10 pb-4">
-          {grouped.map(({ subject, seriesList }) => {
-            const subjectCount = seriesList.reduce((acc, s) => acc + s.items.length, 0);
-            return (
-              <section key={subject} className="space-y-5">
-                <div className="flex items-center gap-3">
-                  <span className="inline-block h-6 w-1 rounded-full bg-primary" />
-                  <h2 className="text-lg font-semibold tracking-tight">{subject}</h2>
-                  <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-                    {subjectCount}
-                  </span>
-                </div>
-                <div className="space-y-6 pl-4">
-                  {seriesList.map(({ series, items }) => (
-                    <section key={series} className="space-y-3">
-                      <div className="flex items-baseline gap-2">
-                        <h3 className="text-sm font-medium text-foreground/80">{series}</h3>
-                        <span className="text-xs text-muted-foreground">· {items.length}</span>
-                      </div>
-                      <div className="grid" style={gridStyle}>
-                        {items.map((t) => (
-                          <TemplateCard key={t.id} template={t} onClick={() => setDetail(t)} />
-                        ))}
-                      </div>
-                    </section>
-                  ))}
-                </div>
-              </section>
-            );
-          })}
+      {/* 内容区：contentRef 始终挂载，确保首次渲染（含刷新场景）时 hook 即可拿到稳定的容器尺寸 */}
+      <div ref={contentRef} className="min-h-0 flex-1 overflow-auto">
+        {isLoading ? (
+          <div className="flex items-center justify-center py-16 text-muted-foreground">
+            <Loader2 className="mr-2 h-5 w-5 animate-spin" /> 加载中…
           </div>
-        </div>
-      )}
+        ) : isError ? (
+          <div className="rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
+            加载失败：{error?.message || "未知错误"}
+          </div>
+        ) : grouped.length === 0 ? (
+          <div className="rounded-md border border-dashed py-16 text-center text-sm text-muted-foreground">
+            暂无模板
+          </div>
+        ) : (
+          <div className="flex flex-col gap-10 pb-4">
+            {grouped.map(({ subject, seriesList }) => {
+              const subjectCount = seriesList.reduce((acc, s) => acc + s.items.length, 0);
+              return (
+                <section key={subject} className="space-y-5">
+                  <div className="flex items-center gap-3">
+                    <span className="inline-block h-6 w-1 rounded-full bg-primary" />
+                    <h2 className="text-lg font-semibold tracking-tight">{subject}</h2>
+                    <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                      {subjectCount}
+                    </span>
+                  </div>
+                  <div className="space-y-6 pl-4">
+                    {seriesList.map(({ series, items }) => (
+                      <section key={series} className="space-y-3">
+                        <div className="flex items-baseline gap-2">
+                          <h3 className="text-sm font-medium text-foreground/80">{series}</h3>
+                          <span className="text-xs text-muted-foreground">· {items.length}</span>
+                        </div>
+                        <div className="grid content-start" style={gridStyle}>
+                          {items.map((t) => (
+                            <TemplateCard key={t.id} template={t} onClick={() => setDetail(t)} />
+                          ))}
+                        </div>
+                      </section>
+                    ))}
+                  </div>
+                </section>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       <TemplateDetailDialog
         template={detail}
