@@ -465,6 +465,7 @@ function CacheCard({
 /* ---------- Main Component ---------- */
 
 export default function OfflineCachePage() {
+  const navTitle = useNavLabel("manage_offline", "离线缓存");
   const [supported] = useState(() => isFileSystemAccessSupported());
   const [dirHandle, setDirHandle] = useState<FileSystemDirectoryHandle | null>(null);
   const [manifest, setManifest] = useState<OfflineManifest | null>(null);
@@ -825,7 +826,7 @@ export default function OfflineCachePage() {
       <header className="flex items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <div className="flex items-center gap-1.5">
-            <h1 className="text-xl font-semibold tracking-tight">{useNavLabel("manage_offline", "离线缓存")}</h1>
+            <h1 className="text-xl font-semibold tracking-tight">{navTitle}</h1>
             <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
               {filtered.length === shows.length
                 ? `共 ${shows.length} 条`
