@@ -25,6 +25,7 @@ import { TemplateItem } from "@/lib/types";
 import { useResponsiveGrid } from "@/lib/use-grid-layout";
 import { usePaginatedQuery } from "@/lib/use-paginated-query";
 import { cn } from "@/lib/utils";
+import { useNavLabel } from "@/lib/nav-config";
 
 export function TemplatesPage() {
   const [detail, setDetail] = React.useState<TemplateItem | null>(null);
@@ -68,7 +69,7 @@ export function TemplatesPage() {
     <div className="flex h-full flex-col gap-4">
       <header className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-1.5">
-          <h1 className="text-xl font-semibold tracking-tight">模板仓库</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{useNavLabel("templates", "模板仓库")}</h1>
           <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
             {total} 个模板
           </span>

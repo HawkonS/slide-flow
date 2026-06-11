@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   ChevronRight,
@@ -29,39 +29,75 @@ import {
 } from "@/components/ui/sheet";
 
 type NavItem = {
+  key: string;
   to: string;
   label: string;
   icon: React.ElementType;
 };
 
-const materialNav: NavItem[] = [
-  { to: "/resources", label: "资源仓库", icon: FolderOpen },
-  { to: "/templates", label: "模板仓库", icon: LayoutTemplate },
-  { to: "/shows", label: "放映仓库", icon: Monitor },
-  { to: "/fonts", label: "字体仓库", icon: Type },
-  { to: "/links", label: "链接仓库", icon: Link2 },
-];
+/** 导航项注册表（图标与路径固定，标签与排序从 store 动态读取） */
+const NAV_ICONS: Record<string, React.ElementType> = {
+  resources: FolderOpen,
+  templates: LayoutTemplate,
+  shows: Monitor,
+  fonts: Type,
+  links: Link2,
+  manage_resources: Settings,
+  manage_tasks: ListTodo,
+  manage_offline: HardDrive,
+  manage_downloads: Download,
+  admin_users: Users,
+  admin_templates: LayoutTemplate,
+  admin_fonts: Type,
+  admin_links: Link2,
+  admin_system: SlidersHorizontal,
+};
 
-const systemNav: NavItem[] = [
-  { to: "/admin/users", label: "用户管理", icon: Users },
-  { to: "/admin/templates", label: "模板管理", icon: LayoutTemplate },
-  { to: "/admin/fonts", label: "字体管理", icon: Type },
-  { to: "/admin/links", label: "链接管理", icon: Link2 },
-];
+/** 默认标签（回退值） */
+const DEFAULT_LABELS: Record<string, string> = {
+  home: "首页",
+  resources: "资源仓库",
+  templates: "模板仓库",
+  shows: "放映仓库",
+  fonts: "字体仓库",
+  links: "链接仓库",
+  manage_resources: "资源管理",
+  manage_tasks: "任务管理",
+  manage_offline: "离线缓存",
+  manage_downloads: "下载记录",
+  admin_users: "用户管理",
+  admin_templates: "模板管理",
+  admin_fonts: "字体管理",
+  admin_links: "链接管理",
+  admin_system: "系统管理",
+  section_material: "素材",
+  section_manage: "维护",
+  section_system: "系统",
+};
 
-const superAdminNav: NavItem[] = [
-  { to: "/admin/system", label: "系统管理", icon: SlidersHorizontal },
-];
-
-const manageNav: NavItem[] = [
-  { to: "/manage/resources", label: "资源管理", icon: Settings },
-  { to: "/manage/tasks", label: "任务管理", icon: ListTodo },
-  { to: "/manage/offline-cache", label: "离线缓存", icon: HardDrive },
-];
-
-const manageAdminNav: NavItem[] = [
-  { to: "/manage/downloads", label: "下载记录", icon: Download },
-];
+/** 分组成员定义（key + 路径） */
+const SECTION_MEMBERS: Record<string, { key: string; to: string }[]> = {
+  material: [
+    { key: "resources", to: "/resources" },
+    { key: "templates", to: "/templates" },
+    { key: "shows", to: "/shows" },
+    { key: "fonts", to: "/fonts" },
+    { key: "links", to: "/links" },
+  ],
+  manage: [
+    { key: "manage_resources", to: "/manage/resources" },
+    { key: "manage_tasks", to: "/manage/tasks" },
+    { key: "manage_offline", to: "/manage/offline-cache" },
+    { key: "manage_downloads", to: "/manage/downloads" },
+  ],
+  system: [
+    { key: "admin_users", to: "/admin/users" },
+    { key: "admin_templates", to: "/admin/templates" },
+    { key: "admin_fonts", to: "/admin/fonts" },
+    { key: "admin_links", to: "/admin/links" },
+    { key: "admin_system", to: "/admin/system" },
+  ],
+};
 
 function NavItemLink({ item }: { item: NavItem }) {
   const Icon = item.icon;
@@ -133,10 +169,49 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const location = useLocation();
   const versionCommit = useSiteConfig((s) => s.versionCommit);
   const versionUpdatedAt = useSiteConfig((s) => s.versionUpdatedAt);
+  const navLabels = useSiteConfig((s) => s.navLabels);
+  const navOrder = useSiteConfig((s) => s.navOrder);
 
   const isAdmin = user?.role === "admin" || user?.role === "super_admin";
+  const isSuperAdmin = user?.role === "super_admin";
   const isHomeActive = location.pathname.startsWith("/home");
   const isOnSystemRoute = location.pathname.startsWith("/admin");
+
+  const getLabel = (key: string): string => navLabels[key] || DEFAULT_LABELS[key] || key;
+
+  // 动态构建分组导航数组，并按 navOrder 排序
+  const materialNav = useMemo<NavItem[]>(
+    () =>
+      SECTION_MEMBERS.material
+        .map((m) => ({ key: m.key, to: m.to, label: getLabel(m.key), icon: NAV_ICONS[m.key] || FolderOpen }))
+        .sort((a, b) => (navOrder[a.key] ?? 99) - (navOrder[b.key] ?? 99)),
+    [navLabels, navOrder],
+  );
+
+  const manageNav = useMemo<NavItem[]>(
+    () => {
+      // 下载记录仅 admin 可见
+      const members = isAdmin
+        ? SECTION_MEMBERS.manage
+        : SECTION_MEMBERS.manage.filter((m) => m.key !== "manage_downloads");
+      return members
+        .map((m) => ({ key: m.key, to: m.to, label: getLabel(m.key), icon: NAV_ICONS[m.key] || Settings }))
+        .sort((a, b) => (navOrder[a.key] ?? 99) - (navOrder[b.key] ?? 99));
+    },
+    [navLabels, navOrder, isAdmin],
+  );
+
+  const systemNav = useMemo<NavItem[]>(
+    () => {
+      const members = isSuperAdmin
+        ? SECTION_MEMBERS.system
+        : SECTION_MEMBERS.system.filter((m) => m.key !== "admin_system");
+      return members
+        .map((m) => ({ key: m.key, to: m.to, label: getLabel(m.key), icon: NAV_ICONS[m.key] || Users }))
+        .sort((a, b) => (navOrder[a.key] ?? 99) - (navOrder[b.key] ?? 99));
+    },
+    [navLabels, navOrder, isSuperAdmin],
+  );
 
   return (
     <div className="flex h-full flex-col">
@@ -153,7 +228,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
             )}
           >
             <Home className="h-4 w-4 shrink-0" />
-            <span>首页</span>
+            <span>{getLabel("home")}</span>
           </NavLink>
         </div>
       </div>
@@ -162,7 +237,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       <div className="flex-1 overflow-y-auto scrollbar-hide">
         {/* 素材 - 始终展开 */}
         <div className="mt-1">
-          <SectionLabel title="素材" />
+          <SectionLabel title={getLabel("section_material")} />
           <div className="mt-0.5 flex flex-col gap-0.5 px-3">
             {materialNav.map((item) => (
               <div key={item.to} onClick={onNavigate}>
@@ -174,37 +249,25 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
 
         {/* 维护 - 始终展开 */}
         <div className="mt-3">
-          <SectionLabel title="维护" />
+          <SectionLabel title={getLabel("section_manage")} />
           <div className="mt-0.5 flex flex-col gap-0.5 px-3">
             {manageNav.map((item) => (
               <div key={item.to} onClick={onNavigate}>
                 <NavItemLink item={item} />
               </div>
             ))}
-            {isAdmin &&
-              manageAdminNav.map((item) => (
-                <div key={item.to} onClick={onNavigate}>
-                  <NavItemLink item={item} />
-                </div>
-              ))}
           </div>
         </div>
 
         {/* 系统 - 默认折叠 */}
         {isAdmin && (
           <div className="mt-3">
-            <CollapsibleSection title="系统" defaultOpen={false} forceOpen={isOnSystemRoute}>
+            <CollapsibleSection title={getLabel("section_system")} defaultOpen={false} forceOpen={isOnSystemRoute}>
               {systemNav.map((item) => (
                 <div key={item.to} onClick={onNavigate}>
                   <NavItemLink item={item} />
                 </div>
               ))}
-              {user?.role === "super_admin" &&
-                superAdminNav.map((item) => (
-                  <div key={item.to} onClick={onNavigate}>
-                    <NavItemLink item={item} />
-                  </div>
-                ))}
             </CollapsibleSection>
           </div>
         )}

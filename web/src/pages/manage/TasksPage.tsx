@@ -43,6 +43,7 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { isAdminRole } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { useNavLabel } from "@/lib/nav-config";
 
 /* ---------- types ---------- */
 
@@ -702,7 +703,7 @@ export default function TasksPage() {
     <div className="flex h-full flex-col gap-4">
       {/* 页头 */}
       <header className="flex items-center gap-3">
-        <h1 className="text-xl font-semibold tracking-tight">任务管理</h1>
+        <h1 className="text-xl font-semibold tracking-tight">{useNavLabel("manage_tasks", "任务管理")}</h1>
         {canManage ? (
           <Badge variant="blue" className="gap-1 text-[11px]">
             <ShieldCheck className="h-3 w-3" />

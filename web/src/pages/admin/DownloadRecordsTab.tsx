@@ -14,6 +14,7 @@ import {
 import { api } from "@/lib/api";
 import { useUrlPage } from "@/lib/use-url-page";
 import { cn } from "@/lib/utils";
+import { useNavLabel } from "@/lib/nav-config";
 
 // ==================== 类型定义 ====================
 
@@ -93,7 +94,7 @@ export function AdminDownloadsPage() {
     <div className="flex h-full flex-col gap-4">
       {/* 页头 */}
       <header className="flex items-center gap-4">
-        <h1 className="text-xl font-semibold tracking-tight">下载记录</h1>
+        <h1 className="text-xl font-semibold tracking-tight">{useNavLabel("manage_downloads", "下载记录")}</h1>
       </header>
 
       {/* 搜索栏 */}

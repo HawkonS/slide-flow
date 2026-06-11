@@ -12,6 +12,7 @@ import { fetchLinks, deleteLink } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { Link } from "@/lib/types";
 import { useResponsiveGrid } from "@/lib/use-grid-layout";
+import { useNavLabel } from "@/lib/nav-config";
 
 export function LinksPage() {
   const { user } = useAuth();
@@ -69,7 +70,7 @@ export function LinksPage() {
       {/* 页头 */}
       <header className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-1.5">
-          <h1 className="text-xl font-semibold tracking-tight">链接仓库</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{useNavLabel("links", "链接仓库")}</h1>
           <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
             {filtered.length === links.length
               ? `共 ${links.length} 条`

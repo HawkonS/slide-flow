@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import { AdminConfigPage } from "./AdminConfigPage";
+import { useNavLabel } from "@/lib/nav-config";
 
 // ==================== 升级遮罩 ====================
 
@@ -473,7 +474,7 @@ export function AdminSystemPage() {
     <div className="flex h-full flex-col gap-4">
       {/* 页头 */}
       <header className="flex items-center gap-4">
-        <h1 className="text-xl font-semibold tracking-tight">系统管理</h1>
+        <h1 className="text-xl font-semibold tracking-tight">{useNavLabel("admin_system", "系统管理")}</h1>
       </header>
 
       <Tabs defaultValue="runtime" className="w-full">

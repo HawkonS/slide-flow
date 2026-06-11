@@ -43,6 +43,7 @@ import { USER_ROLE_LABEL, USER_ROLE_OPTIONS } from "@/lib/constants";
 import { AdminUser, UserRole, isSuperAdminRole } from "@/lib/types";
 import { useUrlPage } from "@/lib/use-url-page";
 import { cn } from "@/lib/utils";
+import { useNavLabel } from "@/lib/nav-config";
 
 interface UsersResponse {
   users: AdminUser[];
@@ -144,7 +145,7 @@ export function AdminUsersPage() {
       {/* 页头 */}
       <header className="flex items-end justify-between gap-4">
         <div className="flex items-center gap-1.5">
-          <h1 className="text-xl font-semibold tracking-tight">用户管理</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{useNavLabel("admin_users", "用户管理")}</h1>
           <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
             {filtered.length === users.length
               ? `共 ${users.length} 条`

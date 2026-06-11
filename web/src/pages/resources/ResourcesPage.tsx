@@ -14,6 +14,7 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { serializeTags } from "@/lib/types";
 import { Resource, ResourceVersion } from "@/lib/types";
+import { useNavLabel } from "@/lib/nav-config";
 import { useResponsiveGrid } from "@/lib/use-grid-layout";
 import { useEncodedUrlState } from "@/lib/use-encoded-url-state";
 import { useResourceFilters, markResourceFiltersUrlRestored } from "@/stores/resource-filters";
@@ -209,7 +210,7 @@ export function ResourcesPage() {
       {/* 页头 */}
       <header className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-1.5">
-          <h1 className="text-xl font-semibold tracking-tight">资源仓库</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{useNavLabel("resources", "资源仓库")}</h1>
           <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
             {total > 0 ? `共 ${total} 条` : "共 0 条"}
           </span>
