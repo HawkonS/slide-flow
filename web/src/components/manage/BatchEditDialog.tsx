@@ -22,6 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { UserPicker } from "@/components/resource/UserPicker";
+import { TagInput } from "@/components/resource/TagInput";
 import {
   DEFAULT_RESOURCE_SUBJECT,
   MANAGEMENT_SCOPE_OPTIONS,
@@ -30,33 +31,44 @@ import {
   VISIBILITY_SCOPE_OPTIONS,
 } from "@/lib/constants";
 import { api } from "@/lib/api";
-import type { SecrecyLevel, ResourceStatus, VisibilityScope } from "@/lib/types";
+import { parseTags } from "@/lib/types";
+import type {
+  Resource,
+  SecrecyLevel,
+  ResourceStatus,
+  VisibilityScope,
+} from "@/lib/types";
+
+/* -------------------------------------------------------------------------- */
+/*  Types                                                                      */
+/* -------------------------------------------------------------------------- */
 
 export interface BatchEditDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   resourceIds: number[];
+  resources: Resource[];
   onSuccess: () => void;
 }
 
-type ScopeField = {
-  enabled: boolean;
-  value: VisibilityScope;
-  userIds: number[];
-};
+type TagMode = "replace" | "append" | "remove";
 
 interface FieldsState {
-  tags: { enabled: boolean; value: string };
+  tags: { enabled: boolean; mode: TagMode; values: string[] };
   subject: { enabled: boolean; value: string };
   secrecy_level: { enabled: boolean; value: SecrecyLevel };
   status: { enabled: boolean; value: ResourceStatus };
-  visibility_scope: ScopeField;
-  management_scope: ScopeField;
+  visibility_scope: { enabled: boolean; value: VisibilityScope; userIds: number[] };
+  management_scope: { enabled: boolean; value: VisibilityScope; userIds: number[] };
 }
+
+/* -------------------------------------------------------------------------- */
+/*  Helpers                                                                     */
+/* -------------------------------------------------------------------------- */
 
 function defaultFields(): FieldsState {
   return {
-    tags: { enabled: false, value: "" },
+    tags: { enabled: false, mode: "replace", values: [] },
     subject: { enabled: false, value: DEFAULT_RESOURCE_SUBJECT },
     secrecy_level: { enabled: false, value: "public" },
     status: { enabled: false, value: "active" },
@@ -65,26 +77,100 @@ function defaultFields(): FieldsState {
   };
 }
 
+function computeSummary(resources: Resource[], resourceIds: number[]) {
+  const idSet = new Set(resourceIds);
+  const matched = resources.filter((r) => idSet.has(r.id));
+
+  // Tags: count unique
+  const allTags = new Set<string>();
+  matched.forEach((r) => parseTags(r.tags).forEach((t) => allTags.add(t)));
+
+  // Subject distribution
+  const subjectMap = new Map<string, number>();
+  matched.forEach((r) => {
+    const s = r.subject || "(无)";
+    subjectMap.set(s, (subjectMap.get(s) || 0) + 1);
+  });
+
+  // Secrecy distribution
+  const secrecyMap = new Map<string, number>();
+  matched.forEach((r) => {
+    secrecyMap.set(r.secrecy_level, (secrecyMap.get(r.secrecy_level) || 0) + 1);
+  });
+
+  // Status distribution
+  const statusMap = new Map<string, number>();
+  matched.forEach((r) => {
+    statusMap.set(r.status, (statusMap.get(r.status) || 0) + 1);
+  });
+
+  // Visibility distribution
+  const visMap = new Map<string, number>();
+  matched.forEach((r) => {
+    visMap.set(r.visibility_scope, (visMap.get(r.visibility_scope) || 0) + 1);
+  });
+
+  // Management distribution
+  const mgmtMap = new Map<string, number>();
+  matched.forEach((r) => {
+    mgmtMap.set(r.management_scope, (mgmtMap.get(r.management_scope) || 0) + 1);
+  });
+
+  return { matched, allTags, subjectMap, secrecyMap, statusMap, visMap, mgmtMap };
+}
+
+function distributionText(
+  map: Map<string, number>,
+  labelMap: Record<string, string>,
+): string {
+  if (map.size === 0) return "";
+  return Array.from(map.entries())
+    .map(([k, v]) => `${labelMap[k] || k} ${v}`)
+    .join(" / ");
+}
+
+const SECRECY_LABELS: Record<string, string> = { public: "公开", confidential: "保密", secret: "秘密" };
+const STATUS_LABELS: Record<string, string> = { active: "正常", disabled: "停用" };
+const SCOPE_LABELS: Record<string, string> = { public: "公开", partial: "部分", private: "仅自己" };
+
+const TAG_MODE_OPTIONS: { value: TagMode; label: string }[] = [
+  { value: "replace", label: "覆盖" },
+  { value: "append", label: "追加" },
+  { value: "remove", label: "移除" },
+];
+
+/* -------------------------------------------------------------------------- */
+/*  Component                                                                  */
+/* -------------------------------------------------------------------------- */
+
 export function BatchEditDialog({
   open,
   onOpenChange,
   resourceIds,
+  resources,
   onSuccess,
 }: BatchEditDialogProps) {
   const [fields, setFields] = React.useState<FieldsState>(defaultFields);
+  const [confirmStep, setConfirmStep] = React.useState(false);
 
   React.useEffect(() => {
     if (open) {
       setFields(defaultFields());
+      setConfirmStep(false);
     }
   }, [open]);
+
+  const summary = React.useMemo(
+    () => computeSummary(resources, resourceIds),
+    [resources, resourceIds],
+  );
 
   const mutation = useMutation({
     mutationFn: async () => {
       const payloadFields: Record<string, unknown> = {};
 
       if (fields.tags.enabled) {
-        payloadFields.tags = fields.tags.value;
+        payloadFields.tags = { mode: fields.tags.mode, values: fields.tags.values };
       }
       if (fields.subject.enabled) {
         payloadFields.subject = fields.subject.value;
@@ -110,10 +196,7 @@ export function BatchEditDialog({
 
       return api("/api/resources/batch", {
         method: "PUT",
-        json: {
-          resource_ids: resourceIds,
-          fields: payloadFields,
-        },
+        json: { resource_ids: resourceIds, fields: payloadFields },
       });
     },
     onSuccess: () => {
@@ -126,18 +209,38 @@ export function BatchEditDialog({
     },
   });
 
+  const enabledFields = React.useMemo(() => {
+    const list: string[] = [];
+    if (fields.tags.enabled) list.push("标签");
+    if (fields.subject.enabled) list.push("主体");
+    if (fields.secrecy_level.enabled) list.push("密级");
+    if (fields.status.enabled) list.push("状态");
+    if (fields.visibility_scope.enabled) list.push("可见范围");
+    if (fields.management_scope.enabled) list.push("管理范围");
+    return list;
+  }, [fields]);
+
+  const changeSummaryText = React.useMemo(() => {
+    const parts: string[] = [];
+    if (fields.tags.enabled) {
+      const modeLabel = TAG_MODE_OPTIONS.find((o) => o.value === fields.tags.mode)?.label || "";
+      parts.push(`标签→${modeLabel} ${fields.tags.values.join(", ") || "(空)"}`);
+    }
+    if (fields.subject.enabled) parts.push(`主体→${fields.subject.value || "(空)"}`);
+    if (fields.secrecy_level.enabled)
+      parts.push(`密级→${SECRECY_LABELS[fields.secrecy_level.value]}`);
+    if (fields.status.enabled) parts.push(`状态→${STATUS_LABELS[fields.status.value]}`);
+    if (fields.visibility_scope.enabled)
+      parts.push(`可见范围→${SCOPE_LABELS[fields.visibility_scope.value]}`);
+    if (fields.management_scope.enabled)
+      parts.push(`管理范围→${SCOPE_LABELS[fields.management_scope.value]}`);
+    return parts.join("；");
+  }, [fields]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
-    const anyEnabled =
-      fields.tags.enabled ||
-      fields.subject.enabled ||
-      fields.secrecy_level.enabled ||
-      fields.status.enabled ||
-      fields.visibility_scope.enabled ||
-      fields.management_scope.enabled;
-
-    if (!anyEnabled) {
+    if (enabledFields.length === 0) {
       toast.error("请至少选择一个要修改的字段");
       return;
     }
@@ -160,6 +263,11 @@ export function BatchEditDialog({
       return;
     }
 
+    if (!confirmStep) {
+      setConfirmStep(true);
+      return;
+    }
+
     mutation.mutate();
   };
 
@@ -171,259 +279,332 @@ export function BatchEditDialog({
       ...prev,
       [key]: { ...prev[key], ...patch },
     }));
+    setConfirmStep(false);
   };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[90vh] max-w-2xl flex-col overflow-hidden">
+      <DialogContent className="flex max-h-[90vh] max-w-lg flex-col overflow-hidden">
         <DialogHeader>
           <DialogTitle>批量编辑</DialogTitle>
+          <p className="text-sm text-muted-foreground">
+            共选中{" "}
+            <span className="font-semibold text-foreground">{resourceIds.length}</span>{" "}
+            项资源
+          </p>
         </DialogHeader>
 
         <form
           onSubmit={handleSubmit}
-          className="grid min-h-0 flex-1 gap-4 overflow-y-auto px-0.5 pb-1"
+          className="flex min-h-0 flex-1 flex-col gap-0 overflow-y-auto"
         >
-          <p className="text-sm text-muted-foreground">
-            共选中 <span className="font-semibold text-foreground">{resourceIds.length}</span> 项资源。
-            勾选字段开关以启用修改，仅开启的字段会被批量更新。
-          </p>
-
-          {/* 标签 */}
-          <div className="flex items-start gap-3 rounded-lg border bg-muted/20 p-4">
-            <Checkbox
-              id="batch-tags"
+          <div className="divide-y">
+            {/* 标签 */}
+            <FieldRow
+              label="标签"
               checked={fields.tags.enabled}
-              onCheckedChange={(v) =>
-                updateField("tags", { enabled: v === true })
+              onCheckedChange={(v) => updateField("tags", { enabled: v })}
+              summary={
+                fields.tags.enabled && summary.allTags.size > 0
+                  ? `当前共 ${summary.allTags.size} 种不同标签`
+                  : undefined
               }
-              className="mt-2"
-            />
-            <div className="grid flex-1 gap-1.5">
-              <Label htmlFor="batch-tags-input">标签</Label>
-              <Input
-                id="batch-tags-input"
-                value={fields.tags.value}
-                onChange={(e) =>
-                  updateField("tags", { value: e.target.value })
-                }
-                placeholder="多个标签用逗号分隔"
-                disabled={!fields.tags.enabled}
-              />
-            </div>
-          </div>
-
-          {/* 主体 */}
-          <div className="flex items-start gap-3 rounded-lg border bg-muted/20 p-4">
-            <Checkbox
-              id="batch-subject"
-              checked={fields.subject.enabled}
-              onCheckedChange={(v) =>
-                updateField("subject", { enabled: v === true })
-              }
-              className="mt-2"
-            />
-            <div className="grid flex-1 gap-1.5">
-              <Label htmlFor="batch-subject-input">主体</Label>
-              <Input
-                id="batch-subject-input"
-                list="batch-subject-list"
-                value={fields.subject.value}
-                onChange={(e) =>
-                  updateField("subject", { value: e.target.value })
-                }
-                disabled={!fields.subject.enabled}
-              />
-              <datalist id="batch-subject-list">
-                <option value={DEFAULT_RESOURCE_SUBJECT} />
-              </datalist>
-            </div>
-          </div>
-
-          {/* 密级 */}
-          <div className="flex items-start gap-3 rounded-lg border bg-muted/20 p-4">
-            <Checkbox
-              id="batch-secrecy"
-              checked={fields.secrecy_level.enabled}
-              onCheckedChange={(v) =>
-                updateField("secrecy_level", { enabled: v === true })
-              }
-              className="mt-2"
-            />
-            <div className="grid flex-1 gap-1.5">
-              <Label>密级</Label>
-              <Select
-                value={fields.secrecy_level.value}
-                onValueChange={(v) =>
-                  updateField("secrecy_level", {
-                    value: v as SecrecyLevel,
-                  })
-                }
-                disabled={!fields.secrecy_level.enabled}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {SECRECY_LEVEL_FORM_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-
-          {/* 状态 */}
-          <div className="flex items-start gap-3 rounded-lg border bg-muted/20 p-4">
-            <Checkbox
-              id="batch-status"
-              checked={fields.status.enabled}
-              onCheckedChange={(v) =>
-                updateField("status", { enabled: v === true })
-              }
-              className="mt-2"
-            />
-            <div className="grid flex-1 gap-1.5">
-              <Label>状态</Label>
-              <Select
-                value={fields.status.value}
-                onValueChange={(v) =>
-                  updateField("status", { value: v as ResourceStatus })
-                }
-                disabled={!fields.status.enabled}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {RESOURCE_STATUS_FORM_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-
-          {/* 可见范围 */}
-          <div className="flex items-start gap-3 rounded-lg border bg-muted/20 p-4">
-            <Checkbox
-              id="batch-visibility"
-              checked={fields.visibility_scope.enabled}
-              onCheckedChange={(v) =>
-                updateField("visibility_scope", { enabled: v === true })
-              }
-              className="mt-2"
-            />
-            <div className="grid flex-1 gap-1.5">
-              <Label>可见范围</Label>
-              <Select
-                value={fields.visibility_scope.value}
-                onValueChange={(v) =>
-                  updateField("visibility_scope", {
-                    value: v as VisibilityScope,
-                  })
-                }
-                disabled={!fields.visibility_scope.enabled}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {VISIBILITY_SCOPE_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {fields.visibility_scope.enabled &&
-                fields.visibility_scope.value === "partial" && (
-                  <div className="mt-2 grid gap-1.5">
-                    <Label className="text-xs text-muted-foreground">
-                      可见用户（必选至少 1 人）
-                    </Label>
-                    <UserPicker
-                      value={fields.visibility_scope.userIds}
-                      onChange={(ids) =>
-                        updateField("visibility_scope", { userIds: ids })
-                      }
-                    />
-                  </div>
-                )}
-            </div>
-          </div>
-
-          {/* 管理范围 */}
-          <div className="flex items-start gap-3 rounded-lg border bg-muted/20 p-4">
-            <Checkbox
-              id="batch-management"
-              checked={fields.management_scope.enabled}
-              onCheckedChange={(v) =>
-                updateField("management_scope", { enabled: v === true })
-              }
-              className="mt-2"
-            />
-            <div className="grid flex-1 gap-1.5">
-              <Label>管理范围</Label>
-              <Select
-                value={fields.management_scope.value}
-                onValueChange={(v) =>
-                  updateField("management_scope", {
-                    value: v as VisibilityScope,
-                  })
-                }
-                disabled={!fields.management_scope.enabled}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {MANAGEMENT_SCOPE_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {fields.management_scope.enabled &&
-                fields.management_scope.value === "partial" && (
-                  <div className="mt-2 grid gap-1.5">
-                    <Label className="text-xs text-muted-foreground">
-                      可管理用户（必选至少 1 人）
-                    </Label>
-                    <UserPicker
-                      value={fields.management_scope.userIds}
-                      onChange={(ids) =>
-                        updateField("management_scope", { userIds: ids })
-                      }
-                    />
-                  </div>
-                )}
-            </div>
-          </div>
-
-          <DialogFooter className="sticky bottom-0 -mx-0.5 border-t bg-background pt-3">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => onOpenChange(false)}
-              disabled={mutation.isPending}
             >
-              取消
-            </Button>
-            <Button type="submit" disabled={mutation.isPending}>
-              {mutation.isPending && (
-                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+              {fields.tags.enabled && (
+                <div className="flex flex-col gap-2">
+                  <div className="flex gap-0.5 rounded-md bg-muted p-0.5">
+                    {TAG_MODE_OPTIONS.map((opt) => (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        className={`flex-1 rounded px-2 py-1 text-xs font-medium transition-colors select-none ${
+                          fields.tags.mode === opt.value
+                            ? "bg-background text-foreground shadow-sm"
+                            : "text-muted-foreground hover:text-foreground"
+                        }`}
+                        onClick={() => updateField("tags", { mode: opt.value })}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                  <TagInput
+                    value={fields.tags.values}
+                    onChange={(next) => updateField("tags", { values: next })}
+                    placeholder="选择或输入标签"
+                  />
+                </div>
               )}
-              确认修改
-            </Button>
+            </FieldRow>
+
+            {/* 主体 */}
+            <FieldRow
+              label="主体"
+              checked={fields.subject.enabled}
+              onCheckedChange={(v) => updateField("subject", { enabled: v })}
+              summary={
+                fields.subject.enabled && summary.subjectMap.size > 0
+                  ? summary.subjectMap.size === 1
+                    ? `统一为 ${Array.from(summary.subjectMap.keys())[0]}`
+                    : Array.from(summary.subjectMap.entries())
+                        .slice(0, 3)
+                        .map(([k, v]) => `${k}（${v}项）`)
+                        .join("、")
+                  : undefined
+              }
+            >
+              {fields.subject.enabled && (
+                <>
+                  <Input
+                    value={fields.subject.value}
+                    onChange={(e) => updateField("subject", { value: e.target.value })}
+                    list="batch-subject-list"
+                    className="h-8"
+                  />
+                  <datalist id="batch-subject-list">
+                    <option value={DEFAULT_RESOURCE_SUBJECT} />
+                  </datalist>
+                </>
+              )}
+            </FieldRow>
+
+            {/* 密级 */}
+            <FieldRow
+              label="密级"
+              checked={fields.secrecy_level.enabled}
+              onCheckedChange={(v) => updateField("secrecy_level", { enabled: v })}
+              summary={
+                fields.secrecy_level.enabled && summary.secrecyMap.size > 0
+                  ? distributionText(summary.secrecyMap, SECRECY_LABELS)
+                  : undefined
+              }
+            >
+              {fields.secrecy_level.enabled && (
+                <Select
+                  value={fields.secrecy_level.value}
+                  onValueChange={(v) =>
+                    updateField("secrecy_level", { value: v as SecrecyLevel })
+                  }
+                >
+                  <SelectTrigger className="h-8">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SECRECY_LEVEL_FORM_OPTIONS.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </FieldRow>
+
+            {/* 状态 */}
+            <FieldRow
+              label="状态"
+              checked={fields.status.enabled}
+              onCheckedChange={(v) => updateField("status", { enabled: v })}
+              summary={
+                fields.status.enabled && summary.statusMap.size > 0
+                  ? distributionText(summary.statusMap, STATUS_LABELS)
+                  : undefined
+              }
+            >
+              {fields.status.enabled && (
+                <Select
+                  value={fields.status.value}
+                  onValueChange={(v) =>
+                    updateField("status", { value: v as ResourceStatus })
+                  }
+                >
+                  <SelectTrigger className="h-8">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {RESOURCE_STATUS_FORM_OPTIONS.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </FieldRow>
+
+            {/* 可见范围 */}
+            <FieldRow
+              label="可见范围"
+              checked={fields.visibility_scope.enabled}
+              onCheckedChange={(v) => updateField("visibility_scope", { enabled: v })}
+              summary={
+                fields.visibility_scope.enabled && summary.visMap.size > 0
+                  ? distributionText(summary.visMap, SCOPE_LABELS)
+                  : undefined
+              }
+            >
+              {fields.visibility_scope.enabled && (
+                <div className="flex flex-col gap-2">
+                  <Select
+                    value={fields.visibility_scope.value}
+                    onValueChange={(v) =>
+                      updateField("visibility_scope", { value: v as VisibilityScope })
+                    }
+                  >
+                    <SelectTrigger className="h-8">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {VISIBILITY_SCOPE_OPTIONS.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {fields.visibility_scope.value === "partial" && (
+                    <div className="ml-4">
+                      <Label className="mb-1 text-xs text-muted-foreground">
+                        可见用户（必选至少 1 人）
+                      </Label>
+                      <UserPicker
+                        value={fields.visibility_scope.userIds}
+                        onChange={(ids) =>
+                          updateField("visibility_scope", { userIds: ids })
+                        }
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+            </FieldRow>
+
+            {/* 管理范围 */}
+            <FieldRow
+              label="管理范围"
+              checked={fields.management_scope.enabled}
+              onCheckedChange={(v) => updateField("management_scope", { enabled: v })}
+              summary={
+                fields.management_scope.enabled && summary.mgmtMap.size > 0
+                  ? distributionText(summary.mgmtMap, SCOPE_LABELS)
+                  : undefined
+              }
+            >
+              {fields.management_scope.enabled && (
+                <div className="flex flex-col gap-2">
+                  <Select
+                    value={fields.management_scope.value}
+                    onValueChange={(v) =>
+                      updateField("management_scope", { value: v as VisibilityScope })
+                    }
+                  >
+                    <SelectTrigger className="h-8">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {MANAGEMENT_SCOPE_OPTIONS.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {fields.management_scope.value === "partial" && (
+                    <div className="ml-4">
+                      <Label className="mb-1 text-xs text-muted-foreground">
+                        可管理用户（必选至少 1 人）
+                      </Label>
+                      <UserPicker
+                        value={fields.management_scope.userIds}
+                        onChange={(ids) =>
+                          updateField("management_scope", { userIds: ids })
+                        }
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+            </FieldRow>
+          </div>
+
+          {/* 确认摘要 */}
+          {confirmStep && (
+            <div className="mx-1 mt-3 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+              将修改 {resourceIds.length} 项资源的 {enabledFields.length} 个字段：
+              {changeSummaryText}
+            </div>
+          )}
+
+          <DialogFooter className="mt-3 border-t pt-3">
+            {confirmStep ? (
+              <>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setConfirmStep(false)}
+                  disabled={mutation.isPending}
+                >
+                  返回修改
+                </Button>
+                <Button type="submit" size="sm" disabled={mutation.isPending}>
+                  {mutation.isPending && (
+                    <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                  )}
+                  确认执行
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onOpenChange(false)}
+                >
+                  取消
+                </Button>
+                <Button type="submit" size="sm">
+                  确认修改
+                </Button>
+              </>
+            )}
           </DialogFooter>
         </form>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  FieldRow helper                                                            */
+/* -------------------------------------------------------------------------- */
+
+interface FieldRowProps {
+  label: string;
+  checked: boolean;
+  onCheckedChange: (v: boolean) => void;
+  summary?: string;
+  children?: React.ReactNode;
+}
+
+function FieldRow({ label, checked, onCheckedChange, summary, children }: FieldRowProps) {
+  return (
+    <div className="flex items-start gap-3 py-3 first:pt-0 last:pb-0">
+      <Checkbox
+        checked={checked}
+        onCheckedChange={(v) => onCheckedChange(v === true)}
+        className="mt-0.5"
+      />
+      <div className="min-w-[60px] shrink-0 pt-0.5">
+        <Label className="text-sm font-medium">{label}</Label>
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        {children}
+        {summary && (
+          <p className="text-[11px] leading-tight text-muted-foreground">{summary}</p>
+        )}
+      </div>
+    </div>
   );
 }

@@ -2111,6 +2111,43 @@ def list_resources(
     }
 
 
+@app.get("/api/resources/ids")
+def list_resource_ids(
+    resource_type: str = Query("asset"),
+    search: str = Query(""),
+    tag: str = Query(""),
+    tags: str = Query(""),
+    tags_mode: str = Query("any"),
+    subject: str = Query(""),
+    status: str = Query("all"),
+    secrecy: str = Query("all"),
+    permission: str = Query("all"),
+    remark_common: str = Query("all"),
+    remark_personal: str = Query("all"),
+    sort: str = Query("updated_desc"),
+    manageable_only: bool = Query(False),
+    user: sqlite3.Row = Depends(require_user),
+    db: sqlite3.Connection = Depends(db_dep),
+) -> dict[str, Any]:
+    """返回当前筛选条件下所有资源的 ID 列表（不含完整数据，用于全选）。
+
+    复用 list_resources 的 SQL WHERE 构建逻辑，确保权限/可见性/筛选行为一致。
+    """
+    if resource_type != "asset":
+        raise HTTPException(400, "模板请使用 /api/templates")
+    where_clause, _, params = _build_resource_query_sql(
+        user, manageable_only=manageable_only,
+        search=search, tag=tag, tags=tags, tags_mode=tags_mode,
+        subject=subject, status=status, secrecy=secrecy,
+        permission=permission, remark_common=remark_common,
+        remark_personal=remark_personal, sort=sort,
+    )
+    rows = db.execute(
+        f"SELECT r.id FROM resources r WHERE {where_clause}", params,
+    ).fetchall()
+    return {"ids": [int(r["id"]) for r in rows]}
+
+
 def _parse_csv(value: str) -> list[str]:
     """将逗号分隔（中英文逗号）的字符串解析为去重去空的列表，保持出现顺序"""
     if not value:
@@ -2989,7 +3026,6 @@ def batch_update_resources(
 
     # 允许更新的字段白名单
     allowed_scalar = {
-        "tags": None,
         "subject": None,
         "secrecy_level": _validate_secrecy,
         "status": _validate_resource_status,
@@ -2998,7 +3034,7 @@ def batch_update_resources(
     }
     allowed_relational = {"visible_user_ids", "manage_user_ids"}
 
-    invalid = set(fields.keys()) - set(allowed_scalar.keys()) - allowed_relational
+    invalid = set(fields.keys()) - set(allowed_scalar.keys()) - allowed_relational - {"tags"}
     if invalid:
         raise HTTPException(400, f"不支持的字段: {', '.join(sorted(invalid))}")
 
@@ -3024,6 +3060,35 @@ def batch_update_resources(
                     value = validator(value)
                 set_clauses.append(f"{key} = ?")
                 set_values.append(value)
+
+        # 处理 tags 字段：支持 replace/append/remove 三种模式
+        if "tags" in fields:
+            tags_field = fields["tags"]
+            # 向下兼容：纯字符串视为 replace
+            if isinstance(tags_field, str):
+                tag_value = tags_field
+            elif isinstance(tags_field, dict):
+                mode = tags_field.get("mode", "replace")
+                values = tags_field.get("values", [])
+                if mode == "replace":
+                    tag_value = ",".join(values)
+                elif mode == "append":
+                    existing_raw = row["tags"] or ""
+                    existing = [t.strip() for t in existing_raw.replace("，", ",").split(",") if t.strip()]
+                    merged = list(dict.fromkeys(existing + values))  # 保序去重
+                    tag_value = ",".join(merged)
+                elif mode == "remove":
+                    existing_raw = row["tags"] or ""
+                    existing = [t.strip() for t in existing_raw.replace("，", ",").split(",") if t.strip()]
+                    remove_set = set(values)
+                    remaining = [t for t in existing if t not in remove_set]
+                    tag_value = ",".join(remaining)
+                else:
+                    raise HTTPException(400, f"不支持的 tags mode: {mode}")
+            else:
+                raise HTTPException(400, "tags 格式错误")
+            set_clauses.append("tags = ?")
+            set_values.append(tag_value)
 
         if set_clauses:
             set_clauses.append("updated_at = ?")

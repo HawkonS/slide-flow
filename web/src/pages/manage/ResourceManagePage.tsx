@@ -4,6 +4,7 @@ import {
   Check,
   ChevronDown,
   ImageOff,
+  ListChecks,
   Loader2,
   Pencil,
   RotateCcw,
@@ -269,6 +270,17 @@ export default function ResourceManagePage() {
 
   /* ---- Selection ---- */
   const [selectedIds, setSelectedIds] = React.useState<Set<number>>(new Set());
+  // 跨页选择缓存：保存浏览过的资源对象，用于 BatchEditDialog 摘要计算
+  const resourceCacheRef = React.useRef<Map<number, Resource>>(new Map());
+  React.useEffect(() => {
+    resources.forEach((r) => {
+      resourceCacheRef.current.set(r.id, r);
+    });
+  }, [resources]);
+  const clearSelection = React.useCallback(() => {
+    setSelectedIds(new Set());
+    resourceCacheRef.current.clear();
+  }, []);
   const toggleSelect = (id: number) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -292,17 +304,31 @@ export default function ResourceManagePage() {
       });
     }
   };
-  // Keep selection in sync with current page items
-  React.useEffect(() => {
-    setSelectedIds((prev) => {
-      const pageIdSet = new Set(resources.map((r) => r.id));
-      const next = new Set<number>();
-      prev.forEach((id) => {
-        if (pageIdSet.has(id)) next.add(id);
-      });
-      return next;
-    });
-  }, [resources]);
+
+  /* ---- 全选所有（跨页，基于当前筛选条件） ---- */
+  const handleSelectAll = async () => {
+    try {
+      const params = new URLSearchParams();
+      params.set("resource_type", "asset");
+      params.set("manageable_only", "true");
+      if (apiParams.search) params.set("search", apiParams.search);
+      if (apiParams.subject) params.set("subject", apiParams.subject);
+      if (apiParams.status) params.set("status", apiParams.status);
+      if (apiParams.secrecy) params.set("secrecy", apiParams.secrecy);
+      if (apiParams.permission) params.set("permission", apiParams.permission);
+      if (apiParams.tags) params.set("tags", apiParams.tags);
+      if (apiParams.tags_mode) params.set("tags_mode", apiParams.tags_mode);
+
+      const data = await api<{ ids: number[] }>(
+        `/api/resources/ids?${params.toString()}`,
+      );
+      setSelectedIds(new Set(data.ids));
+      toast.success(`已选中全部 ${data.ids.length} 项资源`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "全选失败";
+      toast.error(message);
+    }
+  };
 
   /* ---- Batch edit ---- */
   const [batchEditOpen, setBatchEditOpen] = React.useState(false);
@@ -317,7 +343,7 @@ export default function ResourceManagePage() {
       }),
     onSuccess: () => {
       toast.success("批量删除成功");
-      setSelectedIds(new Set());
+      clearSelection();
       queryClient.invalidateQueries({ queryKey: ["manage-resources"] });
       setDeleteDialogOpen(false);
     },
@@ -412,9 +438,19 @@ export default function ResourceManagePage() {
         {/* 批量操作按钮 */}
         <div className="ml-auto flex items-center gap-2">
           {selectedIds.size > 0 && (
-            <span className="text-xs text-muted-foreground">
-              已选 <span className="font-medium text-primary">{selectedIds.size}</span> 项
-            </span>
+            <>
+              <span className="text-xs text-muted-foreground">
+                已选 <span className="font-medium text-primary">{selectedIds.size}</span> 项
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-1.5 text-xs text-muted-foreground hover:text-primary"
+                onClick={clearSelection}
+              >
+                清空
+              </Button>
+            </>
           )}
           <Button
             variant="outline"
@@ -476,12 +512,19 @@ export default function ResourceManagePage() {
                             <ChevronDown className="h-3 w-3 text-muted-foreground" />
                           </button>
                         </DropdownMenuTrigger>
-                        <DropdownMenuContent align="start" className="w-40">
+                        <DropdownMenuContent align="start" className="w-44">
                           <DropdownMenuItem onClick={() => toggleSelectAll(true)}>
                             <Check className="mr-2 h-3.5 w-3.5" />
                             全选本页
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => setSelectedIds(new Set())}>
+                          <DropdownMenuItem
+                            onClick={handleSelectAll}
+                            disabled={total === 0}
+                          >
+                            <ListChecks className="mr-2 h-3.5 w-3.5" />
+                            全选所有{total > 0 ? ` (${total})` : ""}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={clearSelection}>
                             <X className="mr-2 h-3.5 w-3.5" />
                             取消选择
                           </DropdownMenuItem>
@@ -642,8 +685,11 @@ export default function ResourceManagePage() {
         open={batchEditOpen}
         onOpenChange={setBatchEditOpen}
         resourceIds={Array.from(selectedIds)}
+        resources={Array.from(selectedIds)
+          .map((id) => resourceCacheRef.current.get(id))
+          .filter((r): r is Resource => r !== undefined)}
         onSuccess={() => {
-          setSelectedIds(new Set());
+          clearSelection();
           queryClient.invalidateQueries({ queryKey: ["manage-resources"] });
         }}
       />
