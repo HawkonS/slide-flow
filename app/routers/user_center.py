@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.permissions import require_user, is_super_admin, can_view_resource, can_view_show
 from app.db import now_iso
-from app.routers.dependencies import db_dep
+from app.routers.dependencies import db_dep, db_read_dep
 
 
 router = APIRouter()
@@ -151,7 +151,7 @@ def _serialize_show(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row)
 @router.get("/me/personal-remarks")
 def my_personal_remark_summary(
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     """当前用户有非空个人备注的资源 id 汇总（前端筛选用）。"""
     rows = db.execute(
@@ -238,7 +238,7 @@ def unpin_show(
 @router.get("/me/pins")
 def list_my_pins(
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     """返回当前用户置顶的资源 / 放映；不再可见的项自动过滤。"""
     res_rows = db.execute(
@@ -279,7 +279,7 @@ def list_my_pins(
 @router.get("/me/home/stats")
 def my_home_stats(
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     """首页数据概览：仅统计当前用户可见范围；超管看到全部。"""
     user_id = int(user["id"])

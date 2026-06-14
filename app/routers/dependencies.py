@@ -240,13 +240,23 @@ class ChangePasswordPayload(BaseModel):
 # ==================== 工具函数 ====================
 
 def db_dep():
-    """数据库依赖注入"""
-    from app.db import get_db
-    db = get_db()
+    """数据库依赖注入（读写连接）"""
+    from app.db import get_write_db, release_db
+    db = get_write_db()
     try:
         yield db
     finally:
-        db.close()
+        release_db(db, readonly=False)
+
+
+def db_read_dep():
+    """只读数据库依赖注入（用于 GET 请求，不阻塞写操作）"""
+    from app.db import get_read_db, release_db
+    db = get_read_db()
+    try:
+        yield db
+    finally:
+        release_db(db, readonly=True)
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:

@@ -16,6 +16,7 @@ from app.routers.dependencies import (
     LinkOrderPayload,
     LinkSelectionPayload,
     db_dep,
+    db_read_dep,
     _row_to_dict,
     _validate_scope,
 )
@@ -73,7 +74,7 @@ def _serialize_link(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row)
 @router.get("/links")
 def list_links(
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     """获取链接列表"""
     rows = db.execute("SELECT * FROM links ORDER BY sort_order ASC, updated_at DESC, id DESC").fetchall()
@@ -215,7 +216,7 @@ def reorder_links(
 @router.get("/links/my-selection")
 def get_my_link_selection(
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     """获取用户的默认链接选择"""
     rows = db.execute(
@@ -232,7 +233,7 @@ def get_my_link_selection(
 @router.get("/links/admin/defaults")
 def get_default_link_selection(
     user: sqlite3.Row = Depends(require_super_admin),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     """获取默认链接选择（超管）"""
     rows = db.execute(

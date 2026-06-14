@@ -26,7 +26,6 @@ NAV_REGISTRY: list[dict[str, Any]] = [
     {"key": "manage_resources", "path": "/manage/resources",    "default_label": "资源管理", "section": "manage",   "admin": False, "super_admin": False},
     {"key": "manage_tasks",     "path": "/manage/tasks",        "default_label": "任务管理", "section": "manage",   "admin": False, "super_admin": False},
     {"key": "manage_offline",   "path": "/manage/offline-cache","default_label": "离线缓存", "section": "manage",   "admin": False, "super_admin": False},
-    {"key": "manage_downloads", "path": "/manage/downloads",    "default_label": "下载记录", "section": "manage",   "admin": True,  "super_admin": False},
     {"key": "manage_tags",      "path": "/manage/tags",        "default_label": "标签管理", "section": "manage",   "admin": True,  "super_admin": False},
     # ── 系统分组 ──
     {"key": "admin_users",      "path": "/admin/users",         "default_label": "用户管理", "section": "system",   "admin": True,  "super_admin": False},

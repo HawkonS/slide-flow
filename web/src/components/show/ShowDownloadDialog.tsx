@@ -21,20 +21,16 @@ import {
 } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
-import { DownloadProgress, DownloadProgressState } from "@/components/common/DownloadProgress";
 import { FontCheckPanel } from "@/components/common/FontCheckPanel";
 import {
   detectLocalFonts,
-  downloadWithProgress,
   fetchShowFonts,
   LocalFontInfo,
-  showImagesPptxDownloadUrl,
-  showPdfDownloadUrl,
-  showPptxDownloadUrl,
-  DownloadPhase,
 } from "@/lib/fonts";
+import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useSiteConfig } from "@/stores/site-config";
+import { useDownloadManager } from "@/stores/download-manager";
 import { Show } from "@/lib/types";
 
 interface ShowDownloadDialogProps {
@@ -43,9 +39,25 @@ interface ShowDownloadDialogProps {
   show: Show | null;
 }
 
+/** 异步下载创建接口契约 */
+type DownloadType = "pdf" | "pptx_images" | "pptx" | "pptx_fonts";
+
+interface CreateDownloadResponse {
+  task_id: number;
+  track_code: string;
+  message: string;
+}
+
+const DOWNLOAD_TYPE_LABEL: Record<DownloadType, string> = {
+  pdf: "PDF 文档",
+  pptx_images: "纯图 PPT",
+  pptx: "合并 PPT",
+  pptx_fonts: "PPT + 字体包",
+};
+
 export function ShowDownloadDialog({ open, onOpenChange, show }: ShowDownloadDialogProps) {
-  const [progress, setProgress] = React.useState<DownloadProgressState | null>(null);
-  const [phase, setPhase] = React.useState<DownloadPhase | null>(null);
+  /** 当前正在提交的下载类型，用于按钮 loading 状态 */
+  const [submitting, setSubmitting] = React.useState<DownloadType | null>(null);
   const [local, setLocal] = React.useState<LocalFontInfo | null>(null);
   // 水印选项
   const [wmEnabled, setWmEnabled] = React.useState(true);
@@ -54,6 +66,7 @@ export function ShowDownloadDialog({ open, onOpenChange, show }: ShowDownloadDia
 
   const { user } = useAuth();
   const siteName = useSiteConfig((s) => s.siteName);
+  const addTask = useDownloadManager((s) => s.addTask);
 
   const watermarkText = React.useMemo(() => {
     if (!wmEnabled) return "";
@@ -86,8 +99,7 @@ export function ShowDownloadDialog({ open, onOpenChange, show }: ShowDownloadDia
 
   React.useEffect(() => {
     if (open) {
-      setProgress(null);
-      setPhase(null);
+      setSubmitting(null);
       setWmEnabled(true);
       setWmUserName(false);
       setWmPlatform(false);
@@ -97,69 +109,47 @@ export function ShowDownloadDialog({ open, onOpenChange, show }: ShowDownloadDia
   if (!show) return null;
 
   const accessibleCount = show.resources.filter((r) => r.accessible).length;
-  const isBusy = progress != null;
+  const isBusy = submitting != null;
 
-  const runDownload = async (url: string, fallbackName: string) => {
-    setProgress({ label: "正在生成文件…", percent: null });
-    setPhase("generating");
+  const submitDownload = async (downloadType: DownloadType, withFonts: boolean) => {
+    if (!show) return;
+    // UI loading 状态用 pptx_fonts 区分两个 pptx 按钮，但实际请求 download_type 仍为 pptx
+    const submittingKey: DownloadType =
+      withFonts && downloadType === "pptx" ? "pptx_fonts" : downloadType;
+    const labelKey: DownloadType = submittingKey;
+    setSubmitting(submittingKey);
     try {
-      await downloadWithProgress(
-        url,
-        fallbackName,
-        (percent, bytes) => {
-          if (percent == null) {
-            setProgress({ label: `${Math.round(bytes / 1024)} KB`, percent: null });
-          } else {
-            setProgress({ label: `${Math.round(percent)}%`, percent });
-          }
+      const res = await api<CreateDownloadResponse>("/api/downloads/create", {
+        method: "POST",
+        json: {
+          show_id: show.id,
+          download_type: downloadType,
+          watermark: watermarkText,
+          with_fonts: withFonts,
         },
-        (p) => {
-          setPhase(p);
-          if (p === "downloading") {
-            setProgress({ label: "0%", percent: 0 });
-          }
+      });
+      addTask(res.task_id, show.name, res.track_code);
+      toast.success("下载任务已提交", {
+        description: `${show.name} · ${DOWNLOAD_TYPE_LABEL[labelKey]}`,
+        action: {
+          label: "查看任务",
+          onClick: () => {
+            window.location.href = "/manage/tasks?tab=downloads";
+          },
         },
-      );
-      toast.success("下载完成");
+      });
       onOpenChange(false);
     } catch (err) {
-      toast.error((err as Error).message || "下载失败");
+      toast.error((err as Error).message || "提交失败");
     } finally {
-      setProgress(null);
-      setPhase(null);
+      setSubmitting(null);
     }
   };
 
-  const runPdf = () =>
-    runDownload(
-      showPdfDownloadUrl(show.id, watermarkText || undefined),
-      `${show.name}.pdf`,
-    );
-
-  const runImagesPpt = () =>
-    runDownload(
-      showImagesPptxDownloadUrl(show.id, watermarkText || undefined),
-      `${show.name}_纯图.pptx`,
-    );
-
-  const runPpt = (withFonts: boolean) => {
-    const url = showPptxDownloadUrl(show.id, withFonts, watermarkText || undefined);
-    const name = withFonts ? `${show.name}_with_fonts.zip` : `${show.name}.pptx`;
-    return runDownload(url, name);
-  };
-
-  // 进度条显示文案：根据阶段区分
-  const progressLabel =
-    progress && phase === "generating"
-      ? { ...progress, label: "服务端生成中…" }
-      : progress
-        ? { ...progress, label: `下载中 · ${progress.label}` }
-        : null;
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] max-w-3xl gap-0 overflow-hidden p-0">
-        <DialogHeader className="border-b px-6 py-4">
+      <DialogContent className="flex max-h-[85vh] max-w-3xl flex-col gap-0 overflow-hidden p-0">
+        <DialogHeader className="shrink-0 border-b px-6 py-4">
           <DialogTitle className="text-base font-semibold">下载放映</DialogTitle>
           <DialogDescription className="text-sm">
             {show.name} · 共 {accessibleCount} 项可下载资源
@@ -169,7 +159,7 @@ export function ShowDownloadDialog({ open, onOpenChange, show }: ShowDownloadDia
         {/* 主体内容：左右分栏 */}
         <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden md:grid-cols-[1fr_260px]">
           {/* 左侧：下载选项 */}
-          <div className="flex min-h-0 flex-col overflow-y-auto border-r px-6 py-4">
+          <div className="flex min-h-0 flex-col overflow-y-auto border-b px-6 py-4 md:border-b-0 md:border-r">
             <div className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
               选择下载格式
             </div>
@@ -178,29 +168,33 @@ export function ShowDownloadDialog({ open, onOpenChange, show }: ShowDownloadDia
                 icon={<FileText className="h-4 w-4" />}
                 title="PDF 文档"
                 desc="将预览图拼合为 PDF，不受字体影响"
-                onClick={runPdf}
+                onClick={() => submitDownload("pdf", false)}
                 disabled={isBusy}
+                loading={submitting === "pdf"}
               />
               <DownloadRow
                 icon={<ImageIcon className="h-4 w-4" />}
                 title="纯图 PPT"
                 desc="每张预览图生成一页幻灯片"
-                onClick={runImagesPpt}
+                onClick={() => submitDownload("pptx_images", false)}
                 disabled={isBusy}
+                loading={submitting === "pptx_images"}
               />
               <DownloadRow
                 icon={<FileType className="h-4 w-4" />}
                 title="合并 PPT"
                 desc="所有资源合并为一个 PPTX 文件"
-                onClick={() => runPpt(false)}
+                onClick={() => submitDownload("pptx", false)}
                 disabled={isBusy}
+                loading={submitting === "pptx"}
               />
               <DownloadRow
                 icon={<PackageOpen className="h-4 w-4" />}
                 title="PPT + 字体包"
                 desc="PPTX 与所需字体打包为 ZIP"
-                onClick={() => runPpt(true)}
+                onClick={() => submitDownload("pptx", true)}
                 disabled={isBusy}
+                loading={submitting === "pptx_fonts"}
               />
             </div>
 
@@ -211,6 +205,11 @@ export function ShowDownloadDialog({ open, onOpenChange, show }: ShowDownloadDia
               </div>
               <FontCheckPanel local={local} />
             </div>
+
+            <p className="mt-4 rounded-md border border-dashed bg-muted/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+              下载将在后台异步生成，完成后浏览器会自动开始下载。
+              你可以前往「任务管理 · 下载任务」查看进度与历史。
+            </p>
           </div>
 
           {/* 右侧：水印设置 */}
@@ -262,13 +261,8 @@ export function ShowDownloadDialog({ open, onOpenChange, show }: ShowDownloadDia
           </div>
         </div>
 
-        {/* 底部：进度条 + 关闭按钮 */}
-        <div className="border-t px-6 py-3">
-          {progressLabel && (
-            <div className="mb-3">
-              <DownloadProgress progress={progressLabel} />
-            </div>
-          )}
+        {/* 底部：关闭按钮 */}
+        <div className="shrink-0 border-t px-6 py-3">
           <div className="flex justify-end">
             <Button variant="outline" size="sm" onClick={() => onOpenChange(false)} disabled={isBusy}>
               关闭
@@ -307,19 +301,21 @@ function WmOption({
   );
 }
 
-/** 下载选项行：图标 + 标题/描述 + 下载按钮 */
+/** 下载选项行：图标 + 标题/描述 + 提交按钮 */
 function DownloadRow({
   icon,
   title,
   desc,
   onClick,
   disabled,
+  loading,
 }: {
   icon: React.ReactNode;
   title: string;
   desc: string;
   onClick: () => void;
   disabled?: boolean;
+  loading?: boolean;
 }) {
   return (
     <div className="group flex items-center gap-3 rounded-lg border bg-card px-3.5 py-2.5 transition-colors hover:border-primary/30 hover:bg-accent/20">
@@ -337,8 +333,12 @@ function DownloadRow({
         onClick={onClick}
         disabled={disabled}
       >
-        <Download className="mr-1 h-3 w-3" />
-        下载
+        {loading ? (
+          <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+        ) : (
+          <Download className="mr-1 h-3 w-3" />
+        )}
+        开始下载
       </Button>
     </div>
   );

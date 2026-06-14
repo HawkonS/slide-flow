@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import queue
 import shutil
 import sqlite3
+import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -45,8 +47,112 @@ def get_db() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA busy_timeout = 8000")
+    conn.execute("PRAGMA synchronous = NORMAL")
+    conn.execute("PRAGMA cache_size = -20000")
+    conn.execute("PRAGMA temp_store = MEMORY")
+    conn.execute("PRAGMA mmap_size = 268435456")
     return conn
+
+
+class _ConnectionPool:
+    """进程内 SQLite 连接池，减少连接创建/销毁开销"""
+
+    def __init__(self, db_path: Path, max_size: int = 10, readonly: bool = False):
+        self._pool: queue.Queue[sqlite3.Connection] = queue.Queue(maxsize=max_size)
+        self._db_path = db_path
+        self._readonly = readonly
+        self._max_size = max_size
+        self._lock = threading.Lock()
+
+    def acquire(self) -> sqlite3.Connection:
+        """从池中获取连接，池空则新建"""
+        try:
+            conn = self._pool.get_nowait()
+            # 验证连接可用
+            try:
+                conn.execute("SELECT 1")
+                return conn
+            except sqlite3.Error:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                return self._create()
+        except queue.Empty:
+            return self._create()
+
+    def release(self, conn: sqlite3.Connection) -> None:
+        """归还连接到池中，池满则关闭"""
+        try:
+            self._pool.put_nowait(conn)
+        except queue.Full:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _create(self) -> sqlite3.Connection:
+        """创建新连接并应用 PRAGMA 优化"""
+        if self._readonly:
+            conn = sqlite3.connect(
+                f"file:{self._db_path}?mode=ro", uri=True, check_same_thread=False
+            )
+        else:
+            conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA busy_timeout = 8000")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        conn.execute("PRAGMA cache_size = -20000")
+        conn.execute("PRAGMA temp_store = MEMORY")
+        conn.execute("PRAGMA mmap_size = 268435456")
+        return conn
+
+    def close_all(self) -> None:
+        """关闭池中所有连接"""
+        while not self._pool.empty():
+            try:
+                conn = self._pool.get_nowait()
+                conn.close()
+            except (queue.Empty, Exception):
+                break
+
+
+# ── 全局连接池实例（进程级别）──
+_read_pool: _ConnectionPool | None = None
+_write_pool: _ConnectionPool | None = None
+
+
+def _ensure_pools() -> None:
+    """懒初始化连接池"""
+    global _read_pool, _write_pool
+    if _read_pool is None:
+        pool_size = getattr(settings, 'db_pool_size', 10)
+        _read_pool = _ConnectionPool(settings.db_path, max_size=pool_size, readonly=True)
+        _write_pool = _ConnectionPool(settings.db_path, max_size=max(pool_size // 2, 3), readonly=False)
+
+
+def get_read_db() -> sqlite3.Connection:
+    """获取只读连接（用于 GET 请求，不阻塞写操作）"""
+    _ensure_pools()
+    return _read_pool.acquire()
+
+
+def get_write_db() -> sqlite3.Connection:
+    """获取读写连接（用于写操作）"""
+    _ensure_pools()
+    return _write_pool.acquire()
+
+
+def release_db(conn: sqlite3.Connection, readonly: bool = False) -> None:
+    """归还连接到对应池"""
+    _ensure_pools()
+    if readonly:
+        _read_pool.release(conn)
+    else:
+        _write_pool.release(conn)
 
 
 def init_db() -> None:
@@ -574,6 +680,48 @@ def ensure_schema(db: sqlite3.Connection) -> None:
             CREATE INDEX IF NOT EXISTS idx_download_records_downloaded_at ON download_records(downloaded_at);
             PRAGMA foreign_keys = ON;
         """)
+
+    # tasks 表：扩展 task_type CHECK 约束以支持 'download'
+    # SQLite 不支持直接修改 CHECK，需要重建表
+    tasks_sql_row = db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'"
+    ).fetchone()
+    if tasks_sql_row and "'download'" not in (tasks_sql_row["sql"] or ""):
+        db.executescript(
+            """
+            PRAGMA foreign_keys = OFF;
+            CREATE TABLE tasks_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_type TEXT NOT NULL CHECK(task_type IN ('split_import', 'batch_split_import', 'download')),
+                status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('uploading', 'pending', 'processing', 'completed', 'failed', 'cancelled')),
+                owner_id INTEGER NOT NULL REFERENCES users(id),
+                params TEXT NOT NULL DEFAULT '{}',
+                progress INTEGER NOT NULL DEFAULT 0,
+                upload_progress INTEGER NOT NULL DEFAULT 0,
+                total INTEGER NOT NULL DEFAULT 0,
+                message TEXT,
+                result_data TEXT,
+                error_message TEXT,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),
+                completed_at TEXT
+            );
+            INSERT INTO tasks_new (
+                id, task_type, status, owner_id, params, progress, upload_progress,
+                total, message, result_data, error_message, created_at, updated_at, completed_at
+            )
+            SELECT
+                id, task_type, status, owner_id, params, progress,
+                COALESCE(upload_progress, 0), total, message, result_data, error_message,
+                created_at, updated_at, completed_at
+            FROM tasks;
+            DROP TABLE tasks;
+            ALTER TABLE tasks_new RENAME TO tasks;
+            CREATE INDEX IF NOT EXISTS idx_tasks_owner ON tasks(owner_id);
+            CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+            PRAGMA foreign_keys = ON;
+            """
+        )
 
 
 def _scope_user_ids(db: sqlite3.Connection, table: str, id_column: str, item_id: int) -> list[int]:

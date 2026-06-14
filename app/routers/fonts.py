@@ -19,6 +19,7 @@ from app.config import settings
 from app.routers.dependencies import (
     FontDeletePayload,
     db_dep,
+    db_read_dep,
     _font_aliases_from_row,
 )
 
@@ -47,7 +48,7 @@ def _content_disposition(filename: str) -> str:
 @router.get("/fonts")
 def list_fonts(
     _: Any = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     """获取字体列表"""
     rows = db.execute("SELECT * FROM fonts ORDER BY created_at DESC, id DESC").fetchall()
@@ -159,7 +160,7 @@ def bulk_delete_fonts(
 def download_uploaded_font(
     font_id: int,
     _: Any = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> FileResponse:
     """下载字体文件"""
     row = db.execute("SELECT * FROM fonts WHERE id = ?", (font_id,)).fetchone()

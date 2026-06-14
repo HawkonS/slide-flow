@@ -25,6 +25,7 @@ from app.routers.dependencies import (
     UserDeletePayload,
     UserTransferDeletePayload,
     db_dep,
+    db_read_dep,
     _serialize_user,
     _row_to_dict,
 )
@@ -36,7 +37,7 @@ router = APIRouter()
 @router.get("/admin/users")
 def list_users(
     _: Any = Depends(require_admin),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     """获取用户列表（管理员）"""
     rows = db.execute("SELECT * FROM users ORDER BY id").fetchall()
@@ -46,7 +47,7 @@ def list_users(
 @router.get("/users/options")
 def user_options(
     _: Any = Depends(require_admin),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     """获取用户选项列表（用于下拉选择）"""
     rows = db.execute("SELECT id, name, username, role FROM users ORDER BY role, name").fetchall()

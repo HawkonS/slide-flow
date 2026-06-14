@@ -6,6 +6,7 @@ from fastapi import Depends, HTTPException, Request
 
 from app.db import get_db
 from app.core.security import read_session_token
+from app.core.cache import user_cache
 from app.config import settings
 
 
@@ -21,15 +22,30 @@ ADMIN_ROLES = (ROLE_SUPER_ADMIN, ROLE_ADMIN)
 SESSION_COOKIE = "slide_flow_session"
 
 
-def _current_user_from_request(request: Request, db: sqlite3.Connection) -> sqlite3.Row | None:
-    """从请求中提取当前登录用户"""
+def _current_user_from_request(request: Request, db: sqlite3.Connection) -> dict | None:
+    """从请求中提取当前登录用户（带缓存）"""
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
         return None
     user_id = read_session_token(token, settings.secret_key)
     if user_id is None:
         return None
-    return db.execute("SELECT * FROM users WHERE id = ?", (int(user_id),)).fetchone()
+
+    # 尝试从缓存获取
+    cache_key = f"user:{int(user_id)}"
+    cached = user_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    # 缓存未命中，查库
+    row = db.execute("SELECT * FROM users WHERE id = ?", (int(user_id),)).fetchone()
+    if row is None:
+        return None
+
+    # 转为 dict 缓存，确保不依赖数据库连接
+    user_dict = dict(row)
+    user_cache.set(cache_key, user_dict)
+    return user_dict
 
 
 def require_user(request: Request, db: sqlite3.Connection = Depends(get_db)) -> sqlite3.Row:

@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   ChevronRight,
-  Download,
   FolderOpen,
   HardDrive,
   Home,
@@ -21,6 +20,7 @@ import {
 
 import { cn } from "@/lib/utils";
 import { useSiteConfig } from "@/stores/site-config";
+import { useDownloadManager } from "@/stores/download-manager";
 import { useAuth } from "@/lib/auth";
 import { ForceChangePassword } from "@/components/common/ForceChangePassword";
 import {
@@ -46,7 +46,6 @@ const NAV_ICONS: Record<string, React.ElementType> = {
   manage_resources: Settings,
   manage_tasks: ListTodo,
   manage_offline: HardDrive,
-  manage_downloads: Download,
   manage_tags: Tag,
   admin_users: Users,
   admin_templates: LayoutTemplate,
@@ -66,7 +65,6 @@ const DEFAULT_LABELS: Record<string, string> = {
   manage_resources: "资源管理",
   manage_tasks: "任务管理",
   manage_offline: "离线缓存",
-  manage_downloads: "下载记录",
   manage_tags: "标签管理",
   admin_users: "用户管理",
   admin_templates: "模板管理",
@@ -91,7 +89,6 @@ const SECTION_MEMBERS: Record<string, { key: string; to: string }[]> = {
     { key: "manage_resources", to: "/manage/resources" },
     { key: "manage_tasks", to: "/manage/tasks" },
     { key: "manage_offline", to: "/manage/offline-cache" },
-    { key: "manage_downloads", to: "/manage/downloads" },
     { key: "manage_tags", to: "/manage/tags" },
   ],
   system: [
@@ -193,16 +190,11 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   );
 
   const manageNav = useMemo<NavItem[]>(
-    () => {
-      // 下载记录仅 admin 可见
-      const members = isAdmin
-        ? SECTION_MEMBERS.manage
-        : SECTION_MEMBERS.manage.filter((m) => m.key !== "manage_downloads");
-      return members
+    () =>
+      SECTION_MEMBERS.manage
         .map((m) => ({ key: m.key, to: m.to, label: getLabel(m.key), icon: NAV_ICONS[m.key] || Settings }))
-        .sort((a, b) => (navOrder[a.key] ?? 99) - (navOrder[b.key] ?? 99));
-    },
-    [navLabels, navOrder, isAdmin],
+        .sort((a, b) => (navOrder[a.key] ?? 99) - (navOrder[b.key] ?? 99)),
+    [navLabels, navOrder],
   );
 
   const systemNav = useMemo<NavItem[]>(
@@ -294,6 +286,17 @@ export function AppShell() {
   useEffect(() => {
     setSheetOpen(false);
   }, [location.pathname]);
+
+  // 用户登录后初始化全局 WebSocket 连接，用于接收异步任务推送
+  // 项目采用 cookie 鉴权，同源 WebSocket 会自动携带会话，token 仅作占位
+  useEffect(() => {
+    if (!user) return;
+    const token = String(user.id ?? "");
+    useDownloadManager.getState().connect(token);
+    return () => {
+      useDownloadManager.getState().disconnect();
+    };
+  }, [user?.id]);
 
   const userDisplayName = user?.display_name || user?.name || user?.username || "";
   const userRoleText =

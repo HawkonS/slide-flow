@@ -36,6 +36,16 @@ export default defineConfig({
         timeout: 0,
         proxyTimeout: 0,
       },
+      // WebSocket 代理：将前端的 /ws/* 升级请求转发到后端 FastAPI
+      // ws: true 是关键，启用 WebSocket Upgrade 转发；secure: false 允许后端为 http 时也能从 https 前端转发
+      "/ws": {
+        target: backend,
+        changeOrigin: true,
+        ws: true,
+        secure: false,
+        timeout: 0,
+        proxyTimeout: 0,
+      },
       "/static": { target: backend, changeOrigin: true },
       "/storage": { target: backend, changeOrigin: true },
     },

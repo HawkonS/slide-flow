@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from app.config import reload_settings, settings, write_properties
 from app.core.permissions import require_admin, require_user
 from app.db import now_iso
-from app.routers.dependencies import db_dep
+from app.routers.dependencies import db_dep, db_read_dep
 
 
 router = APIRouter()
@@ -76,7 +76,7 @@ def _count_tag_usage(db: sqlite3.Connection, tag_name: str) -> int:
 @router.get("/tags")
 def list_tags(
     _: Any = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     """获取所有预设标签，按 category 分组（任意登录用户可调用）"""
     rows = db.execute(
@@ -112,7 +112,7 @@ def list_tags(
 @router.get("/admin/tags")
 def admin_list_tags(
     _: Any = Depends(require_admin),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     """管理员视图：返回所有预设标签 + 使用次数 + 当前用户自定义标签配置"""
     rows = db.execute(

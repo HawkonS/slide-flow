@@ -1,5 +1,6 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
 import {
   AlertCircle,
   CheckCircle2,
@@ -7,12 +8,14 @@ import {
   ChevronRight,
   CircleDashed,
   Clock,
+  Download,
   FileText,
   Hash,
   Info,
   Loader2,
   Lock,
   OctagonX,
+  Search,
   ShieldCheck,
   Trash2,
   Upload,
@@ -32,6 +35,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Table,
   TableBody,
   TableCell,
@@ -39,6 +49,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { isAdminRole } from "@/lib/types";
@@ -68,6 +85,28 @@ interface TaskParams {
   status?: string;
   owner_id?: number;
   image_count?: number;
+  /** 下载任务专属参数 */
+  show_id?: number;
+  show_name?: string;
+  download_type?: string;
+  watermark?: string;
+  with_fonts?: boolean;
+  file_name?: string;
+  file_size?: number;
+  track_code?: string;
+  client_ip?: string;
+}
+
+interface UserOption {
+  id: number;
+  username: string;
+  name: string | null;
+  display_name?: string | null;
+  role?: string;
+}
+
+interface UserOptionsResponse {
+  users: UserOption[];
 }
 
 interface TaskResult {
@@ -96,7 +135,62 @@ interface Task {
 }
 
 interface TaskListResponse {
-  tasks: Task[];
+  items: Task[];
+  total: number;
+  page: number;
+  page_size: number;
+  /** 兼容旧后端：如果后端仍返回 tasks，进行回退 */
+  tasks?: Task[];
+}
+
+/**
+ * 自适应分页大小：根据表格容器可用高度动态计算每页条数
+ *
+ * - 用 ResizeObserver 监听容器高度变化（窗口缩放、布局调整时自动更新）
+ * - 100ms 防抖，避免高频回调引发频繁 setState
+ * - 仅当计算出的值真正变化时才更新 state
+ * - 初始返回 0，调用方可结合 `enabled: pageSize > 0` 避免初次渲染时
+ *   发出基于占位值的无意义请求
+ */
+function useAdaptivePageSize(
+  containerRef: React.RefObject<HTMLDivElement | null>,
+  rowHeight = 49,
+  headerHeight = 41,
+): number {
+  const [pageSize, setPageSize] = React.useState(0);
+
+  React.useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    let timer: number | null = null;
+    let lastSize = 0;
+
+    const calc = () => {
+      const available = el.clientHeight - headerHeight;
+      // 减 1 行：为分页控件 / 容器 padding 等留出余量，确保最后一行不需要滚动
+      const size = Math.max(5, Math.floor(available / rowHeight) - 1);
+      if (size !== lastSize) {
+        lastSize = size;
+        setPageSize(size);
+      }
+    };
+
+    const schedule = () => {
+      if (timer != null) window.clearTimeout(timer);
+      timer = window.setTimeout(calc, 100);
+    };
+
+    calc();
+    const ro = new ResizeObserver(schedule);
+    ro.observe(el);
+    return () => {
+      if (timer != null) window.clearTimeout(timer);
+      ro.disconnect();
+    };
+  }, [containerRef, rowHeight, headerHeight]);
+
+  return pageSize;
 }
 
 /* ---------- constants ---------- */
@@ -607,44 +701,195 @@ function FilterChip({
   );
 }
 
+/* ---------- Pagination ---------- */
+
+function TasksPagination({
+  page,
+  totalPages,
+  total,
+  pageSize,
+  onChange,
+}: {
+  page: number;
+  totalPages: number;
+  total: number;
+  pageSize: number;
+  onChange: (next: number) => void;
+}) {
+  const start = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const end = Math.min(page * pageSize, total);
+  return (
+    <div className="flex shrink-0 items-center justify-between border-t pt-3 text-sm text-muted-foreground">
+      <span>
+        显示 {start}-{end}，共 {total} 条
+      </span>
+      <div className="flex items-center gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={page <= 1}
+          onClick={() => onChange(Math.max(1, page - 1))}
+        >
+          上一页
+        </Button>
+        <span className="min-w-[52px] select-none text-center text-foreground">
+          {page} / {totalPages}
+        </span>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={page >= totalPages}
+          onClick={() => onChange(Math.min(totalPages, page + 1))}
+        >
+          下一页
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 /* ---------- Main component ---------- */
 
 export default function TasksPage() {
-  const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const rawTab = searchParams.get("tab");
+  const tab: "uploads" | "downloads" = rawTab === "uploads" ? "uploads" : "downloads";
   const { user } = useAuth();
   const canManage = isAdminRole(user?.role);
+  const title = useNavLabel("manage_tasks", "任务管理");
+
+  const handleTabChange = (value: string) => {
+    const next = new URLSearchParams(searchParams);
+    if (value === "uploads") {
+      next.set("tab", "uploads");
+    } else {
+      next.delete("tab");
+    }
+    setSearchParams(next, { replace: true });
+  };
+
+  return (
+    <div className="flex h-full flex-col gap-4">
+      {/* 页头 */}
+      <header className="flex items-center gap-3">
+        <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
+        {canManage ? (
+          <Badge variant="blue" className="gap-1 text-[11px]">
+            <ShieldCheck className="h-3 w-3" />
+            可维护
+          </Badge>
+        ) : (
+          <Badge variant="outline" className="gap-1 text-[11px] text-muted-foreground">
+            <Lock className="h-3 w-3" />
+            只读
+          </Badge>
+        )}
+      </header>
+
+      <Tabs value={tab} onValueChange={handleTabChange} className="flex min-h-0 flex-1 flex-col">
+        <TabsList className="w-fit">
+          <TabsTrigger value="downloads" className="gap-1.5">
+            <Download className="h-3.5 w-3.5" />
+            下载任务
+          </TabsTrigger>
+          <TabsTrigger value="uploads" className="gap-1.5">
+            <Upload className="h-3.5 w-3.5" />
+            上传任务
+          </TabsTrigger>
+        </TabsList>
+        <TabsContent
+          value="downloads"
+          className="mt-3 flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
+        >
+          <DownloadTasksTab canManage={canManage} />
+        </TabsContent>
+        <TabsContent
+          value="uploads"
+          className="mt-3 flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
+        >
+          <UploadTasksTab canManage={canManage} />
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+/* ---------- Upload Tasks Tab ---------- */
+
+function UploadTasksTab({ canManage }: { canManage: boolean }) {
+  const queryClient = useQueryClient();
+  const { user } = useAuth();
 
   const [cancelTarget, setCancelTarget] = React.useState<Task | null>(null);
   const [filter, setFilter] = React.useState<"all" | TaskStatus>("all");
   const [expandedId, setExpandedId] = React.useState<number | null>(null);
   const [selected, setSelected] = React.useState<Set<number>>(new Set());
+  // 用户维度筛选："all" = 所有用户；"self" = 仅自己；其他为某个用户 id 的字符串形式
+  const [ownerFilter, setOwnerFilter] = React.useState<string>("all");
+  const [page, setPage] = React.useState(1);
+
+  // 表格容器引用 + 自适应分页大小（根据可用高度动态计算）
+  const listContainerRef = React.useRef<HTMLDivElement | null>(null);
+  const pageSize = useAdaptivePageSize(listContainerRef);
 
   const isAdmin = canManage;
+  const currentUserId = user?.id ?? null;
+
+  // 动态计算向后端传递的 owner_id（仅管理员能传，非管理员后端会忽略）
+  const ownerIdParam = React.useMemo<number | undefined>(() => {
+    if (!isAdmin) return undefined;
+    if (ownerFilter === "all") return undefined;
+    if (ownerFilter === "self") return currentUserId ?? undefined;
+    const n = Number(ownerFilter);
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  }, [isAdmin, ownerFilter, currentUserId]);
+
+  // 筛选/用户/分页大小变化时重置页码（避免越界）
+  React.useEffect(() => {
+    setPage(1);
+  }, [filter, ownerIdParam, pageSize]);
+
+  // 用户下拉选项（仅管理员拉取）
+  const { data: usersData } = useQuery({
+    queryKey: ["users", "options"],
+    queryFn: async () => api<UserOptionsResponse>("/api/users/options"),
+    enabled: isAdmin,
+    staleTime: 5 * 60 * 1000,
+  });
+  const userOptions = usersData?.users ?? [];
 
   const { data, isLoading, isError, error } = useQuery({
-    queryKey: ["tasks"],
-    queryFn: async () => api<TaskListResponse>("/api/tasks"),
-    refetchInterval: (query) => {
-      const tasks = query.state.data?.tasks ?? [];
-      const hasActive = tasks.some((t) => ACTIVE_STATUSES.includes(t.status as TaskStatus));
-      return hasActive ? 3000 : false;
+    queryKey: ["tasks", "upload", ownerIdParam ?? "all", filter, page, pageSize],
+    queryFn: async () => {
+      const params: Record<string, string | number> = {
+        page,
+        page_size: pageSize,
+      };
+      if (ownerIdParam != null) params.owner_id = ownerIdParam;
+      if (filter !== "all") params.status = filter;
+      return api<TaskListResponse>("/api/tasks", { params });
     },
+    // pageSize 首次完成测量前不发起请求，避免无意义的占位查询
+    enabled: pageSize > 0,
+    refetchInterval: (query) => {
+      const list = query.state.data?.items ?? query.state.data?.tasks ?? [];
+      const hasActive = list.some((t) => ACTIVE_STATUSES.includes(t.status as TaskStatus));
+      return hasActive ? 3000 : 15000;
+    },
+    refetchOnWindowFocus: true,
+    placeholderData: (prev) => prev,
   });
 
-  const allTasks = data?.tasks ?? [];
+  // 容器尚未测量完成时（pageSize=0），视为加载态
+  const isMeasuring = pageSize === 0;
 
-  const statusCounts = React.useMemo(() => {
-    const map: Record<string, number> = { all: allTasks.length };
-    for (const t of allTasks) {
-      map[t.status] = (map[t.status] || 0) + 1;
-    }
-    return map;
-  }, [allTasks]);
-
-  const tasks = React.useMemo(() => {
-    if (filter === "all") return allTasks;
-    return allTasks.filter((t) => t.status === filter);
-  }, [allTasks, filter]);
+  // 后端返回 items；过滤掉下载类任务（后端未限定 task_type，这里按原逻辑保证仅上传类可见）
+  const tasks = React.useMemo(
+    () => (data?.items ?? data?.tasks ?? []).filter((t) => t.task_type !== "download"),
+    [data?.items, data?.tasks],
+  );
+  const total = data?.total ?? tasks.length;
+  const totalPages = Math.max(1, Math.ceil(total / Math.max(1, pageSize)));
 
   const filteredIds = React.useMemo(() => tasks.map((t) => t.id), [tasks]);
   const allSelected = filteredIds.length > 0 && filteredIds.every((id) => selected.has(id));
@@ -700,31 +945,30 @@ export default function TasksPage() {
   const showOwner = canManage;
 
   return (
-    <div className="flex h-full flex-col gap-4">
-      {/* 页头 */}
-      <header className="flex items-center gap-3">
-        <h1 className="text-xl font-semibold tracking-tight">{useNavLabel("manage_tasks", "任务管理")}</h1>
-        {canManage ? (
-          <Badge variant="blue" className="gap-1 text-[11px]">
-            <ShieldCheck className="h-3 w-3" />
-            可维护
-          </Badge>
-        ) : (
-          <Badge variant="outline" className="gap-1 text-[11px] text-muted-foreground">
-            <Lock className="h-3 w-3" />
-            只读
-          </Badge>
-        )}
-      </header>
-
-      {/* 状态筛选 */}
+    <div className="flex min-h-0 flex-1 flex-col gap-4">
+      {/* 筛选区：用户下拉 + 状态 chips */}
       <div className="flex flex-wrap items-center gap-2">
+        {isAdmin && (
+          <Select value={ownerFilter} onValueChange={(v) => setOwnerFilter(v)}>
+            <SelectTrigger className="h-8 w-[180px] rounded-full text-xs">
+              <SelectValue placeholder="选择用户" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">所有用户</SelectItem>
+              <SelectItem value="self">仅自己</SelectItem>
+              {userOptions.map((u) => (
+                <SelectItem key={u.id} value={String(u.id)}>
+                  {u.display_name || u.name || u.username || `#${u.id}`}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
         {STATUS_FILTERS.map((f) => (
           <FilterChip
             key={f.value}
             active={filter === f.value}
             onClick={() => setFilter(f.value)}
-            count={statusCounts[f.value] ?? 0}
           >
             {f.label}
           </FilterChip>
@@ -747,8 +991,8 @@ export default function TasksPage() {
       </div>
 
       {/* 内容区 */}
-      <div className="min-h-0 flex-1 overflow-auto">
-        {isLoading ? (
+      <div ref={listContainerRef} className="min-h-0 flex-1 overflow-auto">
+        {isMeasuring || isLoading ? (
           <div className="flex items-center justify-center py-16 text-muted-foreground">
             <Loader2 className="mr-2 h-5 w-5 animate-spin" /> 加载中…
           </div>
@@ -806,6 +1050,17 @@ export default function TasksPage() {
         )}
       </div>
 
+      {/* 分页 */}
+      {!isLoading && !isError && total > 0 && pageSize > 0 && (
+        <TasksPagination
+          page={page}
+          totalPages={totalPages}
+          total={total}
+          pageSize={pageSize}
+          onChange={setPage}
+        />
+      )}
+
       {/* 停止确认对话框 */}
       <Dialog
         open={!!cancelTarget}
@@ -847,5 +1102,449 @@ export default function TasksPage() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+/* ---------- Download Tasks Tab ---------- */
+
+const DOWNLOAD_TYPE_LABEL: Record<string, string> = {
+  pdf: "PDF",
+  pptx_images: "纯图 PPT",
+  pptx: "合并 PPT",
+  pptx_fonts: "PPT + 字体包",
+  zip: "逐个 PPT",
+  zip_fonts: "PPT + 字体（ZIP）",
+};
+
+function formatFileSize(bytes?: number | null): string {
+  if (bytes == null || bytes <= 0) return "-";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function downloadTaskShowName(task: Task): string {
+  return (
+    task.params?.show_name ||
+    task.params?.name_prefix ||
+    (task.params?.show_id ? `#${task.params.show_id}` : "—")
+  );
+}
+
+function DownloadTasksTab({ canManage }: { canManage: boolean }) {
+  const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const [filter, setFilter] = React.useState<"all" | TaskStatus>("all");
+  const [selected, setSelected] = React.useState<Set<number>>(new Set());
+  // 用户维度筛选："all" = 所有用户；"self" = 仅自己；其他为某个用户 id 的字符串形式
+  const [ownerFilter, setOwnerFilter] = React.useState<string>("all");
+  // 追踪码搜索：输入值与防抖后的实际查询值分开
+  const [searchInput, setSearchInput] = React.useState("");
+  const [search, setSearch] = React.useState("");
+  const [page, setPage] = React.useState(1);
+
+  // 表格容器引用 + 自适应分页大小（根据可用高度动态计算）
+  const listContainerRef = React.useRef<HTMLDivElement | null>(null);
+  const pageSize = useAdaptivePageSize(listContainerRef);
+
+  const isAdmin = canManage;
+  const showOwner = canManage;
+  const currentUserId = user?.id ?? null;
+
+  // 动态计算向后端传递的 owner_id（仅管理员能传，非管理员后端会忽略）
+  const ownerIdParam = React.useMemo<number | undefined>(() => {
+    if (!isAdmin) return undefined;
+    if (ownerFilter === "all") return undefined;
+    if (ownerFilter === "self") return currentUserId ?? undefined;
+    const n = Number(ownerFilter);
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  }, [isAdmin, ownerFilter, currentUserId]);
+
+  // 输入防抖 300ms
+  React.useEffect(() => {
+    const t = window.setTimeout(() => setSearch(searchInput.trim()), 300);
+    return () => window.clearTimeout(t);
+  }, [searchInput]);
+
+  // 筛选/搜索/用户/分页大小变化时重置页码（避免越界）
+  React.useEffect(() => {
+    setPage(1);
+  }, [filter, ownerIdParam, search, pageSize]);
+
+  // 用户下拉选项（仅管理员拉取）
+  const { data: usersData } = useQuery({
+    queryKey: ["users", "options"],
+    queryFn: async () => api<UserOptionsResponse>("/api/users/options"),
+    enabled: isAdmin,
+    staleTime: 5 * 60 * 1000,
+  });
+  const userOptions = usersData?.users ?? [];
+
+  const { data, isLoading, isError, error } = useQuery({
+    queryKey: ["tasks", "download", ownerIdParam ?? "all", filter, search, page, pageSize],
+    queryFn: async () => {
+      const params: Record<string, string | number> = {
+        task_type: "download",
+        page,
+        page_size: pageSize,
+      };
+      if (ownerIdParam != null) params.owner_id = ownerIdParam;
+      if (filter !== "all") params.status = filter;
+      if (search) params.search = search;
+      return api<TaskListResponse>("/api/tasks", { params });
+    },
+    // pageSize 首次完成测量前不发起请求，避免无意义的占位查询
+    enabled: pageSize > 0,
+    refetchInterval: (query) => {
+      const list = query.state.data?.items ?? query.state.data?.tasks ?? [];
+      const hasActive = list.some((t) => ACTIVE_STATUSES.includes(t.status as TaskStatus));
+      return hasActive ? 3000 : 15000;
+    },
+    refetchOnWindowFocus: true,
+    placeholderData: (prev) => prev,
+  });
+
+  // 容器尚未测量完成时（pageSize=0），视为加载态
+  const isMeasuring = pageSize === 0;
+
+  const tasks = data?.items ?? data?.tasks ?? [];
+  const total = data?.total ?? tasks.length;
+  const totalPages = Math.max(1, Math.ceil(total / Math.max(1, pageSize)));
+
+  const filteredIds = React.useMemo(() => tasks.map((t) => t.id), [tasks]);
+  const allSelected = filteredIds.length > 0 && filteredIds.every((id) => selected.has(id));
+  const someSelected = filteredIds.some((id) => selected.has(id)) && !allSelected;
+
+  const toggleOne = (id: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const toggleAll = () => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allSelected) filteredIds.forEach((id) => next.delete(id));
+      else filteredIds.forEach((id) => next.add(id));
+      return next;
+    });
+  };
+
+  const bulkDelMut = useMutation({
+    mutationFn: async (ids: number[]) =>
+      api<{ deleted: number }>("/api/admin/tasks/bulk-delete", {
+        method: "POST",
+        json: { task_ids: ids },
+      }),
+    onSuccess: (data) => {
+      toast.success(`已删除 ${data.deleted} 个任务`);
+      setSelected(new Set());
+      queryClient.invalidateQueries({ queryKey: ["tasks", "download"] });
+    },
+    onError: (err: Error) => toast.error(err.message || "批量删除失败"),
+  });
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-4">
+      {/* 筛选区：用户下拉 + 状态 chips + 追踪码搜索 */}
+      <div className="flex flex-wrap items-center gap-2">
+        {isAdmin && (
+          <Select value={ownerFilter} onValueChange={(v) => setOwnerFilter(v)}>
+            <SelectTrigger className="h-8 w-[180px] rounded-full text-xs">
+              <SelectValue placeholder="选择用户" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">所有用户</SelectItem>
+              <SelectItem value="self">仅自己</SelectItem>
+              {userOptions.map((u) => (
+                <SelectItem key={u.id} value={String(u.id)}>
+                  {u.display_name || u.name || u.username || `#${u.id}`}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+        {STATUS_FILTERS.map((f) => (
+          <FilterChip
+            key={f.value}
+            active={filter === f.value}
+            onClick={() => setFilter(f.value)}
+          >
+            {f.label}
+          </FilterChip>
+        ))}
+        <div className="relative min-w-0">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <input
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            placeholder="搜索追踪码"
+            className={cn(
+              "h-8 w-full sm:w-48 rounded-full border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition",
+              "placeholder:text-muted-foreground",
+              "focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
+              search.trim() !== "" && "border-primary/40 bg-primary/5",
+            )}
+          />
+        </div>
+        {isAdmin && (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={selected.size === 0 || bulkDelMut.isPending}
+            onClick={() => {
+              if (!window.confirm(`确认删除选中的 ${selected.size} 个任务记录？`)) return;
+              bulkDelMut.mutate(Array.from(selected));
+            }}
+            className="h-8 gap-1.5 rounded-full px-3 text-sm text-destructive hover:text-destructive"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            删除选中{selected.size ? `（${selected.size}）` : ""}
+          </Button>
+        )}
+      </div>
+
+      {/* 内容区 */}
+      <div ref={listContainerRef} className="min-h-0 flex-1 overflow-auto">
+        {isMeasuring || isLoading ? (
+          <div className="flex items-center justify-center py-16 text-muted-foreground">
+            <Loader2 className="mr-2 h-5 w-5 animate-spin" /> 加载中…
+          </div>
+        ) : isError ? (
+          <div className="rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
+            加载失败：{(error as Error)?.message || "未知错误"}
+          </div>
+        ) : tasks.length === 0 ? (
+          <div className="rounded-md border border-dashed py-16 text-center text-sm text-muted-foreground">
+            {search
+              ? `没有匹配追踪码“${search}”的任务`
+              : filter === "all"
+                ? "暂无下载任务"
+                : `无${STATUS_LABEL[filter as TaskStatus] || ""}的下载任务`}
+          </div>
+        ) : (
+          <TooltipProvider delayDuration={150}>
+          <div className="overflow-hidden rounded-lg border bg-card shadow-sm">
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-muted/40 hover:bg-muted/40">
+                  {isAdmin && (
+                    <TableHead className="w-10">
+                      <Checkbox
+                        checked={allSelected || (someSelected ? "indeterminate" : false)}
+                        onCheckedChange={toggleAll}
+                        disabled={filteredIds.length === 0}
+                      />
+                    </TableHead>
+                  )}
+                  <TableHead className="w-14">ID</TableHead>
+                  <TableHead>放映名称</TableHead>
+                  <TableHead className="w-28">下载类型</TableHead>
+                  <TableHead className="w-44">状态</TableHead>
+                  <TableHead className="w-32">追踪码</TableHead>
+                  {showOwner && <TableHead className="w-28">提交人</TableHead>}
+                  <TableHead className="w-24">提交时间</TableHead>
+                  <TableHead className="w-28">操作</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {tasks.map((task) => (
+                  <DownloadTaskRow
+                    key={task.id}
+                    task={task}
+                    showOwner={showOwner}
+                    isAdmin={isAdmin}
+                    isSelected={selected.has(task.id)}
+                    onSelectToggle={() => toggleOne(task.id)}
+                  />
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          </TooltipProvider>
+        )}
+      </div>
+
+      {/* 分页 */}
+      {!isLoading && !isError && total > 0 && pageSize > 0 && (
+        <TasksPagination
+          page={page}
+          totalPages={totalPages}
+          total={total}
+          pageSize={pageSize}
+          onChange={setPage}
+        />
+      )}
+    </div>
+  );
+}
+
+interface DownloadTaskRowProps {
+  task: Task;
+  showOwner: boolean;
+  isAdmin: boolean;
+  isSelected: boolean;
+  onSelectToggle: () => void;
+}
+
+function DownloadTaskRow({ task, showOwner, isAdmin, isSelected, onSelectToggle }: DownloadTaskRowProps) {
+  const status = task.status as TaskStatus;
+  const isCompleted = status === "completed";
+  const isFailed = status === "failed";
+  const isCancelled = status === "cancelled";
+  const isProgressing = status === "processing" || status === "pending" || status === "uploading";
+
+  const percent =
+    task.total > 0
+      ? Math.min(100, Math.round((task.progress / task.total) * 100))
+      : task.progress > 0 && task.progress <= 100
+        ? Math.round(task.progress)
+        : 0;
+
+  const downloadType = task.params?.download_type || "";
+  const fileName = task.params?.file_name;
+  const fileSize = task.params?.file_size;
+  const trackCode = task.params?.track_code;
+  const clientIp = task.params?.client_ip;
+
+  return (
+    <TableRow>
+      {isAdmin && (
+        <TableCell onClick={(e) => e.stopPropagation()}>
+          <Checkbox checked={isSelected} onCheckedChange={onSelectToggle} />
+        </TableCell>
+      )}
+
+      <TableCell className="font-mono text-xs text-muted-foreground">#{task.id}</TableCell>
+
+      <TableCell>
+        <div className="flex flex-col gap-0.5">
+          <span className="truncate text-sm font-medium" title={downloadTaskShowName(task)}>
+            {downloadTaskShowName(task)}
+          </span>
+          {(task.params?.with_fonts || (isCompleted && fileSize)) && (
+            <span className="text-[11px] text-muted-foreground">
+              {task.params?.with_fonts && <span>含字体打包</span>}
+              {task.params?.with_fonts && isCompleted && fileSize ? <span> · </span> : null}
+              {isCompleted && fileSize ? (
+                <span className="tabular-nums">{formatFileSize(fileSize)}</span>
+              ) : null}
+            </span>
+          )}
+        </div>
+      </TableCell>
+
+      <TableCell>
+        <span className="inline-flex items-center rounded-md border bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground">
+          {DOWNLOAD_TYPE_LABEL[downloadType] || downloadType || "—"}
+        </span>
+      </TableCell>
+
+      {/* 状态（含进度） */}
+      <TableCell>
+        {isCompleted ? (
+          <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600">
+            <CheckCircle2 className="h-3.5 w-3.5" />
+            已完成
+          </span>
+        ) : isFailed ? (
+          <span
+            className="inline-flex max-w-full items-center gap-1 truncate text-xs font-medium text-destructive"
+            title={task.error_message || "处理失败"}
+          >
+            <XCircle className="h-3.5 w-3.5 shrink-0" />
+            失败
+          </span>
+        ) : isCancelled ? (
+          <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+            <OctagonX className="h-3.5 w-3.5" />
+            已取消
+          </span>
+        ) : (
+          <div className="flex flex-col gap-1">
+            <Badge variant={STATUS_BADGE_VARIANT[status] || "outline"} className="w-fit gap-1 text-[11px]">
+              {statusIcon(status)}
+              {STATUS_LABEL[status] || status}
+            </Badge>
+            {isProgressing && (task.total > 0 || percent > 0) ? (
+              <div className="flex items-center gap-2">
+                <div className="h-1 flex-1 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full rounded-full bg-primary transition-all duration-500"
+                    style={{ width: `${percent}%` }}
+                  />
+                </div>
+                <span className="whitespace-nowrap text-[11px] tabular-nums text-muted-foreground">
+                  {percent}%
+                </span>
+              </div>
+            ) : task.message ? (
+              <span className="truncate text-[11px] text-muted-foreground" title={task.message}>
+                {task.message}
+              </span>
+            ) : null}
+          </div>
+        )}
+      </TableCell>
+
+      {/* 追踪码（hover 显示 IP） */}
+      <TableCell className="font-mono text-xs text-muted-foreground">
+        {trackCode ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="cursor-default border-b border-dashed border-muted-foreground/40">
+                {trackCode}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="font-mono">
+              <div className="flex flex-col gap-0.5">
+                <span>追踪码：{trackCode}</span>
+                <span>客户端IP：{clientIp || "—"}</span>
+              </div>
+            </TooltipContent>
+          </Tooltip>
+        ) : clientIp ? (
+          <span className="text-muted-foreground/80" title={`客户端IP：${clientIp}`}>
+            {clientIp}
+          </span>
+        ) : (
+          <span className="text-muted-foreground/60">—</span>
+        )}
+      </TableCell>
+
+      {showOwner && (
+        <TableCell className="whitespace-nowrap">
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <User className="h-3 w-3" />
+            {ownerDisplay(task.owner, task.owner_id)}
+          </div>
+        </TableCell>
+      )}
+
+      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+        {formatRelativeTime(task.created_at)}
+      </TableCell>
+
+      <TableCell className="w-28">
+        {isCompleted ? (
+          <Button asChild variant="outline" size="sm" className="h-7 gap-1 text-xs">
+            <a
+              href={`/api/downloads/${task.id}/file`}
+              download={fileName || undefined}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <Download className="h-3.5 w-3.5" />
+              下载
+            </a>
+          </Button>
+        ) : (
+          <span className="text-[11px] text-muted-foreground">—</span>
+        )}
+      </TableCell>
+    </TableRow>
   );
 }

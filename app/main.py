@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import concurrent.futures
 import copy
 import io
 import json
@@ -19,13 +20,13 @@ import time
 import urllib.request
 import uuid
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
 
 import psutil
-from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -78,6 +79,54 @@ _split_semaphore = asyncio.Semaphore(settings.max_concurrent_splits)
 
 # ── 拆分任务超时（秒）──
 SPLIT_TASK_TIMEOUT = settings.split_task_timeout
+
+# ── WebSocket 连接管理：user_id -> [WebSocket, ...] ──
+_ws_connections: dict[int, list[WebSocket]] = {}
+_ws_lock = asyncio.Lock()
+
+
+async def broadcast_to_user(user_id: int, message: dict) -> None:
+    """向指定用户的所有 WebSocket 连接推送 JSON 消息。
+
+    仅可从运行中的事件循环调用（调用方需在 async 上下文）。本函数会在未以
+    初始化、未连接、发送异常等场景下以警告日志输出诊断信息，但不会报错中
+    断调用者（下载任务成功后的推送不应因为客户端未连接而失败）。
+    """
+    uid = int(user_id)
+    connections = list(_ws_connections.get(uid, []))
+    if not connections:
+        logger.debug(
+            "broadcast_to_user: no active WS for user_id=%s msg_type=%s",
+            uid,
+            message.get("type") if isinstance(message, dict) else "<non-dict>",
+        )
+        return
+    dead: list[WebSocket] = []
+    sent = 0
+    for ws in connections:
+        try:
+            await ws.send_json(message)
+            sent += 1
+        except Exception as exc:
+            logger.warning(
+                "broadcast_to_user: send failed user_id=%s err=%s", uid, exc
+            )
+            dead.append(ws)
+    logger.debug(
+        "broadcast_to_user user_id=%s msg_type=%s sent=%d dead=%d",
+        uid,
+        message.get("type") if isinstance(message, dict) else "<non-dict>",
+        sent,
+        len(dead),
+    )
+    if dead:
+        async with _ws_lock:
+            current = _ws_connections.get(uid, [])
+            for ws in dead:
+                if ws in current:
+                    current.remove(ws)
+            if not current:
+                _ws_connections.pop(uid, None)
 
 
 SESSION_COOKIE = "slide_flow_session"
@@ -151,6 +200,51 @@ class SlowRequestLogger:
 
 
 app.add_middleware(SlowRequestLogger)
+
+
+class ResponseCacheMiddleware:
+    """为 GET API 请求添加 Cache-Control 头，减少前端重复请求"""
+
+    # 不缓存的路径前缀（需要实时性的接口）
+    _NO_CACHE_PATHS = ("/api/tasks", "/api/me", "/api/auth")
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        method = scope.get("method", "")
+        path = scope.get("path", "")
+
+        # 仅对 GET /api/* 请求添加缓存头（排除实时接口）
+        should_cache = (
+            method == "GET"
+            and path.startswith("/api/")
+            and not any(path.startswith(p) for p in self._NO_CACHE_PATHS)
+        )
+
+        if not should_cache:
+            await self.app(scope, receive, send)
+            return
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                headers = dict(message.get("headers", []))
+                # 添加 5 秒私有缓存
+                cache_header = (b"cache-control", b"private, max-age=5")
+                raw_headers = list(message.get("headers", []))
+                raw_headers.append(cache_header)
+                message = {**message, "headers": raw_headers}
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
+if settings.response_cache_enabled:
+    app.add_middleware(ResponseCacheMiddleware)
 
 DEFAULT_RESOURCE_SUBJECT = settings.default_resource_subject
 app.mount("/static", StaticFiles(directory=settings.static_dir), name="static")
@@ -335,11 +429,22 @@ class UserPreferencesPayload(BaseModel):
 
 
 def db_dep():
-    db = get_db()
+    from app.db import get_write_db, release_db
+    db = get_write_db()
     try:
         yield db
     finally:
-        db.close()
+        release_db(db, readonly=False)
+
+
+def db_read_dep():
+    """只读数据库依赖注入（用于 GET 请求，不阻塞写操作）"""
+    from app.db import get_read_db, release_db
+    db = get_read_db()
+    try:
+        yield db
+    finally:
+        release_db(db, readonly=True)
 
 
 SPA_INDEX = settings.static_dir / "dist" / "index.html"
@@ -354,9 +459,22 @@ def _serve_spa() -> FileResponse:
     return FileResponse(SPA_INDEX)
 
 
+# ── 重任务专用线程池（与普通请求隔离）──
+_heavy_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="heavy-task"
+)
+
+
 @app.on_event("startup")
 def on_startup() -> None:
+    # 扩大默认线程池：支持更多并发同步请求
+    loop = asyncio.get_event_loop()
+    loop.set_default_executor(
+        concurrent.futures.ThreadPoolExecutor(max_workers=settings.thread_pool_size, thread_name_prefix="fastapi-worker")
+    )
     init_db()
+    # 启动过期下载文件后台清理任务
+    asyncio.create_task(_download_cleanup_loop())
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1370,7 +1488,7 @@ def _serialize_link(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row)
 @app.get("/api/users/options")
 def user_options(
     _: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     rows = db.execute("SELECT id, name, username, role FROM users ORDER BY role, name").fetchall()
     return {"users": [_row_to_dict(row) for row in rows]}
@@ -1448,7 +1566,7 @@ def unpin_show(
 @app.get("/api/me/pins")
 def list_my_pins(
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     """返回当前用户置顶的资源 / 放映；不再可见的项自动过滤。"""
     res_rows = db.execute(
@@ -1548,7 +1666,7 @@ def list_download_records(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     user: sqlite3.Row = Depends(require_admin),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ):
     """查询下载记录（管理员）"""
     base_query = """
@@ -1698,7 +1816,7 @@ def list_templates(
     template_type: str = Query(""),
     platform: str = Query(""),
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     uid = int(user["id"])
     # ── 可见性 SQL 条件 ──
@@ -1984,7 +2102,7 @@ async def update_template(
 def template_preview(
     template_id: int,
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> FileResponse:
     row = _template_row(db, template_id)
     if not can_view_template(db, row, user):
@@ -1999,7 +2117,7 @@ def template_preview(
 def template_preview_thumb(
     template_id: int,
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> FileResponse:
     row = _template_row(db, template_id)
     if not can_view_template(db, row, user):
@@ -2019,7 +2137,7 @@ def download_template(
     template_id: int,
     with_fonts: bool = Query(False),
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ):
     row = _template_row(db, template_id)
     if not can_view_template(db, row, user):
@@ -2064,7 +2182,7 @@ def list_resources(
     sort: str = Query("updated_desc"),
     manageable_only: bool = Query(False),
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     if resource_type != "asset":
         raise HTTPException(400, "模板请使用 /api/templates")
@@ -2127,7 +2245,7 @@ def list_resource_ids(
     sort: str = Query("updated_desc"),
     manageable_only: bool = Query(False),
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     """返回当前筛选条件下所有资源的 ID 列表（不含完整数据，用于全选）。
 
@@ -2455,7 +2573,7 @@ def pick_resources(
     remark_personal: str = Query("all"),
     sort: str = Query("updated_desc"),
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     """轻量级资源选择接口：SQL 级分页 + 多维筛选 + 排序，返回最小数据集"""
     where_clause, order_sql, params = _build_resource_query_sql(
@@ -2529,7 +2647,7 @@ def pick_resources_all_ids(
     remark_personal: str = Query("all"),
     sort: str = Query("updated_desc"),
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     """返回当前筛选条件下所有资源的 ID 列表（用于全部全选），SQL 级筛选"""
     where_clause, _, params = _build_resource_query_sql(
@@ -2812,7 +2930,7 @@ async def batch_split_import(
 def get_resource(
     resource_id: int,
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     row = _resource_row(db, resource_id)
     if not can_view_resource(db, row, user):
@@ -3221,7 +3339,7 @@ def get_personal_remark(
     resource_id: int,
     version_id: int | None = Query(None),
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     row = _resource_row(db, resource_id)
     if not can_view_resource(db, row, user):
@@ -3269,7 +3387,7 @@ def resource_preview(
     resource_id: int,
     version_id: int | None = Query(None),
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> FileResponse:
     row = _resource_row(db, resource_id)
     if not can_view_resource(db, row, user):
@@ -3286,7 +3404,7 @@ def resource_preview_thumb(
     resource_id: int,
     version_id: int | None = Query(None),
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> FileResponse:
     row = _resource_row(db, resource_id)
     if not can_view_resource(db, row, user):
@@ -3308,7 +3426,7 @@ def download_resource(
     with_fonts: bool = Query(False),
     version_id: int | None = Query(None),
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ):
     row = _resource_row(db, resource_id)
     if row["resource_type"] == "asset":
@@ -3423,7 +3541,7 @@ def list_shows(
     permission: str = Query("all"),
     sort: str = Query("updated_desc"),
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     uid = int(user["id"])
     super_admin = is_super_admin(user)
@@ -3609,7 +3727,7 @@ def create_show(
 def get_show(
     show_id: int,
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     row = _show_row(db, show_id)
     if not can_view_show(db, row, user):
@@ -3817,7 +3935,7 @@ def iterate_show(
 def show_versions(
     show_id: int,
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     row = _show_row(db, show_id)
     if not can_view_show(db, row, user):
@@ -3851,7 +3969,7 @@ def show_versions(
 def check_show_updates(
     show_id: int,
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     row = _show_row(db, show_id)
     if not can_view_show(db, row, user):
@@ -4032,7 +4150,7 @@ def get_resource_diff(
     show_id: int,
     resource_id: int,
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     row = _show_row(db, show_id)
     if not can_view_show(db, row, user):
@@ -4113,7 +4231,7 @@ def get_show_remark(
     show_id: int,
     resource_id: int,
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     row = _show_row(db, show_id)
     if not can_view_show(db, row, user):
@@ -4385,7 +4503,7 @@ def _aggregate_show_fonts(
 def show_fonts(
     show_id: int,
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     row = _show_row(db, show_id)
     if not can_view_show(db, row, user):
@@ -4543,6 +4661,211 @@ def download_show_zip(
     )
 
 
+# ─────────────────────────────────────────────────────────────
+# 异步下载 API（不代替以上同步下载接口，仅新增）
+# ─────────────────────────────────────────────────────────────
+
+_ALLOWED_DOWNLOAD_TYPES = {"pdf", "pptx_images", "pptx", "zip"}
+
+
+@app.post("/api/downloads/create")
+async def create_download_task(
+    request: Request,
+    show_id: int = Body(..., embed=True),
+    download_type: str = Body(..., embed=True),
+    watermark: str = Body("", embed=True),
+    with_fonts: bool = Body(False, embed=True),
+    user: sqlite3.Row = Depends(require_user),
+    db: sqlite3.Connection = Depends(db_dep),
+) -> dict[str, Any]:
+    """创建一个异步下载任务。返回 task_id，后台生成文件并通过 WebSocket 推送进度。"""
+    if download_type not in _ALLOWED_DOWNLOAD_TYPES:
+        raise HTTPException(400, f"不支持的 download_type: {download_type}")
+    show_row = _show_row(db, show_id)
+    if not can_view_show(db, show_row, user):
+        raise HTTPException(403, "无可见权限")
+
+    # 生成追踪码 + 记录下载（与同步 API 保持一致）
+    record_type = download_type
+    if download_type == "pptx" and with_fonts:
+        record_type = "pptx_fonts"
+    elif download_type == "zip" and with_fonts:
+        record_type = "zip_fonts"
+    track_code = _record_download(db, user, request, show_id, record_type)
+    client_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or (request.client.host if request.client else "")
+
+    params = {
+        "show_id": int(show_id),
+        "download_type": download_type,
+        "with_fonts": bool(with_fonts),
+        "user_watermark": watermark or "",
+        "track_code": track_code,
+        "client_ip": client_ip,
+    }
+    db.execute(
+        """
+        INSERT INTO tasks (task_type, status, owner_id, params, progress, total)
+        VALUES ('download', 'pending', ?, ?, 0, 0)
+        """,
+        (int(user["id"]), json.dumps(params, ensure_ascii=False)),
+    )
+    task_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+    db.commit()
+
+    # 启动后台任务
+    from app.core.download_tasks import execute_download_task
+
+    future = asyncio.ensure_future(execute_download_task(task_id, int(user["id"])))
+
+    def _on_done(f: asyncio.Future) -> None:  # type: ignore[type-arg]
+        try:
+            f.result()
+        except Exception as e:
+            logger.error("Download task %d failed with unhandled error: %s", task_id, e)
+        finally:
+            _pending_task_futures.pop(task_id, None)
+
+    future.add_done_callback(_on_done)
+    _pending_task_futures[task_id] = future
+
+    return {
+        "task_id": task_id,
+        "track_code": track_code,
+        "message": "下载任务已创建，请等待生成...",
+    }
+
+
+@app.get("/api/downloads/{task_id}/file")
+def get_download_file(
+    task_id: int,
+    user: sqlite3.Row = Depends(require_user),
+    db: sqlite3.Connection = Depends(db_read_dep),
+) -> FileResponse:
+    """下载已完成任务生成的文件。仅任务创建者可访问；文件过期返回 410。"""
+    row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "任务不存在")
+    if int(row["owner_id"]) != int(user["id"]) and not is_admin(user):
+        raise HTTPException(403, "无权访问此任务")
+    if row["task_type"] != "download":
+        raise HTTPException(400, "任务类型不匹配")
+    if row["status"] != "completed":
+        raise HTTPException(400, f"任务状态为 {row['status']}，文件尚未生成")
+    try:
+        result = json.loads(row["result_data"] or "{}")
+    except (ValueError, TypeError):
+        result = {}
+    if result.get("expired"):
+        raise HTTPException(410, "下载文件已过期，请重新发起下载")
+    fp = result.get("file_path")
+    if not fp:
+        raise HTTPException(410, "下载文件不可用")
+    file_path = Path(fp)
+    if not file_path.exists():
+        raise HTTPException(410, "下载文件已过期或被清理")
+    file_name = result.get("file_name") or file_path.name
+    suffix = file_path.suffix.lower()
+    media_type_map = {
+        ".pdf": "application/pdf",
+        ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ".zip": "application/zip",
+    }
+    media_type = media_type_map.get(suffix, "application/octet-stream")
+    return FileResponse(
+        file_path,
+        media_type=media_type,
+        headers={"Content-Disposition": _content_disposition(file_name)},
+    )
+
+
+@app.websocket("/ws/tasks")
+async def ws_tasks(websocket: WebSocket) -> None:
+    """单个连接推送当前用户的所有任务更新。认证方式：query param ``token`` 或 session cookie。"""
+    token = websocket.query_params.get("token")
+    user_id = read_session_token(token, settings.secret_key) if token else None
+    if not user_id:
+        # Fallback: 尝试从 cookie 中获取 session（httpOnly cookie 在同源 WS 请求时会自动携带）
+        cookie_token = websocket.cookies.get(SESSION_COOKIE)
+        user_id = read_session_token(cookie_token, settings.secret_key) if cookie_token else None
+    if not user_id:
+        # 未认证：拒绝握手
+        await websocket.close(code=1008)
+        return
+    user_id = int(user_id)
+    await websocket.accept()
+    async with _ws_lock:
+        _ws_connections.setdefault(user_id, []).append(websocket)
+    try:
+        while True:
+            try:
+                # 接收前端 pong/心跳，最多等 30s；超时主动发 ping
+                await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+            except asyncio.TimeoutError:
+                try:
+                    await websocket.send_json({"type": "ping"})
+                except Exception:
+                    break
+            except WebSocketDisconnect:
+                break
+            except Exception:
+                break
+    finally:
+        async with _ws_lock:
+            current = _ws_connections.get(user_id, [])
+            if websocket in current:
+                current.remove(websocket)
+            if not current:
+                _ws_connections.pop(user_id, None)
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+async def _download_cleanup_loop() -> None:
+    """每小时清理超过 24h 的已完成下载任务产生的文件，并标记其 result_data 为 expired。"""
+    from app.db import get_write_db, release_db
+    while True:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            return
+        try:
+            cutoff = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S")
+            db = get_write_db()
+            try:
+                expired = db.execute(
+                    "SELECT id, result_data FROM tasks"
+                    " WHERE task_type = 'download' AND status = 'completed'"
+                    " AND completed_at IS NOT NULL AND completed_at < ?",
+                    (cutoff,),
+                ).fetchall()
+                for task in expired:
+                    try:
+                        result = json.loads(task["result_data"] or "{}")
+                    except (ValueError, TypeError):
+                        result = {}
+                    if result.get("expired"):
+                        continue
+                    fp = result.get("file_path")
+                    if fp:
+                        try:
+                            Path(fp).unlink(missing_ok=True)
+                        except Exception:
+                            logger.warning("清理过期下载文件失败 task_id=%s path=%s", task["id"], fp, exc_info=True)
+                    db.execute(
+                        "UPDATE tasks SET result_data = ?,"
+                        " updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
+                        " WHERE id = ?",
+                        (json.dumps({"expired": True}), task["id"]),
+                    )
+                db.commit()
+            finally:
+                release_db(db, readonly=False)
+        except Exception as exc:
+            logger.error("Download cleanup error: %s", exc, exc_info=True)
+
+
 # ---------- 离线缓存 API ----------
 
 
@@ -4551,7 +4874,7 @@ def get_show_offline_package(
     show_id: int,
     auth_mode: str = "none",
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     row = _show_row(db, show_id)
     if not can_view_show(db, row, user):
@@ -4684,7 +5007,7 @@ def get_show_offline_package(
 @app.get("/api/shows/{show_id}/offline-version")
 def get_show_offline_version(
     show_id: int,
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     row = db.execute("SELECT * FROM shows WHERE id = ?", (show_id,)).fetchone()
     if row is None:
@@ -4732,7 +5055,7 @@ def create_present_session(
 def slide_image(
     resource_id: int,
     session_token: str = Query(...),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> FileResponse:
     claims = verify_present_token(session_token, settings.secret_key)
     if claims is None:
@@ -5123,17 +5446,17 @@ def _execute_split_task(
                 created_by=int(owner_id),
             )
 
-            # 首条资源立即提交，给用户即时反馈；之后每 BATCH_COMMIT 页提交一次
+            # 每次插入后立即提交，避免长时间持有 SQLite 写锁
             progress = index
+            db.commit()
+            db.execute(
+                "UPDATE tasks SET progress = ?,"
+                " updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
+                " WHERE id = ?",
+                (progress, task_id),
+            )
+            db.commit()
             if index == 1 or index % BATCH_COMMIT == 0 or index == total:
-                db.commit()
-                db.execute(
-                    "UPDATE tasks SET progress = ?,"
-                    " updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
-                    " WHERE id = ?",
-                    (progress, task_id),
-                )
-                db.commit()
                 logger.info("Task %d: progress %d/%d", task_id, progress, total)
 
         # 任务完成
@@ -5211,6 +5534,32 @@ def _serialize_task(row: sqlite3.Row, db: sqlite3.Connection | None = None) -> d
     # 附加图片数量（若存在）但不暴露原始路径
     if isinstance(raw_params.get("image_paths"), list):
         safe_params["image_count"] = len(raw_params["image_paths"])
+
+    result_data = json.loads(row["result_data"] or "{}")
+
+    # 下载任务特殊处理：暴露前端展示所需字段（白名单之外）
+    if row["task_type"] == "download":
+        for key in ("show_id", "download_type", "with_fonts", "track_code", "client_ip"):
+            if key in raw_params:
+                safe_params[key] = raw_params[key]
+        # 放映名称未存于 params，从 shows 表反查
+        show_id = raw_params.get("show_id")
+        if db is not None and show_id is not None:
+            try:
+                show_row = db.execute(
+                    "SELECT name FROM shows WHERE id = ?", (int(show_id),)
+                ).fetchone()
+                if show_row is not None:
+                    safe_params["show_name"] = show_row["name"]
+            except Exception:
+                pass
+        # 文件名 / 文件大小来自 result_data
+        if isinstance(result_data, dict):
+            if "file_name" in result_data:
+                safe_params["file_name"] = result_data["file_name"]
+            if "file_size" in result_data:
+                safe_params["file_size"] = result_data["file_size"]
+
     owner = _owner_brief(db, int(row["owner_id"])) if db is not None else None
     return {
         "id": row["id"],
@@ -5222,7 +5571,7 @@ def _serialize_task(row: sqlite3.Row, db: sqlite3.Connection | None = None) -> d
         "upload_progress": row["upload_progress"],
         "total": row["total"],
         "message": row["message"],
-        "result_data": json.loads(row["result_data"] or "{}"),
+        "result_data": result_data,
         "error_message": row["error_message"],
         "params": safe_params,
         "created_at": row["created_at"],
@@ -5234,34 +5583,75 @@ def _serialize_task(row: sqlite3.Row, db: sqlite3.Connection | None = None) -> d
 @app.get("/api/tasks")
 def list_tasks(
     status: str | None = Query(None),
+    task_type: str | None = Query(None),
+    owner_id: int | None = Query(None),
+    search: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
-    """获取当前用户的任务列表，支持 status 过滤，按 created_at DESC 排序"""
+    """获取任务列表，支持 status / task_type / owner_id 过滤、追踪码搜索及分页。
+
+    权限规则：
+    - 管理员：可传任意 owner_id（不传则返回所有用户的任务）
+    - 非管理员：忽略 owner_id 参数，强制只看自己的任务
+
+    分页：page 从 1 开始，page_size 默认 20、上限 100。
+    搜索：search 仅在 task_type=download 时对 params.track_code 字段做模糊匹配。
+    """
+    where_clauses: list[str] = []
+    params_list: list[Any] = []
+
     if is_admin(user):
-        sql = "SELECT * FROM tasks"
-        params_list: list[Any] = []
-        if status and status in {"uploading", "pending", "processing", "completed", "failed", "cancelled"}:
-            sql += " WHERE status = ?"
-            params_list.append(status)
-        sql += " ORDER BY created_at DESC"
-        rows = db.execute(sql, params_list).fetchall()
+        if owner_id is not None:
+            where_clauses.append("owner_id = ?")
+            params_list.append(int(owner_id))
     else:
-        sql = "SELECT * FROM tasks WHERE owner_id = ?"
-        params_list: list[Any] = [int(user["id"])]
-        if status and status in {"uploading", "pending", "processing", "completed", "failed", "cancelled"}:
-            sql += " AND status = ?"
-            params_list.append(status)
-        sql += " ORDER BY created_at DESC"
-        rows = db.execute(sql, params_list).fetchall()
-    return {"tasks": [_serialize_task(row, db) for row in rows]}
+        where_clauses.append("owner_id = ?")
+        params_list.append(int(user["id"]))
+
+    if status and status in {"uploading", "pending", "processing", "completed", "failed", "cancelled"}:
+        where_clauses.append("status = ?")
+        params_list.append(status)
+    if task_type is not None:
+        where_clauses.append("task_type = ?")
+        params_list.append(task_type)
+
+    # 追踪码搜索：仅在筛选下载任务时生效（上传任务无 track_code 字段）
+    search_kw = (search or "").strip()
+    if search_kw and task_type == "download":
+        where_clauses.append("json_extract(params, '$.track_code') LIKE ?")
+        params_list.append(f"%{search_kw}%")
+
+    where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+    total_row = db.execute(
+        f"SELECT COUNT(*) AS c FROM tasks{where_sql}",
+        params_list,
+    ).fetchone()
+    total = int(total_row["c"]) if total_row is not None else 0
+
+    offset = (page - 1) * page_size
+    sql = f"SELECT * FROM tasks{where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    rows = db.execute(sql, [*params_list, page_size, offset]).fetchall()
+    items = [_serialize_task(row, db) for row in rows]
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        # 兼容旧字段：保留 tasks 以避免破坏老调用方
+        "tasks": items,
+    }
 
 
 @app.get("/api/tasks/{task_id}")
 def get_task(
     task_id: int,
     user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
+    db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     """获取单个任务详情。只能查看自己的任务（管理员可查看所有）"""
     row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
@@ -5363,7 +5753,7 @@ async def create_split_import_task(
         async with _split_semaphore:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
-                None,
+                _heavy_executor,
                 _execute_split_task,
                 task_id,
                 str(source_path),
