@@ -311,7 +311,7 @@ export function AdminFontsPage() {
 
       {/* 分页条 */}
       {!isLoading && !isError && filtered.length > 0 && (
-        <div className="flex shrink-0 items-center justify-between border-t pt-3 text-sm text-muted-foreground">
+        <div className="flex shrink-0 items-center justify-between border-t pt-3 text-sm text-muted-foreground select-none">
           <span>
             显示 {pageStart + 1}-{Math.min(pageStart + pageSize, filtered.length)}，共{" "}
             {filtered.length} 条

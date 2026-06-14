@@ -719,7 +719,7 @@ function TasksPagination({
   const start = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const end = Math.min(page * pageSize, total);
   return (
-    <div className="flex shrink-0 items-center justify-between border-t pt-3 text-sm text-muted-foreground">
+    <div className="flex shrink-0 items-center justify-between border-t pt-3 text-sm text-muted-foreground select-none">
       <span>
         显示 {start}-{end}，共 {total} 条
       </span>
