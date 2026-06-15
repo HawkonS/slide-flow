@@ -5,6 +5,7 @@ import {
   Check,
   ChevronRight,
   Clock,
+  Eraser,
   FileText,
   GitBranch,
   GripVertical,
@@ -455,6 +456,28 @@ export function ShowUpgradeDialog({
     }
   };
 
+  // ── 清除草稿 ──
+  const handleClearDraft = React.useCallback(() => {
+    if (!show) return;
+    clearDraft(show.id);
+    setHasDraft(false);
+    setDraftSavedAt(null);
+    // 重置所有表单状态
+    setSelectedIds(new Set());
+    setRemarkDrafts({});
+    setChangeNote("");
+    setName("");
+    setActiveTab("reorganize");
+    setView("list");
+    setDetailResourceId(null);
+    const accessible = show.resources
+      .filter((r): r is Extract<ShowResource, { accessible: true }> => r.accessible === true)
+      .map((r) => ({ id: r.id, name: r.name, preview_url: r.preview_url }));
+    setOrganizedResources(accessible);
+    initialOrganizedRef.current = accessible;
+    toast.success("草稿已清除");
+  }, [show]);
+
   // ── 手动暂存草稿 ──
   const handleSaveDraft = React.useCallback(() => {
     if (!show) return;
@@ -518,8 +541,17 @@ export function ShowUpgradeDialog({
               基于 v{show.version_no}
             </Badge>
             {hasDraft && draftSavedAt && (
-              <span className="text-xs text-amber-600">
+              <span className="flex items-center gap-1 text-xs text-amber-600">
                 有暂存草稿 ({relativeTime(draftSavedAt)})
+                <button
+                  type="button"
+                  onClick={handleClearDraft}
+                  className="ml-1 inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs text-amber-700 hover:bg-amber-100 transition"
+                  title="清除草稿并重置表单"
+                >
+                  <Eraser className="h-3 w-3" />
+                  清除
+                </button>
               </span>
             )}
           </DialogTitle>
