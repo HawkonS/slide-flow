@@ -107,6 +107,7 @@ const SheetTitle = React.forwardRef<
   <DialogPrimitive.Title
     ref={ref}
     className={cn("text-lg font-semibold text-foreground", className)}
+    style={{ userSelect: 'text', WebkitUserSelect: 'text' }}
     {...props}
   />
 ));

@@ -21,6 +21,7 @@ export interface StatCardProps {
 export function StatCard({ label, value, hint, icon: Icon, to, className }: StatCardProps) {
   const inner = (
     <div
+      data-slot="card"
       className={cn(
         "group flex items-center gap-4 rounded-lg border bg-card p-4 shadow-sm transition",
         to && "cursor-pointer hover:-translate-y-0.5 hover:shadow-md",

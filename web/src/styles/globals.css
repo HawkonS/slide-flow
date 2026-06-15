@@ -116,3 +116,16 @@
     -webkit-user-select: none;
   }
 }
+
+/* 标题、卡片、标签等 UI 元素不可选中（放在 @layer 外部以提高优先级） */
+button,
+h1, h2, h3, h4, h5, h6,
+article,
+[role="tab"],
+[role="button"],
+[data-slot="card"],
+[data-slot="badge"],
+label {
+  user-select: none;
+  -webkit-user-select: none;
+}

@@ -210,7 +210,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   );
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col select-none">
       {/* 常驻首页 */}
       <div className="shrink-0 px-3 pt-3 pb-1">
         <div onClick={onNavigate}>
@@ -312,7 +312,10 @@ export function AppShell() {
   return (
     <div className="flex h-screen flex-col bg-background">
       {/* 顶部栏 */}
-      <header className="flex h-14 shrink-0 items-center border-b bg-card px-4 md:px-6">
+      <header
+        className="flex h-14 shrink-0 items-center border-b bg-card px-4 md:px-6"
+        style={{ userSelect: 'none', WebkitUserSelect: 'none' }}
+      >
         {/* 移动端：汉堡按钮 */}
         <div className="md:hidden">
           <SheetRoot open={sheetOpen} onOpenChange={setSheetOpen}>
@@ -325,7 +328,7 @@ export function AppShell() {
                 <Menu className="h-5 w-5" />
               </button>
             </SheetTrigger>
-            <SheetContent side="left" className="w-[260px] p-0">
+            <SheetContent side="left" className="w-[260px] p-0" style={{ userSelect: 'none', WebkitUserSelect: 'none' }}>
               <div className="flex h-full flex-col">
                 {/* 移动端 Sheet 顶部 logo */}
                 <div className="flex items-center gap-2 border-b px-4 py-3">
@@ -379,7 +382,10 @@ export function AppShell() {
       {/* 下方内容区 */}
       <div className="flex flex-1 overflow-hidden">
         {/* 桌面端固定 Sidebar */}
-        <aside className="hidden w-56 shrink-0 flex-col overflow-y-auto border-r bg-card md:flex scrollbar-hide">
+        <aside
+          className="hidden w-56 shrink-0 flex-col overflow-y-auto border-r bg-card md:flex scrollbar-hide"
+          style={{ userSelect: 'none', WebkitUserSelect: 'none' }}
+        >
           <SidebarContent />
         </aside>
 
