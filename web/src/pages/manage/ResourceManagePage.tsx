@@ -535,8 +535,8 @@ export default function ResourceManagePage() {
                   <TableHead className="w-16">ID</TableHead>
                   <TableHead className="w-20">缩略图</TableHead>
                   <TableHead>名称</TableHead>
-                  <TableHead className="w-24">主体</TableHead>
-                  <TableHead className="w-40">标签</TableHead>
+                  <TableHead className="w-28">主体</TableHead>
+                  <TableHead className="w-52">标签</TableHead>
                   <TableHead className="w-20">密级</TableHead>
                   <TableHead className="w-16">状态</TableHead>
                   <TableHead className="w-24">所有者</TableHead>
@@ -593,16 +593,16 @@ export default function ResourceManagePage() {
                       <TableCell>
                         <div className="max-w-[200px] truncate font-medium">{r.name}</div>
                       </TableCell>
-                      <TableCell className="text-sm text-muted-foreground">
+                      <TableCell className="max-w-[120px] truncate text-sm text-muted-foreground">
                         {r.subject || DEFAULT_RESOURCE_SUBJECT}
                       </TableCell>
                       <TableCell>
-                        <div className="flex flex-wrap gap-1">
+                        <div className="flex items-center gap-1 overflow-hidden">
                           {rTags.length > 0 ? (
                             rTags.slice(0, 3).map((tag) => (
                               <span
                                 key={tag}
-                                className="inline-flex h-5 items-center rounded-md bg-secondary px-1.5 text-[11px] text-secondary-foreground"
+                                className="inline-flex h-5 shrink-0 items-center rounded-md bg-secondary px-1.5 text-[11px] text-secondary-foreground"
                               >
                                 {tag}
                               </span>
@@ -611,7 +611,7 @@ export default function ResourceManagePage() {
                             <span className="text-xs text-muted-foreground">-</span>
                           )}
                           {rTags.length > 3 && (
-                            <span className="inline-flex h-5 items-center text-[11px] text-muted-foreground">
+                            <span className="inline-flex h-5 shrink-0 items-center text-[11px] text-muted-foreground">
                               +{rTags.length - 3}
                             </span>
                           )}
