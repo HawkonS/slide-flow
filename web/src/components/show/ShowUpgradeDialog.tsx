@@ -496,17 +496,24 @@ export function ShowUpgradeDialog({
     toast.success("草稿已暂存");
   }, [show, activeTab, selectedIds, remarkDrafts, changeNote, name, organizedResources]);
 
-  // ── 点击遮罩/ESC 关闭时自动暂存草稿 ──
+  // ── 点击遮罩/ESC 关闭时自动暂存草稿（仅在内容发生变化时） ──
   const handleOpenChange = React.useCallback(
     (nextOpen: boolean) => {
       if (!nextOpen && show) {
-        const hasContent =
+        // 对比当前资源列表与初始状态，检测是否有实际改动
+        const currentIds = organizedResources.map((r) => r.id);
+        const initialIds = initialOrganizedRef.current.map((r) => r.id);
+        const resourcesChanged =
+          currentIds.length !== initialIds.length ||
+          currentIds.some((id, i) => id !== initialIds[i]);
+
+        const hasUserChanges =
           changeNote.trim() !== "" ||
           name.trim() !== "" ||
           selectedIds.size > 0 ||
           Object.keys(remarkDrafts).length > 0 ||
-          organizedResources.length > 0;
-        if (hasContent) {
+          resourcesChanged;
+        if (hasUserChanges) {
           const draft: IterationDraft = {
             activeTab,
             selectedIds: Array.from(selectedIds),
