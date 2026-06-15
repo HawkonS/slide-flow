@@ -40,7 +40,7 @@ interface ShowDownloadDialogProps {
 }
 
 /** 异步下载创建接口契约 */
-type DownloadType = "pdf" | "pptx_images" | "pptx" | "pptx_fonts";
+type DownloadType = "pdf" | "pptx_images" | "pptx" | "pptx_fonts" | "pptx_pages";
 
 interface CreateDownloadResponse {
   task_id: number;
@@ -53,6 +53,7 @@ const DOWNLOAD_TYPE_LABEL: Record<DownloadType, string> = {
   pptx_images: "纯图 PPT",
   pptx: "合并 PPT",
   pptx_fonts: "PPT + 字体包",
+  pptx_pages: "逐页 PPT",
 };
 
 export function ShowDownloadDialog({ open, onOpenChange, show }: ShowDownloadDialogProps) {
@@ -198,6 +199,14 @@ export function ShowDownloadDialog({ open, onOpenChange, show }: ShowDownloadDia
                 disabled={isBusy}
                 loading={submitting === "pptx_fonts"}
               />
+              <DownloadRow
+                icon={<PackageOpen className="h-4 w-4" />}
+                title="逐页 PPT"
+                desc="每页幻灯片单独一个 PPTX，打包为 ZIP"
+                onClick={() => submitDownload("pptx_pages", false)}
+                disabled={isBusy}
+                loading={submitting === "pptx_pages"}
+              />
             </div>
 
             {/* 字体检测面板 */}
@@ -207,11 +216,6 @@ export function ShowDownloadDialog({ open, onOpenChange, show }: ShowDownloadDia
               </div>
               <FontCheckPanel local={local} />
             </div>
-
-            <p className="mt-4 rounded-md border border-dashed bg-muted/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
-              下载将在后台异步生成，完成后浏览器会自动开始下载。
-              你可以前往「任务管理 · 下载任务」查看进度与历史。
-            </p>
           </div>
 
           {/* 右侧：水印设置 */}

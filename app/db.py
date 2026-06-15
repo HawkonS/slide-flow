@@ -415,7 +415,7 @@ def init_db() -> None:
                 track_code TEXT NOT NULL UNIQUE,
                 user_id INTEGER REFERENCES users(id),
                 show_id INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
-                download_type TEXT NOT NULL CHECK(download_type IN ('pdf', 'pptx_images', 'pptx', 'pptx_fonts', 'zip', 'zip_fonts')),
+                download_type TEXT NOT NULL CHECK(download_type IN ('pdf', 'pptx_images', 'pptx', 'pptx_fonts', 'pptx_pages', 'zip', 'zip_fonts')),
                 client_ip TEXT NOT NULL DEFAULT '',
                 downloaded_at TEXT NOT NULL
             );
@@ -669,7 +669,31 @@ def ensure_schema(db: sqlite3.Connection) -> None:
                 track_code TEXT NOT NULL UNIQUE,
                 user_id INTEGER REFERENCES users(id),
                 show_id INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
-                download_type TEXT NOT NULL CHECK(download_type IN ('pdf', 'pptx_images', 'pptx', 'pptx_fonts', 'zip', 'zip_fonts')),
+                download_type TEXT NOT NULL CHECK(download_type IN ('pdf', 'pptx_images', 'pptx', 'pptx_fonts', 'pptx_pages', 'zip', 'zip_fonts')),
+                client_ip TEXT NOT NULL DEFAULT '',
+                downloaded_at TEXT NOT NULL
+            );
+            INSERT INTO download_records_new SELECT * FROM download_records;
+            DROP TABLE download_records;
+            ALTER TABLE download_records_new RENAME TO download_records;
+            CREATE INDEX IF NOT EXISTS idx_download_records_track_code ON download_records(track_code);
+            CREATE INDEX IF NOT EXISTS idx_download_records_downloaded_at ON download_records(downloaded_at);
+            PRAGMA foreign_keys = ON;
+        """)
+
+    # download_records 表：扩展 download_type CHECK 约束以支持 'pptx_pages'
+    dr_sql_row = db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='download_records'"
+    ).fetchone()
+    if dr_sql_row and "'pptx_pages'" not in (dr_sql_row["sql"] or ""):
+        db.executescript("""
+            PRAGMA foreign_keys = OFF;
+            CREATE TABLE download_records_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                track_code TEXT NOT NULL UNIQUE,
+                user_id INTEGER REFERENCES users(id),
+                show_id INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
+                download_type TEXT NOT NULL CHECK(download_type IN ('pdf', 'pptx_images', 'pptx', 'pptx_fonts', 'pptx_pages', 'zip', 'zip_fonts')),
                 client_ip TEXT NOT NULL DEFAULT '',
                 downloaded_at TEXT NOT NULL
             );

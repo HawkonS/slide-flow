@@ -4672,7 +4672,7 @@ def download_show_zip(
 # 异步下载 API（不代替以上同步下载接口，仅新增）
 # ─────────────────────────────────────────────────────────────
 
-_ALLOWED_DOWNLOAD_TYPES = {"pdf", "pptx_images", "pptx", "zip"}
+_ALLOWED_DOWNLOAD_TYPES = {"pdf", "pptx_images", "pptx", "pptx_pages", "zip"}
 
 
 @app.post("/api/downloads/create")

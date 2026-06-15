@@ -31,6 +31,7 @@ from app.core.ppt import (
     add_watermark_to_pptx,
     build_image_pptx,
     merge_pptx_files,
+    split_pptx_to_single_pages,
 )
 from app.db import get_db
 
@@ -45,7 +46,7 @@ _download_semaphore = asyncio.Semaphore(3)
 _DOWNLOAD_TASKS_DIR = settings.assets_dir / "downloads" / "tasks"
 
 # 允许的 download_type
-ALLOWED_DOWNLOAD_TYPES = {"pdf", "pptx_images", "pptx", "zip"}
+ALLOWED_DOWNLOAD_TYPES = {"pdf", "pptx_images", "pptx", "pptx_pages", "zip"}
 
 
 def _now_db_ts() -> str:
@@ -233,6 +234,67 @@ def _generate_pptx_images(
     return out_path, f"{show_name}_纯图.pptx", watermark_ok
 
 
+def _generate_pptx_pages(
+    db: sqlite3.Connection,
+    show_id: int,
+    show_name: str,
+    items: list[dict[str, Any]],
+    wm_text: str,
+    out_path: Path,
+) -> tuple[Path, str, bool]:
+    """将每个资源的 PPTX 拆分为单页，全部打包进一个 ZIP。"""
+    all_single_pages: list[Path] = []
+    tmp_dirs: list[tuple[int, Path]] = []  # (items 中的索引, 临时目录)
+    watermark_ok = bool(wm_text)
+
+    for idx, item in enumerate(items):
+        ppt_path = _safe_abs(item.get("ppt_path"))
+        if not ppt_path or not ppt_path.exists():
+            continue
+        # 每份资源用独立临时目录存放拆分结果，目录名格式：pptx_pages_{idx:04d}
+        tmp_dir = Path(tempfile.mkdtemp(prefix=f"pptx_pages_{idx:04d}_"))
+        tmp_dirs.append((idx, tmp_dir))
+        try:
+            pages = split_pptx_to_single_pages(ppt_path, tmp_dir)
+        except Exception:
+            logger.warning("拆分 PPTX 为单页失败 resource_id=%s", item.get("resource_id"), exc_info=True)
+            continue
+        # 可选：对每个单页 PPTX 添加水印
+        if wm_text:
+            for page_path in pages:
+                try:
+                    add_watermark_to_pptx(page_path, wm_text)
+                except Exception:
+                    logger.warning("逐页 PPT 水印添加失败，跳过该页", exc_info=True)
+                    watermark_ok = False
+        all_single_pages.extend(pages)
+
+    if not all_single_pages:
+        raise RuntimeError("没有可下载的幻灯片")
+
+    # 打包为 ZIP，文件名格式：001_资源名_pageN.pptx
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        # 建立 tmp_dir 名称 -> items 索引的映射
+        dir_to_item_idx: dict[str, int] = {}
+        for item_idx, tmp_dir in tmp_dirs:
+            dir_to_item_idx[tmp_dir.name] = item_idx
+        for i, page_path in enumerate(all_single_pages, start=1):
+            parent_name = page_path.parent.name
+            res_idx = dir_to_item_idx.get(parent_name, 0)
+            resource_name = items[res_idx]["name"] if res_idx < len(items) else "slide"
+            safe_name = resource_name.replace("/", "_").replace("\\", "_")
+            # 从 page_path.stem 提取页号（split_pptx_to_single_pages 输出形如 slide_N.pptx）
+            page_suffix = page_path.stem.split("_")[-1] if "_" in page_path.stem else page_path.stem
+            arc_name = f"{i:03d}_{safe_name}_page{page_suffix}.pptx"
+            zf.write(page_path, arc_name)
+
+    # 清理临时目录
+    for _, tmp_dir in tmp_dirs:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    return out_path, f"{show_name}_逐页.zip", watermark_ok
+
+
 def _aggregate_fonts(items: list[dict[str, Any]]) -> dict[str, list[str]]:
     names: list[str] = []
     seen_names: set[str] = set()
@@ -394,6 +456,7 @@ def _generate_download_file_sync(task_id: int, params: dict[str, Any]) -> dict[s
             "pdf": "pdf",
             "pptx_images": "pptx",
             "pptx": "zip" if with_fonts else "pptx",
+            "pptx_pages": "zip",
             "zip": "zip",
         }
         ext = ext_map[download_type]
@@ -428,6 +491,8 @@ def _generate_download_file_sync(task_id: int, params: dict[str, Any]) -> dict[s
             out_path, file_name, watermark_applied = _generate_pdf(db, show_id, show_name, items, wm_text, out_path)
         elif download_type == "pptx_images":
             out_path, file_name, watermark_applied = _generate_pptx_images(db, show_id, show_name, items, wm_text, out_path)
+        elif download_type == "pptx_pages":
+            out_path, file_name, watermark_applied = _generate_pptx_pages(db, show_id, show_name, items, wm_text, out_path)
         elif download_type == "pptx":
             out_path, file_name, watermark_applied = _generate_pptx(db, show_id, show_name, items, wm_text, with_fonts, out_path)
         elif download_type == "zip":
@@ -460,6 +525,8 @@ def _suggest_filename(show_name: str, download_type: str, with_fonts: bool) -> s
         return f"{show_name}.pdf"
     if download_type == "pptx_images":
         return f"{show_name}_纯图.pptx"
+    if download_type == "pptx_pages":
+        return f"{show_name}_逐页.zip"
     if download_type == "pptx":
         return f"{show_name}_with_fonts.zip" if with_fonts else f"{show_name}.pptx"
     if download_type == "zip":
