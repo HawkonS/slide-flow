@@ -1425,15 +1425,14 @@ function DownloadTaskRow({ task, showOwner, isAdmin, isSelected, onSelectToggle 
           <span className="truncate text-sm font-medium" title={downloadTaskShowName(task)}>
             {downloadTaskShowName(task)}
           </span>
-          {(task.params?.with_fonts || (isCompleted && fileSize)) && (
-            <span className="text-[11px] text-muted-foreground">
-              {task.params?.with_fonts && <span>含字体打包</span>}
-              {task.params?.with_fonts && isCompleted && fileSize ? <span> · </span> : null}
-              {isCompleted && fileSize ? (
-                <span className="tabular-nums">{formatFileSize(fileSize)}</span>
-              ) : null}
-            </span>
-          )}
+          <span className="text-[11px] text-muted-foreground">
+            {task.params?.with_fonts && <span>含字体打包</span>}
+            {task.params?.with_fonts && isCompleted && fileSize ? <span> · </span> : null}
+            {isCompleted && fileSize ? (
+              <span className="tabular-nums">{formatFileSize(fileSize)}</span>
+            ) : null}
+            {!task.params?.with_fonts && !(isCompleted && fileSize) && <span>&nbsp;</span>}
+          </span>
         </div>
       </TableCell>
 
@@ -1445,49 +1444,21 @@ function DownloadTaskRow({ task, showOwner, isAdmin, isSelected, onSelectToggle 
 
       {/* 状态（含进度） */}
       <TableCell>
-        {isCompleted ? (
-          <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600">
-            <CheckCircle2 className="h-3.5 w-3.5" />
-            已完成
-          </span>
-        ) : isFailed ? (
-          <span
-            className="inline-flex max-w-full items-center gap-1 truncate text-xs font-medium text-destructive"
-            title={task.error_message || "处理失败"}
-          >
-            <XCircle className="h-3.5 w-3.5 shrink-0" />
-            失败
-          </span>
-        ) : isCancelled ? (
-          <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-            <OctagonX className="h-3.5 w-3.5" />
-            已取消
-          </span>
-        ) : (
-          <div className="flex flex-col gap-1">
-            <Badge variant={STATUS_BADGE_VARIANT[status] || "outline"} className="w-fit gap-1 text-[11px]">
-              {statusIcon(status)}
-              {STATUS_LABEL[status] || status}
-            </Badge>
-            {isProgressing && (task.total > 0 || percent > 0) ? (
-              <div className="flex items-center gap-2">
-                <div className="h-1 flex-1 overflow-hidden rounded-full bg-muted">
-                  <div
-                    className="h-full rounded-full bg-primary transition-all duration-500"
-                    style={{ width: `${percent}%` }}
-                  />
-                </div>
-                <span className="whitespace-nowrap text-[11px] tabular-nums text-muted-foreground">
-                  {percent}%
-                </span>
-              </div>
-            ) : task.message ? (
-              <span className="truncate text-[11px] text-muted-foreground" title={task.message}>
-                {task.message}
-              </span>
-            ) : null}
-          </div>
-        )}
+        <span
+          className={cn(
+            "inline-flex h-5 items-center gap-1 text-[11px]",
+            isProgressing && "rounded-full border px-2.5 font-medium",
+            isCompleted && "text-emerald-600",
+            isFailed && "text-destructive max-w-full truncate",
+            isCancelled && "text-muted-foreground",
+          )}
+          title={isFailed ? task.error_message || "处理失败" : undefined}
+        >
+          {statusIcon(status)}
+          {isProgressing && percent > 0
+            ? `${STATUS_LABEL[status] || status} ${percent}%`
+            : STATUS_LABEL[status] || status}
+        </span>
       </TableCell>
 
       {/* 追踪码（hover 显示 IP） */}
@@ -1529,21 +1500,23 @@ function DownloadTaskRow({ task, showOwner, isAdmin, isSelected, onSelectToggle 
       </TableCell>
 
       <TableCell className="w-28">
-        {isCompleted ? (
-          <Button asChild variant="outline" size="sm" className="h-7 gap-1 text-xs">
-            <a
-              href={`/api/downloads/${task.id}/file`}
-              download={fileName || undefined}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              <Download className="h-3.5 w-3.5" />
-              下载
-            </a>
-          </Button>
-        ) : (
-          <span className="text-[11px] text-muted-foreground">—</span>
-        )}
+        <div className="flex h-7 items-center">
+          {isCompleted ? (
+            <Button asChild variant="outline" size="sm" className="h-7 gap-1 text-xs">
+              <a
+                href={`/api/downloads/${task.id}/file`}
+                download={fileName || undefined}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <Download className="h-3.5 w-3.5" />
+                下载
+              </a>
+            </Button>
+          ) : (
+            <span className="text-[11px] text-muted-foreground">—</span>
+          )}
+        </div>
       </TableCell>
     </TableRow>
   );

@@ -65,6 +65,7 @@ def _update_task(
     result_data: dict | None = None,
     error_message: str | None = None,
     mark_completed: bool = False,
+    total: int | None = None,
 ) -> None:
     """统一的 task 状态更新入口。"""
     fields: list[str] = ["updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"]
@@ -78,6 +79,9 @@ def _update_task(
     if progress is not None:
         fields.append("progress = ?")
         args.append(int(progress))
+    if total is not None:
+        fields.append("total = ?")
+        args.append(int(total))
     if result_data is not None:
         fields.append("result_data = ?")
         args.append(json.dumps(result_data, ensure_ascii=False))
@@ -163,6 +167,8 @@ def _generate_pdf(
     items: list[dict[str, Any]],
     wm_text: str,
     out_path: Path,
+    *,
+    progress_callback: "Callable[[int, int], None] | None" = None,
 ) -> tuple[Path, str, bool]:
     images: list[Image.Image] = []
     watermark_ok = bool(wm_text)
@@ -178,6 +184,8 @@ def _generate_pdf(
                 logger.warning("PDF 图片水印添加失败，跳过该帧水印 show_id=%s", show_id, exc_info=True)
                 watermark_ok = False
         images.append(img)
+        if progress_callback:
+            progress_callback(10 + int(80 * len(images) / len(items)), f"处理图片 {len(images)}/{len(items)}")
     if not images:
         raise RuntimeError("没有可下载的预览图")
     first = images[0]
@@ -195,6 +203,8 @@ def _generate_pptx_images(
     items: list[dict[str, Any]],
     wm_text: str,
     out_path: Path,
+    *,
+    progress_callback: "Callable[[int, int], None] | None" = None,
 ) -> tuple[Path, str, bool]:
     image_paths: list[Path] = []
     for item in items:
@@ -219,18 +229,24 @@ def _generate_pptx_images(
                 img.close()
                 img_wm.close()
                 watermarked_paths.append(tmp_path)
+                if progress_callback:
+                    progress_callback(10 + int(60 * len(watermarked_paths) / len(image_paths)), f"处理图片 {len(watermarked_paths)}/{len(image_paths)}")
             build_image_pptx(watermarked_paths, out_path)
         except Exception:
             logger.warning("纯图 PPT 图片水印添加失败，使用原图生成 show_id=%s", show_id, exc_info=True)
             build_image_pptx(image_paths, out_path)
             watermark_ok = False
         finally:
+            if progress_callback:
+                progress_callback(80, "生成 PPT 文件...")
             for p in watermarked_paths:
                 p.unlink(missing_ok=True)
     else:
         build_image_pptx(image_paths, out_path)
         watermark_ok = False
 
+    if progress_callback:
+        progress_callback(90, "完成")
     return out_path, f"{show_name}_纯图.pptx", watermark_ok
 
 
@@ -241,6 +257,8 @@ def _generate_pptx_pages(
     items: list[dict[str, Any]],
     wm_text: str,
     out_path: Path,
+    *,
+    progress_callback: "Callable[[int, int], None] | None" = None,
 ) -> tuple[Path, str, bool]:
     """将每个资源的 PPTX 拆分为单页，全部打包进一个 ZIP。"""
     all_single_pages: list[Path] = []
@@ -268,6 +286,8 @@ def _generate_pptx_pages(
                     logger.warning("逐页 PPT 水印添加失败，跳过该页", exc_info=True)
                     watermark_ok = False
         all_single_pages.extend(pages)
+        if progress_callback:
+            progress_callback(10 + int(80 * (idx + 1) / len(items)), f"处理 {idx + 1}/{len(items)}")
 
     if not all_single_pages:
         raise RuntimeError("没有可下载的幻灯片")
@@ -328,6 +348,8 @@ def _generate_pptx(
     wm_text: str,
     with_fonts: bool,
     out_path: Path,
+    *,
+    progress_callback: "Callable[[int, int], None] | None" = None,
 ) -> tuple[Path, str, bool]:
     # 复用 main.py 中的字体打包逻辑
     from app import main as _main
@@ -348,6 +370,8 @@ def _generate_pptx(
     merged_tmp.close()
     try:
         merge_pptx_files(input_paths, merged_path, hidden_flags=hidden_flags)
+        if progress_callback:
+            progress_callback(40, "合并完成，处理水印...")
         watermark_ok = bool(wm_text)
         if wm_text:
             try:
@@ -355,6 +379,8 @@ def _generate_pptx(
             except Exception:
                 logger.warning("合并 PPT 水印添加失败，将跳过水印继续生成 show_id=%s", show_id, exc_info=True)
                 watermark_ok = False
+        if progress_callback:
+            progress_callback(70, "生成文件...")
         if not with_fonts:
             shutil.move(str(merged_path), str(out_path))
             return out_path, f"{show_name}.pptx", watermark_ok
@@ -377,6 +403,8 @@ def _generate_zip(
     wm_text: str,
     with_fonts: bool,
     out_path: Path,
+    *,
+    progress_callback: "Callable[[int, int], None] | None" = None,
 ) -> tuple[Path, str, bool]:
     from app import main as _main
 
@@ -405,6 +433,8 @@ def _generate_zip(
             else:
                 zf.write(ppt_path, arcname)
             written += 1
+            if progress_callback:
+                progress_callback(10 + int(80 * written / len(items)), f"打包 {written}/{len(items)}")
         if not written:
             raise RuntimeError("没有可下载的内容")
         agg = _aggregate_fonts(items)
@@ -420,7 +450,12 @@ def _generate_zip(
     return out_path, f"{show_name}{suffix}", watermark_ok
 
 
-def _generate_download_file_sync(task_id: int, params: dict[str, Any]) -> dict[str, Any]:
+def _generate_download_file_sync(
+    task_id: int,
+    params: dict[str, Any],
+    *,
+    progress_callback: "Callable[[int, int], None] | None" = None,
+) -> dict[str, Any]:
     """工作线程中执行：生成下载文件并返回结果数据。
 
     返回字典：``{"file_path": str, "file_name": str, "file_size": int}``
@@ -471,6 +506,8 @@ def _generate_download_file_sync(task_id: int, params: dict[str, Any]) -> dict[s
                 out_path = _output_path(task_id, ext)
                 shutil.copy2(cached, out_path)
                 file_name = _suggest_filename(show_name, download_type, with_fonts)
+                if progress_callback:
+                    progress_callback(90, "缓存命中")
                 return {
                     "file_path": str(out_path),
                     "file_name": file_name,
@@ -488,15 +525,15 @@ def _generate_download_file_sync(task_id: int, params: dict[str, Any]) -> dict[s
             out_path.unlink(missing_ok=True)
 
         if download_type == "pdf":
-            out_path, file_name, watermark_applied = _generate_pdf(db, show_id, show_name, items, wm_text, out_path)
+            out_path, file_name, watermark_applied = _generate_pdf(db, show_id, show_name, items, wm_text, out_path, progress_callback=progress_callback)
         elif download_type == "pptx_images":
-            out_path, file_name, watermark_applied = _generate_pptx_images(db, show_id, show_name, items, wm_text, out_path)
+            out_path, file_name, watermark_applied = _generate_pptx_images(db, show_id, show_name, items, wm_text, out_path, progress_callback=progress_callback)
         elif download_type == "pptx_pages":
-            out_path, file_name, watermark_applied = _generate_pptx_pages(db, show_id, show_name, items, wm_text, out_path)
+            out_path, file_name, watermark_applied = _generate_pptx_pages(db, show_id, show_name, items, wm_text, out_path, progress_callback=progress_callback)
         elif download_type == "pptx":
-            out_path, file_name, watermark_applied = _generate_pptx(db, show_id, show_name, items, wm_text, with_fonts, out_path)
+            out_path, file_name, watermark_applied = _generate_pptx(db, show_id, show_name, items, wm_text, with_fonts, out_path, progress_callback=progress_callback)
         elif download_type == "zip":
-            out_path, file_name, watermark_applied = _generate_zip(db, show_id, show_name, items, wm_text, with_fonts, out_path)
+            out_path, file_name, watermark_applied = _generate_zip(db, show_id, show_name, items, wm_text, with_fonts, out_path, progress_callback=progress_callback)
         else:
             raise RuntimeError(f"不支持的 download_type: {download_type}")
 
@@ -570,6 +607,7 @@ async def execute_download_task(task_id: int, owner_id: int) -> None:
                 status="processing",
                 message="正在生成文件...",
                 progress=10,
+                total=100,
             )
         finally:
             db.close()
@@ -585,10 +623,60 @@ async def execute_download_task(task_id: int, owner_id: int) -> None:
             },
         )
 
+        # 进度追踪：工作线程写入，asyncio 任务读取并广播
+        _progress_broadcast: dict[str, Any] = {"progress": 10, "message": "正在生成文件..."}
+
+        def _progress_cb(progress: int, message: str) -> None:
+            _progress_broadcast["progress"] = progress
+            _progress_broadcast["message"] = message
+
+        async def _broadcast_progress_loop() -> None:
+            """定期检查进度变化并广播 + 更新 DB。"""
+            last_progress = -1
+            while not _progress_broadcast.get("done"):
+                try:
+                    cur = _progress_broadcast.get("progress", 10)
+                    if cur != last_progress:
+                        last_progress = cur
+                        msg = _progress_broadcast.get("message", "")
+                        try:
+                            _db = get_db()
+                            try:
+                                _update_task(_db, task_id, progress=cur, message=msg, total=100)
+                            finally:
+                                _db.close()
+                        except Exception:
+                            pass
+                        await _safe_broadcast(
+                            owner_id,
+                            {
+                                "type": "download_progress",
+                                "task_id": task_id,
+                                "status": "processing",
+                                "progress": cur,
+                                "message": msg,
+                            },
+                        )
+                    await asyncio.sleep(1)
+                except asyncio.CancelledError:
+                    return
+                except Exception:
+                    break
+
+        progress_task = asyncio.create_task(_broadcast_progress_loop())
+
         try:
-            result = await asyncio.to_thread(_generate_download_file_sync, task_id, params)
+            result = await asyncio.to_thread(
+                _generate_download_file_sync, task_id, params, progress_callback=_progress_cb
+            )
         except Exception as exc:
             logger.exception("Download task %d failed", task_id)
+            _progress_broadcast["done"] = True
+            progress_task.cancel()
+            try:
+                await progress_task
+            except (asyncio.CancelledError, Exception):
+                pass
             db = get_db()
             try:
                 _update_task(db, task_id, status="failed", error_message=str(exc))
@@ -604,6 +692,14 @@ async def execute_download_task(task_id: int, owner_id: int) -> None:
             )
             return
 
+        # 标记进度广播循环结束
+        _progress_broadcast["done"] = True
+        progress_task.cancel()
+        try:
+            await progress_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
         db = get_db()
         try:
             _update_task(
@@ -611,6 +707,7 @@ async def execute_download_task(task_id: int, owner_id: int) -> None:
                 task_id,
                 status="completed",
                 progress=100,
+                total=100,
                 message="",
                 result_data=result,
                 mark_completed=True,
