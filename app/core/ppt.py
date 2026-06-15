@@ -1817,29 +1817,17 @@ def build_image_pptx(image_paths: list[Path], output_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def add_watermark_to_image(img: Image.Image, text: str) -> Image.Image:
-    """在图片上叠加半透明斜向水印文字，返回新的 RGBA 图片。
-
-    算法：在超大画布上平铺文字 -> 整体旋转 -> 裁剪中心区域，保证永远不会裁切。
-    """
-    if not text:
-        return img
-    base = img.convert("RGBA")
-    w, h = base.size
-
-    # 字号：图片短边的1/18，与合并PPT水印视觉效果一致
+def _build_watermark_tile(w: int, h: int, text: str) -> Image.Image:
+    """预渲染旋转水印 tile 层，可复用于多张相同尺寸的图片。"""
     font_size = max(28, min(w, h) // 18)
     font = _get_cjk_font(font_size)
 
-    # 计算单个水印文字尺寸
     dummy = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
     bbox = dummy.textbbox((0, 0), text, font=font)
     tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
 
-    # 在超大画布上平铺文字（对角线的 1.5 倍确保旋转后覆盖全图）
     diag = int((w ** 2 + h ** 2) ** 0.5)
     canvas_size = int(diag * 1.5)
-    # 按图片尺寸计算间距，保证约 6 个水印可见（3列×2行）
     gap_x = max(int(w / 2.5), tw + 40)
     gap_y = max(int(h / 2.2), th + 40)
 
@@ -1854,17 +1842,36 @@ def add_watermark_to_image(img: Image.Image, text: str) -> Image.Image:
             x += gap_x
         y += gap_y
 
-    # 整体旋转 30 度
     rotated = tile_layer.rotate(30, resample=Image.BICUBIC, expand=False)
     tile_layer.close()
+    return rotated
 
-    # 从中心裁剪出与原图相同尺寸的区域
-    cx, cy = rotated.size[0] // 2, rotated.size[1] // 2
-    crop_box = (cx - w // 2, cy - h // 2, cx - w // 2 + w, cy - h // 2 + h)
-    watermark_layer = rotated.crop(crop_box)
-    rotated.close()
 
-    return Image.alpha_composite(base, watermark_layer)
+def add_watermark_to_image(img: Image.Image, text: str, tile: Image.Image | None = None) -> Image.Image:
+    """在图片上叠加半透明斜向水印文字，返回新的 RGBA 图片。
+
+    可选传入预渲染的 *tile*（由 ``_build_watermark_tile`` 生成），
+    多张相同尺寸的图片共享同一 tile 可大幅提速。
+    """
+    if not text:
+        return img
+    base = img.convert("RGBA")
+    w, h = base.size
+
+    if tile is None:
+        tile = _build_watermark_tile(w, h, text)
+        tile_owned = True
+    else:
+        tile_owned = False
+
+    try:
+        cx, cy = tile.size[0] // 2, tile.size[1] // 2
+        crop_box = (cx - w // 2, cy - h // 2, cx - w // 2 + w, cy - h // 2 + h)
+        watermark_layer = tile.crop(crop_box)
+        return Image.alpha_composite(base, watermark_layer)
+    finally:
+        if tile_owned:
+            tile.close()
 
 
 # 水印字体搜索顺序：项目字体仓库 > 系统字体（macOS/Linux/Windows）
@@ -1984,34 +1991,41 @@ def _watermark_shape_xml(
 
 
 def add_watermark_to_pptx(pptx_path: Path, text: str) -> None:
-    """就地修改 PPTX 文件，在幻灯片母版中添加水印文本框，所有幻灯片自动继承。"""
+    """就地修改 PPTX 文件，在幻灯片母版中添加水印文本框，所有幻灯片自动继承。
+
+    性能优化：只读取需要修改的母版 XML，其余 ZIP 条目直接拷贝原始压缩数据，
+    避免解压/重压缩大量媒体文件（PPTX 中的图片通常为 ZIP_STORED，直拷极快）。
+    """
     if not text:
         return
 
     A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
     P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
 
-    # 读取所有文件
+    # ── Pass 1: 只读取必要的 XML 文件 ──
     with zipfile.ZipFile(pptx_path, "r") as zf:
-        all_files = {name: zf.read(name) for name in zf.namelist()}
+        all_names = zf.namelist()
 
-    # 找到所有幻灯片母版
-    master_pattern = re.compile(r"^ppt/slideMasters/slideMaster\d+\.xml$")
-    master_names = [n for n in all_files if master_pattern.match(n)]
-    if not master_names:
-        # 如果没有母版，回退到修改每个 slide layout
-        layout_pattern = re.compile(r"^ppt/slideLayouts/slideLayout\d+\.xml$")
-        master_names = [n for n in all_files if layout_pattern.match(n)]
-    if not master_names:
-        return
+        master_pattern = re.compile(r"^ppt/slideMasters/slideMaster\d+\.xml$")
+        master_names = [n for n in all_names if master_pattern.match(n)]
+        if not master_names:
+            layout_pattern = re.compile(r"^ppt/slideLayouts/slideLayout\d+\.xml$")
+            master_names = [n for n in all_names if layout_pattern.match(n)]
+        if not master_names:
+            return
 
-    # 读取 presentation.xml 获取幻灯片尺寸
-    pres_xml = ET.fromstring(all_files["ppt/presentation.xml"])
+        # 仅读取 presentation.xml + 母版 XML（通常 < 500KB）
+        pres_data = zf.read("ppt/presentation.xml")
+        master_data: dict[str, bytes] = {}
+        for n in master_names:
+            master_data[n] = zf.read(n)
+
+    # ── 修改母版 XML（纯内存操作） ──
+    pres_xml = ET.fromstring(pres_data)
     sld_sz = pres_xml.find(f"{{{P_NS}}}sldSz")
     slide_w = int(sld_sz.get("cx", "12192000")) if sld_sz is not None else 12192000
     slide_h = int(sld_sz.get("cy", "6858000")) if sld_sz is not None else 6858000
 
-    # 3列×2行 = 6 个水印位置
     wm_w = int(slide_w * 0.35)
     wm_h = int(slide_h * 0.12)
     cols, rows = 3, 2
@@ -2022,14 +2036,13 @@ def add_watermark_to_pptx(pptx_path: Path, text: str) -> None:
             py = int(slide_h * (row + 0.5) / rows) - wm_h // 2
             positions.append((px, py))
 
+    modified_masters: dict[str, bytes] = {}
     for master_name in master_names:
-        root = ET.fromstring(all_files[master_name])
-        # 找到 spTree（母版中的树节点可能在 cSld/spTree）
+        root = ET.fromstring(master_data[master_name])
         sp_tree = root.find(f".//{{{P_NS}}}spTree")
         if sp_tree is None:
             continue
 
-        # 找到当前最大 id
         max_id = 1
         for cNvPr in sp_tree.iter(f"{{{P_NS}}}cNvPr"):
             try:
@@ -2042,12 +2055,10 @@ def add_watermark_to_pptx(pptx_path: Path, text: str) -> None:
             except ValueError:
                 pass
 
-        # 在 8 个位置各添加一个水印 shape
         for i, (bx, by) in enumerate(positions):
             wm_xml = _watermark_shape_xml(
                 max_id + 100 + i, text, bx, by, wm_w, wm_h, font_size=2800,
             )
-            # 包裹命名空间声明以便 ET.fromstring 解析
             wrapped = (
                 f'<__wrap xmlns:p="{P_NS}" xmlns:a="{A_NS}" '
                 f'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
@@ -2057,13 +2068,22 @@ def add_watermark_to_pptx(pptx_path: Path, text: str) -> None:
             wm_elem = wrapper[0]
             sp_tree.append(wm_elem)
 
-        # 序列化回 bytes
-        all_files[master_name] = ET.tostring(root, xml_declaration=True, encoding="UTF-8")
+        modified_masters[master_name] = ET.tostring(root, xml_declaration=True, encoding="UTF-8")
 
-    # 写回 zip
+    # ── Pass 2: 重写 ZIP —— 未修改的条目直接拷贝原始压缩数据 ──
+    master_set = set(modified_masters.keys())
     tmp_path = pptx_path.with_suffix(".tmp")
-    with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for name, data in all_files.items():
-            zf.writestr(name, data)
+    with zipfile.ZipFile(pptx_path, "r") as zf_in, \
+         zipfile.ZipFile(tmp_path, "w") as zf_out:
+        for item in zf_in.infolist():
+            if item.filename in master_set:
+                # 仅对修改的母版 XML 重新压缩（通常 < 500KB）
+                zf_out.writestr(item, modified_masters[item.filename],
+                                compress_type=zipfile.ZIP_DEFLATED)
+            else:
+                # 直拷原始压缩字节：ZIP_STORED(图片/媒体)跳过压缩，
+                # ZIP_DEFLATED(XML)跳过解压+重压缩，极大提速
+                raw = zf_in.read(item.filename)
+                zf_out.writestr(item, raw, compress_type=item.compress_type)
     tmp_path.replace(pptx_path)
 

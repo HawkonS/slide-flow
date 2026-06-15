@@ -65,7 +65,7 @@ from app.core.permissions import (
     is_admin,
     is_super_admin,
 )
-from app.core.ppt import build_image_pptx, detect_ppt_fonts, merge_pptx_files, slide_count, split_pptx_to_single_pages, add_watermark_to_image, add_watermark_to_pptx
+from app.core.ppt import build_image_pptx, detect_ppt_fonts, merge_pptx_files, slide_count, split_pptx_to_single_pages, add_watermark_to_image, add_watermark_to_pptx, _build_watermark_tile
 from app.core.security import create_present_token, create_session_token, hash_password, read_session_token, verify_password, verify_present_token
 from app.core.storage import copy_into, safe_filename, save_upload, unique_child_dir
 from app.db import get_db, init_db, known_font_aliases, now_iso
@@ -4305,6 +4305,7 @@ def download_show_pdf(
         (show_id,),
     ).fetchall()
     images = []
+    wm_tile = None
     for sr in sr_rows:
         resource = db.execute("SELECT * FROM resources WHERE id = ?", (sr["resource_id"],)).fetchone()
         if resource is None or not can_view_resource(db, resource, user):
@@ -4318,8 +4319,12 @@ def download_show_pdf(
             if path and path.exists():
                 img = Image.open(path).convert("RGB")
                 if wm_text:
-                    img = add_watermark_to_image(img, wm_text).convert("RGB")
+                    if wm_tile is None:
+                        wm_tile = _build_watermark_tile(img.size[0], img.size[1], wm_text)
+                    img = add_watermark_to_image(img, wm_text, tile=wm_tile).convert("RGB")
                 images.append(img)
+    if wm_tile is not None:
+        wm_tile.close()
     if not images:
         raise HTTPException(404, "没有可下载的预览图")
     tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)

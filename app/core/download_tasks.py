@@ -20,6 +20,7 @@ import shutil
 import sqlite3
 import tempfile
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,7 @@ from PIL import Image
 
 from app.config import settings
 from app.core.ppt import (
+    _build_watermark_tile,
     add_watermark_to_image,
     add_watermark_to_pptx,
     build_image_pptx,
@@ -172,20 +174,47 @@ def _generate_pdf(
 ) -> tuple[Path, str, bool]:
     images: list[Image.Image] = []
     watermark_ok = bool(wm_text)
-    for item in items:
-        png = _safe_abs(item.get("png_path"))
-        if not png or not png.exists():
-            continue
-        img = Image.open(png).convert("RGB")
-        if wm_text:
+    if wm_text and items:
+        # ── 优化：预渲染 tile + 并行水印 ──
+        first_png = _safe_abs(items[0].get("png_path"))
+        tile = None
+        if first_png and first_png.exists():
+            with Image.open(first_png) as probe:
+                tile = _build_watermark_tile(probe.size[0], probe.size[1], wm_text)
+
+        def _wm_pdf_item(item: dict[str, Any]) -> Image.Image | None:
+            png = _safe_abs(item.get("png_path"))
+            if not png or not png.exists():
+                return None
+            img = Image.open(png).convert("RGB")
             try:
-                img = add_watermark_to_image(img, wm_text).convert("RGB")
+                return add_watermark_to_image(img, wm_text, tile=tile).convert("RGB")
             except Exception:
-                logger.warning("PDF 图片水印添加失败，跳过该帧水印 show_id=%s", show_id, exc_info=True)
-                watermark_ok = False
-        images.append(img)
-        if progress_callback:
-            progress_callback(10 + int(80 * len(images) / len(items)), f"处理图片 {len(images)}/{len(items)}")
+                logger.warning("PDF 图片水印添加失败，使用原图", exc_info=True)
+                return img
+
+        try:
+            workers = min(4, len(items))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                results = list(pool.map(_wm_pdf_item, items))
+            images = [img for img in results if img is not None]
+        finally:
+            if tile is not None:
+                tile.close()
+        if any(img is None for img in results):
+            watermark_ok = False
+        for i, img in enumerate(images):
+            if progress_callback:
+                progress_callback(10 + int(80 * (i + 1) / len(items)), f"处理图片 {i + 1}/{len(items)}")
+    else:
+        for item in items:
+            png = _safe_abs(item.get("png_path"))
+            if not png or not png.exists():
+                continue
+            img = Image.open(png).convert("RGB")
+            images.append(img)
+            if progress_callback:
+                progress_callback(10 + int(80 * len(images) / len(items)), f"处理图片 {len(images)}/{len(items)}")
     if not images:
         raise RuntimeError("没有可下载的预览图")
     first = images[0]
@@ -216,27 +245,40 @@ def _generate_pptx_images(
 
     watermark_ok = True
     if wm_text:
-        # 将水印烧录到图片像素中，生成临时文件
+        # ── 优化：预渲染 tile + 并行水印 + JPEG 临时文件 ──
         watermarked_paths: list[Path] = []
+        tile = None
         try:
-            for img_path in image_paths:
+            with Image.open(image_paths[0]) as probe:
+                tile = _build_watermark_tile(probe.size[0], probe.size[1], wm_text)
+
+            def _wm_img_item(idx_path: tuple[int, Path]) -> Path | None:
+                idx, img_path = idx_path
                 img = Image.open(img_path)
-                img_wm = add_watermark_to_image(img, wm_text).convert("RGB")
-                tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                try:
+                    img_wm = add_watermark_to_image(img, wm_text, tile=tile).convert("RGB")
+                finally:
+                    img.close()
+                tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
                 tmp_path = Path(tmp.name)
                 tmp.close()
-                img_wm.save(tmp_path, "PNG")
-                img.close()
+                img_wm.save(tmp_path, "JPEG", quality=95)
                 img_wm.close()
-                watermarked_paths.append(tmp_path)
                 if progress_callback:
-                    progress_callback(10 + int(60 * len(watermarked_paths) / len(image_paths)), f"处理图片 {len(watermarked_paths)}/{len(image_paths)}")
+                    progress_callback(10 + int(60 * (idx + 1) / len(image_paths)), f"处理图片 {idx + 1}/{len(image_paths)}")
+                return tmp_path
+
+            workers = min(4, len(image_paths))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                watermarked_paths = [p for p in pool.map(_wm_img_item, enumerate(image_paths)) if p is not None]
             build_image_pptx(watermarked_paths, out_path)
         except Exception:
             logger.warning("纯图 PPT 图片水印添加失败，使用原图生成 show_id=%s", show_id, exc_info=True)
             build_image_pptx(image_paths, out_path)
             watermark_ok = False
         finally:
+            if tile is not None:
+                tile.close()
             if progress_callback:
                 progress_callback(80, "生成 PPT 文件...")
             for p in watermarked_paths:
@@ -277,14 +319,16 @@ def _generate_pptx_pages(
         except Exception:
             logger.warning("拆分 PPTX 为单页失败 resource_id=%s", item.get("resource_id"), exc_info=True)
             continue
-        # 可选：对每个单页 PPTX 添加水印
+        # 可选：对每个单页 PPTX 并行添加水印
         if wm_text:
-            for page_path in pages:
+            def _wm_page(page_path: Path) -> None:
                 try:
                     add_watermark_to_pptx(page_path, wm_text)
                 except Exception:
                     logger.warning("逐页 PPT 水印添加失败，跳过该页", exc_info=True)
-                    watermark_ok = False
+            workers = min(4, len(pages))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                list(pool.map(_wm_page, pages))
         all_single_pages.extend(pages)
         if progress_callback:
             progress_callback(10 + int(80 * (idx + 1) / len(items)), f"处理 {idx + 1}/{len(items)}")
@@ -408,44 +452,65 @@ def _generate_zip(
 ) -> tuple[Path, str, bool]:
     from app import main as _main
 
-    written = 0
+    # ── 收集有效资源 ──
+    valid_items: list[tuple[dict, Path, str]] = []  # (item, ppt_path, arcname)
+    for item in items:
+        ppt_path = _safe_abs(item.get("ppt_path"))
+        if not ppt_path or not ppt_path.exists():
+            continue
+        arcname = f"{item['name']}_v{item['version_no']}.pptx"
+        valid_items.append((item, ppt_path, arcname))
+    if not valid_items:
+        raise RuntimeError("没有可下载的内容")
+
     watermark_ok = bool(wm_text)
-    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for item in items:
-            ppt_path = _safe_abs(item.get("ppt_path"))
-            if not ppt_path or not ppt_path.exists():
-                continue
-            arcname = f"{item['name']}_v{item['version_no']}.pptx"
-            if wm_text:
-                wm_tmp = tempfile.NamedTemporaryFile(suffix=".pptx", delete=False)
-                wm_tmp_path = Path(wm_tmp.name)
-                wm_tmp.close()
-                try:
-                    shutil.copy2(ppt_path, wm_tmp_path)
-                    add_watermark_to_pptx(wm_tmp_path, wm_text)
-                    zf.write(wm_tmp_path, arcname)
-                except Exception:
-                    logger.warning("ZIP 中 %s 水印添加失败，使用原始文件", arcname, exc_info=True)
-                    zf.write(ppt_path, arcname)
-                    watermark_ok = False
-                finally:
-                    wm_tmp_path.unlink(missing_ok=True)
-            else:
-                zf.write(ppt_path, arcname)
-            written += 1
-            if progress_callback:
-                progress_callback(10 + int(80 * written / len(items)), f"打包 {written}/{len(items)}")
-        if not written:
-            raise RuntimeError("没有可下载的内容")
-        agg = _aggregate_fonts(items)
-        fonts_info = {
-            "fonts": sorted(agg["font_names"], key=str.lower),
-            "missing_fonts": sorted(agg["missing_fonts"], key=str.lower),
-        }
-        zf.writestr("fonts.json", json.dumps(fonts_info, ensure_ascii=False, indent=2))
-        if with_fonts:
-            fonts, _ = _main._build_fonts_bundle(db, agg["font_names"])
-            _main._write_fonts_into_zip(zf, fonts, agg["missing_fonts"])
+
+    # ── 并行水印：先并行处理所有 PPTX，再顺序写入 ZIP ──
+    wm_paths: dict[int, Path] = {}  # index -> watermarked temp path
+    if wm_text:
+        def _wm_zip_item(idx_item: tuple[int, tuple]) -> tuple[int, Path | None]:
+            idx, (_, ppt_path, _) = idx_item
+            wm_tmp = tempfile.NamedTemporaryFile(suffix=".pptx", delete=False)
+            wm_tmp_path = Path(wm_tmp.name)
+            wm_tmp.close()
+            shutil.copy2(ppt_path, wm_tmp_path)
+            try:
+                add_watermark_to_pptx(wm_tmp_path, wm_text)
+                return idx, wm_tmp_path
+            except Exception:
+                logger.warning("ZIP 水印添加失败，使用原始文件", exc_info=True)
+                wm_tmp_path.unlink(missing_ok=True)
+                return idx, None
+
+        workers = min(4, len(valid_items))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for idx, wm_path in pool.map(_wm_zip_item, enumerate(valid_items)):
+                if wm_path is not None:
+                    wm_paths[idx] = wm_path
+        if len(wm_paths) < len(valid_items):
+            watermark_ok = False
+
+    # ── 写入 ZIP ──
+    try:
+        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for idx, (item, ppt_path, arcname) in enumerate(valid_items):
+                src = wm_paths.get(idx, ppt_path)
+                zf.write(src, arcname)
+                if progress_callback:
+                    progress_callback(10 + int(80 * (idx + 1) / len(valid_items)), f"打包 {idx + 1}/{len(valid_items)}")
+            agg = _aggregate_fonts(items)
+            fonts_info = {
+                "fonts": sorted(agg["font_names"], key=str.lower),
+                "missing_fonts": sorted(agg["missing_fonts"], key=str.lower),
+            }
+            zf.writestr("fonts.json", json.dumps(fonts_info, ensure_ascii=False, indent=2))
+            if with_fonts:
+                fonts, _ = _main._build_fonts_bundle(db, agg["font_names"])
+                _main._write_fonts_into_zip(zf, fonts, agg["missing_fonts"])
+    finally:
+        for p in wm_paths.values():
+            p.unlink(missing_ok=True)
+
     suffix = "_with_fonts.zip" if with_fonts else ".zip"
     return out_path, f"{show_name}{suffix}", watermark_ok
 
