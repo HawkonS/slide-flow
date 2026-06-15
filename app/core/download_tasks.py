@@ -162,15 +162,20 @@ def _generate_pdf(
     items: list[dict[str, Any]],
     wm_text: str,
     out_path: Path,
-) -> tuple[Path, str]:
+) -> tuple[Path, str, bool]:
     images: list[Image.Image] = []
+    watermark_ok = bool(wm_text)
     for item in items:
         png = _safe_abs(item.get("png_path"))
         if not png or not png.exists():
             continue
         img = Image.open(png).convert("RGB")
         if wm_text:
-            img = add_watermark_to_image(img, wm_text).convert("RGB")
+            try:
+                img = add_watermark_to_image(img, wm_text).convert("RGB")
+            except Exception:
+                logger.warning("PDF 图片水印添加失败，跳过该帧水印 show_id=%s", show_id, exc_info=True)
+                watermark_ok = False
         images.append(img)
     if not images:
         raise RuntimeError("没有可下载的预览图")
@@ -179,7 +184,7 @@ def _generate_pdf(
     first.save(out_path, "PDF", save_all=True, append_images=rest)
     for img in images:
         img.close()
-    return out_path, f"{show_name}.pdf"
+    return out_path, f"{show_name}.pdf", watermark_ok
 
 
 def _generate_pptx_images(
@@ -189,7 +194,7 @@ def _generate_pptx_images(
     items: list[dict[str, Any]],
     wm_text: str,
     out_path: Path,
-) -> tuple[Path, str]:
+) -> tuple[Path, str, bool]:
     image_paths: list[Path] = []
     for item in items:
         png = _safe_abs(item.get("png_path"))
@@ -197,13 +202,35 @@ def _generate_pptx_images(
             image_paths.append(png)
     if not image_paths:
         raise RuntimeError("没有可下载的预览图")
-    build_image_pptx(image_paths, out_path)
+
+    watermark_ok = True
     if wm_text:
+        # 将水印烧录到图片像素中，生成临时文件
+        watermarked_paths: list[Path] = []
         try:
-            add_watermark_to_pptx(out_path, wm_text)
+            for img_path in image_paths:
+                img = Image.open(img_path)
+                img_wm = add_watermark_to_image(img, wm_text).convert("RGB")
+                tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                tmp_path = Path(tmp.name)
+                tmp.close()
+                img_wm.save(tmp_path, "PNG")
+                img.close()
+                img_wm.close()
+                watermarked_paths.append(tmp_path)
+            build_image_pptx(watermarked_paths, out_path)
         except Exception:
-            logger.warning("纯图 PPT 水印添加失败，将跳过水印继续生成 show_id=%s", show_id, exc_info=True)
-    return out_path, f"{show_name}_纯图.pptx"
+            logger.warning("纯图 PPT 图片水印添加失败，使用原图生成 show_id=%s", show_id, exc_info=True)
+            build_image_pptx(image_paths, out_path)
+            watermark_ok = False
+        finally:
+            for p in watermarked_paths:
+                p.unlink(missing_ok=True)
+    else:
+        build_image_pptx(image_paths, out_path)
+        watermark_ok = False
+
+    return out_path, f"{show_name}_纯图.pptx", watermark_ok
 
 
 def _aggregate_fonts(items: list[dict[str, Any]]) -> dict[str, list[str]]:
@@ -239,7 +266,7 @@ def _generate_pptx(
     wm_text: str,
     with_fonts: bool,
     out_path: Path,
-) -> tuple[Path, str]:
+) -> tuple[Path, str, bool]:
     # 复用 main.py 中的字体打包逻辑
     from app import main as _main
 
@@ -259,18 +286,23 @@ def _generate_pptx(
     merged_tmp.close()
     try:
         merge_pptx_files(input_paths, merged_path, hidden_flags=hidden_flags)
+        watermark_ok = bool(wm_text)
         if wm_text:
-            add_watermark_to_pptx(merged_path, wm_text)
+            try:
+                add_watermark_to_pptx(merged_path, wm_text)
+            except Exception:
+                logger.warning("合并 PPT 水印添加失败，将跳过水印继续生成 show_id=%s", show_id, exc_info=True)
+                watermark_ok = False
         if not with_fonts:
             shutil.move(str(merged_path), str(out_path))
-            return out_path, f"{show_name}.pptx"
+            return out_path, f"{show_name}.pptx", watermark_ok
         # 打包字体
         agg = _aggregate_fonts(items)
         fonts, _ = _main._build_fonts_bundle(db, agg["font_names"])
         with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.write(merged_path, arcname=f"{show_name}.pptx")
             _main._write_fonts_into_zip(zf, fonts, agg["missing_fonts"])
-        return out_path, f"{show_name}_with_fonts.zip"
+        return out_path, f"{show_name}_with_fonts.zip", watermark_ok
     finally:
         merged_path.unlink(missing_ok=True)
 
@@ -283,10 +315,11 @@ def _generate_zip(
     wm_text: str,
     with_fonts: bool,
     out_path: Path,
-) -> tuple[Path, str]:
+) -> tuple[Path, str, bool]:
     from app import main as _main
 
     written = 0
+    watermark_ok = bool(wm_text)
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for item in items:
             ppt_path = _safe_abs(item.get("ppt_path"))
@@ -301,6 +334,10 @@ def _generate_zip(
                     shutil.copy2(ppt_path, wm_tmp_path)
                     add_watermark_to_pptx(wm_tmp_path, wm_text)
                     zf.write(wm_tmp_path, arcname)
+                except Exception:
+                    logger.warning("ZIP 中 %s 水印添加失败，使用原始文件", arcname, exc_info=True)
+                    zf.write(ppt_path, arcname)
+                    watermark_ok = False
                 finally:
                     wm_tmp_path.unlink(missing_ok=True)
             else:
@@ -318,7 +355,7 @@ def _generate_zip(
             fonts, _ = _main._build_fonts_bundle(db, agg["font_names"])
             _main._write_fonts_into_zip(zf, fonts, agg["missing_fonts"])
     suffix = "_with_fonts.zip" if with_fonts else ".zip"
-    return out_path, f"{show_name}{suffix}"
+    return out_path, f"{show_name}{suffix}", watermark_ok
 
 
 def _generate_download_file_sync(task_id: int, params: dict[str, Any]) -> dict[str, Any]:
@@ -336,7 +373,7 @@ def _generate_download_file_sync(task_id: int, params: dict[str, Any]) -> dict[s
 
     # 是否需要嵌入水印（用户传入了水印 → 嵌入；否则纯净版本可缓存）
     wm_text = ""
-    if user_watermark.strip():
+    if user_watermark:  # 前端传了非空值就启用水印（追踪码总包含）
         wm_text = _main._compose_watermark_text(track_code, user_watermark)
 
     db = get_db()
@@ -375,6 +412,7 @@ def _generate_download_file_sync(task_id: int, params: dict[str, Any]) -> dict[s
                     "file_path": str(out_path),
                     "file_name": file_name,
                     "file_size": out_path.stat().st_size,
+                    "watermark_applied": False,
                 }
 
         # 收集资源
@@ -387,13 +425,13 @@ def _generate_download_file_sync(task_id: int, params: dict[str, Any]) -> dict[s
             out_path.unlink(missing_ok=True)
 
         if download_type == "pdf":
-            out_path, file_name = _generate_pdf(db, show_id, show_name, items, wm_text, out_path)
+            out_path, file_name, watermark_applied = _generate_pdf(db, show_id, show_name, items, wm_text, out_path)
         elif download_type == "pptx_images":
-            out_path, file_name = _generate_pptx_images(db, show_id, show_name, items, wm_text, out_path)
+            out_path, file_name, watermark_applied = _generate_pptx_images(db, show_id, show_name, items, wm_text, out_path)
         elif download_type == "pptx":
-            out_path, file_name = _generate_pptx(db, show_id, show_name, items, wm_text, with_fonts, out_path)
+            out_path, file_name, watermark_applied = _generate_pptx(db, show_id, show_name, items, wm_text, with_fonts, out_path)
         elif download_type == "zip":
-            out_path, file_name = _generate_zip(db, show_id, show_name, items, wm_text, with_fonts, out_path)
+            out_path, file_name, watermark_applied = _generate_zip(db, show_id, show_name, items, wm_text, with_fonts, out_path)
         else:
             raise RuntimeError(f"不支持的 download_type: {download_type}")
 
@@ -408,6 +446,7 @@ def _generate_download_file_sync(task_id: int, params: dict[str, Any]) -> dict[s
             "file_path": str(out_path),
             "file_name": file_name,
             "file_size": out_path.stat().st_size,
+            "watermark_applied": watermark_applied,
         }
     finally:
         try:
@@ -527,5 +566,7 @@ async def execute_download_task(task_id: int, owner_id: int) -> None:
                 "task_id": task_id,
                 "file_name": result.get("file_name", ""),
                 "file_size": int(result.get("file_size", 0)),
+                "watermark_applied": bool(result.get("watermark_applied", False)),
+                "watermark_requested": bool((params.get("user_watermark", "") or "").strip()),
             },
         )

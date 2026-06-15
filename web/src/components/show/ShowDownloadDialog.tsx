@@ -61,7 +61,7 @@ export function ShowDownloadDialog({ open, onOpenChange, show }: ShowDownloadDia
   const [local, setLocal] = React.useState<LocalFontInfo | null>(null);
   // 水印选项
   const [wmEnabled, setWmEnabled] = React.useState(true);
-  const [wmUserName, setWmUserName] = React.useState(false);
+  const [wmUserName, setWmUserName] = React.useState(true);
   const [wmPlatform, setWmPlatform] = React.useState(false);
 
   const { user } = useAuth();
@@ -77,7 +77,9 @@ export function ShowDownloadDialog({ open, onOpenChange, show }: ShowDownloadDia
     if (wmPlatform) {
       parts.push(siteName);
     }
-    return parts.length > 0 ? parts.join(" | ") : " ";
+    // 即使 parts 为空也返回特殊标记表示"启用水印"
+    // 后端会自动追加追踪编码
+    return parts.length > 0 ? parts.join(" | ") : "__enabled__";
   }, [wmEnabled, wmUserName, wmPlatform, user, siteName]);
 
   const { data: fontSource } = useQuery({
@@ -101,7 +103,7 @@ export function ShowDownloadDialog({ open, onOpenChange, show }: ShowDownloadDia
     if (open) {
       setSubmitting(null);
       setWmEnabled(true);
-      setWmUserName(false);
+      setWmUserName(true);
       setWmPlatform(false);
     }
   }, [open]);
@@ -256,6 +258,9 @@ export function ShowDownloadDialog({ open, onOpenChange, show }: ShowDownloadDia
                   disabled={isBusy}
                   onChange={(v) => setWmPlatform(v)}
                 />
+                <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+                  启用水印后将自动嵌入唯一追踪编码，可额外叠加姓名或平台信息。
+                </p>
               </div>
             )}
           </div>

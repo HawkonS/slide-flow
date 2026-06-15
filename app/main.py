@@ -791,10 +791,11 @@ def _record_download(db: sqlite3.Connection, user: sqlite3.Row, request: Request
 
 def _compose_watermark_text(track_code: str, extra: str) -> str:
     """组合追踪码与前端传入的水印文本，返回最终水印字符串。"""
-    parts = [f"追踪码: {track_code}"]
-    if extra and extra.strip():
-        parts.append(extra.strip())
-    return "  |  ".join(parts)
+    parts = [track_code]
+    cleaned = (extra or "").strip()
+    if cleaned and cleaned != "__enabled__":  # 过滤前端占位标记
+        parts.append(cleaned[:100])  # 限制附加文本最大100字符
+    return " ".join(parts)
 
 
 # ── 放映下载缓存 ────────────────────────────────────────────────
@@ -4283,7 +4284,7 @@ def download_show_pdf(
 
     # 无水印时尝试缓存命中
     cache_key = ""
-    if not watermark:
+    if not wm_text:
         cache_key = _show_download_cache_key(show_id, "pdf", db)
         cached = _get_cached_download(cache_key, "pdf")
         if cached:
@@ -4361,7 +4362,7 @@ def download_show_pptx_images(
 
     # 无水印时尝试缓存命中
     cache_key = ""
-    if not watermark:
+    if not wm_text:
         cache_key = _show_download_cache_key(show_id, "pptx_images", db)
         cached = _get_cached_download(cache_key, "pptx")
         if cached:
@@ -4530,7 +4531,7 @@ def download_show_pptx(
 
     # 无水印时尝试缓存命中
     cache_key = ""
-    if not watermark:
+    if not wm_text:
         cache_key = _show_download_cache_key(show_id, dl_type, db)
         cache_ext = "zip" if with_fonts else "pptx"
         cached = _get_cached_download(cache_key, cache_ext)
@@ -4561,7 +4562,10 @@ def download_show_pptx(
     tmp.close()
     merge_pptx_files(input_paths, merged_path, hidden_flags=hidden_flags)
     if wm_text:
-        add_watermark_to_pptx(merged_path, wm_text)
+        try:
+            add_watermark_to_pptx(merged_path, wm_text)
+        except Exception:
+            logger.warning("PPTX 水印添加失败，生成无水印文件 show_id=%s", show_id, exc_info=True)
     if not with_fonts:
         # 无水印时写入缓存
         if cache_key:
@@ -4636,6 +4640,9 @@ def download_show_zip(
                     shutil.copy2(ppt_path, wm_tmp_path)
                     add_watermark_to_pptx(wm_tmp_path, wm_text)
                     zf.write(wm_tmp_path, arcname)
+                except Exception:
+                    logger.warning("ZIP 中 %s 水印添加失败，使用原始文件", arcname, exc_info=True)
+                    zf.write(ppt_path, arcname)
                 finally:
                     wm_tmp_path.unlink(missing_ok=True)
             else:

@@ -1818,71 +1818,121 @@ def build_image_pptx(image_paths: list[Path], output_path: Path) -> None:
 
 
 def add_watermark_to_image(img: Image.Image, text: str) -> Image.Image:
-    """在图片上叠加平铺的半透明斜向水印文字，返回新的 RGBA 图片。"""
+    """在图片上叠加半透明斜向水印文字，返回新的 RGBA 图片。
+
+    算法：在超大画布上平铺文字 -> 整体旋转 -> 裁剪中心区域，保证永远不会裁切。
+    """
     if not text:
         return img
     base = img.convert("RGBA")
     w, h = base.size
 
-    # 根据图片尺寸选择合适字号（略大以确保可读）
-    font_size = max(22, min(w, h) // 20)
+    # 字号：图片短边的1/18，与合并PPT水印视觉效果一致
+    font_size = max(28, min(w, h) // 18)
     font = _get_cjk_font(font_size)
 
-    # 计算单行文字尺寸
-    tmp_draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-    bbox = tmp_draw.textbbox((0, 0), text, font=font)
-    text_w = bbox[2] - bbox[0]
-    text_h = bbox[3] - bbox[1]
+    # 计算单个水印文字尺寸
+    dummy = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    bbox = dummy.textbbox((0, 0), text, font=font)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
 
-    # 创建足够大的单层画布（旋转后会裁剪，因此需要更大）
-    diagonal = int((w**2 + h**2) ** 0.5) + text_w * 2
-    tile = Image.new("RGBA", (diagonal * 2, diagonal * 2), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(tile)
+    # 在超大画布上平铺文字（对角线的 1.5 倍确保旋转后覆盖全图）
+    diag = int((w ** 2 + h ** 2) ** 0.5)
+    canvas_size = int(diag * 1.5)
+    # 按图片尺寸计算间距，保证约 6 个水印可见（3列×2行）
+    gap_x = max(int(w / 2.5), tw + 40)
+    gap_y = max(int(h / 2.2), th + 40)
 
-    # 间距：加大间距以降低密度
-    gap_x = text_w + 200
-    gap_y = text_h + 260
+    tile_layer = Image.new("RGBA", (canvas_size, canvas_size), (0, 0, 0, 0))
+    tile_draw = ImageDraw.Draw(tile_layer)
 
     y = 0
-    while y < diagonal * 2:
+    while y < canvas_size:
         x = 0
-        while x < diagonal * 2:
-            draw.text((x, y), text, font=font, fill=(140, 140, 140, 120))
+        while x < canvas_size:
+            tile_draw.text((x, y), text, font=font, fill=(216, 216, 216, 55))
             x += gap_x
         y += gap_y
 
-    # 旋转 -30 度并裁剪到原图尺寸
-    rotated = tile.rotate(-30, expand=False, resample=Image.BICUBIC)
-    # 取中心区域
+    # 整体旋转 30 度
+    rotated = tile_layer.rotate(30, resample=Image.BICUBIC, expand=False)
+    tile_layer.close()
+
+    # 从中心裁剪出与原图相同尺寸的区域
     cx, cy = rotated.size[0] // 2, rotated.size[1] // 2
-    crop_box = (cx - w // 2, cy - h // 2, cx + w // 2, cy + h // 2)
+    crop_box = (cx - w // 2, cy - h // 2, cx - w // 2 + w, cy - h // 2 + h)
     watermark_layer = rotated.crop(crop_box)
+    rotated.close()
 
     return Image.alpha_composite(base, watermark_layer)
 
 
-# 常见 CJK 字体路径（Linux 服务器常见安装位置）
-_CJK_FONT_PATHS = [
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+# 水印字体搜索顺序：项目字体仓库 > 系统字体（macOS/Linux/Windows）
+_CJK_FONT_PATHS: list[str] = []
+
+# 系统字体回退列表
+_SYSTEM_FONT_PATHS = [
+    # macOS
+    "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/STHeiti Medium.ttc",
+    "/Library/Fonts/Arial Unicode.ttf",
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    # Windows
+    "C:/Windows/Fonts/msyh.ttc",
+    "C:/Windows/Fonts/simhei.ttf",
+    "C:/Windows/Fonts/simsun.ttc",
+    # Linux
     "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
     "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-    "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
-    "/usr/share/fonts/truetype/arphic/uming.ttc",
-    "arial.ttf",
-    "msyh.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 ]
+
+
+def _init_font_paths() -> None:
+    """初始化字体搜索路径：优先使用项目字体仓库中的字体。"""
+    from app.config import settings
+    fonts_dir = settings.fonts_dir
+    # 优先搜索项目字体仓库（支持 .ttf/.otf/.ttc）
+    if fonts_dir.exists():
+        # 优先匹配“Alibaba PuHuiTi”或“PuHuiTi”关键词的字体
+        preferred: list[str] = []
+        others: list[str] = []
+        for f in sorted(fonts_dir.iterdir()):
+            if f.suffix.lower() in (".ttf", ".otf", ".ttc"):
+                if "puhuiti" in f.name.lower() or "alibaba" in f.name.lower():
+                    preferred.append(str(f))
+                else:
+                    others.append(str(f))
+        _CJK_FONT_PATHS.extend(preferred)
+        _CJK_FONT_PATHS.extend(others)
+    # 再追加系统字体回退
+    _CJK_FONT_PATHS.extend(_SYSTEM_FONT_PATHS)
+
+
+_cjk_font_loaded_path: str | None = None
 
 
 def _get_cjk_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     """尝试加载支持 CJK 字符的字体，逐级回退。"""
+    global _cjk_font_loaded_path
+    # 首次调用时初始化字体路径
+    if not _CJK_FONT_PATHS:
+        _init_font_paths()
     for path in _CJK_FONT_PATHS:
         try:
-            return ImageFont.truetype(path, size)
+            font = ImageFont.truetype(path, size)
+            if _cjk_font_loaded_path is None:
+                _cjk_font_loaded_path = path
+                _logger.info("水印字体加载成功: %s", path)
+            return font
         except OSError:
             continue
+    if _cjk_font_loaded_path is None:
+        _cjk_font_loaded_path = "__default__"
+        _logger.warning("未找到可用的 CJK 字体，回退到系统默认字体（中文可能无法正确显示）")
     return ImageFont.load_default()
 
 
@@ -1893,7 +1943,7 @@ def _watermark_shape_xml(
     box_y: int,
     box_w: int,
     box_h: int,
-    font_size: int = 3200,
+    font_size: int = 2800,
 ) -> str:
     """生成一个文本框 shape 的 XML 片段，用于 PPTX 水印。"""
     # 旋转 -30 度（单位: 1/60000 度）
@@ -1921,7 +1971,7 @@ def _watermark_shape_xml(
         f'<a:p><a:pPr algn="ctr"/>'
         f'<a:r>'
         f'<a:rPr lang="zh-CN" sz="{font_size}" b="0" i="0" u="none" strike="noStrike" dirty="0">'
-        f'<a:solidFill><a:srgbClr val="909090"><a:alpha val="60000"/></a:srgbClr></a:solidFill>'
+        f'<a:solidFill><a:srgbClr val="D8D8D8"><a:alpha val="35000"/></a:srgbClr></a:solidFill>'
         f'<a:latin typeface="Microsoft YaHei"/>'
         f'<a:ea typeface="Microsoft YaHei"/>'
         f'</a:rPr>'
@@ -1934,7 +1984,7 @@ def _watermark_shape_xml(
 
 
 def add_watermark_to_pptx(pptx_path: Path, text: str) -> None:
-    """就地修改 PPTX 文件，在每个 slide 上叠加半透明水印文本框（2×2 平铺）。"""
+    """就地修改 PPTX 文件，在幻灯片母版中添加水印文本框，所有幻灯片自动继承。"""
     if not text:
         return
 
@@ -1945,12 +1995,15 @@ def add_watermark_to_pptx(pptx_path: Path, text: str) -> None:
     with zipfile.ZipFile(pptx_path, "r") as zf:
         all_files = {name: zf.read(name) for name in zf.namelist()}
 
-    # 找出所有 slide XML 文件（排除 rels、_rels 目录）
-    slide_pattern = re.compile(r"^ppt/slides/slide\d+\.xml$")
-    slide_names = sorted(
-        [n for n in all_files if slide_pattern.match(n)],
-        key=lambda n: int(re.search(r"slide(\d+)", n).group(1)),  # type: ignore
-    )
+    # 找到所有幻灯片母版
+    master_pattern = re.compile(r"^ppt/slideMasters/slideMaster\d+\.xml$")
+    master_names = [n for n in all_files if master_pattern.match(n)]
+    if not master_names:
+        # 如果没有母版，回退到修改每个 slide layout
+        layout_pattern = re.compile(r"^ppt/slideLayouts/slideLayout\d+\.xml$")
+        master_names = [n for n in all_files if layout_pattern.match(n)]
+    if not master_names:
+        return
 
     # 读取 presentation.xml 获取幻灯片尺寸
     pres_xml = ET.fromstring(all_files["ppt/presentation.xml"])
@@ -1958,19 +2011,20 @@ def add_watermark_to_pptx(pptx_path: Path, text: str) -> None:
     slide_w = int(sld_sz.get("cx", "12192000")) if sld_sz is not None else 12192000
     slide_h = int(sld_sz.get("cy", "6858000")) if sld_sz is not None else 6858000
 
-    # 2×2 平铺水印布局参数
-    wm_w = int(slide_w * 0.50)
-    wm_h = int(slide_h * 0.14)
-    positions = [
-        (int(slide_w * 0.08), int(slide_h * 0.18)),
-        (int(slide_w * 0.48), int(slide_h * 0.28)),
-        (int(slide_w * 0.12), int(slide_h * 0.60)),
-        (int(slide_w * 0.50), int(slide_h * 0.70)),
-    ]
+    # 3列×2行 = 6 个水印位置
+    wm_w = int(slide_w * 0.35)
+    wm_h = int(slide_h * 0.12)
+    cols, rows = 3, 2
+    positions = []
+    for row in range(rows):
+        for col in range(cols):
+            px = int(slide_w * (col + 0.5) / cols) - wm_w // 2
+            py = int(slide_h * (row + 0.5) / rows) - wm_h // 2
+            positions.append((px, py))
 
-    for slide_name in slide_names:
-        root = ET.fromstring(all_files[slide_name])
-        # 找到 spTree
+    for master_name in master_names:
+        root = ET.fromstring(all_files[master_name])
+        # 找到 spTree（母版中的树节点可能在 cSld/spTree）
         sp_tree = root.find(f".//{{{P_NS}}}spTree")
         if sp_tree is None:
             continue
@@ -1982,23 +2036,29 @@ def add_watermark_to_pptx(pptx_path: Path, text: str) -> None:
                 max_id = max(max_id, int(cNvPr.get("id", "1")))
             except ValueError:
                 pass
-        # 也检查 drawingml 命名空间
         for cNvPr in sp_tree.iter(f"{{{A_NS}}}cNvPr"):
             try:
                 max_id = max(max_id, int(cNvPr.get("id", "1")))
             except ValueError:
                 pass
 
-        # 在 4 个位置各添加一个水印 shape
+        # 在 8 个位置各添加一个水印 shape
         for i, (bx, by) in enumerate(positions):
             wm_xml = _watermark_shape_xml(
-                max_id + 100 + i, text, bx, by, wm_w, wm_h, font_size=3200,
+                max_id + 100 + i, text, bx, by, wm_w, wm_h, font_size=2800,
             )
-            wm_elem = ET.fromstring(wm_xml)
+            # 包裹命名空间声明以便 ET.fromstring 解析
+            wrapped = (
+                f'<__wrap xmlns:p="{P_NS}" xmlns:a="{A_NS}" '
+                f'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                f'{wm_xml}</__wrap>'
+            )
+            wrapper = ET.fromstring(wrapped)
+            wm_elem = wrapper[0]
             sp_tree.append(wm_elem)
 
         # 序列化回 bytes
-        all_files[slide_name] = ET.tostring(root, xml_declaration=True, encoding="UTF-8")
+        all_files[master_name] = ET.tostring(root, xml_declaration=True, encoding="UTF-8")
 
     # 写回 zip
     tmp_path = pptx_path.with_suffix(".tmp")

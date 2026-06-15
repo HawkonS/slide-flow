@@ -30,6 +30,7 @@ interface CompletedMessage {
   task_id: number;
   file_name: string;
   file_size: number;
+  watermark_applied?: boolean;
 }
 
 interface FailedMessage {
@@ -204,6 +205,11 @@ export const useDownloadManager = create<DownloadManagerState>((set, get) => {
               },
             },
           });
+          // 水印添加失败提醒：后端明确返回 watermark_applied === false
+          // 表示文件未成功嵌入水印，需要提示用户。
+          if (m.watermark_applied === false) {
+            toast.warning("下载已完成，但水印添加失败，文件不包含水印");
+          }
         }
         break;
       }
