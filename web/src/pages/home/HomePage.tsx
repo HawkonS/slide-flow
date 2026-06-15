@@ -79,7 +79,7 @@ export function HomePage() {
             加载中…
           </div>
         ) : (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))" }}>
             <StatCard
               label="资源"
               value={stats?.resources.total ?? 0}

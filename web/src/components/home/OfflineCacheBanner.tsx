@@ -201,14 +201,14 @@ function BannerLink({
     <Link
       to={to}
       className={cn(
-        "group flex items-center gap-4 rounded-lg border bg-card p-4 shadow-sm transition",
+        "group flex flex-wrap items-center gap-2.5 rounded-lg border bg-card p-3 shadow-sm transition sm:gap-4 sm:p-4",
         "hover:-translate-y-0.5 hover:shadow-md",
         toneClass,
       )}
     >
       <div
         className={cn(
-          "flex h-10 w-10 shrink-0 items-center justify-center rounded-md transition group-hover:scale-105",
+          "flex h-9 w-9 shrink-0 items-center justify-center rounded-md transition sm:h-10 sm:w-10 group-hover:scale-105",
           iconWrapClass,
         )}
       >
@@ -228,7 +228,7 @@ function BannerLink({
           actionToneClass,
         )}
       >
-        {actionLabel}
+        <span className="hidden sm:inline">{actionLabel}</span>
         <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
       </span>
     </Link>
