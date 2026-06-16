@@ -32,6 +32,8 @@ from app.core.ppt import (
     add_watermark_to_image,
     add_watermark_to_pptx,
     build_image_pptx,
+    determine_pdf_canvas_size,
+    fit_image_to_canvas,
     merge_pptx_files,
     split_pptx_to_single_pages,
 )
@@ -172,21 +174,29 @@ def _generate_pdf(
     *,
     progress_callback: "Callable[[int, int], None] | None" = None,
 ) -> tuple[Path, str, bool]:
+    # ── 预扫描：收集有效 PNG 路径并动态确定画布尺寸 ──
+    valid_paths: list[Path] = []
+    for item in items:
+        png = _safe_abs(item.get("png_path"))
+        if png and png.exists():
+            valid_paths.append(png)
+    if not valid_paths:
+        raise RuntimeError("没有可下载的预览图")
+    canvas_w, canvas_h = determine_pdf_canvas_size(valid_paths)
+
     images: list[Image.Image] = []
     watermark_ok = bool(wm_text)
     if wm_text and items:
         # ── 优化：预渲染 tile + 并行水印 ──
-        first_png = _safe_abs(items[0].get("png_path"))
-        tile = None
-        if first_png and first_png.exists():
-            with Image.open(first_png) as probe:
-                tile = _build_watermark_tile(probe.size[0], probe.size[1], wm_text)
+        # 使用动态画布尺寸构建水印 tile，确保各页水印位置一致
+        tile = _build_watermark_tile(canvas_w, canvas_h, wm_text)
 
         def _wm_pdf_item(item: dict[str, Any]) -> Image.Image | None:
             png = _safe_abs(item.get("png_path"))
             if not png or not png.exists():
                 return None
             img = Image.open(png).convert("RGB")
+            img = fit_image_to_canvas(img, canvas_w, canvas_h)
             try:
                 return add_watermark_to_image(img, wm_text, tile=tile).convert("RGB")
             except Exception:
@@ -212,6 +222,7 @@ def _generate_pdf(
             if not png or not png.exists():
                 continue
             img = Image.open(png).convert("RGB")
+            img = fit_image_to_canvas(img, canvas_w, canvas_h)
             images.append(img)
             if progress_callback:
                 progress_callback(10 + int(80 * len(images) / len(items)), f"处理图片 {len(images)}/{len(items)}")

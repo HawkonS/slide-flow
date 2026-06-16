@@ -1558,6 +1558,88 @@ def _merge_pptx_into(
 _IMG_SLIDE_W_EMU = 12192000
 _IMG_SLIDE_H_EMU = 6858000
 
+# PDF 页面默认尺寸（16:9 宽屏），作为无法预扫描时的回退值
+_PDF_TARGET_W = 1920
+_PDF_TARGET_H = 1080
+
+
+def _png_dimensions(path: Path) -> tuple[int, int] | None:
+    """快速读取 PNG 尺寸，仅读文件头 24 字节，避免 PIL 开销。"""
+    try:
+        with path.open("rb") as f:
+            header = f.read(24)
+        if len(header) < 24 or header[:8] != b"\x89PNG\r\n\x1a\n":
+            return None
+        # IHDR chunk: offset 16 = width(4) + height(4)  big-endian uint32
+        w, h = struct.unpack(">II", header[16:24])
+        return w, h
+    except Exception:
+        return None
+
+
+def determine_pdf_canvas_size(png_paths: list[Path]) -> tuple[int, int]:
+    """根据图片集合动态确定 PDF 统一画布尺寸。
+
+    策略：取所有图片的最大宽度和最大高度作为画布尺寸，
+    确保每张图片都能等比缩放后完整放入画布。
+    - 若全部图片都是 16:9，画布即为 16:9
+    - 若全部图片都是 4:3，画布即为 4:3
+    - 若混合比例，画布取最大宽×最大高，少数比例不同的图片两侧留白
+    """
+    max_w, max_h = 0, 0
+    for p in png_paths:
+        if not p.exists():
+            continue
+        dim = _png_dimensions(p)
+        if dim:
+            max_w = max(max_w, dim[0])
+            max_h = max(max_h, dim[1])
+            continue
+        # 非 PNG 或读头失败时回退到 PIL
+        try:
+            with Image.open(p) as img:
+                max_w = max(max_w, img.width)
+                max_h = max(max_h, img.height)
+        except Exception:
+            continue
+    if max_w == 0 or max_h == 0:
+        return _PDF_TARGET_W, _PDF_TARGET_H  # 回退到默认 16:9
+    # 限制最大分辨率不超过 4K，避免内存与处理时间过高
+    if max_w > 3840 or max_h > 2160:
+        ratio = min(3840 / max_w, 2160 / max_h)
+        max_w = int(max_w * ratio)
+        max_h = int(max_h * ratio)
+    # 确保偶数（部分编码器要求）
+    max_w += max_w % 2
+    max_h += max_h % 2
+    return max_w, max_h
+
+
+def fit_image_to_canvas(
+    img: Image.Image,
+    target_w: int = _PDF_TARGET_W,
+    target_h: int = _PDF_TARGET_H,
+) -> Image.Image:
+    """将图片等比缩放并居中放置到统一尺寸的白色画布上。
+
+    保证输出图片尺寸一致，从而使 PDF 各页面大小统一。
+    不同宽高比的图片会保留完整内容，两侧/上下留白。
+    """
+    if img.width == target_w and img.height == target_h:
+        return img
+    ratio = min(target_w / img.width, target_h / img.height)
+    new_w = max(1, int(img.width * ratio))
+    new_h = max(1, int(img.height * ratio))
+    # 放大用 BILINEAR（快），缩小用 LANCZOS（高质量）
+    resample = Image.BILINEAR if ratio > 1 else Image.LANCZOS
+    resized = img.resize((new_w, new_h), resample)
+    canvas = Image.new("RGB", (target_w, target_h), (255, 255, 255))
+    offset_x = (target_w - new_w) // 2
+    offset_y = (target_h - new_h) // 2
+    canvas.paste(resized, (offset_x, offset_y))
+    resized.close()
+    return canvas
+
 _IMG_EXT_TO_CT = {
     ".png": "image/png",
     ".jpg": "image/jpeg",

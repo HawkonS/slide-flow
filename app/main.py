@@ -65,7 +65,7 @@ from app.core.permissions import (
     is_admin,
     is_super_admin,
 )
-from app.core.ppt import build_image_pptx, detect_ppt_fonts, merge_pptx_files, slide_count, split_pptx_to_single_pages, add_watermark_to_image, add_watermark_to_pptx, _build_watermark_tile
+from app.core.ppt import build_image_pptx, detect_ppt_fonts, merge_pptx_files, slide_count, split_pptx_to_single_pages, add_watermark_to_image, add_watermark_to_pptx, _build_watermark_tile, fit_image_to_canvas, determine_pdf_canvas_size
 from app.core.security import create_present_token, create_session_token, hash_password, read_session_token, verify_password, verify_present_token
 from app.core.storage import copy_into, safe_filename, save_upload, unique_child_dir
 from app.db import get_db, init_db, known_font_aliases, now_iso
@@ -4304,6 +4304,25 @@ def download_show_pdf(
         """,
         (show_id,),
     ).fetchall()
+
+    # ── 预扫描：收集有效 PNG 路径并动态确定画布尺寸 ──
+    valid_paths: list[Path] = []
+    for sr in sr_rows:
+        resource = db.execute("SELECT * FROM resources WHERE id = ?", (sr["resource_id"],)).fetchone()
+        if resource is None or not can_view_resource(db, resource, user):
+            continue
+        version_row = db.execute(
+            "SELECT png_path FROM resource_versions WHERE resource_id = ? AND version_no = ?",
+            (sr["resource_id"], sr["version_no"]),
+        ).fetchone()
+        if version_row and version_row["png_path"]:
+            path = _safe_abs(version_row["png_path"])
+            if path and path.exists():
+                valid_paths.append(path)
+    if not valid_paths:
+        raise HTTPException(404, "没有可下载的预览图")
+    canvas_w, canvas_h = determine_pdf_canvas_size(valid_paths)
+
     images = []
     wm_tile = None
     for sr in sr_rows:
@@ -4318,9 +4337,10 @@ def download_show_pdf(
             path = _safe_abs(version_row["png_path"])
             if path and path.exists():
                 img = Image.open(path).convert("RGB")
+                img = fit_image_to_canvas(img, canvas_w, canvas_h)
                 if wm_text:
                     if wm_tile is None:
-                        wm_tile = _build_watermark_tile(img.size[0], img.size[1], wm_text)
+                        wm_tile = _build_watermark_tile(canvas_w, canvas_h, wm_text)
                     img = add_watermark_to_image(img, wm_text, tile=wm_tile).convert("RGB")
                 images.append(img)
     if wm_tile is not None:
