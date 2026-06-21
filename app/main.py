@@ -5,12 +5,14 @@ import base64
 import concurrent.futures
 import copy
 import io
+import ipaddress
 import json
 import logging
 import os
 import re
 import random
 import shutil
+import socket
 import sqlite3
 import string
 import subprocess
@@ -135,12 +137,28 @@ OFFICE_EXTENSIONS = {".ppt", ".pptx", ".pot", ".potx", ".pps", ".ppsx"}
 
 app = FastAPI(title=settings.site_name)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["*"],
-)
+# 从 settings.allowed_host（逗号分隔）生成 CORS 允许来源列表
+# 若为空则维持宽松策略（适合纯内网部署）
+_allowed_origins = [
+    o.strip() for o in settings.allowed_host.split(",") if o.strip()
+]
+
+if _allowed_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_allowed_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    # 内网场景：维持宽松策略，不启用 credentials（与 allow_origins=["*"] 互斥）
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 # 注册模块化路由
 from app.routers import pages, config, system, auth, user_center, users, fonts, links, tags
@@ -245,6 +263,44 @@ class ResponseCacheMiddleware:
 
 if settings.response_cache_enabled:
     app.add_middleware(ResponseCacheMiddleware)
+
+
+class SecurityHeadersMiddleware:
+    """为所有 HTTP 响应添加安全响应头（纯 ASGI，不触碰 receive 流）"""
+
+    # 这些路径需要被 iframe 嵌入，跳过 X-Frame-Options
+    _FRAME_ALLOWED_PATHS = ("/api/proxy/webpage",)
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        skip_frame_options = any(path.startswith(p) for p in self._FRAME_ALLOWED_PATHS)
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                raw_headers = list(message.get("headers", []))
+                raw_headers.append((b"x-content-type-options", b"nosniff"))
+                raw_headers.append((b"referrer-policy", b"strict-origin-when-cross-origin"))
+                raw_headers.append((b"x-xss-protection", b"1; mode=block"))
+                if not skip_frame_options:
+                    raw_headers.append((b"x-frame-options", b"SAMEORIGIN"))
+                if settings.web_https:
+                    raw_headers.append(
+                        (b"strict-transport-security", b"max-age=31536000")
+                    )
+                message = {**message, "headers": raw_headers}
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 DEFAULT_RESOURCE_SUBJECT = settings.default_resource_subject
 app.mount("/static", StaticFiles(directory=settings.static_dir), name="static")
@@ -473,6 +529,8 @@ def on_startup() -> None:
         concurrent.futures.ThreadPoolExecutor(max_workers=settings.thread_pool_size, thread_name_prefix="fastapi-worker")
     )
     init_db()
+    # 初始化安全文件访问目录白名单
+    _init_allowed_file_dirs()
     # 启动过期下载文件后台清理任务
     asyncio.create_task(_download_cleanup_loop())
 
@@ -846,16 +904,45 @@ def _cleanup_expired_cache():
             f.unlink(missing_ok=True)
 
 
+# 允许文件服务访问的目录白名单（启动时解析一次）
+_ALLOWED_FILE_DIRS: list[Path] = []
+
+
+def _init_allowed_file_dirs() -> None:
+    """初始化允许访问的目录列表（在应用启动后调用以确保路径已解析）"""
+    global _ALLOWED_FILE_DIRS
+    _ALLOWED_FILE_DIRS = [
+        settings.assets_dir.resolve(),
+        settings.fonts_dir.resolve(),
+        settings.templates_dir.resolve(),
+        settings.thumbs_dir.resolve(),
+        settings.downloads_dir.resolve(),
+        settings.resources_dir.resolve(),
+    ]
+
+
 def _safe_abs(stored_path: str | None) -> Path | None:
+    """将数据库中的相对/绝对路径转为 Path，并验证在允许的目录范围内。"""
     path = settings.abs_path(stored_path)
     if path is None:
         return None
     try:
-        path.resolve().relative_to(settings.root_dir)
-    except ValueError:
-        # System font downloads intentionally live outside project root.
-        pass
-    return path
+        resolved = path.resolve()
+    except (OSError, RuntimeError):
+        return None
+    # 检查路径是否在允许的目录范围内
+    for allowed_dir in _ALLOWED_FILE_DIRS:
+        try:
+            resolved.relative_to(allowed_dir)
+            return resolved
+        except ValueError:
+            continue
+    logger.warning(
+        "_safe_abs 拒绝访问允许目录之外的路径: stored=%s resolved=%s",
+        stored_path,
+        resolved,
+    )
+    return None
 
 
 def _uploaded_font_abs(stored_path: str | None) -> Path | None:
@@ -5259,6 +5346,43 @@ def set_default_link_selection(
 # ---------- 代理 ----------
 
 
+_CGN_NETWORK = ipaddress.ip_network("100.64.0.0/10")  # Carrier-Grade NAT 网段
+
+
+def _is_private_or_reserved(ip_str: str) -> bool:
+    """检查 IP 地址是否属于私有/保留/环回/链路本地等网段"""
+    try:
+        addr = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return True  # 无法解析为 IP，视为不安全
+    return (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_reserved
+        or addr.is_multicast
+        or addr in _CGN_NETWORK
+    )
+
+
+def _check_ssrf_url(url: str) -> None:
+    """SSRF 检查：解析 URL 后对 DNS 解析结果中所有 IP 逐一验证，防止 DNS rebinding"""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(400, "仅支持 http/https URL")
+    hostname = (parsed.hostname or "").lower()
+    if not hostname:
+        raise HTTPException(400, "无效的 URL")
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror:
+        raise HTTPException(400, "无法解析目标域名")
+    for _family, _type, _proto, _canonname, sockaddr in infos:
+        ip_str = sockaddr[0]
+        if _is_private_or_reserved(ip_str):
+            raise HTTPException(400, "禁止访问内网/私有/保留地址")
+
+
 @app.get("/api/proxy/webpage")
 def proxy_webpage(
     url: str = Query(...),
@@ -5268,13 +5392,10 @@ def proxy_webpage(
     if claims is None:
         raise HTTPException(401, "会话token无效或已过期")
 
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise HTTPException(400, "仅支持 http/https URL")
+    # SSRF 检查（包含 DNS 解析后验证，防止 DNS rebinding）
+    _check_ssrf_url(url)
 
-    hostname = (parsed.hostname or "").lower()
-    if hostname in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
-        raise HTTPException(400, "禁止访问本地地址")
+    parsed = urlparse(url)  # 保留给后续 <base> 标签注入使用
 
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; SlideFlowProxy/1.0)"})

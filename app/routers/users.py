@@ -18,6 +18,7 @@ from app.core.permissions import (
     is_super_admin,
 )
 from app.core.security import hash_password
+from app.core.cache import invalidate_user
 from app.config import settings
 from app.db import now_iso
 from app.routers.dependencies import (
@@ -148,6 +149,7 @@ def update_user(
         raise HTTPException(400, "用户名已存在") from None
     
     user = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    invalidate_user(user_id)
     return {"user": _serialize_user(user)}
 
 
@@ -167,6 +169,7 @@ def delete_user(
     
     try:
         db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        invalidate_user(user_id)
         db.commit()
     except sqlite3.IntegrityError:
         raise HTTPException(400, "该用户关联了资源、放映、下载记录或任务等数据，无法直接删除。请先转移或删除相关数据后再试。") from None
@@ -197,6 +200,8 @@ def bulk_delete_users(
     deleted_ids = [int(row["id"]) for row in rows]
     try:
         db.execute(f"DELETE FROM users WHERE id IN ({placeholders})", user_ids)
+        for uid in deleted_ids:
+            invalidate_user(uid)
         db.commit()
     except sqlite3.IntegrityError:
         raise HTTPException(400, "部分用户关联了资源、放映、下载记录或任务等数据，无法直接删除。请先转移或删除相关数据后再试。") from None
@@ -252,6 +257,7 @@ def transfer_and_delete_user(
     # 删除用户（关联的 visibility/management/preferences/pinned 表会级联删除）
     try:
         db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        invalidate_user(user_id)
         db.commit()
     except sqlite3.IntegrityError:
         raise HTTPException(400, "数据转移后仍无法删除用户，请联系技术支持。") from None

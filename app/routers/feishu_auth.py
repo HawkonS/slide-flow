@@ -130,5 +130,6 @@ def feishu_sso_callback(
         httponly=True,
         samesite="lax",
         max_age=settings.session_ttl_hours * 3600,
+        secure=settings.web_https,
     )
     return {"user": _serialize_user(user)}

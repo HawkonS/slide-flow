@@ -3,9 +3,11 @@
 处理登录、登出、用户信息等
 """
 import sqlite3
+import time
+import threading
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from app.core.permissions import require_user
 from app.core.security import create_session_token, hash_password, verify_password
@@ -24,17 +26,79 @@ from app.config import settings
 router = APIRouter()
 
 
+# ==================== 登录频率限制 ====================
+
+_login_attempts: dict[str, dict] = {}  # {ip: {"fail_count": int, "window_start": float, "ban_until": float}}
+_login_lock = threading.Lock()
+_LOGIN_MAX_FAILS = 10      # 1 分钟内最多失败次数
+_LOGIN_WINDOW = 60         # 秒，失败计数窗口
+_LOGIN_BAN_DURATION = 300  # 秒，封禁时长（5 分钟）
+
+
+def _get_client_ip(request: Request) -> str:
+    """提取客户端真实 IP，支持反向代理"""
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _check_login_rate_limit(ip: str) -> tuple[bool, str]:
+    """检查是否被限流。返回 (True=允许, 原因说明)"""
+    now = time.time()
+    with _login_lock:
+        record = _login_attempts.get(ip)
+        if record is None:
+            return True, ""
+        # 封禁期内
+        if record.get("ban_until", 0) > now:
+            remaining = int(record["ban_until"] - now)
+            return False, f"登录失败次数过多，请 {remaining} 秒后重试"
+        # 计数窗口已过期，重置
+        if now - record.get("window_start", now) > _LOGIN_WINDOW:
+            record["fail_count"] = 0
+            record["window_start"] = now
+        return True, ""
+
+
+def _record_login_failure(ip: str) -> None:
+    """记录一次登录失败"""
+    now = time.time()
+    with _login_lock:
+        record = _login_attempts.get(ip)
+        if record is None or now - record.get("window_start", now) > _LOGIN_WINDOW:
+            _login_attempts[ip] = {"fail_count": 1, "window_start": now, "ban_until": 0.0}
+        else:
+            record["fail_count"] += 1
+            if record["fail_count"] >= _LOGIN_MAX_FAILS:
+                record["ban_until"] = now + _LOGIN_BAN_DURATION
+
+
+def _clear_login_failures(ip: str) -> None:
+    """登录成功后清除失败记录"""
+    with _login_lock:
+        _login_attempts.pop(ip, None)
+
+
 @router.post("/auth/login")
 def login(
     payload: LoginPayload,
+    request: Request,
     response: Response,
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
     """用户登录"""
+    ip = _get_client_ip(request)
+    allowed, reason = _check_login_rate_limit(ip)
+    if not allowed:
+        raise HTTPException(429, reason)
+
     user = db.execute("SELECT * FROM users WHERE username = ?", (payload.username,)).fetchone()
     if user is None or not verify_password(payload.password, user["password_hash"]):
+        _record_login_failure(ip)
         raise HTTPException(401, "用户名或密码错误")
     
+    _clear_login_failures(ip)
     token = create_session_token(
         int(user["id"]),
         settings.secret_key,
@@ -46,6 +110,7 @@ def login(
         httponly=True,
         samesite="lax",
         max_age=settings.session_ttl_hours * 3600,
+        secure=settings.web_https,
     )
     return {"user": _serialize_user(user)}
 

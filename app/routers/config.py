@@ -108,8 +108,6 @@ def api_config() -> dict[str, Any]:
         logo_url = "/" + logo_path
     return {
         "site_name": settings.site_name,
-        "port": settings.port,
-        "startup_script": settings.startup_script,
         "logo_svg_path": logo_url,
         "default_filter_status": settings.default_filter_status,
         "default_filter_subject": settings.default_filter_subject,
