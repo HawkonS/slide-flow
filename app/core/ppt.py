@@ -25,6 +25,7 @@ PKG_CT_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
 SLIDE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide"
 SLIDE_MASTER_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster"
 SLIDE_LAYOUT_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout"
+NOTES_MASTER_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesMaster"
 THEME_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme"
 IMAGE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
 
@@ -511,8 +512,8 @@ def _rewrite_master_for_page(
                 master_root.remove(child)
             break
 
-    new_master_xml = ET.tostring(master_root, encoding='utf-8', xml_declaration=True)
-    new_rels_xml = ET.tostring(new_rels, encoding='utf-8', xml_declaration=True)
+    new_master_xml = _serialize_xml_with_ns_preservation(master_root, master_xml)
+    new_rels_xml = _serialize_rels_xml(new_rels)
     return new_master_xml, new_rels_xml
 
 
@@ -616,7 +617,7 @@ def split_pptx_to_single_pages(pptx_path: Path, output_dir: Path, progress_callb
                 new_rels.append(copy.deepcopy(rel))
                 kept_rel_ids.add(kept_rid)
                 break
-        new_rels_bytes = ET.tostring(new_rels, encoding="utf-8", xml_declaration=True)
+        new_rels_bytes = _serialize_rels_xml(new_rels)
 
         # Build minimal presentation.xml: keep only the slideId for this page,
         # and prune master-id lists so they stay in sync with the rels above.
@@ -1003,32 +1004,214 @@ def _attach_layout_to_master(
         f"{{{P_NS}}}sldLayoutId",
         {"id": str(max_lid + 1), f"{{{R_NS}}}id": new_rid},
     )
-    merged_files[master_part] = ET.tostring(master_root, encoding="utf-8", xml_declaration=True)
+    merged_files[master_part] = _serialize_xml_with_ns_preservation(master_root, master_xml_data)
 
 
-def _serialize_pres_xml(root: ET.Element) -> bytes:
+# Regex to normalise .rels files that use "ns0:" prefix for the OPC relationships
+# namespace instead of the correct default namespace (no prefix).
+# Some tools (including older versions of this codebase) generate such files;
+# Office 365 rejects them while WPS tolerates them.
+_NS0_RELS_TAG_RE = re.compile(
+    rb'<ns0:(Relationships|Relationship)([^>]*)>',
+    re.DOTALL,
+)
+_NS0_RELS_CLOSE_RE = re.compile(rb'</ns0:Relationships>')
+_NS0_XMLNS_RE = re.compile(
+    rb'\s+xmlns:ns0=["\'][^"\']*["\']'
+)
+
+# XML declaration regex, used for replacing/normalizing XML declarations
+_XML_DECL_RE = re.compile(rb"^<\?xml[^?]*\?>\s*", re.MULTILINE)
+
+
+def _normalize_rels_bytes(data: bytes) -> bytes:
+    """Fix .rels XML files that use 'ns0:' prefix instead of the default OPC namespace.
+
+    This repairs files produced by some tools (including older versions of
+    split_pptx_to_single_pages) that serialise the OPC Relationships namespace
+    with an explicit ``ns0:`` prefix instead of the correct default namespace.
+    Office 365 strictly rejects such files; WPS tolerates them.
+    """
+    if b'ns0:Relationships' not in data and b'ns0:Relationship ' not in data:
+        return data
+    # Remove xmlns:ns0="..." declaration
+    data = _NS0_XMLNS_RE.sub(b'', data)
+    # Replace <ns0:Relationships ...> with <Relationships xmlns="..." ...>
+    ns_uri = b'http://schemas.openxmlformats.org/package/2006/relationships'
+    def replace_open(m: re.Match) -> bytes:
+        tag_name = m.group(1)  # b'Relationships' or b'Relationship'
+        attrs = m.group(2)     # remaining attributes
+        if tag_name == b'Relationships':
+            return b'<Relationships xmlns="' + ns_uri + b'"' + attrs + b'>'
+        return b'<Relationship' + attrs + b'>'
+    data = _NS0_RELS_TAG_RE.sub(replace_open, data)
+    data = _NS0_RELS_CLOSE_RE.sub(b'</Relationships>', data)
+    # Add/fix standalone="yes" in the XML declaration
+    data = _fix_xml_declaration(data)
+    return data
+
+
+
+def _extract_ns_declarations(xml_bytes: bytes) -> dict[str, str]:
+    """Extract all xmlns:prefix="uri" and xmlns="uri" declarations from XML bytes.
+
+    Returns a dict mapping prefix (empty string for default ns) -> URI.
+    This is used to preserve namespace declarations that ElementTree may discard
+    when serialising elements that only reference those namespaces in attribute
+    values (e.g. mc:Ignorable="p14 p15").
+    """
+    result: dict[str, str] = {}
+    # Match xmlns:prefix="uri" and xmlns="uri"
+    for m in re.finditer(rb'xmlns(?::([\w.-]+))?=["\']([^"\']*)["\']', xml_bytes):
+        prefix = m.group(1).decode("utf-8") if m.group(1) else ""
+        uri = m.group(2).decode("utf-8")
+        result[prefix] = uri
+    return result
+
+
+def _fix_xml_declaration(xml_bytes: bytes) -> bytes:
+    """Replace/add XML declaration with canonical standalone="yes" form.
+
+    Office requires ``standalone="yes"`` on OOXML part declarations.
+    Python's ElementTree never emits the standalone attribute, so we patch it.
+    """
+    decl = b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+    stripped = _XML_DECL_RE.sub(b"", xml_bytes, count=1)
+    return decl + stripped
+
+
+def _restore_ns_declarations(xml_bytes: bytes, original_ns: dict[str, str]) -> bytes:
+    """Re-inject namespace declarations that ElementTree may have discarded.
+
+    ElementTree only emits xmlns: declarations for namespaces actually used in
+    element/attribute names. Namespaces referenced only in attribute *values*
+    (e.g. mc:Ignorable="p14 p15") will be silently dropped, creating dangling
+    prefix references that Office's MC processor rejects.
+
+    This function finds the root element's opening tag and adds back any missing
+    xmlns: declaration from `original_ns`.
+    """
+    if not original_ns:
+        return xml_bytes
+
+    # Find the end of the XML declaration (if any) and start of the root element
+    root_start = _XML_DECL_RE.sub(b"", xml_bytes, count=1)
+    # Find the root element's opening tag to determine where to insert
+    tag_start = xml_bytes.find(b"<", xml_bytes.find(b"?>") + 2 if b"?>" in xml_bytes else 0)
+    if tag_start == -1:
+        return xml_bytes
+    tag_end = xml_bytes.find(b">", tag_start)
+    if tag_end == -1:
+        return xml_bytes
+    tag_slice = xml_bytes[tag_start:tag_end + 1]
+
+    missing_decls: list[bytes] = []
+    for prefix, uri in original_ns.items():
+        ns_key = (f"xmlns:{prefix}" if prefix else "xmlns").encode("utf-8")
+        if ns_key not in tag_slice:
+            decl_bytes = (
+                f' xmlns:{prefix}="{uri}"' if prefix else f' xmlns="{uri}"'
+            ).encode("utf-8")
+            missing_decls.append(decl_bytes)
+
+    if not missing_decls:
+        return xml_bytes
+
+    # Insert missing declarations before the first whitespace/> after the tag name
+    insert_at = tag_start
+    # Skip to end of tag name
+    m = re.search(rb"<[\w:]+", xml_bytes[tag_start:tag_end])
+    if m:
+        insert_at = tag_start + m.end()
+    else:
+        return xml_bytes
+
+    return xml_bytes[:insert_at] + b"".join(missing_decls) + xml_bytes[insert_at:]
+
+
+def _serialize_xml_with_ns_preservation(
+    root: ET.Element,
+    original_bytes: bytes | None = None,
+    extra_ns: dict[str, str] | None = None,
+) -> bytes:
+    """Serialize an ElementTree element, preserving namespace declarations.
+
+    1. Registers all namespaces found in `original_bytes` (and `extra_ns`) so
+       ElementTree uses the original prefixes instead of auto-assigning ns0/ns1.
+    2. Adds back the ``standalone="yes"`` XML declaration.
+    3. Re-injects any xmlns: declarations that ElementTree silently dropped
+       (those only referenced in attribute values, e.g. mc:Ignorable).
+    """
+    original_ns = _extract_ns_declarations(original_bytes) if original_bytes else {}
+    if extra_ns:
+        original_ns.update(extra_ns)
+
+    # Register all original namespace prefixes so ET uses them
+    for prefix, uri in original_ns.items():
+        if prefix:  # skip default namespace (empty prefix) – ET handles it via ""
+            try:
+                ET.register_namespace(prefix, uri)
+            except Exception:
+                pass
+        else:
+            try:
+                ET.register_namespace("", uri)
+            except Exception:
+                pass
+
+    raw = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    raw = _fix_xml_declaration(raw)
+    raw = _restore_ns_declarations(raw, original_ns)
+    return raw
+
+
+def _serialize_pres_xml(root: ET.Element, original_bytes: bytes | None = None) -> bytes:
     ET.register_namespace("a", A_NS)
     ET.register_namespace("p", P_NS)
     ET.register_namespace("r", R_NS)
-    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    return _serialize_xml_with_ns_preservation(root, original_bytes)
 
 
 def _serialize_rels_xml(root: ET.Element) -> bytes:
     ET.register_namespace("", PKG_REL_NS)
-    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    raw = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    return _fix_xml_declaration(raw)
 
 
 def _serialize_ct_xml(root: ET.Element) -> bytes:
     ET.register_namespace("", PKG_CT_NS)
-    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    raw = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    return _fix_xml_declaration(raw)
 
 
 def _set_slide_hidden(slide_xml: bytes) -> bytes:
-    """Parse a slide XML and set show='0' on the root <p:sld> element."""
+    """Set show='0' on the root <p:sld> element using byte-level injection.
+
+    Avoids XML round-tripping through ElementTree which would lose namespace
+    declarations and rename prefixes (e.g. 'mc:' -> 'ns0:'), causing Office to
+    report corrupt content.
+    """
+    # Use regex to inject/overwrite show="0" without parsing/re-serializing the whole XML.
+    # Step 1: remove any existing show= attribute from the root <p:sld ...> tag.
+    new_xml = re.sub(
+        rb'(<p:sld(?=[ >/])[^>]*?) show=["\'][^"\'>]*["\']',
+        rb'\1',
+        slide_xml,
+        count=1,
+    )
+    # Step 2: inject show="0" right after "<p:sld" (before the next char which is space or >).
+    result = re.sub(
+        rb'(<p:sld)([ />])',
+        rb'\1 show="0"\2',
+        new_xml,
+        count=1,
+    )
+    if result != new_xml:
+        return result
+    # Fallback: XML round-trip (for edge cases where regex didn't match)
     root = ET.fromstring(slide_xml)
     root.set("show", "0")
     return ET.tostring(root, encoding='utf-8', xml_declaration=True)
-
 
 def _get_slide_paths_from_presentation(pres_xml: bytes, rels_xml: bytes) -> list[str]:
     """Parse presentation.xml and its rels to get ordered list of slide file paths."""
@@ -1114,6 +1297,579 @@ def _apply_hidden_flags_to_merged(
         offset += count
 
 
+# Content-type map: used by _ensure_content_types_complete to assign MIME types
+_PART_CT_MAP: list[tuple[re.Pattern, str]] = [
+    (re.compile(r'^ppt/slides/slide[^/]+\.xml$'), 'application/vnd.openxmlformats-officedocument.presentationml.slide+xml'),
+    (re.compile(r'^ppt/slideLayouts/[^/]+\.xml$'), 'application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml'),
+    (re.compile(r'^ppt/slideMasters/[^/]+\.xml$'), 'application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml'),
+    (re.compile(r'^ppt/theme/[^/]+\.xml$'), 'application/vnd.openxmlformats-officedocument.theme+xml'),
+    (re.compile(r'^ppt/notesMasters/[^/]+\.xml$'), 'application/vnd.openxmlformats-officedocument.presentationml.notesMaster+xml'),
+    (re.compile(r'^ppt/notesSlides/[^/]+\.xml$'), 'application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml'),
+    (re.compile(r'^ppt/tags/[^/]+\.xml$'), 'application/vnd.openxmlformats-officedocument.presentationml.tags+xml'),
+    (re.compile(r'^ppt/charts/[^/]+\.xml$'), 'application/vnd.openxmlformats-officedocument.drawingml.chart+xml'),
+    (re.compile(r'^ppt/diagrams/[^/]+\.xml$'), 'application/vnd.openxmlformats-officedocument.drawingml.diagramData+xml'),
+    (re.compile(r'^ppt/presentation\.xml$'), 'application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml'),
+    (re.compile(r'^ppt/presProps\.xml$'), 'application/vnd.openxmlformats-officedocument.presentationml.presProps+xml'),
+    (re.compile(r'^ppt/viewProps\.xml$'), 'application/vnd.openxmlformats-officedocument.presentationml.viewProps+xml'),
+    (re.compile(r'^ppt/tableStyles\.xml$'), 'application/vnd.openxmlformats-officedocument.presentationml.tableStyles+xml'),
+    (re.compile(r'^docProps/core\.xml$'), 'application/vnd.openxmlformats-package.core-properties+xml'),
+    (re.compile(r'^docProps/app\.xml$'), 'application/vnd.openxmlformats-officedocument.extended-properties+xml'),
+    (re.compile(r'^docProps/custom\.xml$'), 'application/vnd.openxmlformats-officedocument.custom-properties+xml'),
+]
+
+
+def _remove_dangling_rels(
+    merged_files: dict[str, bytes],
+    pres_rels_root: ET.Element,
+    presentation_root: ET.Element,
+) -> None:
+    """Remove relationship entries that point to parts not present in merged_files.
+
+    Single-page PPTXs created by split_pptx_to_single_pages() may carry .rels
+    entries for embedded fonts, commentAuthors, global tags and other parts that
+    were never extracted. Office 365 (unlike WPS) treats unresolvable references
+    as a fatal package error. This function prunes every such dangling rel from
+    pres_rels_root *and* removes the corresponding XML-level references inside
+    presentation.xml (e.g. <p:embeddedFontLst> entries).
+    """
+    import posixpath
+
+    # rels that the *merged* package is known to be missing
+    to_remove: list[ET.Element] = []
+    missing_ids: set[str] = set()
+
+    for rel in list(pres_rels_root):
+        target = rel.attrib.get("Target", "")
+        rel_id = rel.attrib.get("Id", "")
+        if not target or rel.attrib.get("TargetMode", "Internal") == "External":
+            continue
+        resolved = posixpath.normpath(posixpath.join("ppt", target))
+        if resolved not in merged_files:
+            to_remove.append(rel)
+            missing_ids.add(rel_id)
+
+    for rel in to_remove:
+        pres_rels_root.remove(rel)
+
+    # Detect whether any font relationships were removed
+    font_rel_type = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/font"
+    removed_font_rels = any(
+        rel.attrib.get("Type") == font_rel_type for rel in to_remove
+    )
+
+    if not missing_ids:
+        return
+
+    # Also purge matching references inside presentation.xml -
+    # most importantly <p:embeddedFontLst> which references font rId values.
+    # We also remove <p:custDataLst> (custom data), <p:commentAuthors> refs, etc.
+    EMBEDDED_FONT_TAG = f"{{{P_NS}}}embeddedFontLst"
+    CUST_DATA_TAG = f"{{{P_NS}}}custDataLst"
+    COMMENT_AUTHORS_TAG = f"{{{P_NS}}}cmAuthorLst"
+
+    for container_tag in (EMBEDDED_FONT_TAG, CUST_DATA_TAG, COMMENT_AUTHORS_TAG):
+        container = presentation_root.find(f".//{container_tag}")
+        if container is None:
+            # Try direct child
+            container = presentation_root.find(container_tag)
+        if container is None:
+            continue
+        # Check if *all* rId refs in this container are missing
+        rids_in_container = set(re.findall(
+            r'r:id\s*=\s*["\']([^"\']+)["\']',
+            ET.tostring(container, encoding="unicode"),
+        ))
+        if rids_in_container and rids_in_container.issubset(missing_ids):
+            # Remove the whole container from its parent
+            parent = _find_parent(presentation_root, container)
+            if parent is not None:
+                parent.remove(container)
+
+    # If embedded font files were removed, also clear the embedTrueTypeFonts
+    # and saveSubsetFonts attributes on the root <p:presentation> element.
+    # Leaving them set to "1" with no font parts causes Office 365 to flag
+    # the package as corrupt.
+    if removed_font_rels:
+        for attr in ("embedTrueTypeFonts", "saveSubsetFonts"):
+            if attr in presentation_root.attrib:
+                del presentation_root.attrib[attr]
+
+
+def _find_parent(root: ET.Element, target: ET.Element) -> ET.Element | None:
+    """Return the direct parent of *target* within the tree rooted at *root*."""
+    for parent in root.iter():
+        if target in list(parent):
+            return parent
+    return None
+
+
+def _remove_orphan_parts(
+    merged_files: dict[str, bytes],
+    pres_rels_root: ET.Element,
+) -> None:
+    """Remove ALL unreachable parts from the merged package.
+
+    Performs a BFS from the root relationships (pres_rels_root), following
+    every internal relationship recursively to collect the set of reachable
+    parts. Then deletes every file in merged_files that is NOT reachable,
+    except for a small set of always-kept structural files.
+
+    This catches orphan slideMasters, slideLayouts, themes, notesMasters,
+    media files, tags, and any other part that was copied into the package
+    during merging but ended up unreferenced.
+    """
+    import posixpath
+
+    # Files that are always kept regardless of reachability
+    _ALWAYS_KEEP = {
+        "[Content_Types].xml",
+        "_rels/.rels",
+        "docProps/app.xml",
+        "docProps/core.xml",
+        "docProps/custom.xml",
+        "ppt/presentation.xml",
+        "ppt/_rels/presentation.xml.rels",
+    }
+
+    # BFS: collect all parts reachable from the presentation rels
+    reachable: set[str] = set()
+    queue: list[str] = []
+
+    def _enqueue(part: str) -> None:
+        if part in merged_files and part not in reachable:
+            reachable.add(part)
+            queue.append(part)
+
+    # Seed with all targets in pres_rels_root
+    for rel in pres_rels_root:
+        target = rel.attrib.get("Target", "")
+        if not target or rel.attrib.get("TargetMode", "Internal") == "External":
+            continue
+        _enqueue(posixpath.normpath(posixpath.join("ppt", target)))
+
+    while queue:
+        part = queue.pop()
+        rels_path = _rels_path_for(part)
+        rels_data = merged_files.get(rels_path)
+        if not rels_data:
+            continue
+        reachable.add(rels_path)
+        try:
+            rels_root = ET.fromstring(rels_data)
+        except ET.ParseError:
+            continue
+        for rel in rels_root:
+            if rel.attrib.get("TargetMode", "Internal") == "External":
+                continue
+            dep = _resolve_target(part, rel.attrib.get("Target", ""))
+            _enqueue(dep)
+
+    # Delete every part that is not reachable and not in the always-keep set
+    to_delete = [
+        name for name in list(merged_files)
+        if name not in reachable and name not in _ALWAYS_KEEP
+    ]
+    for name in to_delete:
+        del merged_files[name]
+
+
+def _ensure_content_types_complete(
+    merged_files: dict[str, bytes],
+    content_types_root: ET.Element,
+) -> None:
+    """Synchronize [Content_Types].xml with the actual parts in merged_files.
+
+    1. Remove Override entries whose PartName points to a part that no longer
+       exists in the package. Such dangling references are produced when
+       _remove_orphan_parts deletes deduplicated masters/themes/layouts but
+       leaves the original Content_Types entries behind. Office 365 strictly
+       validates OPC and refuses to open a package that advertises parts it
+       cannot find ("needs repair"); WPS silently tolerates it.
+    2. Add Override entries for every XML part that is present but missing
+       from Content_Types. python-pptx and manual merges sometimes omit them
+       and Office 365 falls back to the Default extension map which only
+       covers generic types and will flag unknown XML parts as corrupt.
+    """
+    CT_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
+    OVERRIDE_TAG = f"{{{CT_NS}}}Override"
+
+    # ── Pass 1: prune dangling Override entries ─────────────────────────────
+    for child in list(content_types_root):
+        if child.tag != OVERRIDE_TAG:
+            continue
+        pn = child.attrib.get("PartName", "").lstrip("/")
+        if pn and pn not in merged_files:
+            content_types_root.remove(child)
+
+    # ── Pass 2: collect remaining declared parts and add missing entries ────
+    existing_parts: set[str] = set()
+    for child in content_types_root:
+        pn = child.attrib.get("PartName", "")
+        if pn:
+            existing_parts.add(pn.lstrip("/"))
+
+    for name in merged_files:
+        if name.endswith(".rels") or name == "[Content_Types].xml":
+            continue
+        if name in existing_parts:
+            continue
+        # Determine content type
+        content_type: str | None = None
+        for pattern, ct in _PART_CT_MAP:
+            if pattern.match(name):
+                content_type = ct
+                break
+        if content_type is None:
+            continue  # Not an XML part we know about; skip
+        override = ET.SubElement(content_types_root, OVERRIDE_TAG)
+        override.attrib["PartName"] = f"/{name}"
+        override.attrib["ContentType"] = content_type
+
+
+def _ensure_notes_master_independent_theme(
+    merged_files: dict[str, bytes],
+    pres_rels_root: ET.Element,
+    content_types_root: ET.Element,
+) -> None:
+    """Ensure every notesMaster references its OWN theme part (not shared with slideMaster).
+
+    Two related OOXML compliance issues are handled here:
+
+    1. A notesMaster MUST declare a relationship of type .../relationships/theme.
+       Some upstream generators omit the notesMasters/_rels/ directory entirely.
+    2. Each master (slideMaster / notesMaster / handoutMaster) MUST own its
+       own theme part. When notesMaster and slideMaster share the same
+       theme (e.g. both pointing at ppt/theme/theme1.xml), Office 365 strict
+       validation rejects the package as corrupt — even though the older
+       PowerPoint and WPS silently accept it. PowerPoint's own "auto-repair"
+       splits the shared theme into a new theme part, which is exactly what
+       we mirror here.
+    """
+    import posixpath
+
+    REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+    THEME_CT = "application/vnd.openxmlformats-officedocument.theme+xml"
+
+    # Collect themes that any slideMaster references — these are "shared" and
+    # must NOT also be referenced by a notesMaster.
+    slide_master_themes: set[str] = set()
+    for sm_name in merged_files:
+        if not sm_name.startswith("ppt/slideMasters/") or not sm_name.endswith(".xml"):
+            continue
+        sm_rels_data = merged_files.get(_rels_path_for(sm_name))
+        if not sm_rels_data:
+            continue
+        try:
+            sm_rr = ET.fromstring(sm_rels_data)
+        except ET.ParseError:
+            continue
+        for r in sm_rr:
+            if r.attrib.get("Type") != THEME_REL_TYPE:
+                continue
+            if r.attrib.get("TargetMode", "Internal") == "External":
+                continue
+            tgt = posixpath.normpath(posixpath.join(
+                posixpath.dirname(sm_name), r.attrib.get("Target", "")
+            ))
+            slide_master_themes.add(tgt)
+
+    # Find a fallback primary theme (used when notesMaster has no theme rel at all).
+    primary_theme: str | None = None
+    for rel in pres_rels_root:
+        if rel.attrib.get("Type") != THEME_REL_TYPE:
+            continue
+        if rel.attrib.get("TargetMode", "Internal") == "External":
+            continue
+        cand = posixpath.normpath(posixpath.join("ppt", rel.attrib.get("Target", "")))
+        if cand in merged_files:
+            primary_theme = cand
+            break
+    if primary_theme is None:
+        for name in merged_files:
+            if name.startswith("ppt/theme/") and name.endswith(".xml"):
+                primary_theme = name
+                break
+    if primary_theme is None:
+        return  # Nothing to reference; give up silently
+
+    def _alloc_theme_part() -> str:
+        n = 1
+        while f"ppt/theme/theme{n}.xml" in merged_files:
+            n += 1
+        return f"ppt/theme/theme{n}.xml"
+
+    def _add_theme_override(part: str) -> None:
+        pn = "/" + part
+        for child in content_types_root:
+            if _local_name(child.tag) == "Override" and child.attrib.get("PartName") == pn:
+                return
+        ov = ET.SubElement(
+            content_types_root,
+            f"{{{PKG_CT_NS}}}Override",
+        )
+        ov.attrib["PartName"] = pn
+        ov.attrib["ContentType"] = THEME_CT
+
+    def _split_theme_if_shared(target_part: str) -> str:
+        """If target_part is referenced by a slideMaster, duplicate it and
+        return the new part name; otherwise return target_part unchanged.
+        """
+        if target_part not in slide_master_themes or target_part not in merged_files:
+            return target_part
+        new_part = _alloc_theme_part()
+        merged_files[new_part] = merged_files[target_part]
+        # Copy theme's sibling rels (if any) so embedded image refs survive.
+        src_rels = merged_files.get(_rels_path_for(target_part))
+        if src_rels:
+            merged_files[_rels_path_for(new_part)] = src_rels
+        _add_theme_override(new_part)
+        return new_part
+
+    for name in list(merged_files):
+        if not name.startswith("ppt/notesMasters/") or not name.endswith(".xml"):
+            continue
+        rels_path = _rels_path_for(name)
+        rels_data = merged_files.get(rels_path)
+        if rels_data:
+            try:
+                rr = ET.fromstring(rels_data)
+            except ET.ParseError:
+                rr = ET.Element(f"{{{REL_NS}}}Relationships")
+        else:
+            rr = ET.Element(f"{{{REL_NS}}}Relationships")
+
+        theme_rel: ET.Element | None = None
+        for child in rr:
+            if child.attrib.get("Type") == THEME_REL_TYPE:
+                theme_rel = child
+                break
+
+        if theme_rel is None:
+            # No theme rel: synthesize one. If the chosen target is shared
+            # with a slideMaster, split it first.
+            chosen = _split_theme_if_shared(primary_theme)
+            new_rel = ET.SubElement(rr, f"{{{REL_NS}}}Relationship")
+            new_rel.attrib["Id"] = _next_rel_id(rr)
+            new_rel.attrib["Type"] = THEME_REL_TYPE
+            new_rel.attrib["Target"] = _make_relative(name, chosen)
+            merged_files[rels_path] = _serialize_rels_xml(rr)
+            continue
+
+        # Already has a theme rel: check whether it is shared with a slideMaster.
+        cur_target = posixpath.normpath(posixpath.join(
+            posixpath.dirname(name), theme_rel.attrib.get("Target", "")
+        ))
+        if cur_target not in slide_master_themes:
+            continue  # already independent; nothing to do
+        new_target = _split_theme_if_shared(cur_target)
+        if new_target != cur_target:
+            theme_rel.attrib["Target"] = _make_relative(name, new_target)
+            merged_files[rels_path] = _serialize_rels_xml(rr)
+
+
+def _strip_invalid_default_content_types(content_types_root: ET.Element) -> None:
+    """Drop <Default> entries with malformed MIME types from [Content_Types].xml.
+
+    Some upstream PPTX templates carry malformed Default entries such as
+    <Default Extension="JPG" ContentType="image/.jpg"/> (subtype starts with
+    a dot, violating RFC 2616 type/subtype syntax). Office 365 strict
+    validation rejects the whole package over a single bad Default; older
+    PowerPoint and WPS silently ignore it.
+    """
+    def _is_valid_mime(mime: str) -> bool:
+        if not mime or "/" not in mime:
+            return False
+        main, _, sub = mime.partition("/")
+        if not main or not sub:
+            return False
+        if sub.startswith(".") or main.startswith("."):
+            return False
+        ok_chars = lambda s: all(c.isalnum() or c in "+-._" for c in s)
+        return ok_chars(main) and ok_chars(sub)
+
+    for child in list(content_types_root):
+        if _local_name(child.tag) != "Default":
+            continue
+        ct = child.attrib.get("ContentType", "")
+        if not _is_valid_mime(ct):
+            content_types_root.remove(child)
+
+
+def _normalize_app_xml_metadata(merged_files: dict[str, bytes]) -> None:
+    """Rewrite docProps/app.xml so Slides/Notes counts and vector sizes match reality.
+
+    Some upstream PPTX (notably WPS exports and certain template generators)
+    carry stale metadata declaring far more slides than actually exist (e.g.
+    <Slides>147</Slides> with a 4-slide deck plus <vt:vector size="167">
+    entries pointing at nothing). Office 365 strict validation flags this
+    size mismatch as a corrupt package.
+
+    We replace docProps/app.xml with a minimal-but-valid version that uses
+    accurate counts. HeadingPairs/TitlesOfParts (which carry slide titles)
+    are dropped — they are non-essential metadata and PowerPoint regenerates
+    them on save.
+    """
+    if "ppt/presentation.xml" not in merged_files:
+        return
+    try:
+        pres = ET.fromstring(merged_files["ppt/presentation.xml"])
+    except ET.ParseError:
+        return
+
+    slide_count = 0
+    for c in pres:
+        if _local_name(c.tag) == "sldIdLst":
+            slide_count = len(list(c))
+            break
+    notes_count = sum(
+        1 for n in merged_files
+        if n.startswith("ppt/notesSlides/") and n.endswith(".xml")
+    )
+
+    # Preserve original Application/AppVersion if present, else use defaults.
+    app_name = b"SlideFlow"
+    app_version = b"16.0000"
+    orig = merged_files.get("docProps/app.xml")
+    if orig:
+        try:
+            orig_root = ET.fromstring(orig)
+            for child in orig_root:
+                ln = _local_name(child.tag)
+                if ln == "Application" and child.text:
+                    app_name = child.text.encode("utf-8")
+                elif ln == "AppVersion" and child.text:
+                    app_version = child.text.encode("utf-8")
+        except ET.ParseError:
+            pass
+
+    new_app = (
+        b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n'
+        b'<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" '
+        b'xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">'
+        b'<TotalTime>0</TotalTime>'
+        b'<Application>' + app_name + b'</Application>'
+        b'<Slides>' + str(slide_count).encode("ascii") + b'</Slides>'
+        b'<Notes>' + str(notes_count).encode("ascii") + b'</Notes>'
+        b'<HiddenSlides>0</HiddenSlides>'
+        b'<MMClips>0</MMClips>'
+        b'<ScaleCrop>false</ScaleCrop>'
+        b'<LinksUpToDate>false</LinksUpToDate>'
+        b'<SharedDoc>false</SharedDoc>'
+        b'<HyperlinksChanged>false</HyperlinksChanged>'
+        b'<AppVersion>' + app_version + b'</AppVersion>'
+        b'</Properties>'
+    )
+    merged_files["docProps/app.xml"] = new_app
+
+
+# Repair targets: only XML parts that may contain <a:blip> elements.
+_BLIP_REPAIR_DIRS = (
+    "ppt/slides/",
+    "ppt/slideLayouts/",
+    "ppt/slideMasters/",
+    "ppt/notesSlides/",
+    "ppt/notesMasters/",
+)
+
+# Pre-compiled regex for repairing <a:blip> elements that are missing the
+# primary r:embed/r:link attribute. PowerPoint's "Save As" can strip the
+# PNG fallback rel of an SVG image but leave the outer <a:blip> open-tag
+# without any primary reference, only the nested <asvg:svgBlip r:embed>.
+# Office 365 then rejects the package as corrupt.
+_BLIP_OPEN_RE = re.compile(rb"<a:blip\b([^>]*?)(?<!/)>")
+_BLIP_HAS_PRIMARY_RE = re.compile(rb"\br:(embed|link)\s*=")
+_SVG_BLIP_EMBED_RE = re.compile(rb'<asvg:svgBlip\b[^>]*?\br:embed\s*=\s*"([^"]+)"')
+
+
+def _repair_blip_in_xml(xml_bytes: bytes) -> tuple[bytes, int]:
+    """Repair <a:blip> elements lacking the primary r:embed/r:link attribute.
+
+    Strategy: when an <a:blip> open-tag has no r:embed/r:link but its body
+    contains a nested <asvg:svgBlip r:embed="rIdX"/>, promote that rIdX as
+    the outer <a:blip>'s r:embed so OOXML schema validation passes.
+
+    Returns (possibly-modified bytes, number of repairs applied).
+    Self-closed forms <a:blip .../> are skipped (they already have or
+    intentionally omit attributes in the open-tag).
+    """
+    if b"<a:blip" not in xml_bytes or b"svgBlip" not in xml_bytes:
+        return xml_bytes, 0
+
+    out: list[bytes] = []
+    cursor = 0
+    fixed = 0
+    close_tag = b"</a:blip>"
+    while True:
+        m = _BLIP_OPEN_RE.search(xml_bytes, cursor)
+        if not m:
+            out.append(xml_bytes[cursor:])
+            break
+        attrs = m.group(1)
+        close_idx = xml_bytes.find(close_tag, m.end())
+        if close_idx < 0:
+            out.append(xml_bytes[cursor:])
+            break
+        # Append everything up to and including this <a:blip> element
+        out.append(xml_bytes[cursor:m.start()])
+        body = xml_bytes[m.end():close_idx]
+        if _BLIP_HAS_PRIMARY_RE.search(attrs):
+            out.append(xml_bytes[m.start():close_idx + len(close_tag)])
+        else:
+            svg_m = _SVG_BLIP_EMBED_RE.search(body)
+            if svg_m:
+                svg_rid = svg_m.group(1)
+                out.append(b'<a:blip r:embed="' + svg_rid + b'"' + attrs + b">" + body + close_tag)
+                fixed += 1
+            else:
+                out.append(xml_bytes[m.start():close_idx + len(close_tag)])
+        cursor = close_idx + len(close_tag)
+
+    if fixed == 0:
+        return xml_bytes, 0
+    return b"".join(out), fixed
+
+
+def _repair_svg_blip_primary_embed(merged_files: dict[str, bytes]) -> int:
+    """Sweep slide/slideLayout/slideMaster/notesSlide XMLs and repair every
+    <a:blip> that lacks a primary r:embed/r:link reference but has a nested
+    <asvg:svgBlip r:embed="..."/>.
+
+    PowerPoint's "Save As" sometimes deletes the PNG fallback relationship
+    behind an SVG image yet leaves the outer <a:blip> open-tag without any
+    primary reference. Office 365 strictly validates this and flags the
+    package as corrupt. Promoting the inner SVG rId as the outer r:embed
+    restores schema validity without altering visible content.
+
+    Returns the total number of repairs applied across the package.
+    """
+    total = 0
+    for name in list(merged_files.keys()):
+        if not name.endswith(".xml"):
+            continue
+        if not any(d in name for d in _BLIP_REPAIR_DIRS):
+            continue
+        data = merged_files[name]
+        new_data, n = _repair_blip_in_xml(data)
+        if n > 0:
+            merged_files[name] = new_data
+            total += n
+            _logger.info("Repaired %d SVG <a:blip> primary r:embed in %s", n, name)
+    return total
+
+
+def _next_rel_id(rels_root: ET.Element) -> str:
+    """Return an Id that is not already used inside *rels_root*."""
+    used: set[str] = set()
+    for child in rels_root:
+        rid = child.attrib.get("Id", "")
+        if rid:
+            used.add(rid)
+    n = 1
+    while f"rId{n}" in used:
+        n += 1
+    return f"rId{n}"
+
+
 def merge_pptx_files(input_paths: list[Path], output_path: Path, *, hidden_flags: list[bool] | None = None) -> None:
     """Merge multiple .pptx files into one, preserving each source's layouts, masters, themes and media.
 
@@ -1145,7 +1901,11 @@ def merge_pptx_files(input_paths: list[Path], output_path: Path, *, hidden_flags
         for info in zf.infolist():
             if info.is_dir():
                 continue
-            merged_files[info.filename] = zf.read(info.filename)
+            data = zf.read(info.filename)
+            # Normalize malformed .rels files (ns0: prefix issue)
+            if info.filename.endswith(".rels"):
+                data = _normalize_rels_bytes(data)
+            merged_files[info.filename] = data
 
     if "ppt/presentation.xml" not in merged_files or "ppt/_rels/presentation.xml.rels" not in merged_files:
         raise ValueError(f"{paths[0]} is not a valid PPTX package")
@@ -1153,6 +1913,21 @@ def merge_pptx_files(input_paths: list[Path], output_path: Path, *, hidden_flags
     presentation_root = ET.fromstring(merged_files["ppt/presentation.xml"])
     pres_rels_root = ET.fromstring(merged_files["ppt/_rels/presentation.xml.rels"])
     content_types_root = ET.fromstring(merged_files.get("[Content_Types].xml", b"<Types/>"))
+
+    # Identify base notesMaster (if any) so we can collapse every source's
+    # notesMaster onto it. Otherwise the source's notesSlide rels would keep
+    # referencing notesMaster1_src2/3.xml and produce orphan notesMasters that
+    # are not declared in <p:notesMasterIdLst>, which Office 365 rejects.
+    base_notes_master: str | None = None
+    for rel in pres_rels_root:
+        if rel.attrib.get("Type") != NOTES_MASTER_REL_TYPE:
+            continue
+        if rel.attrib.get("TargetMode", "Internal") == "External":
+            continue
+        nm_part = _resolve_target("ppt/presentation.xml", rel.attrib.get("Target", ""))
+        if nm_part in merged_files:
+            base_notes_master = nm_part
+            break
 
     # Build master group fingerprint registry from the base file
     master_group_index: dict[str, str] = {}  # group_fp -> master_part in merged
@@ -1192,9 +1967,60 @@ def merge_pptx_files(input_paths: list[Path], output_path: Path, *, hidden_flags
             master_group_index=master_group_index,
             master_layout_index=master_layout_index,
             blank_master_state=blank_master_state,
+            base_notes_master=base_notes_master,
         )
 
-    merged_files["ppt/presentation.xml"] = _serialize_pres_xml(presentation_root)
+    # Save original bytes before modification for namespace preservation
+    orig_pres_bytes = merged_files.get("ppt/presentation.xml")
+
+    # ── Orphan-parts pass: remove unreachable master/layout/theme files ─────
+    # When two source PPTXs share the same master fingerprint, _merge_pptx_into
+    # deduplicates the master (redirects slides/layouts to the base master) but
+    # the renamed copies (slideMaster1_src2.xml, etc.) may still end up in
+    # merged_files because visit() followed their deps from the slide chain.
+    # Those orphan parts are NOT listed in sldMasterIdLst and violate OPC rules,
+    # causing Office 365 to report a corrupt package.
+    _remove_orphan_parts(merged_files, pres_rels_root)
+
+    # ── Repair pass: ensure each notesMaster has its own (independent) theme.
+    # Two compliance issues are fixed in one shot:
+    #   1. notesMaster missing the required /relationships/theme rel altogether.
+    #   2. notesMaster sharing a theme part with a slideMaster (Office 365 strict
+    #      validation rejects this; PowerPoint's own auto-repair splits the
+    #      shared theme into a new theme part, which we mirror here).
+    _ensure_notes_master_independent_theme(
+        merged_files, pres_rels_root, content_types_root
+    )
+
+    # ── Integrity pass: remove dangling references ──────────────────────────
+    # After merging, pres_rels_root and presentation_root may still reference
+    # parts that weren't included (e.g. embedded font files, commentAuthors,
+    # global tags) because the source single-page PPTXs only contain a subset
+    # of the original file's parts. Dangling references cause Office 365 to
+    # reject the package as corrupt.
+    _remove_dangling_rels(merged_files, pres_rels_root, presentation_root)
+    # Also ensure [Content_Types].xml has Override entries for every XML part
+    # that is actually present in the package.
+    _ensure_content_types_complete(merged_files, content_types_root)
+    # Drop malformed Default entries (e.g. ContentType="image/.jpg") that
+    # violate RFC 2616 type/subtype syntax. Office 365 strict validation
+    # rejects the package over a single bad Default; older PowerPoint and
+    # WPS silently ignore them, so they sneak in via templates.
+    _strip_invalid_default_content_types(content_types_root)
+    # Rewrite docProps/app.xml so Slides/Notes counts match the actual deck.
+    # Some upstream PPTX (notably WPS exports) declare far more slides than
+    # actually exist plus mismatched <vt:vector size=…> entries, which Office
+    # 365 flags as corruption.
+    _normalize_app_xml_metadata(merged_files)
+
+    # ── Schema-repair pass: promote SVG <asvg:svgBlip> rId to the outer
+    # <a:blip r:embed> when the primary reference is missing. Some upstream
+    # sources (notably PowerPoint's "Save As") drop the PNG fallback rel of
+    # an SVG image without restoring a primary r:embed on <a:blip>, which
+    # Office 365 rejects as a corrupt package.
+    _repair_svg_blip_primary_embed(merged_files)
+
+    merged_files["ppt/presentation.xml"] = _serialize_pres_xml(presentation_root, orig_pres_bytes)
     merged_files["ppt/_rels/presentation.xml.rels"] = _serialize_rels_xml(pres_rels_root)
     merged_files["[Content_Types].xml"] = _serialize_ct_xml(content_types_root)
 
@@ -1202,9 +2028,16 @@ def merge_pptx_files(input_paths: list[Path], output_path: Path, *, hidden_flags
     if hidden_flags:
         _apply_hidden_flags_to_merged(merged_files, paths, hidden_flags)
 
-    with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as out:
+    with zipfile.ZipFile(output_path, "w") as out:
         for name, data in merged_files.items():
-            out.writestr(name, data)
+            ext = Path(name).suffix.lower()
+            # Ensure all XML files have proper standalone="yes" declaration.
+            # This repairs source files that were generated without it.
+            if ext == ".xml" and data and b"<?xml" in data[:100]:
+                if b'standalone="yes"' not in data[:200] and b"standalone='yes'" not in data[:200]:
+                    data = _fix_xml_declaration(data)
+            compress_type = zipfile.ZIP_STORED if ext in _PRECOMPRESSED_EXTS else zipfile.ZIP_DEFLATED
+            out.writestr(zipfile.ZipInfo(name), data, compress_type=compress_type)
 
 
 def _merge_pptx_into(
@@ -1218,13 +2051,18 @@ def _merge_pptx_into(
     master_group_index: dict[str, str],
     master_layout_index: dict[str, dict[str, str]],
     blank_master_state: dict,
+    base_notes_master: str | None = None,
 ) -> None:
     src_files: dict[str, bytes] = {}
     with zipfile.ZipFile(src_path) as zf:
         for info in zf.infolist():
             if info.is_dir():
                 continue
-            src_files[info.filename] = zf.read(info.filename)
+            data = zf.read(info.filename)
+            # Normalize malformed .rels files (ns0: prefix issue from older generators)
+            if info.filename.endswith(".rels"):
+                data = _normalize_rels_bytes(data)
+            src_files[info.filename] = data
 
     if "ppt/presentation.xml" not in src_files or "ppt/_rels/presentation.xml.rels" not in src_files:
         return
@@ -1284,6 +2122,27 @@ def _merge_pptx_into(
     master_src_parts: list[str] = []
     layout_redirect: dict[str, str] = {}  # src_layout_part -> base_layout_part (in merged)
     master_redirect: dict[str, str] = {}  # src_master_part -> base_master_part (in merged)
+    notes_master_redirect: dict[str, str] = {}  # src_notes_master_part -> base_notes_master
+
+    # Collapse every notesMaster from this source onto the merged base notesMaster.
+    # Carrying the source's own notesMaster as notesMaster1_srcN.xml leaves an
+    # orphan part (it is never declared in <p:notesMasterIdLst>) which Office
+    # 365 flags as a corrupt package. WPS silently ignores it.
+    #
+    # Note: a source PPTX may itself be a previously merged product and contain
+    # multiple notesMaster*.xml files (only one of which is referenced from its
+    # own presentation.xml.rels; the others are reachable only via notesSlide
+    # rels). To catch them all we scan src_files directly instead of relying on
+    # src_pres_rels_root.
+    if base_notes_master is not None:
+        for src_nm in list(src_files.keys()):
+            if not src_nm.startswith("ppt/notesMasters/") or not src_nm.endswith(".xml"):
+                continue
+            notes_master_redirect[src_nm] = base_notes_master
+            # Drop it from rename_map so the duplicate copy isn't written out.
+            # Its dependencies (theme/image) will become orphans and be removed
+            # by the subsequent _remove_orphan_parts pass.
+            rename_map.pop(src_nm, None)
 
     for rel in src_pres_rels_root:
         if rel.attrib.get("Type") != SLIDE_MASTER_REL_TYPE:
@@ -1417,8 +2276,12 @@ def _merge_pptx_into(
                 continue
             target = rel.attrib.get("Target", "")
             dep = _resolve_target(src_part, target)
-            # Check if this dep should redirect to a shared master/layout part
-            redirect = layout_redirect.get(dep) or master_redirect.get(dep)
+            # Check if this dep should redirect to a shared master/layout/notesMaster part
+            redirect = (
+                layout_redirect.get(dep)
+                or master_redirect.get(dep)
+                or notes_master_redirect.get(dep)
+            )
             if redirect is not None:
                 rel.attrib["Target"] = _make_relative(new_part, redirect)
                 continue
@@ -2150,7 +3013,9 @@ def add_watermark_to_pptx(pptx_path: Path, text: str) -> None:
             wm_elem = wrapper[0]
             sp_tree.append(wm_elem)
 
-        modified_masters[master_name] = ET.tostring(root, xml_declaration=True, encoding="UTF-8")
+        modified_masters[master_name] = _serialize_xml_with_ns_preservation(
+            root, master_data[master_name]
+        )
 
     # ── Pass 2: 重写 ZIP —— 未修改的条目直接拷贝原始压缩数据 ──
     master_set = set(modified_masters.keys())
@@ -2160,8 +3025,24 @@ def add_watermark_to_pptx(pptx_path: Path, text: str) -> None:
         for item in zf_in.infolist():
             if item.filename in master_set:
                 # 仅对修改的母版 XML 重新压缩（通常 < 500KB）
-                zf_out.writestr(item, modified_masters[item.filename],
+                # 同时对母版应用 SVG blip 修补
+                data = modified_masters[item.filename]
+                repaired, _n = _repair_blip_in_xml(data)
+                zf_out.writestr(item, repaired,
                                 compress_type=zipfile.ZIP_DEFLATED)
+            elif item.filename.endswith(".xml") and any(
+                d in item.filename for d in _BLIP_REPAIR_DIRS
+            ):
+                # 兜底防御：对 slide/slideLayout/notesSlide 等可能含 <a:blip>
+                # 的 XML 做 schema 修补（PowerPoint 另存导致的 SVG blip 缺主
+                # r:embed 问题）。仅当需要修补时才重新压缩，否则直拷原压缩数据。
+                raw = zf_in.read(item.filename)
+                repaired, n = _repair_blip_in_xml(raw)
+                if n > 0:
+                    zf_out.writestr(item, repaired,
+                                    compress_type=zipfile.ZIP_DEFLATED)
+                else:
+                    zf_out.writestr(item, raw, compress_type=item.compress_type)
             else:
                 # 直拷原始压缩字节：ZIP_STORED(图片/媒体)跳过压缩，
                 # ZIP_DEFLATED(XML)跳过解压+重压缩，极大提速
