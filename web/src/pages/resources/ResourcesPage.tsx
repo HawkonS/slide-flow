@@ -203,6 +203,21 @@ export function ResourcesPage() {
     setDownloadCtx({ resource: r, version });
   };
 
+  // 全屏放映：将当前页所有可见资源的 ID 传入
+  const currentResourceIds = resources.map((r) => r.id);
+
+  const handleFullscreen = React.useCallback(
+    (r: Resource) => {
+      const ids = currentResourceIds.join(",");
+      window.open(
+        `/resources/${r.id}/fullscreen?ids=${ids}`,
+        "_blank",
+        "popup=yes,width=1920,height=1080",
+      );
+    },
+    [currentResourceIds],
+  );
+
   const pageStart = (page - 1) * pageSize;
 
   return (
@@ -269,6 +284,7 @@ export function ResourcesPage() {
                 onEdit={handleEdit}
                 onNewVersion={handleNewVersion}
                 onDownload={(x) => handleDownload(x, x.current)}
+                onFullscreen={handleFullscreen}
               />
             ))}
           </div>
@@ -315,6 +331,7 @@ export function ResourcesPage() {
         onEdit={handleEdit}
         onNewVersion={handleNewVersion}
         onDownload={handleDownload}
+        onFullscreen={handleFullscreen}
       />
 
       <ResourceEditDialog

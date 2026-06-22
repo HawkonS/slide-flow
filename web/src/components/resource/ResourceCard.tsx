@@ -6,6 +6,7 @@ import {
   GitBranch,
   ImageOff,
   Loader2,
+  Maximize,
   MoreHorizontal,
   Pencil,
   Pin,
@@ -32,6 +33,7 @@ export interface ResourceCardProps {
   onEdit?: (resource: Resource) => void;
   onNewVersion?: (resource: Resource) => void;
   onDownload?: (resource: Resource) => void;
+  onFullscreen?: (resource: Resource) => void;
 }
 
 interface ShowListResponse {
@@ -44,6 +46,7 @@ export function ResourceCard({
   onEdit,
   onNewVersion,
   onDownload,
+  onFullscreen,
 }: ResourceCardProps) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
@@ -159,6 +162,11 @@ export function ResourceCard({
               <DropdownMenuItem onSelect={() => onOpen?.(resource)}>
                 <Eye className="mr-2 h-4 w-4" /> 查看详情
               </DropdownMenuItem>
+              {onFullscreen && (
+                <DropdownMenuItem onSelect={() => onFullscreen(resource)}>
+                  <Maximize className="mr-2 h-4 w-4" /> 全屏放映
+                </DropdownMenuItem>
+              )}
               {onDownload && (
                 <DropdownMenuItem onSelect={() => onDownload(resource)}>
                   <Download className="mr-2 h-4 w-4" /> 下载

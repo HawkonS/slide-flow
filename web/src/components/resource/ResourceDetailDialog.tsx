@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Download, Loader2, Pencil, RefreshCw, Save } from "lucide-react";
+import { Download, Loader2, Maximize, Pencil, RefreshCw, Save } from "lucide-react";
 import { toast } from "sonner";
 
 import {
@@ -37,6 +37,7 @@ export interface ResourceDetailDialogProps {
   onEdit?: (resource: Resource) => void;
   onNewVersion?: (resource: Resource) => void;
   onDownload?: (resource: Resource, version: ResourceVersion) => void;
+  onFullscreen?: (resource: Resource) => void;
 }
 
 interface PersonalRemarkResponse {
@@ -56,6 +57,7 @@ export function ResourceDetailDialog({
   onEdit,
   onNewVersion,
   onDownload,
+  onFullscreen,
 }: ResourceDetailDialogProps) {
   const [selectedVersionId, setSelectedVersionId] = React.useState<number | null>(null);
 
@@ -184,6 +186,12 @@ export function ResourceDetailDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             关闭
           </Button>
+          {onFullscreen && (
+            <Button variant="outline" onClick={() => onFullscreen(resource)}>
+              <Maximize className="mr-1 h-4 w-4" />
+              全屏放映
+            </Button>
+          )}
           {resource.can_manage && onEdit && (
             <Button variant="outline" onClick={() => onEdit(resource)}>
               <Pencil className="mr-1 h-4 w-4" />
