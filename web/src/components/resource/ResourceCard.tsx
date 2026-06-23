@@ -164,7 +164,7 @@ export function ResourceCard({
               </DropdownMenuItem>
               {onFullscreen && (
                 <DropdownMenuItem onSelect={() => onFullscreen(resource)}>
-                  <Maximize className="mr-2 h-4 w-4" /> 全屏放映
+                  <Maximize className="mr-2 h-4 w-4" /> 放大查看
                 </DropdownMenuItem>
               )}
               {onDownload && (

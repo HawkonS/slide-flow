@@ -189,7 +189,7 @@ export function ResourceDetailDialog({
           {onFullscreen && (
             <Button variant="outline" onClick={() => onFullscreen(resource)}>
               <Maximize className="mr-1 h-4 w-4" />
-              全屏放映
+              放大查看
             </Button>
           )}
           {resource.can_manage && onEdit && (

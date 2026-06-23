@@ -8,6 +8,7 @@ import { ResourceCard } from "@/components/resource/ResourceCard";
 import { ResourceDetailDialog } from "@/components/resource/ResourceDetailDialog";
 import { ResourceDownloadDialog } from "@/components/resource/ResourceDownloadDialog";
 import { ResourceEditDialog } from "@/components/resource/ResourceEditDialog";
+import { ResourcePreviewDialog } from "@/components/resource/ResourcePreviewDialog";
 import { ResourceFilters } from "@/components/resource/ResourceFilters";
 import { ResourceNewVersionDialog } from "@/components/resource/ResourceNewVersionDialog";
 import { api } from "@/lib/api";
@@ -162,6 +163,7 @@ export function ResourcesPage() {
   const [downloadCtx, setDownloadCtx] = React.useState<
     { resource: Resource; version: ResourceVersion } | null
   >(null);
+  const [previewResource, setPreviewResource] = React.useState<Resource | null>(null);
 
   // 按需加载完整资源数据（用于详情/编辑/新版本弹窗）
   const { data: fullResourceData } = useQuery({
@@ -203,20 +205,9 @@ export function ResourcesPage() {
     setDownloadCtx({ resource: r, version });
   };
 
-  // 全屏放映：将当前页所有可见资源的 ID 传入
-  const currentResourceIds = resources.map((r) => r.id);
-
-  const handleFullscreen = React.useCallback(
-    (r: Resource) => {
-      const ids = currentResourceIds.join(",");
-      window.open(
-        `/resources/${r.id}/fullscreen?ids=${ids}`,
-        "_blank",
-        "popup=yes,width=1920,height=1080",
-      );
-    },
-    [currentResourceIds],
-  );
+  const handlePreview = React.useCallback((r: Resource) => {
+    setPreviewResource(r);
+  }, []);
 
   const pageStart = (page - 1) * pageSize;
 
@@ -284,7 +275,7 @@ export function ResourcesPage() {
                 onEdit={handleEdit}
                 onNewVersion={handleNewVersion}
                 onDownload={(x) => handleDownload(x, x.current)}
-                onFullscreen={handleFullscreen}
+                onFullscreen={handlePreview}
               />
             ))}
           </div>
@@ -331,7 +322,7 @@ export function ResourcesPage() {
         onEdit={handleEdit}
         onNewVersion={handleNewVersion}
         onDownload={handleDownload}
-        onFullscreen={handleFullscreen}
+        onFullscreen={handlePreview}
       />
 
       <ResourceEditDialog
@@ -369,6 +360,14 @@ export function ResourcesPage() {
         }}
         resource={downloadCtx?.resource ?? null}
         version={downloadCtx?.version ?? null}
+      />
+
+      <ResourcePreviewDialog
+        open={previewResource != null}
+        onOpenChange={(open) => {
+          if (!open) setPreviewResource(null);
+        }}
+        resource={previewResource}
       />
 
       <BatchSplitImportDialog

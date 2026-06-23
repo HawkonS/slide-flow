@@ -12,7 +12,6 @@ import { ShowsPage } from "@/pages/shows/ShowsPage";
 import { LinksPage } from "@/pages/links/LinksPage";
 import { DisplayPage } from "@/pages/present/DisplayPage";
 import { FullscreenPage } from "@/pages/present/FullscreenPage";
-import { ResourceFullscreenPage } from "@/pages/present/ResourceFullscreenPage";
 import { AdminUsersPage } from "@/pages/admin/AdminUsersPage";
 import { AdminTemplatesPage } from "@/pages/admin/AdminTemplatesPage";
 import { AdminFontsPage } from "@/pages/admin/AdminFontsPage";
@@ -32,14 +31,6 @@ export const router = createBrowserRouter([
     element: (
       <RequireAuth>
         <FullscreenPage />
-      </RequireAuth>
-    ),
-  },
-  {
-    path: "/resources/:id/fullscreen",
-    element: (
-      <RequireAuth>
-        <ResourceFullscreenPage />
       </RequireAuth>
     ),
   },
