@@ -36,6 +36,9 @@ export function DisplayPage() {
   const canvasRef = useRef<DrawingCanvasRef>(null);
   const cursorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const slideImageRef = useRef<HTMLImageElement>(null);
+  // 镜像流推迟赋值的 animation frame id，用于组件卸载时取消，
+  // 避免在已卸载的元素上 setState/赋值 srcObject。
+  const mirrorFrameRef = useRef<number | null>(null);
 
   // Slide state (synced from Presenter via BroadcastChannel)
   const [sessionToken, setSessionToken] = useState<string>("");
@@ -153,12 +156,15 @@ export function DisplayPage() {
           const stream = (window as any).__mirrorStream as MediaStream | null;
           if (stream) {
             setMirrorActive(true);
-            // 使用 setTimeout 确保 video 元素已渲染
-            setTimeout(() => {
+            // 使用 requestAnimationFrame 等待 video 元素渲染完成，
+            // 比 setTimeout 更稳定；cleanup 中需取消。
+            const frameId = requestAnimationFrame(() => {
+              mirrorFrameRef.current = null;
               if (videoRef.current && stream.active) {
                 videoRef.current.srcObject = stream;
               }
-            }, 50);
+            });
+            mirrorFrameRef.current = frameId;
           }
           break;
         }
@@ -185,7 +191,13 @@ export function DisplayPage() {
       }
     });
 
-    return unsubscribe;
+    return () => {
+      if (mirrorFrameRef.current != null) {
+        cancelAnimationFrame(mirrorFrameRef.current);
+        mirrorFrameRef.current = null;
+      }
+      unsubscribe();
+    };
   }, []);
 
   // Hide cursor after 3 seconds of inactivity

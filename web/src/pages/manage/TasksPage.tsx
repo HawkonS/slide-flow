@@ -158,15 +158,17 @@ function useAdaptivePageSize(
   headerHeight = 41,
 ): number {
   const [pageSize, setPageSize] = React.useState(0);
+  // 使用 ref 保存防抖 timer，确保 cleanup 能同时清除 timer 与 ResizeObserver。
+  const timerRef = React.useRef<number | null>(null);
 
   React.useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
 
-    let timer: number | null = null;
     let lastSize = 0;
 
     const calc = () => {
+      timerRef.current = null;
       const available = el.clientHeight - headerHeight;
       // 减 1 行：为分页控件 / 容器 padding 等留出余量，确保最后一行不需要滚动
       const size = Math.max(5, Math.floor(available / rowHeight) - 1);
@@ -177,15 +179,18 @@ function useAdaptivePageSize(
     };
 
     const schedule = () => {
-      if (timer != null) window.clearTimeout(timer);
-      timer = window.setTimeout(calc, 100);
+      if (timerRef.current != null) window.clearTimeout(timerRef.current);
+      timerRef.current = window.setTimeout(calc, 100);
     };
 
     calc();
     const ro = new ResizeObserver(schedule);
     ro.observe(el);
     return () => {
-      if (timer != null) window.clearTimeout(timer);
+      if (timerRef.current != null) {
+        window.clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
       ro.disconnect();
     };
   }, [containerRef, rowHeight, headerHeight]);

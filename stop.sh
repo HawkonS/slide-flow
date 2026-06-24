@@ -6,6 +6,13 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# 依赖检查：本脚本需要 lsof 查找端口占用进程
+if ! command -v lsof &>/dev/null; then
+    echo "错误: 未找到 lsof 命令"
+    echo "请安装: apt install lsof (Linux) 或 brew install lsof (macOS)"
+    exit 1
+fi
+
 PROPS="slide_flow.properties"
 
 # 读取后端端口：与 start.sh 保持一致，解析 server.port
@@ -53,12 +60,14 @@ stop_by_port() {
     # 第三步：超时后发送 SIGKILL 强制终止
     echo "[$name] 进程未在 5 秒内退出，正在强制终止..."
     lsof -ti "tcp:$port" 2>/dev/null | xargs kill -9 2>/dev/null || true
-    sleep 0.5
+    # 给内核足够时间回收进程与端口，避免竞态误报
+    sleep 2
 
     if ! lsof -ti "tcp:$port" &>/dev/null; then
         echo "[$name] 已强制终止"
     else
-        echo "[$name] 警告：部分进程可能仍在运行，请手动检查"
+        echo "[$name] 警告：端口 $port 仍被占用，请手动排查"
+        lsof -i "tcp:$port" 2>/dev/null || true
     fi
 }
 

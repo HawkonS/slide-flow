@@ -11,7 +11,7 @@ import threading
 from typing import Any
 
 from fastapi import Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.permissions import ROLE_USER, SESSION_COOKIE, require_user, require_admin, require_super_admin
 from app.config import settings
@@ -43,10 +43,11 @@ class LoginPayload(BaseModel):
 
 
 class UserPayload(BaseModel):
-    name: str
-    username: str
-    password: str | None = None
-    feishu_id: str = ""
+    name: str = Field(..., min_length=1, max_length=100)
+    username: str = Field(..., min_length=2, max_length=50)
+    # 飞书 SSO 用户或选择需要强制首次修改密码时，可以不传 password
+    password: str | None = Field(default=None, max_length=200)
+    feishu_id: str = Field(default="", max_length=100)
     role: str = "user"
     need_change_pwd: bool = False
 

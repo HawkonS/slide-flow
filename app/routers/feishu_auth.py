@@ -38,12 +38,21 @@ def _sanitize_username(name: str) -> str:
 
 
 def _unique_username(db: sqlite3.Connection, base: str) -> str:
-    """确保用户名不重复，必要时追加数字后缀"""
+    """确保用户名不重复，必要时追加数字后缀。
+
+    为避免极端场景下出现无限循环（如同名账号量异常增长、查询错误等），
+    限制顺序探测的最大次数，超过后使用随机后缀兑底。
+    """
     candidate = base
     suffix = 1
+    max_attempts = 1000
     while db.execute("SELECT 1 FROM users WHERE username = ?", (candidate,)).fetchone():
         candidate = f"{base}_{suffix}"
         suffix += 1
+        if suffix > max_attempts:
+            # 使用随机后缀趋近唯一，防止无限循环
+            candidate = f"{base}_{secrets.token_hex(4)}"
+            break
     return candidate
 
 
@@ -105,18 +114,30 @@ def feishu_sso_callback(
         username = _unique_username(db, base_username)
         # 使用随机密码（飞书 SSO 用户不通过密码登录）
         random_pwd = hash_password(secrets.token_urlsafe(16))
-        db.execute(
-            """
-            INSERT INTO users (name, username, password_hash, feishu_id, role, created_at, updated_at)
-            VALUES (?, ?, ?, ?, 'user', ?, ?)
-            """,
-            (feishu_user.name, username, random_pwd, feishu_user.open_id, ts, ts),
-        )
-        db.commit()
-        user = db.execute(
-            "SELECT * FROM users WHERE feishu_id = ?", (feishu_user.open_id,)
-        ).fetchone()
-        logger.info("飞书 SSO 自动创建用户: %s (%s)", feishu_user.name, feishu_user.open_id)
+        try:
+            db.execute(
+                """
+                INSERT INTO users (name, username, password_hash, feishu_id, role, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 'user', ?, ?)
+                """,
+                (feishu_user.name, username, random_pwd, feishu_user.open_id, ts, ts),
+            )
+            db.commit()
+            user = db.execute(
+                "SELECT * FROM users WHERE feishu_id = ?", (feishu_user.open_id,)
+            ).fetchone()
+        except sqlite3.IntegrityError:
+            # 并发请求可能同时创建同一个 feishu_id/username 的用户，
+            # 被 UNIQUE 约束拦截后重新查询已被其他请求创建的记录
+            db.rollback()
+            user = db.execute(
+                "SELECT * FROM users WHERE feishu_id = ?", (feishu_user.open_id,)
+            ).fetchone()
+            if user is None:
+                raise HTTPException(500, "飞书用户创建失败，请重试")
+        # 避免在 INFO 日志中完整记录 open_id，仅保留尾部 8 位以供审计追踪
+        masked = feishu_user.open_id[-8:] if feishu_user.open_id else ""
+        logger.info("飞书 SSO 自动创建用户: %s (id=...%s)", feishu_user.name, masked)
 
     # 6. 创建 session cookie
     token = create_session_token(

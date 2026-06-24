@@ -177,22 +177,37 @@ def api_admin_system_upgrade(
     def do_upgrade():
         """在后台执行升级操作"""
         time.sleep(2)
+        log_file = None
         try:
             update_script = settings.root_dir / "tools" / "update.sh"
             if not update_script.exists():
                 logger.error("更新脚本不存在: %s", update_script)
                 return
-            
+
+            # 显式打开日志文件并存为变量，避免在表达式中隐式堆面对象的句柄泄漏。
+            # 注意：Popen 子进程仍在使用该文件，不在父进程主动 close()；
+            # close_fds=True 仅会在子进程中关闭除 stdin/stdout/stderr 之外的描述符，
+            # 不会影响作为 stdout 传入的日志文件。父进程上升级完成后，
+            # 该文件句柄会随着 daemon 线程退出由 GC 收回。
+            log_path = settings.log_dir / "upgrade.log"
+            log_file = open(str(log_path), "w")
             subprocess.Popen(
                 ["bash", str(update_script)],
                 cwd=str(settings.root_dir),
                 start_new_session=True,
-                stdout=open(str(settings.log_dir / "upgrade.log"), "w"),
-                stderr=subprocess.STDOUT
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                close_fds=True,
             )
-            logger.info("系统升级进程已启动")
+            logger.info("系统升级进程已启动，日志输出: %s", log_path)
         except Exception as e:
             logger.error("系统升级异常: %s", e)
+            # 异常路径下未能启动子进程，需手动关闭描述符避免泄漏
+            if log_file is not None:
+                try:
+                    log_file.close()
+                except Exception:
+                    pass
     
     threading.Thread(target=do_upgrade, daemon=True).start()
     return {"message": "系统升级指令已发送，请等待 1-2 分钟"}

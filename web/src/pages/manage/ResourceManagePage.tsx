@@ -498,9 +498,13 @@ export default function ResourceManagePage() {
                   <TableHead className="w-10">
                     <div className="flex items-center gap-0.5">
                       <Checkbox
-                        checked={allPageSelected}
-                        // @ts-expect-error indeterminate is a valid HTML attribute but not in the Checkbox component types
-                        indeterminate={somePageSelected ? "true" : undefined}
+                        checked={
+                          allPageSelected
+                            ? true
+                            : somePageSelected
+                              ? "indeterminate"
+                              : false
+                        }
                         onCheckedChange={(checked) => toggleSelectAll(!!checked)}
                       />
                       <DropdownMenu>

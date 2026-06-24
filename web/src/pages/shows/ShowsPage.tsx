@@ -50,8 +50,11 @@ export function ShowsPage() {
   const [urlState, setUrlState] = useEncodedUrlState({ defaults: URL_DEFAULTS });
 
   // URL → zustand store（仅首次挂载时同步）
+  // 注意：必须在 useEffect 中执行而非渲染期间，否则 StrictMode 下
+  // 组件卸载重挂载时 ref 会重置，导致重复同步并可能覆盖用户操作。
   const initialized = React.useRef(false);
-  if (!initialized.current) {
+  React.useEffect(() => {
+    if (initialized.current) return;
     initialized.current = true;
     const s = urlState;
     filters.setQuery(s.q);
@@ -62,7 +65,8 @@ export function ShowsPage() {
     filters.setTags(s.tags);
     filters.setTagsMode(s.tm as "any" | "all");
     filters.setSort(s.sort as SortKey);
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // zustand → URL（筛选变化时重置页码）
   const prevFiltersKey = React.useRef("");
@@ -130,8 +134,12 @@ export function ShowsPage() {
   });
 
   // 页码越界检查
+  // 增加 page !== 1 守卫，避免与其他 setPage 调用产生竞态、
+  // 也避免页码已为 1 时仍然触发一次不必要的 setState。
   React.useEffect(() => {
-    if (totalPages > 0 && page > totalPages) setPage(1);
+    if (totalPages > 0 && page > totalPages && page !== 1) {
+      setPage(1);
+    }
   }, [page, totalPages, setPage]);
 
   // 详情按需加载（完整数据含所有资源）

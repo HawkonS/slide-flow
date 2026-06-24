@@ -113,6 +113,17 @@ function buildWsUrl(token: string): string {
 // 该集合作为客户端侧的兜底去重，确保每个 task_id 只在第一次收到 completed 时
 // 自动触发一次浏览器下载，后续重复消息只刷新状态、不再下载。
 const autoTriggeredTasks = new Set<number>();
+const AUTO_TRIGGERED_MAX = 500;
+
+// 防止 autoTriggeredTasks 在长期运行下无限增长：超过阈值时清理
+// 不在当前任务列表中的 ID（这些任务已不需要去重）。
+function maybeShrinkAutoTriggered(currentTaskIds: Iterable<number>) {
+  if (autoTriggeredTasks.size <= AUTO_TRIGGERED_MAX) return;
+  const alive = new Set(currentTaskIds);
+  for (const id of autoTriggeredTasks) {
+    if (!alive.has(id)) autoTriggeredTasks.delete(id);
+  }
+}
 
 function triggerBrowserDownload(taskId: number, fileName: string) {
   try {
@@ -188,6 +199,8 @@ export const useDownloadManager = create<DownloadManagerState>((set, get) => {
         if (!alreadyTriggered) {
           autoTriggeredTasks.add(m.task_id);
           triggerBrowserDownload(m.task_id, m.file_name);
+          // 任务完成后顺便检查集合大小，超过阈值时清理已不在任务列表中的 ID
+          maybeShrinkAutoTriggered(get().tasks.keys());
         }
         // Toast 仅作为可视化提示与“浏览器拦截时的手动兜底”。
         // action.onClick 只会在用户主动点击「点击下载」按钮时执行，不会随 toast

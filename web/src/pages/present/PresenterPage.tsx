@@ -121,6 +121,11 @@ const MIN_FONT_SIZE = 10;
 const MAX_FONT_SIZE = 28;
 
 function getRemarkFontSizesFromPrefs(prefs: Record<string, string>): Record<RemarkKey, number> {
+  // 设计说明：字号偏好采用 “API 优先 + localStorage 回退” 的混合方案。
+  //   1. 优先使用后端下发的用户偏好（跨设备一致）。
+  //   2. 后端未返回或不可用时，回退到 localStorage（本地缓存、离线可用）。
+  //   3. API 成功加载后会同步写回 localStorage（参见 prefsAppliedRef 后续逻辑），
+  //      以保证下次离线/初始渲染能快速拿到最新值。
   const sizes = {} as Record<RemarkKey, number>;
   for (const key of Object.keys(REMARK_FONT_KEYS) as RemarkKey[]) {
     const prefKey = REMARK_FONT_KEYS[key];
@@ -319,16 +324,34 @@ export function PresenterPage() {
   const pageJumpInputRef = React.useRef<HTMLInputElement>(null);
 
   // Apply preferences when loaded (only once)
+  // 设计意图：API 加载完成后同步写回 localStorage，使之作为本地回退缓存，
+  // 下次冷启动/离线场景可以快速拿到最新偏好。仅同步读取到的有效值，
+  // 避免后端未设置时覆盖本地已有的 fallback。
   const prefsAppliedRef = React.useRef(false);
   React.useEffect(() => {
     if (prefsData && !prefsAppliedRef.current) {
       prefsAppliedRef.current = true;
-      setPanelRatio(getPanelRatioFromPrefs(prefs));
-      setPanelSplitRatio(getPanelSplitRatioFromPrefs(prefs));
-      setResourceViewMode(getResourceViewFromPrefs(prefs));
-      setImageFit(getImageFitFromPrefs(prefs));
-      setRemarkFontSizes(getRemarkFontSizesFromPrefs(prefs));
-      setRemarksExpanded(getRemarkExpandedFromPrefs(prefs));
+      const panel = getPanelRatioFromPrefs(prefs);
+      const split = getPanelSplitRatioFromPrefs(prefs);
+      const view = getResourceViewFromPrefs(prefs);
+      const fit = getImageFitFromPrefs(prefs);
+      const fontSizes = getRemarkFontSizesFromPrefs(prefs);
+      const expanded = getRemarkExpandedFromPrefs(prefs);
+      setPanelRatio(panel);
+      setPanelSplitRatio(split);
+      setResourceViewMode(view);
+      setImageFit(fit);
+      setRemarkFontSizes(fontSizes);
+      setRemarksExpanded(expanded);
+      // 同步 API 成功返回的值到 localStorage。
+      try {
+        localStorage.setItem("presenter-panel-ratio", String(panel));
+        for (const key of Object.keys(REMARK_FONT_KEYS) as RemarkKey[]) {
+          localStorage.setItem(`presenter-font-${key}`, String(fontSizes[key]));
+        }
+      } catch {
+        /* ignore quota / privacy mode errors */
+      }
     }
   }, [prefsData, prefs]);
 

@@ -22,10 +22,38 @@ if [ -f "$CONFIG_FILE" ]; then
     SUDO_PASS=$(grep "^system.sudo_password=" "$CONFIG_FILE" | cut -d'=' -f2 | tr -d '\r')
 fi
 
-SUDO_CMD="sudo"
-if [ -n "$SUDO_PASS" ]; then
-    SUDO_CMD="echo \"$SUDO_PASS\" | sudo -S"
-fi
+# 安全的 sudo 执行函数：通过管道传递密码，避免 ps 泄露与 shell 展开
+# - 以 root 身份运行时直接执行命令
+# - 配置了 SUDO_PASS 时通过 stdin 管道传递（避免命令行明文）
+# - 否则交互式 sudo
+run_sudo() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
+    elif [ -n "$SUDO_PASS" ]; then
+        echo "$SUDO_PASS" | sudo -S "$@" 2>/dev/null
+    else
+        sudo "$@"
+    fi
+}
+
+# 将 stdin 内容以 sudo 权限写入目标文件
+# 避免 echo 内容与 sudo 密码共享 stdin 引发冲突
+run_sudo_write() {
+    local target="$1"
+    if [ "$EUID" -eq 0 ]; then
+        tee "$target" >/dev/null
+    elif [ -n "$SUDO_PASS" ]; then
+        local tmp
+        tmp=$(mktemp)
+        cat > "$tmp"
+        echo "$SUDO_PASS" | sudo -S cp "$tmp" "$target" 2>/dev/null
+        local rc=$?
+        rm -f "$tmp"
+        return $rc
+    else
+        sudo tee "$target" >/dev/null
+    fi
+}
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -93,9 +121,6 @@ install_service() {
                 exit 1
             fi
         fi
-        SUDO="$SUDO_CMD"
-    else
-        SUDO=""
     fi
 
     SERVICE_CONTENT="[Unit]
@@ -117,19 +142,19 @@ Environment=PYTHONUNBUFFERED=1
 [Install]
 WantedBy=multi-user.target"
 
-    echo "$SERVICE_CONTENT" | eval "$SUDO tee \"$SERVICE_FILE\"" > /dev/null
+    echo "$SERVICE_CONTENT" | run_sudo_write "$SERVICE_FILE"
 
     # 修复脚本权限和换行符
     for s in "$RUN_SCRIPT" "$STOP_SCRIPT"; do
         if [ -f "$s" ]; then
-            eval "$SUDO chmod +x \"$s\""
-            eval "$SUDO sed -i 's/\r\$//' \"$s\"" 2>/dev/null || true
+            run_sudo chmod +x "$s"
+            run_sudo sed -i 's/\r$//' "$s" 2>/dev/null || true
         fi
     done
 
-    eval "$SUDO systemctl daemon-reload"
-    eval "$SUDO systemctl enable \"$SERVICE_NAME\""
-    eval "$SUDO systemctl start \"$SERVICE_NAME\""
+    run_sudo systemctl daemon-reload
+    run_sudo systemctl enable "$SERVICE_NAME"
+    run_sudo systemctl start "$SERVICE_NAME"
 
     sleep 2
     if systemctl is-active --quiet "$SERVICE_NAME"; then
@@ -150,15 +175,12 @@ uninstall_service() {
         else
             sudo -v || { echo -e "${RED}认证失败${NC}"; return 1; }
         fi
-        SUDO="$SUDO_CMD"
-    else
-        SUDO=""
     fi
 
-    eval "$SUDO systemctl stop \"$SERVICE_NAME\"" 2>/dev/null || true
-    eval "$SUDO systemctl disable \"$SERVICE_NAME\"" 2>/dev/null || true
-    eval "$SUDO rm -f \"$SERVICE_FILE\""
-    eval "$SUDO systemctl daemon-reload"
+    run_sudo systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+    run_sudo systemctl disable "$SERVICE_NAME" 2>/dev/null || true
+    run_sudo rm -f "$SERVICE_FILE"
+    run_sudo systemctl daemon-reload
     echo -e "${GREEN}服务已卸载。${NC}"
 }
 
@@ -199,7 +221,7 @@ if [ -n "${1:-}" ]; then
                     echo "服务已经在运行中"
                     exit 0
                 fi
-                eval "$SUDO_CMD systemctl start \"$SERVICE_NAME\""
+                run_sudo systemctl start "$SERVICE_NAME"
                 sleep 2
                 if systemctl is-active --quiet "$SERVICE_NAME"; then
                     echo "服务已成功启动"
@@ -221,7 +243,7 @@ if [ -n "${1:-}" ]; then
                     echo "服务已经是停止状态"
                     exit 0
                 fi
-                eval "$SUDO_CMD systemctl stop \"$SERVICE_NAME\""
+                run_sudo systemctl stop "$SERVICE_NAME"
                 echo "服务已停止"
                 exit 0
             else
@@ -237,7 +259,7 @@ if [ -n "${1:-}" ]; then
             ;;
         restart)
             if is_installed; then
-                eval "$SUDO_CMD systemctl restart \"$SERVICE_NAME\""
+                run_sudo systemctl restart "$SERVICE_NAME"
                 echo "服务已重启"
                 exit 0
             else
@@ -256,7 +278,7 @@ if [ -n "${1:-}" ]; then
             ;;
         status)
             if is_installed; then
-                systemctl status "$SERVICE_NAME" --no-pager 2>/dev/null || eval "$SUDO_CMD systemctl status \"$SERVICE_NAME\" --no-pager"
+                systemctl status "$SERVICE_NAME" --no-pager 2>/dev/null || run_sudo systemctl status "$SERVICE_NAME" --no-pager
             else
                 echo "服务未安装"
                 exit 1
@@ -350,10 +372,10 @@ while true; do
             else
                 if [ -f "$RUN_SCRIPT" ] && [ ! -x "$RUN_SCRIPT" ]; then
                     echo -e "${YELLOW}正在修复脚本权限...${NC}"
-                    eval "$SUDO_CMD chmod +x \"$RUN_SCRIPT\""
-                    eval "$SUDO_CMD sed -i 's/\r\$//' \"$RUN_SCRIPT\" 2>/dev/null || true"
+                    run_sudo chmod +x "$RUN_SCRIPT"
+                    run_sudo sed -i 's/\r$//' "$RUN_SCRIPT" 2>/dev/null || true
                 fi
-                eval "$SUDO_CMD systemctl start \"$SERVICE_NAME\""
+                run_sudo systemctl start "$SERVICE_NAME"
                 echo -e "${BLUE}正在启动...${NC}"
                 sleep 2
                 if systemctl is-active --quiet "$SERVICE_NAME"; then
@@ -370,13 +392,13 @@ while true; do
             if [ "$CURRENT_STATUS" == "stopped" ]; then
                 echo -e "${YELLOW}服务已经是停止状态。${NC}"
             else
-                eval "$SUDO_CMD systemctl stop \"$SERVICE_NAME\""
+                run_sudo systemctl stop "$SERVICE_NAME"
                 echo -e "${RED}服务已停止。${NC}"
             fi
             break
             ;;
         "重启 (Restart)")
-            eval "$SUDO_CMD systemctl restart \"$SERVICE_NAME\""
+            run_sudo systemctl restart "$SERVICE_NAME"
             echo -e "${GREEN}服务已重启。${NC}"
             break
             ;;
@@ -384,7 +406,7 @@ while true; do
             if [ "$ENABLE_STATUS" == "enabled" ]; then
                 echo -e "${YELLOW}开机自启已经是开启状态。${NC}"
             else
-                eval "$SUDO_CMD systemctl enable \"$SERVICE_NAME\""
+                run_sudo systemctl enable "$SERVICE_NAME"
                 echo -e "${GREEN}开机自启已开启。${NC}"
             fi
             break
@@ -393,7 +415,7 @@ while true; do
             if [ "$ENABLE_STATUS" == "disabled" ]; then
                 echo -e "${YELLOW}开机自启已经是关闭状态。${NC}"
             else
-                eval "$SUDO_CMD systemctl disable \"$SERVICE_NAME\""
+                run_sudo systemctl disable "$SERVICE_NAME"
                 echo -e "${RED}开机自启已关闭。${NC}"
             fi
             break

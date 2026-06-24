@@ -148,8 +148,12 @@ export function ResourcesPage() {
   });
 
   // 页码越界检查
+  // 增加 page !== 1 守卫，避免与其他 setPage 调用产生竞态、
+  // 也避免页码已为 1 时仍然触发一次不必要的 setState。
   React.useEffect(() => {
-    if (totalPages > 0 && page > totalPages) setPage(1);
+    if (totalPages > 0 && page > totalPages && page !== 1) {
+      setPage(1);
+    }
   }, [page, totalPages, setPage]);
 
   // 详情按需加载

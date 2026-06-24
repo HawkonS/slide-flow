@@ -104,6 +104,8 @@ def get_user_access_token(app_access_token: str, code: str) -> str:
     data = resp.json()
     _check_response(data, "get_user_access_token")
     token_data = data.get("data", {})
+    if not isinstance(token_data, dict):
+        raise FeishuAPIError(-1, "飞书 API 返回格式错误：data 字段不是对象")
     access_token = token_data.get("access_token")
     if not access_token:
         raise FeishuAPIError(-1, "响应中缺少 user_access_token")
@@ -120,6 +122,8 @@ def get_user_info(user_access_token: str) -> FeishuUserInfo:
     data = resp.json()
     _check_response(data, "get_user_info")
     user_data = data.get("data", {})
+    if not isinstance(user_data, dict):
+        raise FeishuAPIError(-1, "飞书 API 返回格式错误：data 字段不是对象")
     open_id = user_data.get("open_id", "")
     if not open_id:
         raise FeishuAPIError(-1, "响应中缺少 open_id")

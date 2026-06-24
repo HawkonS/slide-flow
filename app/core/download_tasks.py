@@ -283,8 +283,12 @@ def _generate_pptx_images(
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 watermarked_paths = [p for p in pool.map(_wm_img_item, enumerate(image_paths)) if p is not None]
             build_image_pptx(watermarked_paths, out_path)
-        except Exception:
-            logger.warning("纯图 PPT 图片水印添加失败，使用原图生成 show_id=%s", show_id, exc_info=True)
+        except (OSError, IOError) as e:
+            logger.error("纯图 PPT 水印处理 I/O 错误 show_id=%s: %s", show_id, e, exc_info=True)
+            build_image_pptx(image_paths, out_path)
+            watermark_ok = False
+        except Exception as e:
+            logger.warning("纯图 PPT 图片水印添加失败，使用原图生成 show_id=%s: %s", show_id, e, exc_info=True)
             build_image_pptx(image_paths, out_path)
             watermark_ok = False
         finally:

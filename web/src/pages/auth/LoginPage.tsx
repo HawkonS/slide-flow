@@ -32,6 +32,9 @@ export function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
   const [feishuConfig, setFeishuConfig] = useState<FeishuConfig | null>(null);
   const [feishuLogging, setFeishuLogging] = useState(false);
+  // 配置加载状态：避免配置（站点名、飞书 SSO 等）尚未就绪时用户可以点击登录/飞书。
+  const [configLoading, setConfigLoading] = useState(true);
+  const [feishuConfigLoading, setFeishuConfigLoading] = useState(true);
 
   const siteName = useSiteConfig((s) => s.siteName);
   const logoSvgPath = useSiteConfig((s) => s.logoSvgPath);
@@ -40,7 +43,9 @@ export function LoginPage() {
 
   // 加载站点配置（站点名称、浏览器标题）
   useEffect(() => {
-    fetch("/api/config")
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 5000);
+    fetch("/api/config", { signal: controller.signal })
       .then((res) => (res.ok ? res.json() : null))
       .then((config) => {
         if (config?.site_name) {
@@ -51,7 +56,15 @@ export function LoginPage() {
           useSiteConfig.getState().setLogoSvgPath(config.logo_svg_path);
         }
       })
-      .catch(() => { /* ignore */ });
+      .catch(() => { /* ignore */ })
+      .finally(() => {
+        window.clearTimeout(timeout);
+        setConfigLoading(false);
+      });
+    return () => {
+      controller.abort();
+      window.clearTimeout(timeout);
+    };
   }, []);
 
   const form = useForm<LoginForm>({
@@ -63,12 +76,22 @@ export function LoginPage() {
 
   // 加载飞书 SSO 配置
   useEffect(() => {
-    fetch("/api/auth/feishu/config")
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 5000);
+    fetch("/api/auth/feishu/config", { signal: controller.signal })
       .then((res) => (res.ok ? res.json() : null))
       .then((data: FeishuConfig | null) => {
         if (data?.enabled) setFeishuConfig(data);
       })
-      .catch(() => { /* ignore */ });
+      .catch(() => { /* ignore */ })
+      .finally(() => {
+        window.clearTimeout(timeout);
+        setFeishuConfigLoading(false);
+      });
+    return () => {
+      controller.abort();
+      window.clearTimeout(timeout);
+    };
   }, []);
 
   // 处理飞书回调：URL 中包含 code 参数
@@ -112,8 +135,9 @@ export function LoginPage() {
         navigate(from, { replace: true });
       })
       .catch((e) => {
-        // 授权码失败时清除标记，允许用户重新授权获取新 code
-        sessionStorage.removeItem(codeKey);
+        // 不清除 codeKey：StrictMode 下 useEffect 会二次执行，若清除了标记，
+        // 重试时会再次使用已被后端作废的 code 及可能导致错误反复提示。
+        // 如需重新登录，用户可重新发起飞书授权获取新 code。
         toast.error(e instanceof Error ? e.message : "飞书登录失败");
       })
       .finally(() => setFeishuLogging(false));
@@ -156,6 +180,10 @@ export function LoginPage() {
 
   const [showPassword, setShowPassword] = useState(false);
   const isProcessing = submitting || feishuLogging;
+  // 登录按钮需等待基础配置加载完成（避免在未初始化状态下提交）
+  const loginDisabled = isProcessing || configLoading;
+  // 飞书按钮需等待飞书配置加载完成
+  const feishuDisabled = isProcessing || feishuConfigLoading;
 
   return (
     <div className="flex min-h-screen">
@@ -260,10 +288,10 @@ export function LoginPage() {
             <Button
               type="submit"
               className="h-11 w-full rounded-lg text-sm font-medium shadow-sm transition-colors"
-              disabled={isProcessing}
+              disabled={loginDisabled}
             >
               {submitting ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}
-              登录
+              {configLoading ? "加载中…" : "登录"}
             </Button>
           </form>
 
@@ -283,7 +311,7 @@ export function LoginPage() {
                 variant="outline"
                 className="h-11 w-full rounded-lg border-slate-200"
                 onClick={handleFeishuLogin}
-                disabled={isProcessing}
+                disabled={feishuDisabled}
               >
                 {feishuLogging ? (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />

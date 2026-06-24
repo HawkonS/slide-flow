@@ -155,9 +155,12 @@ if [ "$SERVICE_OK" -ne 1 ]; then
   STARTUP_LOG="$LOG_DIR/startup.log"
 
   log_info "以后台方式启动 start.sh (日志: $STARTUP_LOG)"
-  # setsid + nohup 双保险，让 start.sh 脱离当前终端继续运行
-  if command -v setsid &>/dev/null; then
-    setsid nohup bash "$START_SCRIPT" >"$STARTUP_LOG" 2>&1 < /dev/null &
+  # macOS 上 setsid 不可用且行为与 Linux 不一致，采用平台区分策略
+  RESTART_OS="$(uname -s)"
+  if [ "$RESTART_OS" = "Darwin" ]; then
+    nohup bash "$START_SCRIPT" >"$STARTUP_LOG" 2>&1 < /dev/null &
+  elif command -v setsid &>/dev/null; then
+    setsid bash "$START_SCRIPT" >"$STARTUP_LOG" 2>&1 < /dev/null &
   else
     nohup bash "$START_SCRIPT" >"$STARTUP_LOG" 2>&1 < /dev/null &
   fi

@@ -24,8 +24,12 @@ export function App() {
   );
 
   // 加载配置并初始化筛选器默认值
+  // 使用 AbortController + setTimeout 给 fetch 加上 5s 超时保护，
+  // 避免后端不可用时 promise 长期挂起、以及组件卸载后仍被触发。
   useEffect(() => {
-    fetch("/api/config")
+    const configController = new AbortController();
+    const configTimeout = window.setTimeout(() => configController.abort(), 5000);
+    fetch("/api/config", { signal: configController.signal })
       .then((res) => (res.ok ? res.json() : null))
       .then((config) => {
         if (config) {
@@ -45,17 +49,28 @@ export function App() {
           }
         }
       })
-      .catch(() => { /* ignore */ });
+      .catch(() => { /* ignore */ })
+      .finally(() => window.clearTimeout(configTimeout));
 
     // 加载版本信息
-    fetch("/api/version")
+    const versionController = new AbortController();
+    const versionTimeout = window.setTimeout(() => versionController.abort(), 5000);
+    fetch("/api/version", { signal: versionController.signal })
       .then((res) => (res.ok ? res.json() : null))
       .then((v) => {
         if (v) {
           useSiteConfig.getState().setVersion(v.commit || "", v.updated_at || "");
         }
       })
-      .catch(() => { /* ignore */ });
+      .catch(() => { /* ignore */ })
+      .finally(() => window.clearTimeout(versionTimeout));
+
+    return () => {
+      configController.abort();
+      versionController.abort();
+      window.clearTimeout(configTimeout);
+      window.clearTimeout(versionTimeout);
+    };
   }, []);
 
   return (
