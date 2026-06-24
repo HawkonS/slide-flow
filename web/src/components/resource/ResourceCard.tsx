@@ -23,7 +23,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Resource, Show, ShowResourceAccessible } from "@/lib/types";
+import { Resource, Show } from "@/lib/types";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
@@ -68,33 +68,46 @@ export function ResourceCard({
   }, [showsData]);
 
   const isInShow = React.useCallback(
-    (show: Show) => show.resources.some((r) => r.id === resource.id),
+    (show: Show) => {
+      // 优先使用后端返回的完整资源 ID 列表，回退到 lite 接口仅返回的前 2 个预览
+      if (Array.isArray(show.all_resource_ids)) {
+        return show.all_resource_ids.includes(resource.id);
+      }
+      return show.resources.some((r) => r.id === resource.id);
+    },
     [resource.id],
   );
 
   const handleAddToShow = React.useCallback(
     async (show: Show) => {
       try {
-        const detail = await api<{ show: Show }>(`/api/shows/${show.id}`);
-        const currentIds = detail.show.resources
-          .filter((r): r is ShowResourceAccessible => r.accessible === true)
-          .map((r) => r.id);
+        // 使用后端原子追加接口，一次调用完成，避免 GET→PUT 竞态
+        const result = await api<{ show: Show; added: boolean }>(
+          `/api/shows/${show.id}/resources/append`,
+          {
+            method: "POST",
+            json: { resource_id: resource.id },
+          },
+        );
 
-        if (currentIds.includes(resource.id)) {
-          toast.info("该资源已在放映中");
-          return;
+        if (result.added) {
+          toast.success(`已添加到「${show.name}」`);
+        } else {
+          toast.info(`该资源已在「${show.name}」中`);
         }
 
-        await api(`/api/shows/${show.id}/resources`, {
-          method: "PUT",
-          json: { resource_ids: [...currentIds, resource.id] },
-        });
-
-        toast.success(`已添加到「${show.name}」`);
-        queryClient.invalidateQueries({ queryKey: ["shows"] });
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ["shows"] }),
+          queryClient.invalidateQueries({ queryKey: ["shows", show.id] }),
+          queryClient.invalidateQueries({ queryKey: ["show", show.id] }),
+          queryClient.invalidateQueries({ queryKey: ["home", "pins"] }),
+          queryClient.invalidateQueries({ queryKey: ["home", "stats"] }),
+        ]);
+        // 刷新完成后再关闭菜单，确保下次打开时能立即看到灰色状态
         setAddOpen(false);
       } catch (err) {
-        toast.error((err as Error)?.message || "添加失败");
+        const message = (err as Error)?.message || "添加失败";
+        toast.error(message);
       }
     },
     [resource.id, queryClient],

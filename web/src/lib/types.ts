@@ -203,6 +203,8 @@ export interface Show {
   manage_user_ids?: number[];
   /** 列表接口仅返回前2个资源预览 */
   resources: ShowResource[];
+  /** 列表接口附带的完整资源 ID 列表（用于判断某资源是否已在该放映中） */
+  all_resource_ids?: number[];
   series_id: string;
   version_no: number;
   change_note?: string;

@@ -420,6 +420,10 @@ class ShowResourcesPayload(BaseModel):
     resource_ids: list[int] = []
 
 
+class ShowResourceAppendPayload(BaseModel):
+    resource_id: int
+
+
 class ShowResourceHiddenPayload(BaseModel):
     hidden: bool
 
@@ -1485,7 +1489,7 @@ def _serialize_show(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row)
 
 
 def _serialize_show_lite(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row) -> dict[str, Any]:
-    """轻量级放映序列化：仅返回列表展示所需字段，资源只取前2个预览"""
+    """轻量级放映序列化：仅返回列表展示所需字段，资源只取前2个预览；同时附带完整 resource_id 列表用于前端判断资源是否已存在"""
     owner = db.execute("SELECT id, name, username FROM users WHERE id = ?", (row["owner_id"],)).fetchone()
     sr_rows = db.execute(
         "SELECT resource_id, version_no FROM show_resources WHERE show_id = ? ORDER BY sort_order LIMIT 2",
@@ -1496,6 +1500,11 @@ def _serialize_show_lite(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3
         sres = _serialize_show_resource(db, int(sr["resource_id"]), int(sr["version_no"]), user)
         if sres is not None:
             resources.append(sres)
+    all_ids_rows = db.execute(
+        "SELECT resource_id FROM show_resources WHERE show_id = ? ORDER BY sort_order",
+        (row["id"],),
+    ).fetchall()
+    all_resource_ids = [int(r["resource_id"]) for r in all_ids_rows]
     return {
         "id": row["id"],
         "name": row["name"],
@@ -1513,6 +1522,7 @@ def _serialize_show_lite(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3
         ).fetchone()[0] > 0,
         "can_manage": can_manage_show(db, row, user),
         "resources": resources,
+        "all_resource_ids": all_resource_ids,
         "is_pinned": _is_show_pinned(db, int(row["id"]), int(user["id"])),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
@@ -3924,6 +3934,40 @@ def update_show_resources(
     db.execute("UPDATE shows SET updated_by = ?, updated_at = ? WHERE id = ?", (user["id"], now_iso(), show_id))
     db.commit()
     return {"show": _serialize_show(db, _show_row(db, show_id), user)}
+
+
+@app.post("/api/shows/{show_id}/resources/append")
+def append_show_resource(
+    show_id: int,
+    payload: ShowResourceAppendPayload,
+    user: sqlite3.Row = Depends(require_user),
+    db: sqlite3.Connection = Depends(db_dep),
+) -> dict[str, Any]:
+    row = _show_row(db, show_id)
+    if not can_manage_show(db, row, user):
+        raise HTTPException(403, "无管理权限")
+    _resource_row(db, payload.resource_id)
+    max_order_row = db.execute(
+        "SELECT COALESCE(MAX(sort_order), -1) AS max_order FROM show_resources WHERE show_id = ?",
+        (show_id,),
+    ).fetchone()
+    max_order = int(max_order_row["max_order"]) if max_order_row is not None else -1
+    res_row = db.execute(
+        "SELECT current_version FROM resources WHERE id = ?", (payload.resource_id,)
+    ).fetchone()
+    version_no = int(res_row["current_version"]) if res_row else 1
+    cursor = db.execute(
+        "INSERT OR IGNORE INTO show_resources (show_id, resource_id, version_no, sort_order, is_hidden) VALUES (?, ?, ?, ?, 0)",
+        (show_id, payload.resource_id, version_no, max_order + 1),
+    )
+    added = cursor.rowcount > 0
+    if added:
+        db.execute(
+            "UPDATE shows SET updated_by = ?, updated_at = ? WHERE id = ?",
+            (user["id"], now_iso(), show_id),
+        )
+    db.commit()
+    return {"show": _serialize_show(db, _show_row(db, show_id), user), "added": added}
 
 
 @app.post("/api/shows/{show_id}/duplicate")
