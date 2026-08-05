@@ -780,6 +780,50 @@ def _validate_png_upload(upload: UploadFile) -> None:
         raise HTTPException(400, "请上传 PNG 文件")
 
 
+def _compress_hd_image(source_path: Path) -> Path:
+    """如果图片超过配置的最大分辨率，压缩并返回新路径；否则原样返回。"""
+    with Image.open(source_path) as img:
+        w, h = img.size
+        max_res = settings.image_hd_max_resolution
+
+        if max(w, h) <= max_res:
+            return source_path  # 最长边未超过阈值，不处理
+
+        # 等比缩放，最长边不超过 max_res
+        img.thumbnail((max_res, max_res), Image.Resampling.LANCZOS)
+
+        # 根据配置决定输出格式
+        fmt = settings.image_hd_format.upper()  # "PNG" or "JPEG"
+        dpi = settings.image_hd_dpi
+
+        if fmt == "JPEG":
+            # JPEG 不支持 RGBA，需转 RGB
+            if img.mode in ("RGBA", "P"):
+                bg = Image.new("RGB", img.size, (255, 255, 255))
+                if img.mode == "RGBA":
+                    bg.paste(img, mask=img.split()[3])
+                else:
+                    bg.paste(img)
+                img = bg
+            elif img.mode != "RGB":
+                img = img.convert("RGB")
+
+            new_path = source_path.with_suffix(".jpg")
+            quality = settings.image_hd_quality
+            img.save(new_path, format="JPEG", quality=quality,
+                     optimize=True, dpi=(dpi, dpi))
+        else:
+            # PNG 无损格式，保留透明度
+            new_path = source_path.with_suffix(".png")
+            img.save(new_path, format="PNG", dpi=(dpi, dpi))
+
+        # 如果路径变了（后缀不同），删除原始文件
+        if new_path != source_path:
+            source_path.unlink(missing_ok=True)
+
+        return new_path
+
+
 def _set_scope_users(db: sqlite3.Connection, table: str, resource_id: int, user_ids: list[int]) -> None:
     db.execute(f"DELETE FROM {table} WHERE resource_id = ?", (resource_id,))
     for user_id in sorted(set(user_ids)):
@@ -1080,24 +1124,26 @@ def _preview_thumb_path(source_path: Path, version_id: int) -> Path:
     thumbs_dir = settings.thumbs_dir
     thumbs_dir.mkdir(parents=True, exist_ok=True)
     mtime = source_path.stat().st_mtime_ns
-    return thumbs_dir / f"preview_v{version_id}_{mtime}_640x360_q74.jpg"
+    return thumbs_dir / f"preview_v{version_id}_{mtime}_{settings.image_thumb_width}x{settings.image_thumb_height}_q{settings.image_thumb_quality}.jpg"
 
 
 def _ensure_preview_thumb(source_path: Path, version_id: int) -> Path:
     target = _preview_thumb_path(source_path, version_id)
     if target.exists():
         return target
+    thumb_w = settings.image_thumb_width
+    thumb_h = settings.image_thumb_height
     with Image.open(source_path) as image:
-        image.thumbnail((640, 360), Image.Resampling.LANCZOS)
-        canvas = Image.new("RGB", (640, 360), (248, 250, 252))
+        image.thumbnail((thumb_w, thumb_h), Image.Resampling.LANCZOS)
+        canvas = Image.new("RGB", (thumb_w, thumb_h), (248, 250, 252))
         if image.mode not in {"RGB", "RGBA"}:
             image = image.convert("RGBA")
         elif image.mode == "RGB":
             image = image.convert("RGBA")
-        left = (640 - image.width) // 2
-        top = (360 - image.height) // 2
+        left = (thumb_w - image.width) // 2
+        top = (thumb_h - image.height) // 2
         canvas.paste(image, (left, top), image)
-        canvas.save(target, format="JPEG", quality=74, optimize=True, progressive=True)
+        canvas.save(target, format="JPEG", quality=settings.image_thumb_quality, optimize=True, progressive=True)
     return target
 
 
@@ -2040,6 +2086,7 @@ async def create_template(
             await save_upload(png_file, template_dir, "preview_"),
             _template_preview_file_name(series, subject, platform, ratio, template_type),
         )
+        png_path = _compress_hd_image(png_path)
     display_name = _template_display_name(series, subject, platform, ratio, template_type)
     subject_order, series_order, sort_order = _template_group_order_values(db, subject, series)
     ts = now_iso()
@@ -2138,9 +2185,9 @@ async def update_template(
         _validate_png_upload(png_file)
         new_png = await save_upload(png_file, _ensure_template_dir(), "preview_")
         old_paths.append(_resource_file_abs(row["png_path"]))
-        png_path = settings.store_path(
-            _rename_template_file(new_png, _template_preview_file_name(series, subject, platform, ratio, template_type))
-        )
+        renamed_png = _rename_template_file(new_png, _template_preview_file_name(series, subject, platform, ratio, template_type))
+        renamed_png = _compress_hd_image(renamed_png)
+        png_path = settings.store_path(renamed_png)
     else:
         current_png = _resource_file_abs(row["png_path"])
         if current_png is not None and current_png.exists():
@@ -2795,6 +2842,8 @@ async def create_resource(
         ppt_path.unlink(missing_ok=True)
         raise HTTPException(400, "资源导入只接收单页 PPTX，多页文件请使用「拆分导入」")
     png_path = await save_upload(png_file, resource_dir, "preview_") if png_file else None
+    if png_path is not None:
+        png_path = _compress_hd_image(png_path)
     ts = now_iso()
     db.execute(
         """
@@ -2976,6 +3025,7 @@ async def batch_split_import(
             resource_dir = unique_child_dir(settings.resources_dir)
             v1_path = copy_into(split_ppt, resource_dir, "v1_")
             png_path = await save_upload(image, resource_dir, "preview_")
+            png_path = _compress_hd_image(png_path)
 
             ts = now_iso()
             db.execute(
@@ -3124,6 +3174,7 @@ async def create_resource_version(
             _validate_png_upload(png_file)
             old_paths.append(settings.abs_path(latest["png_path"]) if latest["png_path"] else None)
             png_path = await save_upload(png_file, version_dir, "preview_replace_")
+            png_path = _compress_hd_image(png_path)
         db.execute(
             """
             UPDATE resource_versions
@@ -3158,6 +3209,7 @@ async def create_resource_version(
         assert png_file is not None
         _validate_png_upload(png_file)
         png_path = await save_upload(png_file, version_dir, "preview_")
+        png_path = _compress_hd_image(png_path)
     elif latest["png_path"]:
         previous_png = settings.abs_path(latest["png_path"])
         png_path = copy_into(previous_png, version_dir, "preview_") if previous_png else None
@@ -3263,6 +3315,17 @@ def batch_update_resources(
         _require_template_admin(row, user)
         rows[rid] = row
 
+    # 预构建标签映射（label→name），用于规范化遗留 CSV 数据
+    _tag_rows = db.execute("SELECT name, label FROM tags").fetchall()
+    _tag_name_set = {r["name"] for r in _tag_rows}
+    _label_to_name: dict[str, str] = {}
+    for _tr in _tag_rows:
+        # 仅当 label≠name 且 label 不是其他标签的 name 时才映射
+        if _tr["label"] != _tr["name"] and _tr["label"] not in _tag_name_set:
+            _label_to_name[_tr["label"]] = _tr["name"]
+    # 反向映射：name→label，用于 remove 模式兜底匹配
+    _name_to_label: dict[str, str] = {r["name"]: r["label"] for r in _tag_rows if r["name"] != r["label"]}
+
     updated = 0
     for rid, row in rows.items():
         set_clauses: list[str] = []
@@ -3291,12 +3354,20 @@ def batch_update_resources(
                 elif mode == "append":
                     existing_raw = row["tags"] or ""
                     existing = [t.strip() for t in existing_raw.replace("，", ",").split(",") if t.strip()]
+                    # 规范化遗留标签值
+                    existing = [_label_to_name.get(t, t) for t in existing]
                     merged = list(dict.fromkeys(existing + values))  # 保序去重
                     tag_value = ",".join(merged)
                 elif mode == "remove":
                     existing_raw = row["tags"] or ""
                     existing = [t.strip() for t in existing_raw.replace("，", ",").split(",") if t.strip()]
+                    # 规范化遗留标签值
+                    existing = [_label_to_name.get(t, t) for t in existing]
+                    # 构建移除集合：包含 name 和对应的 label（兜底匹配遗留数据）
                     remove_set = set(values)
+                    for v in values:
+                        if v in _name_to_label:
+                            remove_set.add(_name_to_label[v])
                     remaining = [t for t in existing if t not in remove_set]
                     tag_value = ",".join(remaining)
                 else:

@@ -60,6 +60,13 @@ CONFIG_META: dict[str, dict[str, Any]] = {
     "app.split_task_timeout": {"label": "拆分任务超时（秒）", "group": "app", "hot_reload": False, "type": "int", "desc": "PPT 拆分任务超时时间"},
     "app.max_concurrent_splits": {"label": "最大并发拆分数", "group": "app", "hot_reload": False, "type": "int", "desc": "最大并发的 PPT 拆分任务数"},
     "app.user_custom_tags": {"label": "允许用户自定义标签", "group": "app", "hot_reload": True, "type": "bool", "desc": "开启后用户可自由创建标签；关闭后只能选择管理员预设标签"},
+    "image.hd.max_resolution": {"label": "高清图最大分辨率", "group": "app", "hot_reload": False, "type": "int", "desc": "图片最长边像素上限，适配不同比例(16:9/4:3)"},
+    "image.hd.dpi": {"label": "高清图 DPI", "group": "app", "hot_reload": False, "type": "int", "desc": "压缩后图片的 DPI 值"},
+    "image.hd.format": {"label": "高清图格式", "group": "app", "hot_reload": False, "type": "str", "desc": "压缩后图片格式（jpeg/png）"},
+    "image.hd.quality": {"label": "高清图质量", "group": "app", "hot_reload": False, "type": "int", "desc": "JPEG 压缩质量 (1-100)"},
+    "image.thumb.width": {"label": "缩略图宽度", "group": "app", "hot_reload": False, "type": "int", "desc": "缩略图目标宽度（像素）"},
+    "image.thumb.height": {"label": "缩略图高度", "group": "app", "hot_reload": False, "type": "int", "desc": "缩略图目标高度（像素）"},
+    "image.thumb.quality": {"label": "缩略图质量", "group": "app", "hot_reload": False, "type": "int", "desc": "缩略图 JPEG 质量 (1-100)"},
     # 管理后台
     "admin.route_prefix": {"label": "管理面板路由前缀", "group": "admin", "hot_reload": False, "type": "str", "desc": "管理面板路由前缀"},
     # 外观
@@ -114,6 +121,13 @@ _PROP_TO_ATTR: dict[str, str] = {
     "app.split_task_timeout": "split_task_timeout",
     "app.max_concurrent_splits": "max_concurrent_splits",
     "app.user_custom_tags": "user_custom_tags",
+    "image.hd.max_resolution": "image_hd_max_resolution",
+    "image.hd.dpi": "image_hd_dpi",
+    "image.hd.format": "image_hd_format",
+    "image.hd.quality": "image_hd_quality",
+    "image.thumb.width": "image_thumb_width",
+    "image.thumb.height": "image_thumb_height",
+    "image.thumb.quality": "image_thumb_quality",
     "admin.route_prefix": "admin_route_prefix",
     "logo.svg.path": "logo_svg_path",
     "web.https": "web_https",
@@ -177,6 +191,15 @@ class Settings:
     split_task_timeout: int = 600
     max_concurrent_splits: int = 2
     user_custom_tags: bool = False
+
+    # 图片压缩配置
+    image_hd_max_resolution: int = 2560
+    image_hd_dpi: int = 300
+    image_hd_format: str = "png"
+    image_hd_quality: int = 90
+    image_thumb_width: int = 640
+    image_thumb_height: int = 360
+    image_thumb_quality: int = 74
 
     # 管理后台
     admin_route_prefix: str = "/admin"
@@ -363,6 +386,15 @@ def load_settings() -> Settings:
     max_concurrent_splits = int(props.get("app.max_concurrent_splits", "2"))
     user_custom_tags = _parse_bool(props.get("app.user_custom_tags", "false"))
 
+    # 图片压缩配置
+    image_hd_max_resolution = int(props.get("image.hd.max_resolution", "2560"))
+    image_hd_dpi = int(props.get("image.hd.dpi", "300"))
+    image_hd_format = props.get("image.hd.format", "png")
+    image_hd_quality = int(props.get("image.hd.quality", "90"))
+    image_thumb_width = int(props.get("image.thumb.width", "640"))
+    image_thumb_height = int(props.get("image.thumb.height", "360"))
+    image_thumb_quality = int(props.get("image.thumb.quality", "74"))
+
     # 管理后台
     admin_route_prefix = props.get("admin.route_prefix", "/admin")
 
@@ -411,6 +443,13 @@ def load_settings() -> Settings:
         split_task_timeout=split_task_timeout,
         max_concurrent_splits=max_concurrent_splits,
         user_custom_tags=user_custom_tags,
+        image_hd_max_resolution=image_hd_max_resolution,
+        image_hd_dpi=image_hd_dpi,
+        image_hd_format=image_hd_format,
+        image_hd_quality=image_hd_quality,
+        image_thumb_width=image_thumb_width,
+        image_thumb_height=image_thumb_height,
+        image_thumb_quality=image_thumb_quality,
         admin_route_prefix=admin_route_prefix,
         logo_svg_path=logo_svg_path,
         web_https=web_https,

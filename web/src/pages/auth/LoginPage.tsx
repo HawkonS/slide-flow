@@ -28,7 +28,7 @@ interface FeishuConfig {
 export function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { setUser, reload } = useAuth();
+  const { setUser } = useAuth();
   const [submitting, setSubmitting] = useState(false);
   const [feishuConfig, setFeishuConfig] = useState<FeishuConfig | null>(null);
   const [feishuLogging, setFeishuLogging] = useState(false);
@@ -128,9 +128,9 @@ export function LoginPage() {
       method: "POST",
       json: { code },
     })
-      .then(async (res) => {
+      .then((res) => {
+        // 回调已返回完整用户信息，直接登录跳转，无需再请求 /api/me
         setUser(res.user);
-        await reload();
         toast.success(`欢迎，${res.user.name || res.user.username}`);
         navigate(from, { replace: true });
       })
@@ -151,8 +151,8 @@ export function LoginPage() {
         json: values,
       });
       const user = res.user;
+      // 登录接口已返回完整用户信息，直接跳转，无需再请求 /api/me
       setUser(user);
-      await reload();
       toast.success(`欢迎回来，${user.display_name || user.name || user.username}`);
       navigate(from, { replace: true });
     } catch (e) {
