@@ -197,6 +197,9 @@ def api_admin_system_upgrade(
                 start_new_session=True,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
+                # 升级脚本在无终端环境运行，stdin 必须隔离，
+                # 避免脚本中的交互式 read（如 sudo 密码提示）阻塞导致升级卡死
+                stdin=subprocess.DEVNULL,
                 close_fds=True,
             )
             logger.info("系统升级进程已启动，日志输出: %s", log_path)

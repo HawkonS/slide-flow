@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Loader2, Power, RotateCw, Download, Server, Clock, HardDrive, ArrowUpCircle, CheckCircle2 } from "lucide-react";
+import { Loader2, Power, RotateCw, Download, Server, Clock, HardDrive, ArrowUpCircle, CheckCircle2, XCircle } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -13,16 +13,26 @@ import { useNavLabel } from "@/lib/nav-config";
 
 // ==================== 升级遮罩 ====================
 
-type UpgradePhase = "upgrading" | "restarting" | "done";
+type UpgradePhase = "upgrading" | "restarting" | "done" | "failed";
 
 /**
- * 升级中全屏遮罩：显示升级进度状态，轮询服务可用性，恢复后自动刷新。
+ * 升级中全屏遮罩：显示升级进度状态，轮询服务可用性，恢复后自动刷新；
+ * 超时或服务端返回认证失败时进入 failed 状态，提供关闭入口，避免无限等待。
  */
-function UpgradeOverlay({ phase, elapsed }: { phase: UpgradePhase; elapsed: number }) {
+function UpgradeOverlay({
+  phase,
+  elapsed,
+  onClose,
+}: {
+  phase: UpgradePhase;
+  elapsed: number;
+  onClose: () => void;
+}) {
   const phaseText: Record<UpgradePhase, string> = {
     upgrading: "正在拉取最新代码并升级...",
     restarting: "服务重启中，请稍候...",
     done: "升级完成，正在刷新页面...",
+    failed: "未能在预期时间内检测到服务恢复",
   };
 
   return (
@@ -30,16 +40,29 @@ function UpgradeOverlay({ phase, elapsed }: { phase: UpgradePhase; elapsed: numb
       <div className="flex flex-col items-center gap-5 text-center">
         {phase === "done" ? (
           <CheckCircle2 className="h-14 w-14 text-green-500" />
+        ) : phase === "failed" ? (
+          <XCircle className="h-14 w-14 text-red-500" />
         ) : (
           <Loader2 className="h-14 w-14 animate-spin text-blue-500" />
         )}
         <div>
-          <h2 className="text-xl font-semibold">系统升级中</h2>
+          <h2 className="text-xl font-semibold">
+            {phase === "failed" ? "升级状态异常" : "系统升级中"}
+          </h2>
           <p className="mt-2 text-sm text-muted-foreground">{phaseText[phase]}</p>
         </div>
-        <p className="text-xs text-muted-foreground">
-          已耗时 {elapsed} 秒 · 升级期间请勿关闭页面
-        </p>
+        {phase === "failed" ? (
+          <>
+            <p className="max-w-sm text-xs text-muted-foreground">
+              升级可能失败或服务尚未恢复，请到「日志管理」查看 upgrade.log / startup.log 确认，必要时手动重启服务。
+            </p>
+            <Button variant="outline" onClick={onClose}>关闭并返回</Button>
+          </>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            已耗时 {elapsed} 秒 · 升级期间请勿关闭页面
+          </p>
+        )}
       </div>
     </div>
   );
@@ -48,6 +71,13 @@ function UpgradeOverlay({ phase, elapsed }: { phase: UpgradePhase; elapsed: numb
 // ==================== 升级状态持久化 ====================
 
 const UPGRADE_STATE_KEY = "slideflow_upgrade_state";
+
+// 轮询节奏：upgrading 阶段等待较长（git 拉取 + 停服务），restarting 阶段较短
+const UPGRADE_INITIAL_DELAY = 10_000;
+const RESTART_INITIAL_DELAY = 4_000;
+const POLL_INTERVAL = 3_000;
+// 总超时：超过后不再无限等待，进入 failed 状态由用户处理
+const UPGRADE_TIMEOUT = 180_000;
 
 function saveUpgradeState(state: { phase: UpgradePhase; startTime: number }) {
   try {
@@ -65,8 +95,8 @@ function loadUpgradeState(): { phase: UpgradePhase; startTime: number } | null {
       sessionStorage.removeItem(UPGRADE_STATE_KEY);
       return null;
     }
-    // done 状态无需恢复
-    if (parsed.phase === "done") {
+    // done / failed 状态无需恢复
+    if (parsed.phase === "done" || parsed.phase === "failed") {
       sessionStorage.removeItem(UPGRADE_STATE_KEY);
       return null;
     }
@@ -136,10 +166,10 @@ function RuntimeTab() {
   const pollTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
   const elapsedTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // 计时器：每秒更新已耗时
+  // 计时器：每秒更新已耗时（基于 startTime 累计，阶段切换不重置）
   React.useEffect(() => {
     if (!upgradeState) return;
-    setElapsed(0);
+    setElapsed(Math.floor((Date.now() - upgradeState.startTime) / 1000));
     elapsedTimerRef.current = setInterval(() => {
       setElapsed(Math.floor((Date.now() - upgradeState.startTime) / 1000));
     }, 1000);
@@ -148,12 +178,21 @@ function RuntimeTab() {
     };
   }, [upgradeState]);
 
-  // 轮询逻辑：升级/重启后探测服务是否恢复
-  React.useEffect(() => {
-    if (!upgradeState || upgradeState.phase === "done") return;
+  const failUpgrade = React.useCallback((reason: string) => {
+    if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+    clearUpgradeState();
+    setUpgradeState((s) => (s ? { ...s, phase: "failed" } : s));
+    toast.error(reason);
+  }, []);
 
-    // 升级从 "upgrading" 开始需要等8秒；重启直接从 "restarting" 开始则等4秒
-    const initialDelay = upgradeState.phase === "upgrading" ? 8000 : 4000;
+  // 轮询逻辑：升级/重启后探测服务是否恢复；超时或认证失效时终止等待
+  React.useEffect(() => {
+    if (!upgradeState) return;
+    if (upgradeState.phase === "done" || upgradeState.phase === "failed") return;
+
+    const startTime = upgradeState.startTime;
+    // 升级从 "upgrading" 开始需要等10秒；重启/刷新恢复直接从 "restarting" 开始则等4秒
+    const initialDelay = upgradeState.phase === "upgrading" ? UPGRADE_INITIAL_DELAY : RESTART_INITIAL_DELAY;
 
     const startDelay = setTimeout(() => {
       if (upgradeState.phase === "upgrading") {
@@ -162,6 +201,11 @@ function RuntimeTab() {
 
       // 每 3 秒轮询一次服务健康检查（使用原生 fetch，不经过 api() 以避免错误传播）
       pollTimerRef.current = setInterval(async () => {
+        // 总超时保护：升级/重启流程异常时不再无限等待
+        if (Date.now() - startTime > UPGRADE_TIMEOUT) {
+          failUpgrade("等待服务恢复超时，升级可能未成功，请检查升级日志");
+          return;
+        }
         try {
           const res = await fetch("/api/admin/system/status", {
             credentials: "include",
@@ -174,12 +218,18 @@ function RuntimeTab() {
             clearUpgradeState(); // 清除持久化状态
             // 等待 1.5 秒让用户看到"完成"状态后刷新
             setTimeout(() => window.location.reload(), 1500);
+            return;
           }
-          // 非 ok 响应（如 502）：静默忽略，继续轮询
+          if (res.status === 401 || res.status === 403) {
+            // 服务端已可达但会话失效，继续轮询没有意义
+            failUpgrade("服务已恢复但登录状态失效，请重新登录");
+            return;
+          }
+          // 其他非 ok 响应（如 502）：静默忽略，继续轮询
         } catch {
           // 网络错误（服务完全不可达）：继续轮询
         }
-      }, 3000);
+      }, POLL_INTERVAL);
     }, initialDelay);
 
     return () => {
@@ -188,7 +238,7 @@ function RuntimeTab() {
     };
   }, [upgradeState?.phase]); // 依赖改为只看 phase 变化
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ["system", "status"],
     queryFn: async () => api<SystemStatus>("/api/admin/system/status"),
     refetchInterval: upgradeState ? false : 5000,
@@ -244,13 +294,35 @@ function RuntimeTab() {
   };
 
   if (upgradeState) {
-    return <UpgradeOverlay phase={upgradeState.phase} elapsed={elapsed} />;
+    return (
+      <UpgradeOverlay
+        phase={upgradeState.phase}
+        elapsed={elapsed}
+        onClose={() => {
+          clearUpgradeState();
+          setUpgradeState(null);
+        }}
+      />
+    );
   }
 
-  if (isLoading || !data) {
+  if (isLoading || (!data && !isError)) {
     return (
       <div className="flex h-64 items-center justify-center text-sm text-muted-foreground">
         <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 加载状态中…
+      </div>
+    );
+  }
+
+  if (!data) {
+    return (
+      <div className="flex h-64 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+        <XCircle className="h-8 w-8 text-red-500" />
+        <p>无法获取系统状态，服务可能尚未恢复</p>
+        <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
+          {isFetching ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RotateCw className="mr-2 h-4 w-4" />}
+          重试
+        </Button>
       </div>
     );
   }

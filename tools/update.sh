@@ -101,17 +101,13 @@ if command -v systemctl &>/dev/null && systemctl list-unit-files 2>/dev/null | g
   log_info "检测到 systemd 服务: ${SERVICE_NAME}"
 
   if [ -z "$SUDO_PASS" ]; then
-    log_warn "重启服务可能需要 sudo 权限"
-    read -r -s -p "请输入当前用户的 sudo 密码 (留空则直接尝试): " USER_INPUT_PASS
-    echo ""
-    [ -n "$USER_INPUT_PASS" ] && SUDO_PASS="$USER_INPUT_PASS"
-  fi
-
-  if [ -n "$SUDO_PASS" ]; then
-    echo "$SUDO_PASS" | sudo -S systemctl restart "$SERVICE_NAME"
+    # 未配置 sudo 密码：本脚本可能在无终端环境（API 触发的后台升级）运行，
+    # 不能交互式 read 等待输入（会永久阻塞），改用 sudo -n 免密尝试
+    log_warn "未配置 system.sudo_password，尝试免密 sudo（sudo -n）重启服务"
+    sudo -n systemctl restart "$SERVICE_NAME"
     RESTART_RC=$?
   else
-    sudo systemctl restart "$SERVICE_NAME"
+    echo "$SUDO_PASS" | sudo -S systemctl restart "$SERVICE_NAME"
     RESTART_RC=$?
   fi
 
