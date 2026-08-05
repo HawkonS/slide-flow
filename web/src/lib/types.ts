@@ -207,6 +207,10 @@ export interface Show {
   all_resource_ids?: number[];
   series_id: string;
   version_no: number;
+  /** 放映系列的版本总数（含自身） */
+  version_count?: number;
+  /** 放映系列的最新版本号 */
+  latest_version_no?: number;
   change_note?: string;
   has_other_versions: boolean;
   created_at: string;

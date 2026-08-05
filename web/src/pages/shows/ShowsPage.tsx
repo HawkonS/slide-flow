@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, Plus } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,10 @@ import { ShowFilters } from "@/components/show/ShowFilters";
 import { ShowEditDialog } from "@/components/show/ShowEditDialog";
 import { ShowDetailDialog } from "@/components/show/ShowDetailDialog";
 import { ShowUpgradeDialog } from "@/components/show/ShowUpgradeDialog";
+import {
+  DeleteScopeDialog,
+  type DeleteScope,
+} from "@/components/common/DeleteScopeDialog";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { toast } from "sonner";
@@ -148,6 +152,20 @@ export function ShowsPage() {
   const [createOpen, setCreateOpen] = React.useState(false);
   const [editOpen, setEditOpen] = React.useState(false);
   const [iterateShow, setIterateShow] = React.useState<Show | null>(null);
+  const [deleteTarget, setDeleteTarget] = React.useState<Show | null>(null);
+
+  const deleteMutation = useMutation({
+    mutationFn: ({ id, scope }: { id: number; scope: DeleteScope }) =>
+      api<{ ok: boolean }>(`/api/shows/${id}?scope=${scope}`, {
+        method: "DELETE",
+      }),
+    onSuccess: (_data, { scope }) => {
+      toast.success(scope === "all" ? "放映及全部版本已删除" : "放映已删除");
+      setDeleteTarget(null);
+      queryClient.invalidateQueries({ queryKey: ["shows"] });
+    },
+    onError: (err: Error) => toast.error(err.message || "删除失败"),
+  });
 
   const { data: fullShowData } = useQuery({
     queryKey: ["shows", detailShowId],
@@ -176,14 +194,14 @@ export function ShowsPage() {
     setDetailShowId(null);
   };
 
-  const handleDelete = async (show: Show) => {
-    if (!window.confirm(`确定要删除放映「${show.name}」吗？此操作不可撤销。`)) return;
-    try {
-      await api(`/api/shows/${show.id}`, { method: "DELETE" });
-      queryClient.invalidateQueries({ queryKey: ["shows"] });
-    } catch (err) {
-      alert("删除失败：" + ((err as Error)?.message || "未知错误"));
+  const handleDelete = (show: Show) => {
+    // 多版本放映：弹窗让用户选择删除范围
+    if (show.has_other_versions) {
+      setDeleteTarget(show);
+      return;
     }
+    if (!window.confirm(`确定要删除放映「${show.name}」吗？此操作不可撤销。`)) return;
+    deleteMutation.mutate({ id: show.id, scope: "latest" });
   };
 
   const pageStart = (page - 1) * pageSize;
@@ -359,6 +377,23 @@ export function ShowsPage() {
           }}
         />
       )}
+
+      <DeleteScopeDialog
+        open={deleteTarget != null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null);
+        }}
+        entityLabel="放映"
+        name={deleteTarget?.name ?? ""}
+        versionCount={deleteTarget?.version_count ?? deleteTarget?.version_no ?? 1}
+        latestVersionNo={deleteTarget?.latest_version_no ?? deleteTarget?.version_no}
+        loading={deleteMutation.isPending}
+        onDelete={(scope) => {
+          if (deleteTarget) {
+            deleteMutation.mutate({ id: deleteTarget.id, scope });
+          }
+        }}
+      />
     </div>
   );
 }

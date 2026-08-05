@@ -26,6 +26,10 @@ import { UserPicker } from "@/components/resource/UserPicker";
 import { FilePickerCard } from "@/components/resource/FilePickerCard";
 import { RichTextEditor } from "@/components/resource/RichTextEditor";
 import {
+  DeleteScopeDialog,
+  type DeleteScope,
+} from "@/components/common/DeleteScopeDialog";
+import {
   DEFAULT_RESOURCE_SUBJECT,
   MANAGEMENT_SCOPE_OPTIONS,
   RESOURCE_STATUS_FORM_OPTIONS,
@@ -184,19 +188,31 @@ export function ResourceEditDialog({
 
   // 删除 / 回退：仅编辑模式下可用，且当前用户具备管理权限
   const deleteMutation = useMutation({
-    mutationFn: async (kind: "rollback" | "all") => {
+    mutationFn: async (kind: "rollback" | DeleteScope) => {
       if (!resource) throw new Error("资源不存在");
       if (kind === "rollback") {
         return api(`/api/resources/${resource.id}/versions/rollback`, {
           method: "POST",
         });
       }
+      if (kind === "latest") {
+        return api(`/api/resources/${resource.id}?scope=latest`, {
+          method: "DELETE",
+        });
+      }
       return api(`/api/resources/${resource.id}`, { method: "DELETE" });
     },
     onSuccess: (_data, kind) => {
-      toast.success(kind === "rollback" ? "已回退到上一版本" : "资源已删除");
+      toast.success(
+        kind === "rollback"
+          ? "已回退到上一版本"
+          : kind === "latest"
+            ? "最新版本已删除"
+            : "资源已删除",
+      );
       queryClient.invalidateQueries({ queryKey: ["resources"] });
       queryClient.invalidateQueries({ queryKey: ["me", "personal-remarks", "summary"] });
+      setDeleteScopeOpen(false);
       onOpenChange(false);
     },
     onError: (err: Error) => {
@@ -213,10 +229,15 @@ export function ResourceEditDialog({
     deleteMutation.mutate("rollback");
   };
 
-  const handleDeleteAll = () => {
+  const handleDelete = () => {
     if (!resource) return;
+    // 多版本资源：弹窗让用户选择删除范围
+    if (resource.current_version > 1) {
+      setDeleteScopeOpen(true);
+      return;
+    }
     const ok = window.confirm(
-      `确定要彻底删除「${resource.name}」及其全部 ${resource.current_version} 个版本吗？所有文件、备注、访问配置都将被清除，此操作不可恢复。`,
+      `确定要彻底删除「${resource.name}」吗？所有文件、备注、访问配置都将被清除，此操作不可恢复。`,
     );
     if (!ok) return;
     deleteMutation.mutate("all");
@@ -248,8 +269,10 @@ export function ResourceEditDialog({
   };
 
   const ownerId = resource?.owner_id;
+  const [deleteScopeOpen, setDeleteScopeOpen] = React.useState(false);
 
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[90vh] max-w-3xl flex-col overflow-hidden">
         <DialogHeader>
@@ -504,7 +527,7 @@ export function ResourceEditDialog({
                   size="sm"
                   className="h-8 px-2 text-destructive hover:bg-destructive/10 hover:text-destructive"
                   disabled={deleteMutation.isPending}
-                  onClick={handleDeleteAll}
+                  onClick={handleDelete}
                 >
                   删除资源
                 </Button>
@@ -532,5 +555,19 @@ export function ResourceEditDialog({
         </form>
       </DialogContent>
     </Dialog>
+
+    {resource && (
+      <DeleteScopeDialog
+        open={deleteScopeOpen}
+        onOpenChange={setDeleteScopeOpen}
+        entityLabel="资源"
+        name={resource.name}
+        versionCount={resource.current_version}
+        latestVersionNo={resource.current_version}
+        loading={deleteMutation.isPending}
+        onDelete={(scope) => deleteMutation.mutate(scope)}
+      />
+    )}
+    </>
   );
 }

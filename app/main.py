@@ -1489,6 +1489,16 @@ def _serialize_show_resource(db: sqlite3.Connection, resource_id: int, version_n
         }
 
 
+def _show_series_stats(db: sqlite3.Connection, series_id: str) -> tuple[int, int]:
+    """返回放映系列的 (版本总数, 最新版本号)。"""
+    stats = db.execute(
+        "SELECT COUNT(*) AS cnt, MAX(COALESCE(version_no, 0)) AS max_ver"
+        " FROM shows WHERE series_id = ?",
+        (series_id,),
+    ).fetchone()
+    return int(stats[0]), int(stats[1] or 0)
+
+
 def _serialize_show(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row) -> dict[str, Any]:
     owner = db.execute("SELECT id, name, username FROM users WHERE id = ?", (row["owner_id"],)).fetchone()
     visible_user_ids = _show_scope_user_ids(db, "show_visibility", int(row["id"]))
@@ -1505,6 +1515,7 @@ def _serialize_show(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row)
     updated_by_user = None
     if row["updated_by"]:
         updated_by_user = db.execute("SELECT id, name, username FROM users WHERE id = ?", (row["updated_by"],)).fetchone()
+    version_count, latest_version_no = _show_series_stats(db, row["series_id"])
     return {
         "id": row["id"],
         "name": row["name"],
@@ -1520,10 +1531,9 @@ def _serialize_show(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row)
         "series_id": row["series_id"],
         "version_no": row["version_no"],
         "change_note": row["change_note"],
-        "has_other_versions": db.execute(
-            "SELECT COUNT(*) FROM shows WHERE series_id = ? AND id != ?",
-            (row["series_id"], row["id"]),
-        ).fetchone()[0] > 0,
+        "version_count": version_count,
+        "latest_version_no": latest_version_no,
+        "has_other_versions": version_count > 1,
         "can_manage": can_manage_show(db, row, user),
         "visible_user_ids": visible_user_ids,
         "manage_user_ids": manage_user_ids,
@@ -1551,6 +1561,7 @@ def _serialize_show_lite(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3
         (row["id"],),
     ).fetchall()
     all_resource_ids = [int(r["resource_id"]) for r in all_ids_rows]
+    version_count, latest_version_no = _show_series_stats(db, row["series_id"])
     return {
         "id": row["id"],
         "name": row["name"],
@@ -1562,10 +1573,9 @@ def _serialize_show_lite(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3
         "secrecy_level": row["secrecy_level"],
         "series_id": row["series_id"],
         "version_no": row["version_no"],
-        "has_other_versions": db.execute(
-            "SELECT COUNT(*) FROM shows WHERE series_id = ? AND id != ?",
-            (row["series_id"], row["id"]),
-        ).fetchone()[0] > 0,
+        "version_count": version_count,
+        "latest_version_no": latest_version_no,
+        "has_other_versions": version_count > 1,
         "can_manage": can_manage_show(db, row, user),
         "resources": resources,
         "all_resource_ids": all_resource_ids,
@@ -3244,17 +3254,13 @@ async def create_resource_version(
     return {"resource": _serialize_resource(db, _resource_row(db, resource_id), user)}
 
 
-@app.post("/api/resources/{resource_id}/versions/rollback")
-def rollback_resource_version(
-    resource_id: int,
-    user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    """删除当前最新版本，回退到上一版本；仅剩 1 个版本时拒绝。"""
-    row = _resource_row(db, resource_id)
-    if not can_manage_resource(db, row, user):
-        raise HTTPException(403, "无管理权限")
-    _require_template_admin(row, user)
+def _delete_latest_resource_version(
+    db: sqlite3.Connection, resource_id: int
+) -> tuple[list[Path | None], list[int]]:
+    """删除资源最新版本并回退 current_version，返回待清理的 (物理文件路径, 版本ID)。
+
+    供“回退上一版”与“仅删除最新版本”共用；仅剩 1 个版本时拒绝。
+    """
     versions = db.execute(
         "SELECT id, version_no, ppt_path, png_path FROM resource_versions "
         "WHERE resource_id = ? ORDER BY version_no DESC",
@@ -3271,10 +3277,25 @@ def rollback_resource_version(
         (prev_version_no, now_iso(), resource_id),
     )
     db.commit()
-    _delete_resource_files(
+    return (
         [_resource_file_abs(latest["ppt_path"]), _resource_file_abs(latest["png_path"])],
         [latest_version_id],
     )
+
+
+@app.post("/api/resources/{resource_id}/versions/rollback")
+def rollback_resource_version(
+    resource_id: int,
+    user: sqlite3.Row = Depends(require_user),
+    db: sqlite3.Connection = Depends(db_dep),
+) -> dict[str, Any]:
+    """删除当前最新版本，回退到上一版本；仅剩 1 个版本时拒绝。"""
+    row = _resource_row(db, resource_id)
+    if not can_manage_resource(db, row, user):
+        raise HTTPException(403, "无管理权限")
+    _require_template_admin(row, user)
+    paths, version_ids = _delete_latest_resource_version(db, resource_id)
+    _delete_resource_files(paths, version_ids)
     return {"resource": _serialize_resource(db, _resource_row(db, resource_id), user)}
 
 
@@ -3441,14 +3462,31 @@ def batch_delete_resources(
 @app.delete("/api/resources/{resource_id}")
 def delete_resource(
     resource_id: int,
+    scope: str = Query("all"),
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
-    """删除资源及其全部版本（含物理文件与缩略图）。"""
+    """删除资源。
+
+    scope=all：删除资源及其全部版本（默认，原有行为）；
+    scope=latest：仅删除最新版本并回退到上一版本（仅剩 1 个版本时等同于全部删除）。
+    """
     row = _resource_row(db, resource_id)
     if not can_manage_resource(db, row, user):
         raise HTTPException(403, "无管理权限")
     _require_template_admin(row, user)
+    if scope not in {"all", "latest"}:
+        raise HTTPException(400, "删除范围不正确")
+    if scope == "latest":
+        version_count = db.execute(
+            "SELECT COUNT(*) FROM resource_versions WHERE resource_id = ?",
+            (resource_id,),
+        ).fetchone()[0]
+        if version_count > 1:
+            paths, version_ids = _delete_latest_resource_version(db, resource_id)
+            _delete_resource_files(paths, version_ids)
+            return {"ok": True, "scope": "latest", "deleted_versions": 1}
+        # 仅剩 1 个版本：删除最新版本即删除整个资源，落入全量删除
     versions = db.execute(
         "SELECT id, ppt_path, png_path FROM resource_versions WHERE resource_id = ?",
         (resource_id,),
@@ -3464,7 +3502,7 @@ def delete_resource(
     db.execute("DELETE FROM resources WHERE id = ?", (resource_id,))
     db.commit()
     _delete_resource_files(paths, version_ids)
-    return {"ok": True, "deleted": 1}
+    return {"ok": True, "scope": "all", "deleted": 1, "deleted_versions": len(version_ids)}
 
 
 @app.post("/api/resources/{resource_id}/common-remark")
@@ -3935,15 +3973,39 @@ def update_show(
 @app.delete("/api/shows/{show_id}")
 def delete_show(
     show_id: int,
+    scope: str = Query("latest"),
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
+    """删除放映。
+
+    scope=latest：仅删除系列中的最新版本（默认，保留原有单行删除行为）；
+    scope=all：删除整个放映系列的所有版本。
+    """
     row = _show_row(db, show_id)
     if not can_manage_show(db, row, user):
         raise HTTPException(403, "无管理权限")
-    db.execute("DELETE FROM shows WHERE id = ?", (show_id,))
+    if scope not in {"latest", "all"}:
+        raise HTTPException(400, "删除范围不正确")
+    series_id = row["series_id"]
+    if scope == "all":
+        target_rows = db.execute(
+            "SELECT * FROM shows WHERE series_id = ?", (series_id,)
+        ).fetchall()
+    else:
+        latest_row = db.execute(
+            "SELECT * FROM shows WHERE series_id = ?"
+            " ORDER BY COALESCE(version_no, 0) DESC, id DESC LIMIT 1",
+            (series_id,),
+        ).fetchone()
+        target_rows = [latest_row] if latest_row is not None else [row]
+    for target in target_rows:
+        if not can_manage_show(db, target, user):
+            raise HTTPException(403, "对部分版本无管理权限，无法删除")
+    for target in target_rows:
+        db.execute("DELETE FROM shows WHERE id = ?", (int(target["id"]),))
     db.commit()
-    return {"ok": True, "deleted": 1}
+    return {"ok": True, "scope": scope, "deleted": len(target_rows)}
 
 
 @app.patch("/api/shows/{show_id}/resources/{resource_id}/hidden")

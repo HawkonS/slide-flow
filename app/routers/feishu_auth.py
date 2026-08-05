@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from app.config import settings
 from app.core.feishu import (
     FeishuAPIError,
+    FeishuUserInfo,
     get_tenant_access_token,
     get_user_access_token,
     get_user_info,
@@ -35,6 +36,23 @@ def _sanitize_username(name: str) -> str:
     """将飞书用户名转为安全的系统用户名（仅保留中英文、数字、下划线）"""
     safe = re.sub(r"[^\w\u4e00-\u9fff]", "", name)
     return safe or "feishu_user"
+
+
+def _resolve_feishu_username(feishu_user: FeishuUserInfo) -> str:
+    """确定飞书用户的系统用户名。
+
+    优先取企业邮箱前缀作为真实账号（如 someone@example.com -> someone），
+    未开通邮箱字段权限或邮箱为空时退回姓名清洗后的值。
+    """
+    if feishu_user.enterprise_email:
+        local_part = feishu_user.enterprise_email.split("@")[0].strip()
+        if local_part:
+            return _sanitize_username(local_part)
+        logger.warning("飞书企业邮箱格式异常（%s），降级使用姓名作为用户名: %s",
+                       feishu_user.enterprise_email, feishu_user.name)
+    else:
+        logger.warning("飞书未返回企业邮箱，降级使用姓名作为用户名: %s", feishu_user.name)
+    return _sanitize_username(feishu_user.name)
 
 
 def _unique_username(db: sqlite3.Connection, base: str) -> str:
@@ -110,7 +128,7 @@ def feishu_sso_callback(
     if user is None:
         # 5. 未找到则自动创建用户
         ts = now_iso()
-        base_username = _sanitize_username(feishu_user.name)
+        base_username = _resolve_feishu_username(feishu_user)
         username = _unique_username(db, base_username)
         # 使用随机密码（飞书 SSO 用户不通过密码登录）
         random_pwd = hash_password(secrets.token_urlsafe(16))

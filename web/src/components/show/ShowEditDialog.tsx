@@ -24,6 +24,10 @@ import { TagInput } from "@/components/resource/TagInput";
 import { UserPicker } from "@/components/resource/UserPicker";
 import { ResourcePicker } from "@/components/show/ResourcePicker";
 import {
+  DeleteScopeDialog,
+  type DeleteScope,
+} from "@/components/common/DeleteScopeDialog";
+import {
   MANAGEMENT_SCOPE_OPTIONS,
   RESOURCE_STATUS_FORM_OPTIONS,
   SECRECY_LEVEL_FORM_OPTIONS,
@@ -155,13 +159,14 @@ export function ShowEditDialog({
   });
 
   const deleteMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (scope: DeleteScope) => {
       if (!show) throw new Error("放映不存在");
-      return api(`/api/shows/${show.id}`, { method: "DELETE" });
+      return api(`/api/shows/${show.id}?scope=${scope}`, { method: "DELETE" });
     },
-    onSuccess: () => {
-      toast.success("放映已删除");
+    onSuccess: (_data, scope) => {
+      toast.success(scope === "all" ? "放映及全部版本已删除" : "放映已删除");
       queryClient.invalidateQueries({ queryKey: ["shows"] });
+      setDeleteScopeOpen(false);
       onOpenChange(false);
     },
     onError: (err: Error) => {
@@ -171,11 +176,16 @@ export function ShowEditDialog({
 
   const handleDelete = () => {
     if (!show) return;
+    // 多版本放映：弹窗让用户选择删除范围
+    if (show.has_other_versions) {
+      setDeleteScopeOpen(true);
+      return;
+    }
     const ok = window.confirm(
       `确定要删除放映「${show.name}」吗？此操作不可恢复。`,
     );
     if (!ok) return;
-    deleteMutation.mutate();
+    deleteMutation.mutate("latest");
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -196,8 +206,10 @@ export function ShowEditDialog({
   };
 
   const ownerId = show?.owner_id;
+  const [deleteScopeOpen, setDeleteScopeOpen] = React.useState(false);
 
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[90vh] max-w-6xl flex-col overflow-hidden">
         <DialogHeader>
@@ -420,5 +432,19 @@ export function ShowEditDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+    {show && (
+      <DeleteScopeDialog
+        open={deleteScopeOpen}
+        onOpenChange={setDeleteScopeOpen}
+        entityLabel="放映"
+        name={show.name}
+        versionCount={show.version_count ?? show.version_no}
+        latestVersionNo={show.latest_version_no ?? show.version_no}
+        loading={deleteMutation.isPending}
+        onDelete={(scope) => deleteMutation.mutate(scope)}
+      />
+    )}
+    </>
   );
 }

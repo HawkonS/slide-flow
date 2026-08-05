@@ -78,6 +78,9 @@ class FeishuUserInfo:
     name: str
     avatar_url: str
     tenant_key: str
+    # 企业邮箱（如 someone@example.com），邮箱前缀即真实账号，
+    # 需应用开通 contact:user.employee:readonly 权限，未开通时为空
+    enterprise_email: str = ""
 
 
 def _check_response(data: dict, action: str) -> None:
@@ -181,4 +184,5 @@ def get_user_info(user_access_token: str) -> FeishuUserInfo:
         name=user_data.get("name", "") or open_id,
         avatar_url=user_data.get("avatar_url", ""),
         tenant_key=user_data.get("tenant_key", ""),
+        enterprise_email=user_data.get("enterprise_email", "") or "",
     )
