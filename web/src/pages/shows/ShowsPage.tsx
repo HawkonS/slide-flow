@@ -349,9 +349,10 @@ export function ShowsPage() {
               .catch((err: Error) => toast.error(err.message || "创建副本失败"));
           }
         }}
-        onIterate={(s) => {
-          setIterateShow(s);
+        onIterate={(newShow) => {
+          // 创建新版本成功后，切换详情卡片到最新版本
           setDetailShowId(null);
+          setTimeout(() => setDetailShowId(newShow.id), 0);
         }}
         onSwitchVersion={async (showId: number) => {
           try {
@@ -372,8 +373,10 @@ export function ShowsPage() {
             if (!open) setIterateShow(null);
           }}
           show={iterateShow}
-          onSuccess={() => {
+          onSuccess={(newShow) => {
             setIterateShow(null);
+            // 创建成功后打开新版本的详情卡片
+            setTimeout(() => setDetailShowId(newShow.id), 0);
           }}
         />
       )}

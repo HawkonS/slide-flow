@@ -92,7 +92,8 @@ interface ShowUpgradeDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   show: Show | null;
-  onSuccess?: () => void;
+  /** 创建成功回调，参数为新创建的版本 Show */
+  onSuccess?: (newShow: Show) => void;
 }
 
 type View = "list" | "detail";
@@ -257,7 +258,7 @@ export function ShowUpgradeDialog({
       const count = result.upgraded?.length ?? 0;
       toast.success(`新版本创建成功，已升级 ${count} 个资源`);
       queryClient.invalidateQueries({ queryKey: ["shows"] });
-      onSuccess?.();
+      onSuccess?.(result.show);
     },
     onError: (err: Error) => toast.error(err.message || "升级失败"),
   });
@@ -277,14 +278,14 @@ export function ShowUpgradeDialog({
       }
       return iterateShow(show.id, payload);
     },
-    onSuccess: () => {
+    onSuccess: (newShow) => {
       onOpenChange(false);
       if (show) clearDraft(show.id);
       setHasDraft(false);
       setDraftSavedAt(null);
       toast.success("迭代成功，新版本已创建");
       queryClient.invalidateQueries({ queryKey: ["shows"] });
-      onSuccess?.();
+      onSuccess?.(newShow);
     },
     onError: (err: Error) => toast.error(err.message || "迭代失败"),
   });

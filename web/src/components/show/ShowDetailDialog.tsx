@@ -439,7 +439,7 @@ export function ShowDetailDialog({
           open={upgradeOpen}
           onOpenChange={setUpgradeOpen}
           show={show}
-          onSuccess={() => onIterate?.(show)}
+          onSuccess={(newShow) => onIterate?.(newShow)}
         />
 
       </DialogContent>
