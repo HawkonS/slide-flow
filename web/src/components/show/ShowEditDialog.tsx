@@ -166,6 +166,9 @@ export function ShowEditDialog({
     onSuccess: (_data, scope) => {
       toast.success(scope === "all" ? "放映及全部版本已删除" : "放映已删除");
       queryClient.invalidateQueries({ queryKey: ["shows"] });
+      // 首页置顶卡片与统计也依赖放映数据，删除后需同步失效
+      queryClient.invalidateQueries({ queryKey: ["home", "pins"] });
+      queryClient.invalidateQueries({ queryKey: ["home", "stats"] });
       setDeleteScopeOpen(false);
       onOpenChange(false);
     },

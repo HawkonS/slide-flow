@@ -163,6 +163,10 @@ export function ShowsPage() {
       toast.success(scope === "all" ? "放映及全部版本已删除" : "放映已删除");
       setDeleteTarget(null);
       queryClient.invalidateQueries({ queryKey: ["shows"] });
+      // 首页置顶卡片与统计也依赖放映数据，删除后需同步失效，
+      // 否则 30s staleTime 内回到首页仍会看到已删除的放映
+      queryClient.invalidateQueries({ queryKey: ["home", "pins"] });
+      queryClient.invalidateQueries({ queryKey: ["home", "stats"] });
     },
     onError: (err: Error) => toast.error(err.message || "删除失败"),
   });

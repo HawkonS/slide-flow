@@ -21,7 +21,8 @@ def _serve_spa() -> FileResponse:
             503,
             "前端尚未构建，请在 web/ 下执行 `npm install && npm run build`",
         )
-    return FileResponse(SPA_INDEX)
+    # index.html 文件名不带 hash，必须每次协商校验，避免浏览器缓存旧入口
+    return FileResponse(SPA_INDEX, headers={"Cache-Control": "no-cache"})
 
 
 @router.get("/", response_class=HTMLResponse)

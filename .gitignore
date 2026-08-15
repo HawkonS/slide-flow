@@ -24,8 +24,9 @@ storage/thumbs/
 # 数据目录（DB + 素材 + 日志）
 data/
 
-# Build output (managed by build)
-# app/static/dist/ is tracked for deployment
+# Build output (auto-built by start.sh, not tracked)
+app/static/dist/
+*.tsbuildinfo
 
 # IDE
 .vscode/

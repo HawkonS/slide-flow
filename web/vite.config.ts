@@ -55,5 +55,29 @@ export default defineConfig({
     emptyOutDir: true,
     assetsDir: "assets",
     sourcemap: false,
+    rollupOptions: {
+      output: {
+        // vendor 拆分：按依赖分组打包，提升缓存命中率、避免单一巨型 chunk
+        manualChunks(id: string) {
+          if (!id.includes("node_modules")) return undefined;
+          if (/[\\/]node_modules[\\/](react|react-dom|react-router-dom|react-router|@remix-run|scheduler|loose-envify|js-tokens|object-assign)[\\/]/.test(id)) {
+            return "vendor-react";
+          }
+          if (/[\\/]node_modules[\\/]@tanstack[\\/]/.test(id)) {
+            return "vendor-query";
+          }
+          if (/[\\/]node_modules[\\/](zod|react-hook-form|@hookform)[\\/]/.test(id)) {
+            return "vendor-form";
+          }
+          if (/[\\/]node_modules[\\/](@radix-ui|@floating-ui)[\\/]/.test(id)) {
+            return "vendor-ui";
+          }
+          if (/[\\/]node_modules[\\/]lucide-react[\\/]/.test(id)) {
+            return "vendor-icons";
+          }
+          return "vendor";
+        },
+      },
+    },
   },
 });

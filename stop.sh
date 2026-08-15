@@ -20,6 +20,8 @@ PORT="$(awk -F= '/^server\.port=/{gsub(/[[:space:]]/, "", $2); print $2}' "$PROP
 PORT="${PORT:-8088}"
 
 # 前端端口：优先从 properties 读取，默认 5173
+# 注意：生产模式下前端由 FastAPI 托管静态产物，不会监听该端口，
+#       此时 stop_by_port 会提示"未发现运行中的进程"，属正常现象。
 WEB_PORT="$(awk -F= '/^server\.web_port=/{gsub(/[[:space:]]/, "", $2); print $2}' "$PROPS" 2>/dev/null || true)"
 WEB_PORT="${WEB_PORT:-5173}"
 

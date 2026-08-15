@@ -212,6 +212,9 @@ export function ResourceEditDialog({
       );
       queryClient.invalidateQueries({ queryKey: ["resources"] });
       queryClient.invalidateQueries({ queryKey: ["me", "personal-remarks", "summary"] });
+      // 首页置顶卡片与统计也依赖资源数据，删除后需同步失效
+      queryClient.invalidateQueries({ queryKey: ["home", "pins"] });
+      queryClient.invalidateQueries({ queryKey: ["home", "stats"] });
       setDeleteScopeOpen(false);
       onOpenChange(false);
     },
