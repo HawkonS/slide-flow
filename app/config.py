@@ -28,12 +28,13 @@ CONFIG_META: dict[str, dict[str, Any]] = {
     # 服务器
     "site.name": {"label": "站点名称", "group": "server", "hot_reload": True, "type": "str", "desc": "前端页面标题与后端服务名"},
     "server.port": {"label": "后端服务端口", "group": "server", "hot_reload": False, "type": "int", "desc": "主 API 服务端口，修改后需重启"},
-    "server.web_port": {"label": "前端服务端口", "group": "server", "hot_reload": False, "type": "int", "desc": "前端开发/代理端口，修改后需重启"},
+    "server.web_port": {"label": "前端服务端口", "group": "server", "hot_reload": False, "type": "int", "desc": "前端开发端口，仅 --dev 开发模式启动 Vite 时生效；生产模式前端由后端静态托管，访问入口为 server.port"},
     "server.workers": {"label": "工作进程数", "group": "server", "hot_reload": False, "type": "int", "desc": "Uvicorn worker 数量"},
     "server.allowed_host": {"label": "允许的访问域名", "group": "server", "hot_reload": False, "type": "str", "desc": "Vite 开发服务器允许访问的域名，多个域名用逗号分隔"},
     "server.db_pool_size": {"label": "数据库连接池大小", "group": "server", "hot_reload": False, "type": "int", "desc": "每个 worker 进程的数据库连接池容量"},
     "server.thread_pool_size": {"label": "线程池大小", "group": "server", "hot_reload": False, "type": "int", "desc": "处理并发同步请求的默认线程池容量"},
     "server.response_cache": {"label": "启用响应缓存", "group": "server", "hot_reload": True, "type": "bool", "desc": "为 GET API 请求添加 Cache-Control 头以减少重复请求"},
+    "web.https": {"label": "前端启用 HTTPS", "group": "server", "hot_reload": True, "type": "bool", "desc": "是否部署在 HTTPS 反向代理之后（影响 Secure Cookie 与 HSTS），生产模式下 uvicorn 本身不终结 TLS"},
     # 安全
     "security.secret_key": {"label": "会话签名密钥", "group": "security", "hot_reload": False, "type": "str", "desc": "会话/演示令牌签名密钥，修改后现有会话会失效"},
     "security.default_password": {"label": "默认密码", "group": "security", "hot_reload": True, "type": "str", "desc": "新建用户及首次初始化使用的默认密码"},
@@ -71,7 +72,6 @@ CONFIG_META: dict[str, dict[str, Any]] = {
     "admin.route_prefix": {"label": "管理面板路由前缀", "group": "admin", "hot_reload": False, "type": "str", "desc": "管理面板路由前缀"},
     # 外观
     "logo.svg.path": {"label": "Logo 路径", "group": "appearance", "hot_reload": True, "type": "str", "desc": "Logo SVG 文件路径"},
-    "web.https": {"label": "前端启用 HTTPS", "group": "appearance", "hot_reload": True, "type": "bool", "desc": "前端是否启用 HTTPS"},
     # 飞书 SSO
     "feishu.sso_enabled": {"label": "启用飞书 SSO", "group": "feishu", "hot_reload": True, "type": "bool", "desc": "是否启用飞书单点登录"},
     "feishu.app_id": {"label": "飞书 App ID", "group": "feishu", "hot_reload": True, "type": "str", "desc": "飞书自建应用的 App ID"},
@@ -156,6 +156,8 @@ class Settings:
     workers: int = 4
     startup_script: str = "start.sh"
     allowed_host: str = ""
+    # 是否部署在 HTTPS 反向代理之后（影响 Secure Cookie 与 HSTS），缺省 false 避免纯 HTTP 部署丢失登录态
+    web_https: bool = False
 
     # 并发配置
     db_pool_size: int = 10
@@ -206,7 +208,6 @@ class Settings:
 
     # 外观
     logo_svg_path: str = "app/static/img/logo.svg"
-    web_https: bool = True
 
     # 飞书 SSO
     feishu_sso_enabled: bool = False
@@ -400,7 +401,9 @@ def load_settings() -> Settings:
 
     # 外观
     logo_svg_path = props.get("logo.svg.path", "app/static/img/logo.svg")
-    web_https = _parse_bool(props.get("web.https", "true"))
+
+    # HTTPS 反向代理标记（缺省 false：纯 HTTP 部署时不发 Secure Cookie）
+    web_https = _parse_bool(props.get("web.https", "false"))
 
     # 飞书 SSO
     feishu_sso_enabled = _parse_bool(props.get("feishu.sso_enabled", "false"))

@@ -125,6 +125,8 @@ interface SystemStatus {
   backend_port: number;
   frontend_pid: number | null;
   frontend_port: number;
+  /** "static" = 生产模式前端由后端静态托管；"dev" = Vite dev server 运行中（可选字段，兼容旧后端） */
+  frontend_mode?: "static" | "dev";
   start_time: string;
   config_file: string;
   log_dir: string;
@@ -398,12 +400,16 @@ function RuntimeTab() {
             <div className="text-2xl font-bold">
               {data.frontend_pid ? (
                 <Badge variant="default" className="text-sm">运行中</Badge>
-              ) : (
+              ) : data.frontend_mode === "dev" ? (
                 <Badge variant="secondary" className="text-sm">未运行</Badge>
+              ) : (
+                <Badge variant="secondary" className="text-sm">静态托管</Badge>
               )}
             </div>
             <p className="text-xs text-muted-foreground">
-              {data.frontend_pid ? `PID: ${data.frontend_pid} | ` : ''}端口: {data.frontend_port}
+              {data.frontend_pid
+                ? `PID: ${data.frontend_pid} | 端口: ${data.frontend_port}`
+                : "前端由后端静态托管（经后端端口访问）"}
             </p>
           </CardContent>
         </Card>

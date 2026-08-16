@@ -4,9 +4,15 @@ import basicSsl from "@vitejs/plugin-basic-ssl";
 import path from "node:path";
 
 const backend = process.env.SLIDE_FLOW_BACKEND || "http://127.0.0.1:8088";
-// 通过环境变量控制是否启用 HTTPS（默认开启，便于 File System Access API 在局域网 IP 下使用）
-// 关闭方式：SLIDE_FLOW_HTTPS=false npm run dev
-const enableHttps = (process.env.SLIDE_FLOW_HTTPS ?? "true").toLowerCase() !== "false";
+// dev server 端口：优先读取 start.sh 从 slide_flow.properties 解析后注入的
+// SLIDE_FLOW_WEB_PORT，手动 npm run dev 时缺省回退 5173
+const webPort = Number(process.env.SLIDE_FLOW_WEB_PORT) || 5173;
+// 通过环境变量控制是否启用 HTTPS（缺省 false，与后端保持统一）
+// 开启方式：SLIDE_FLOW_HTTPS=true npm run dev（支持 true/1/yes/on）
+// 开启后可满足 File System Access API 在局域网 IP 下的使用需求
+const enableHttps = ["true", "1", "yes", "on"].includes(
+  (process.env.SLIDE_FLOW_HTTPS ?? "").toLowerCase()
+);
 
 // 通过环境变量配置允许的访问域名（解决通过域名访问 Vite 开发服务器被拦截的问题）
 // 多个域名用逗号分隔，例如：slide-flow.example.com,example.com
@@ -25,7 +31,7 @@ export default defineConfig({
   },
   server: {
     host: "0.0.0.0",
-    port: 5173,
+    port: webPort,
     https: enableHttps ? {} : undefined,
     allowedHosts: allowedHosts.length > 0 ? allowedHosts : true,
     proxy: {

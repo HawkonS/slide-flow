@@ -29,17 +29,25 @@ WEB_PORT="${WEB_PORT:-5173}"
 # 根据端口号停止相关进程
 #   $1 - 端口号
 #   $2 - 服务名称（用于日志显示）
+#   $3 - 可选：未找到进程时的补充说明（如生产模式下前端由后端托管）
 # ------------------------------------------------------------------
 stop_by_port() {
     local port=$1
     local name=$2
+    local empty_hint=${3:-}
     local pids
 
     # 通过 lsof 查找占用该端口的所有进程
     pids=$(lsof -ti "tcp:$port" 2>/dev/null || true)
 
     if [ -z "$pids" ]; then
-        echo "[$name] 未发现运行中的进程 (端口 $port)"
+        if [ -n "$empty_hint" ]; then
+            # 注意：macOS bash 3.2 下 $port 紧跟全角冒号会把多字节首字节并入变量名，
+            # 在 set -u 下报 unbound variable，必须用 ${port} 花括号定界
+            echo "[$name] 端口 ${port}：无进程 $empty_hint"
+        else
+            echo "[$name] 未发现运行中的进程 (端口 $port)"
+        fi
         return
     fi
 
@@ -75,5 +83,5 @@ stop_by_port() {
 
 echo "=== SlideFlow 服务停止 ==="
 stop_by_port "$PORT" "后端"
-stop_by_port "$WEB_PORT" "前端"
+stop_by_port "$WEB_PORT" "前端" "(生产模式正常：前端由后端托管)"
 echo "=== 完成 ==="

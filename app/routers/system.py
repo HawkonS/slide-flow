@@ -47,6 +47,9 @@ def api_admin_system_status(
     except Exception:
         pass
     
+    # 前端模式：存在前端开发进程（Vite）时为 dev；否则生产模式下前端由后端静态托管
+    frontend_mode = "dev" if frontend_pid is not None else "static"
+    
     # 计算运行时长
     try:
         process_start_time = psutil.Process(backend_pid).create_time()
@@ -87,6 +90,7 @@ def api_admin_system_status(
         "backend_port": backend_port,
         "frontend_pid": frontend_pid,
         "frontend_port": frontend_port,
+        "frontend_mode": frontend_mode,
         "start_time": start_time,
         "config_file": str(PROPERTIES_FILE),
         "log_dir": str(settings.log_dir),
