@@ -56,7 +56,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { api } from "@/lib/api";
+import { api, downloadFile } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { isAdminRole } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -114,6 +114,7 @@ interface TaskResult {
   created?: number;
   resource_ids?: number[];
   message?: string;
+  expired?: boolean;
 }
 
 interface Task {
@@ -1396,6 +1397,7 @@ interface DownloadTaskRowProps {
 }
 
 function DownloadTaskRow({ task, showOwner, isAdmin, isSelected, onSelectToggle }: DownloadTaskRowProps) {
+  const [downloading, setDownloading] = React.useState(false);
   const status = task.status as TaskStatus;
   const isCompleted = status === "completed";
   const isFailed = status === "failed";
@@ -1414,6 +1416,23 @@ function DownloadTaskRow({ task, showOwner, isAdmin, isSelected, onSelectToggle 
   const fileSize = task.params?.file_size;
   const trackCode = task.params?.track_code;
   const clientIp = task.params?.client_ip;
+  const isExpired = task.result_data?.expired === true;
+
+  const handleDownload = async () => {
+    if (isExpired) {
+      toast.error("下载文件已过期，请重新发起下载");
+      return;
+    }
+    if (downloading) return;
+    setDownloading(true);
+    try {
+      await downloadFile(`/api/downloads/${task.id}/file`, fileName);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "下载失败");
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   return (
     <TableRow>
@@ -1506,17 +1525,22 @@ function DownloadTaskRow({ task, showOwner, isAdmin, isSelected, onSelectToggle 
 
       <TableCell className="w-28">
         <div className="flex h-7 items-center">
-          {isCompleted ? (
-            <Button asChild variant="outline" size="sm" className="h-7 gap-1 text-xs">
-              <a
-                href={`/api/downloads/${task.id}/file`}
-                download={fileName || undefined}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
+          {isCompleted && isExpired ? (
+            <span className="text-[11px] text-muted-foreground">已过期</span>
+          ) : isCompleted ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1 text-xs"
+              disabled={downloading}
+              onClick={handleDownload}
+            >
+              {downloading ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
                 <Download className="h-3.5 w-3.5" />
-                下载
-              </a>
+              )}
+              下载
             </Button>
           ) : (
             <span className="text-[11px] text-muted-foreground">—</span>

@@ -149,6 +149,66 @@ export async function updateUserPreferences(prefs: Record<string, string>): Prom
   });
 }
 
+/**
+ * 通用文件下载助手：先以 GET + `Range: bytes=0-0` 预检（正常文件只返回 206 + 1 字节，
+ * 错误分支返回 4xx + JSON detail），成功后通过临时 <a download> 触发浏览器原生
+ * 流式下载（保留下载进度、零内存缓冲，不新开标签页）。
+ * 预检失败时解析响应 JSON 的 detail 字段并抛出 ApiError，解析失败时按状态码兜底文案。
+ */
+export async function downloadFile(path: string, fileName?: string): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      headers: { Range: "bytes=0-0" },
+      credentials: "include",
+    });
+  } catch {
+    throw new ApiError(0, "网络错误，下载失败");
+  }
+
+  if (!res.ok) {
+    const fallbackDetail =
+      res.status === 410
+        ? "下载文件已过期或被清理，请重新发起下载"
+        : res.status === 403
+          ? "无权访问此任务"
+          : res.status === 404
+            ? "任务不存在"
+            : res.status === 400
+              ? "任务文件尚未生成"
+              : `${res.status} ${res.statusText}`;
+    let data: unknown = null;
+    let detail = res.status === 401 ? "未登录或会话已过期" : fallbackDetail;
+    try {
+      data = await res.json();
+      if (data && typeof data === "object" && "detail" in data) {
+        const d = (data as { detail?: unknown }).detail;
+        if (d != null) detail = typeof d === "string" ? d : JSON.stringify(d);
+      }
+    } catch {
+      // 响应体非 JSON，按状态码兜底文案
+    }
+    if (res.status === 401 && !path.startsWith("/api/auth/")) {
+      unauthorizedHandler?.();
+    }
+    throw new ApiError(res.status, detail, data);
+  }
+
+  // 预检通过：丢弃预检响应体（仅 1 字节）避免连接悬挂，
+  // 随后交由浏览器原生流式下载（后端已设置 Content-Disposition: attachment）
+  try {
+    await res.body?.cancel();
+  } catch {
+    // 忽略取消失败
+  }
+  const a = document.createElement("a");
+  a.href = path;
+  if (fileName) a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 /** multipart/form-data 上传 */
 export async function apiUpload<T = unknown>(
   path: string,

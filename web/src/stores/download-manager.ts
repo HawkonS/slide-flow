@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { toast } from "sonner";
+import { downloadFile } from "@/lib/api";
 
 /* ---------- Types ---------- */
 
@@ -126,16 +127,10 @@ function maybeShrinkAutoTriggered(currentTaskIds: Iterable<number>) {
 }
 
 function triggerBrowserDownload(taskId: number, fileName: string) {
-  try {
-    const a = document.createElement("a");
-    a.href = `/api/downloads/${taskId}/file`;
-    a.download = fileName;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-  } catch {
-    // ignore – fallback toast is shown by caller
-  }
+  // 复用 downloadFile：HEAD 预检 + 浏览器原生流式下载，失败时 toast 提示
+  void downloadFile(`/api/downloads/${taskId}/file`, fileName).catch((err) =>
+    toast.error(err instanceof Error ? err.message : "下载失败"),
+  );
 }
 
 /* ---------- Store ---------- */
