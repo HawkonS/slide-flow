@@ -9,8 +9,6 @@ import sqlite3
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel
-
 from app.config import settings
 from app.core.feishu import (
     FeishuAPIError,
@@ -21,14 +19,14 @@ from app.core.feishu import (
 )
 from app.core.security import create_session_token, hash_password
 from app.db import now_iso
-from app.routers.dependencies import SESSION_COOKIE, _serialize_user, db_dep
+from app.routers.dependencies import ApiPayload, SESSION_COOKIE, _serialize_user, db_dep
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-class FeishuCallbackPayload(BaseModel):
+class FeishuCallbackPayload(ApiPayload):
     code: str
 
 

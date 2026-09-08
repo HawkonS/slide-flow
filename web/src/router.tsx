@@ -4,7 +4,7 @@ import { Loader2 } from "lucide-react";
 
 import { AppShell } from "@/components/layout/AppShell";
 import { PlaceholderPage } from "@/components/common/PlaceholderPage";
-import { RequireAdmin, RequireAuth, RequireSuperAdmin } from "@/lib/auth";
+import { RequireAdmin, RequireAuth, RequireSystemAdmin } from "@/lib/auth";
 
 // 路由级代码分割：各页面按需加载，登录页与主应用不再打入同一 bundle
 const LoginPage = lazy(() => import("@/pages/auth/LoginPage").then((m) => ({ default: m.LoginPage })));
@@ -13,11 +13,10 @@ const ResourcesPage = lazy(() => import("@/pages/resources/ResourcesPage").then(
 const TemplatesPage = lazy(() => import("@/pages/templates/TemplatesPage").then((m) => ({ default: m.TemplatesPage })));
 const FontsPage = lazy(() => import("@/pages/fonts/FontsPage").then((m) => ({ default: m.FontsPage })));
 const ShowsPage = lazy(() => import("@/pages/shows/ShowsPage").then((m) => ({ default: m.ShowsPage })));
-const LinksPage = lazy(() => import("@/pages/links/LinksPage").then((m) => ({ default: m.LinksPage })));
+const StandardShowsPage = lazy(() => import("@/pages/shows/StandardShowsPage").then((m) => ({ default: m.StandardShowsPage })));
 const DisplayPage = lazy(() => import("@/pages/present/DisplayPage").then((m) => ({ default: m.DisplayPage })));
 const FullscreenPage = lazy(() => import("@/pages/present/FullscreenPage").then((m) => ({ default: m.FullscreenPage })));
 const PresenterPage = lazy(() => import("@/pages/present/PresenterPage").then((m) => ({ default: m.PresenterPage })));
-const LinkSharePage = lazy(() => import("@/pages/present/LinkSharePage"));
 const ResourceManagePage = lazy(() => import("@/pages/manage/ResourceManagePage"));
 const TasksPage = lazy(() => import("@/pages/manage/TasksPage"));
 const OfflineCachePage = lazy(() => import("@/pages/manage/OfflineCachePage"));
@@ -25,7 +24,6 @@ const TagManagePage = lazy(() => import("@/pages/manage/TagManagePage"));
 const AdminUsersPage = lazy(() => import("@/pages/admin/AdminUsersPage").then((m) => ({ default: m.AdminUsersPage })));
 const AdminTemplatesPage = lazy(() => import("@/pages/admin/AdminTemplatesPage").then((m) => ({ default: m.AdminTemplatesPage })));
 const AdminFontsPage = lazy(() => import("@/pages/admin/AdminFontsPage").then((m) => ({ default: m.AdminFontsPage })));
-const AdminLinksPage = lazy(() => import("@/pages/admin/AdminLinksPage").then((m) => ({ default: m.AdminLinksPage })));
 const AdminSystemPage = lazy(() => import("@/pages/admin/AdminSystemPage").then((m) => ({ default: m.AdminSystemPage })));
 
 // 全屏加载指示器：路由懒加载挂起时显示
@@ -48,7 +46,6 @@ export const router = createBrowserRouter([
     ),
   },
   { path: "/shows/:id/display", element: <DisplayPage /> },
-  { path: "/shows/:id/link-share", element: <LinkSharePage /> },
   {
     path: "/shows/:id/present",
     element: (
@@ -69,8 +66,8 @@ export const router = createBrowserRouter([
       { path: "/resources", element: <ResourcesPage /> },
       { path: "/templates", element: <TemplatesPage /> },
       { path: "/fonts", element: <FontsPage /> },
-      { path: "/shows", element: <ShowsPage /> },
-      { path: "/links", element: <LinksPage /> },
+      { path: "/shows", element: <StandardShowsPage /> },
+      { path: "/manage/shows", element: <ShowsPage /> },
       { path: "/manage/resources", element: <ResourceManagePage /> },
       { path: "/manage/tasks", element: <TasksPage /> },
       { path: "/manage/offline-cache", element: <OfflineCachePage /> },
@@ -85,9 +82,9 @@ export const router = createBrowserRouter([
       {
         path: "/admin/users",
         element: (
-          <RequireAdmin>
+          <RequireSystemAdmin>
             <AdminUsersPage />
-          </RequireAdmin>
+          </RequireSystemAdmin>
         ),
       },
       {
@@ -107,19 +104,27 @@ export const router = createBrowserRouter([
         ),
       },
       {
-        path: "/admin/links",
+        path: "/admin/runtime",
         element: (
-          <RequireAdmin>
-            <AdminLinksPage />
-          </RequireAdmin>
+          <RequireSystemAdmin>
+            <AdminSystemPage section="runtime" />
+          </RequireSystemAdmin>
         ),
       },
       {
-        path: "/admin/system",
+        path: "/admin/config",
         element: (
-          <RequireSuperAdmin>
-            <AdminSystemPage />
-          </RequireSuperAdmin>
+          <RequireSystemAdmin>
+            <AdminSystemPage section="config" />
+          </RequireSystemAdmin>
+        ),
+      },
+      {
+        path: "/admin/logs",
+        element: (
+          <RequireSystemAdmin>
+            <AdminSystemPage section="logs" />
+          </RequireSystemAdmin>
         ),
       },
       {

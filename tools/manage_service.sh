@@ -9,18 +9,12 @@ SERVICE_NAME="slide-flow"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-RUN_SCRIPT="${PROJECT_ROOT}/start.sh"
+RUN_SCRIPT="${PROJECT_ROOT}/run.sh"
 STOP_SCRIPT="${PROJECT_ROOT}/stop.sh"
 CURRENT_USER="${SUDO_USER:-$USER}"
 
 CONFIG_FILE="${PROJECT_ROOT}/slide_flow.properties"
-CONFIG_TEMPLATE="${PROJECT_ROOT}/slide_flow.properties.example"
 SUDO_PASS=""
-
-# 读取 sudo 密码（如果在 properties 中配置了 system.sudo_password）
-if [ -f "$CONFIG_FILE" ]; then
-    SUDO_PASS=$(grep "^system.sudo_password=" "$CONFIG_FILE" | cut -d'=' -f2 | tr -d '\r')
-fi
 
 # 安全的 sudo 执行函数：通过管道传递密码，避免 ps 泄露与 shell 展开
 # - 以 root 身份运行时直接执行命令
@@ -79,15 +73,28 @@ check_run_script() {
 }
 
 check_config() {
-    # SlideFlow 没有强制必填的运行时配置，缺失时从模板复制即可
+    local python_cmd=""
+    if [ -x "${PROJECT_ROOT}/.venv/bin/python" ]; then
+        python_cmd="${PROJECT_ROOT}/.venv/bin/python"
+    elif command -v python3 >/dev/null 2>&1; then
+        python_cmd="$(command -v python3)"
+    else
+        echo -e "${RED}错误: 未检测到 Python，无法生成配置文件。${NC}"
+        return 1
+    fi
+
     if [ ! -f "$CONFIG_FILE" ]; then
-        if [ -f "$CONFIG_TEMPLATE" ]; then
-            echo -e "${YELLOW}未找到 $CONFIG_FILE，正在从模板复制...${NC}"
-            cp "$CONFIG_TEMPLATE" "$CONFIG_FILE"
-            echo -e "${GREEN}配置文件已生成，可按需编辑：${NC}${BLUE}$CONFIG_FILE${NC}"
-        else
-            echo -e "${YELLOW}未找到配置文件和模板，将使用默认值运行。${NC}"
-        fi
+        echo -e "${YELLOW}未找到 $CONFIG_FILE，正在生成默认配置...${NC}"
+    fi
+    if ! (cd "$PROJECT_ROOT" && "$python_cmd" -c 'from app.config import ensure_properties_file; ensure_properties_file()'); then
+        echo -e "${RED}错误: 生成或检查配置文件失败。${NC}"
+        return 1
+    fi
+}
+
+load_sudo_password() {
+    if [ -f "$CONFIG_FILE" ]; then
+        SUDO_PASS=$(grep "^system.sudo_password=" "$CONFIG_FILE" | cut -d'=' -f2- | tr -d '\r')
     fi
 }
 
@@ -210,7 +217,8 @@ show_status() {
 
 check_systemd || exit 1
 check_run_script || exit 1
-check_config
+check_config || exit 1
+load_sudo_password
 
 # 支持命令行参数模式（供 API 调用）
 if [ -n "${1:-}" ]; then
@@ -263,7 +271,7 @@ if [ -n "${1:-}" ]; then
                 echo "服务已重启"
                 exit 0
             else
-                echo "服务未安装，使用 stop.sh + start.sh 重启..."
+                echo "服务未安装，使用 stop.sh + run.sh 重启..."
                 if [ -f "$STOP_SCRIPT" ] && [ -f "$RUN_SCRIPT" ]; then
                     bash "$STOP_SCRIPT"
                     sleep 2

@@ -2,7 +2,7 @@
 # ============================================================
 # SlideFlow 一键更新脚本
 # 1) 强制拉取远程最新代码
-# 2) 自动重启服务（兼容 systemd 与 start.sh/stop.sh 两种模式）
+# 2) 自动重启服务（支持 systemd 服务或项目脚本运行模式）
 # 适用于 Mac / Linux
 # ============================================================
 set -uo pipefail
@@ -19,6 +19,11 @@ log_info()  { echo -e "${GREEN}${PREFIX}${NC} $*"; }
 log_warn()  { echo -e "${YELLOW}${PREFIX}${NC} $*"; }
 log_error() { echo -e "${RED}${PREFIX}${NC} $*"; }
 
+# 更新前启动的 Bash 进程可能继续执行旧版脚本内容。更新完成后通过该标记
+# 重新载入新版脚本，并从重启阶段继续，避免启动入口改名时使用旧路径。
+RESUME_COMMIT="${SLIDEFLOW_UPDATE_RESUME_COMMIT:-}"
+unset SLIDEFLOW_UPDATE_RESUME_COMMIT
+
 # 路径定位：本脚本位于 <project_root>/tools/，项目根是上一级
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -32,35 +37,46 @@ echo "项目目录: $PROJECT_ROOT"
 # ============================================================
 # Step 1 - 拉取远程代码
 # ============================================================
-log_info "[1/3] 正在拉取远程代码..."
-
 if ! command -v git &>/dev/null; then
   log_error "未检测到 git，请先安装 Git"
   exit 1
 fi
 
-# 自动识别远程默认分支：优先 main，其次 master，最后回退 origin/HEAD
-REMOTE_BRANCH=""
-git fetch --all --prune
-if git show-ref --verify --quiet refs/remotes/origin/main; then
-  REMOTE_BRANCH="origin/main"
-elif git show-ref --verify --quiet refs/remotes/origin/master; then
-  REMOTE_BRANCH="origin/master"
+CURRENT_COMMIT="$(git rev-parse HEAD 2>/dev/null || true)"
+if [ -n "$RESUME_COMMIT" ] && [ "$CURRENT_COMMIT" = "$RESUME_COMMIT" ]; then
+  log_info "[1/3] 已载入更新后的脚本，继续完成更新..."
 else
-  REMOTE_BRANCH="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/@@' || true)"
-fi
+  log_info "[1/3] 正在拉取远程代码..."
 
-if [ -z "$REMOTE_BRANCH" ]; then
-  log_error "无法识别远程分支，请检查 Git 仓库配置"
-  exit 1
-fi
+  # 自动识别远程默认分支：优先 main，其次 master，最后回退 origin/HEAD
+  REMOTE_BRANCH=""
+  git fetch --all --prune
+  if git show-ref --verify --quiet refs/remotes/origin/main; then
+    REMOTE_BRANCH="origin/main"
+  elif git show-ref --verify --quiet refs/remotes/origin/master; then
+    REMOTE_BRANCH="origin/master"
+  else
+    REMOTE_BRANCH="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/@@' || true)"
+  fi
 
-log_info "目标分支: $REMOTE_BRANCH"
-if ! git reset --hard "$REMOTE_BRANCH"; then
-  log_error "代码更新失败，请检查网络或 Git 配置"
-  exit 1
+  if [ -z "$REMOTE_BRANCH" ]; then
+    log_error "无法识别远程分支，请检查 Git 仓库配置"
+    exit 1
+  fi
+
+  log_info "目标分支: $REMOTE_BRANCH"
+  if ! git reset --hard "$REMOTE_BRANCH"; then
+    log_error "代码更新失败，请检查网络或 Git 配置"
+    exit 1
+  fi
+  log_info "代码已更新到最新版本"
+
+  UPDATED_COMMIT="$(git rev-parse HEAD 2>/dev/null || true)"
+  if [ -n "$CURRENT_COMMIT" ] && [ -n "$UPDATED_COMMIT" ] && [ "$CURRENT_COMMIT" != "$UPDATED_COMMIT" ]; then
+    log_info "检测到代码版本变化，正在切换到更新后的脚本..."
+    exec env SLIDEFLOW_UPDATE_RESUME_COMMIT="$UPDATED_COMMIT" bash "$SCRIPT_DIR/update.sh" "$@"
+  fi
 fi
-log_info "代码已更新到最新版本"
 
 # 写入版本信息文件（commit hash + 更新时间）
 VERSION_FILE="$PROJECT_ROOT/data/.version_info"
@@ -118,13 +134,13 @@ if command -v systemctl &>/dev/null && systemctl list-unit-files 2>/dev/null | g
     echo "------------------------------------------"
     SERVICE_OK=1
   else
-    log_error "systemd 服务重启失败，将回退到 start.sh/stop.sh 模式"
+    log_error "systemd 服务重启失败，将回退到 run.sh/stop.sh 模式"
   fi
 fi
 
-# 回退：使用项目自带的 stop.sh + start.sh
+# 回退：使用项目自带的 stop.sh + run.sh
 if [ "$SERVICE_OK" -ne 1 ]; then
-  START_SCRIPT="$PROJECT_ROOT/start.sh"
+  START_SCRIPT="$PROJECT_ROOT/run.sh"
   STOP_SCRIPT="$PROJECT_ROOT/stop.sh"
 
   if [ ! -f "$START_SCRIPT" ]; then
@@ -140,7 +156,7 @@ if [ "$SERVICE_OK" -ne 1 ]; then
     log_warn "未找到 stop.sh，跳过停止步骤"
   fi
 
-  # 启动日志路径（与 start.sh 中 log.dir 保持一致）
+  # 启动日志路径（与 run.sh 中 log.dir 保持一致）
   LOG_DIR="$(read_prop 'log.dir' || true)"
   LOG_DIR="${LOG_DIR:-data/logs}"
   case "$LOG_DIR" in
@@ -150,7 +166,7 @@ if [ "$SERVICE_OK" -ne 1 ]; then
   mkdir -p "$LOG_DIR"
   STARTUP_LOG="$LOG_DIR/startup.log"
 
-  log_info "以后台方式启动 start.sh (日志: $STARTUP_LOG)"
+  log_info "以后台方式启动 run.sh (日志: $STARTUP_LOG)"
   # macOS 上 setsid 不可用且行为与 Linux 不一致，采用平台区分策略
   RESTART_OS="$(uname -s)"
   if [ "$RESTART_OS" = "Darwin" ]; then
@@ -166,10 +182,10 @@ if [ "$SERVICE_OK" -ne 1 ]; then
   # 简单等待并检查进程是否仍存活
   sleep 2
   if kill -0 "$NEW_PID" 2>/dev/null; then
-    log_info "start.sh 已在后台启动 (PID: $NEW_PID)"
+    log_info "run.sh 已在后台启动 (PID: $NEW_PID)"
     log_info "如需查看启动过程，请执行: tail -f $STARTUP_LOG"
   else
-    log_error "start.sh 启动后立即退出，请检查日志: $STARTUP_LOG"
+    log_error "run.sh 启动后立即退出，请检查日志: $STARTUP_LOG"
     exit 1
   fi
 fi

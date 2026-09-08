@@ -6,11 +6,9 @@ export type PresentMessage =
   | { type: 'pen-erase'; index: number }
   | { type: 'pen-clear' }
   | { type: 'laser-move'; x: number; y: number; visible: boolean }
-  | { type: 'open-link'; url: string; name: string }
-  | { type: 'close-link' }
   | { type: 'session-end' }
   | { type: 'request-sync' }  // display窗口请求当前状态
-  | { type: 'sync-state'; resourceId: number; index: number; sessionToken: string; linkUrl?: string; linkName?: string; imageFit?: 'contain' | 'fill' }  // 主控回复当前状态
+  | { type: 'sync-state'; resourceId: number; index: number; sessionToken: string; imageFit?: 'contain' | 'fill' }  // 主控回复当前状态
   | { type: 'image-fit-change'; imageFit: 'contain' | 'fill' }  // 图片显示模式切换
   | { type: 'frame-update'; dataUrl: string };
 

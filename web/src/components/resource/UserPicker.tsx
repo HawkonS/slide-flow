@@ -84,7 +84,7 @@ export function UserPicker({ value, onChange, showBulk = true, className, exclud
           <div className="grid gap-1 sm:grid-cols-2">
             {users.map((u) => {
               const checked = valueSet.has(u.id);
-              const label = u.display_name || u.name || u.username;
+              const label = u.name || u.username;
               return (
                 <button
                   key={u.id}

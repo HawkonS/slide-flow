@@ -32,11 +32,11 @@ export interface OfflineShowEntry {
   slide_count: number
   auth_mode: 'required' | 'none'
   updated_at: string
-  subject?: string
-  tags?: string[]
-  status?: string
-  secrecy_level?: string
-  owner_name?: string
+  subject: string
+  tags: string[]
+  status: string
+  secrecy_level: string
+  owner_name: string | null
 }
 
 export interface OfflineManifest {
@@ -47,28 +47,29 @@ export interface OfflineManifest {
 }
 
 export interface OfflinePackageData {
+  format_version: 2
   show_id: number
   name: string
   version_no: number
   series_id: string
   updated_at: string
   auth_mode: 'required' | 'none'
-  auth_hash?: string
-  auth_username?: string
-  subject?: string
-  tags?: string[]
-  status?: string
-  secrecy_level?: string
-  owner_name?: string
-  cover_thumb_base64?: string | null
-  cover_hd_base64?: string | null
+  auth_hash: string | null
+  auth_username: string | null
+  subject: string
+  tags: string[]
+  status: string
+  secrecy_level: string
+  owner_name: string | null
+  cover_thumb_base64: string | null
+  cover_hd_base64: string | null
   resources: Array<{
     id: number
     name: string
     version_no: number
     slide_index: number
     image_base64: string
-    thumb_base64?: string
+    thumb_base64: string
     common_remark_html: string
     personal_remark_html: string
     show_remark_html: string
@@ -82,6 +83,7 @@ export interface OfflinePackageData {
 const DB_NAME = 'slideflow-offline-cache'
 const STORE_NAME = 'settings'
 const DIR_HANDLE_KEY = 'dir-handle'
+const OFFLINE_FORMAT_VERSION = 2
 
 // ============================================================
 // 1. IndexedDB 存储管理
@@ -192,20 +194,22 @@ export function isSecureContext(): boolean {
 
 /** 从文件夹读取manifest */
 export async function readManifest(dirHandle: FileSystemDirectoryHandle): Promise<OfflineManifest | null> {
+  let fileHandle: FileSystemFileHandle
   try {
-    const fileHandle = await dirHandle.getFileHandle('manifest.js')
-    const file = await fileHandle.getFile()
-    const text = await file.text()
-    // JSONP格式: window.__OFFLINE_MANIFEST = { ... };
-    const match = text.match(/window\.__OFFLINE_MANIFEST\s*=\s*([\s\S]*?)\s*;?\s*$/)
-    if (!match || !match[1]) {
-      return null
-    }
-    return JSON.parse(match[1]) as OfflineManifest
-  } catch {
-    // 文件不存在或解析失败
-    return null
+    fileHandle = await dirHandle.getFileHandle('manifest.js')
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'NotFoundError') return null
+    throw error
   }
+  const file = await fileHandle.getFile()
+  const text = await file.text()
+  const match = text.match(/window\.__OFFLINE_MANIFEST\s*=\s*([\s\S]*?)\s*;?\s*$/)
+  if (!match || !match[1]) throw new Error('离线目录中的 manifest.js 格式无效')
+  const manifest = JSON.parse(match[1]) as OfflineManifest
+  if (manifest.version !== OFFLINE_FORMAT_VERSION) {
+    throw new Error('检测到旧版离线缓存，请选择空目录重新缓存')
+  }
+  return manifest
 }
 
 /** 写入/更新manifest */
@@ -281,14 +285,6 @@ export async function writeOfflineFiles(dirHandle: FileSystemDirectoryHandle): P
   await writeTextFile(dirHandle, 'app.js', generateOfflineJs())
 }
 
-/** @deprecated 使用 writeOfflineFiles 替代 */
-export async function writeOfflineHtml(
-  dirHandle: FileSystemDirectoryHandle,
-  htmlContent: string
-): Promise<void> {
-  await writeTextFile(dirHandle, 'index.html', htmlContent)
-}
-
 /** 删除show目录 */
 export async function deleteShowCache(
   dirHandle: FileSystemDirectoryHandle,
@@ -349,6 +345,9 @@ export async function cacheShowToDirectory(
   serverUrl: string,
   onProgress?: (current: number, total: number) => void
 ): Promise<void> {
+  if (packageData.format_version !== OFFLINE_FORMAT_VERSION) {
+    throw new Error('离线包格式版本不受支持')
+  }
   // 1. 遍历resources，写入PNG图片并收集文件名映射
   const resourcesWithFiles = []
   for (let i = 0; i < packageData.resources.length; i++) {
@@ -356,20 +355,17 @@ export async function cacheShowToDirectory(
     // 写入PNG图片，获取文件名（含.png扩展名）
     const filename = await writeImageFile(dirHandle, packageData.show_id, r.image_base64)
 
-    // 保存缩略图（如果后端提供了 thumb_base64）
-    let thumbFilename = ''
-    if (r.thumb_base64) {
-      const randomHex = filename.replace('.png', '')
-      thumbFilename = randomHex + '_thumb.jpg'
-      const thumbBinary = base64ToUint8Array(r.thumb_base64)
-      const showsDir = await getOrCreateDir(dirHandle, 'shows')
-      const showDir = await getOrCreateDir(showsDir, String(packageData.show_id))
-      const slidesDir = await getOrCreateDir(showDir, 'slides')
-      const thumbHandle = await slidesDir.getFileHandle(thumbFilename, { create: true })
-      const thumbWritable = await thumbHandle.createWritable()
-      await thumbWritable.write(new Blob([thumbBinary.buffer.slice(thumbBinary.byteOffset, thumbBinary.byteOffset + thumbBinary.byteLength) as ArrayBuffer]))
-      await thumbWritable.close()
-    }
+    if (!r.thumb_base64) throw new Error(`资源 ${r.id} 缺少离线缩略图`)
+    const randomHex = filename.replace('.png', '')
+    const thumbFilename = randomHex + '_thumb.jpg'
+    const thumbBinary = base64ToUint8Array(r.thumb_base64)
+    const showsDir = await getOrCreateDir(dirHandle, 'shows')
+    const showDir = await getOrCreateDir(showsDir, String(packageData.show_id))
+    const slidesDir = await getOrCreateDir(showDir, 'slides')
+    const thumbHandle = await slidesDir.getFileHandle(thumbFilename, { create: true })
+    const thumbWritable = await thumbHandle.createWritable()
+    await thumbWritable.write(new Blob([thumbBinary.buffer.slice(thumbBinary.byteOffset, thumbBinary.byteOffset + thumbBinary.byteLength) as ArrayBuffer]))
+    await thumbWritable.close()
 
     resourcesWithFiles.push({
       id: r.id,
@@ -386,7 +382,7 @@ export async function cacheShowToDirectory(
     onProgress?.(i + 1, packageData.resources.length)
   }
 
-  // 2. 写入封面图片（不做XOR加密，明文存储）
+  // 2. 写入明文封面图片
   const showsDir = await getOrCreateDir(dirHandle, 'shows')
   const showDir = await getOrCreateDir(showsDir, String(packageData.show_id))
 
@@ -411,13 +407,13 @@ export async function cacheShowToDirectory(
     coverHdFile = 'cover_hd.png'
   }
 
-  // 3. 写入 info.js（xor_key=0 表示明文存储，file 字段含 .png 扩展名）
+  // 3. 写入当前格式的 info.js
   const showInfo = {
+    format_version: OFFLINE_FORMAT_VERSION,
     id: packageData.show_id,
     name: packageData.name,
     version_no: packageData.version_no,
     slide_count: packageData.resources.length,
-    xor_key: 0,
     subject: packageData.subject,
     tags: packageData.tags,
     status: packageData.status,
@@ -443,7 +439,7 @@ export async function cacheShowToDirectory(
   let manifest = await readManifest(dirHandle)
   if (!manifest) {
     manifest = {
-      version: 1,
+      version: OFFLINE_FORMAT_VERSION,
       server_url: serverUrl,
       generated_at: new Date().toISOString(),
       shows: {},

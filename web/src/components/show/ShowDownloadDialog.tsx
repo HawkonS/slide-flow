@@ -73,7 +73,7 @@ export function ShowDownloadDialog({ open, onOpenChange, show }: ShowDownloadDia
     if (!wmEnabled) return "";
     const parts: string[] = [];
     if (wmUserName && user) {
-      parts.push(user.display_name || user.name || user.username);
+      parts.push(user.name || user.username);
     }
     if (wmPlatform) {
       parts.push(siteName);
@@ -154,7 +154,7 @@ export function ShowDownloadDialog({ open, onOpenChange, show }: ShowDownloadDia
       <DialogContent className="flex max-h-[85vh] max-w-3xl flex-col gap-0 overflow-hidden p-0">
         <DialogHeader className="shrink-0 border-b px-6 py-4">
           <DialogTitle className="text-base font-semibold">下载放映</DialogTitle>
-          <DialogDescription className="text-sm">
+          <DialogDescription className="sr-only">
             {show.name} · 共 {accessibleCount} 项可下载资源
           </DialogDescription>
         </DialogHeader>
@@ -249,7 +249,7 @@ export function ShowDownloadDialog({ open, onOpenChange, show }: ShowDownloadDia
                 <WmOption
                   id="wm-user"
                   label="下载人姓名"
-                  desc={user?.display_name || user?.name || user?.username || ""}
+                  desc={user?.name || user?.username || ""}
                   checked={wmUserName}
                   disabled={isBusy}
                   onChange={(v) => setWmUserName(v)}

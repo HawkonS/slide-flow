@@ -160,7 +160,7 @@ export default function ShowOfflineCacheDialog({
                 className="text-primary underline underline-offset-4 hover:text-primary/80"
                 onClick={() => onOpenChange(false)}
               >
-                维护 &gt; 离线缓存
+                离线缓存页面
               </Link>{" "}
               中配置缓存文件夹。
             </p>

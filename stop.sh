@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================
 # SlideFlow 服务停止脚本
-# 通过端口号查找并优雅地停止后端（uvicorn）和前端（vite）进程
+# 通过端口号查找并优雅地停止后端和前端（vite）进程
 # ============================================================
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -15,7 +15,7 @@ fi
 
 PROPS="slide_flow.properties"
 
-# 读取后端端口：与 start.sh 保持一致，解析 server.port
+# 读取后端端口：与 run.sh 保持一致，解析 server.port
 PORT="$(awk -F= '/^server\.port=/{gsub(/[[:space:]]/, "", $2); print $2}' "$PROPS" 2>/dev/null || true)"
 PORT="${PORT:-8088}"
 

@@ -151,16 +151,10 @@ export function AdminConfigPage() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-4">
       {/* 页头 */}
-      <header className="flex items-end justify-between gap-4">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">配置管理</h1>
-          <p className="text-xs text-muted-foreground">
-            直接读写 <code className="rounded bg-muted px-1.5 py-0.5 text-xs">slide_flow.properties</code>
-            。所有配置修改需重启服务后生效。
-          </p>
-        </div>
+      <header className="flex items-center justify-between gap-4">
+        <h1 className="text-xl font-semibold tracking-tight">配置管理</h1>
         {dirtyKeys.length > 0 && (
           <span className="inline-flex h-6 items-center rounded-full bg-primary/10 px-2.5 text-xs text-primary">
             已修改 {dirtyKeys.length} 项

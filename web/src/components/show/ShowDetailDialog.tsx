@@ -418,7 +418,7 @@ export function ShowDetailDialog({
             <HardDriveDownload className="mr-1 h-4 w-4" />
             离线缓存
           </Button>
-          {show.can_manage && (
+          {onIterate && show.can_manage && (
             <Button variant="outline" size="sm" onClick={() => setUpgradeOpen(true)}>
               <GitBranch className="mr-1 h-4 w-4" />
               版本迭代

@@ -40,7 +40,6 @@ import { api } from "@/lib/api";
 import { useResponsiveGrid } from "@/lib/use-grid-layout";
 import { useUrlPage } from "@/lib/use-url-page";
 import { cn } from "@/lib/utils";
-import { useNavLabel } from "@/lib/nav-config";
 import {
   type OfflineManifest,
   type OfflinePackageData,
@@ -465,7 +464,7 @@ function CacheCard({
 /* ---------- Main Component ---------- */
 
 export default function OfflineCachePage() {
-  const navTitle = useNavLabel("manage_offline", "离线缓存");
+  const navTitle = "离线缓存";
   const [supported] = useState(() => isFileSystemAccessSupported());
   const [dirHandle, setDirHandle] = useState<FileSystemDirectoryHandle | null>(null);
   const [manifest, setManifest] = useState<OfflineManifest | null>(null);
@@ -807,7 +806,7 @@ export default function OfflineCachePage() {
         <div className="space-y-2 text-center">
           <h1 className="text-xl font-semibold">选择缓存文件夹</h1>
           <p className="max-w-sm text-sm text-muted-foreground">
-            请选择一个本地文件夹用于存储离线缓存数据。选择后，您可以管理已缓存的放映仓库。
+            请选择一个本地文件夹用于存储离线缓存数据。选择后，您可以管理已缓存的标准放映。
           </p>
         </div>
         <Button onClick={handlePickDirectory} className="gap-2">

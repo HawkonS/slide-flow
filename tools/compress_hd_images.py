@@ -21,6 +21,12 @@ import sqlite3
 import sys
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from app.config import PROPERTIES_FILE, ensure_properties_file, read_properties
+
 try:
     from PIL import Image
 except ImportError:  # pragma: no cover
@@ -60,26 +66,11 @@ def log_dry(msg: str) -> None:
 
 # ---------------- 路径常量 ----------------
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-PROPERTIES_FILE = PROJECT_ROOT / "slide_flow.properties"
 RESOURCES_DIR = PROJECT_ROOT / "data" / "assets" / "resources"
 DB_PATH = PROJECT_ROOT / "data" / "db" / "slide_flow.db"
 
 
 # ---------------- 配置读取 ----------------
-
-def read_properties(path: Path) -> dict[str, str]:
-    """逐行解析 INI 格式的 properties 文件，与 app/config.py 行为一致。"""
-    values: dict[str, str] = {}
-    if not path.exists():
-        return values
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        values[key.strip()] = value.strip()
-    return values
 
 
 class HdImageConfig:
@@ -189,9 +180,7 @@ def main() -> int:
     args = parse_args()
 
     log_step("加载配置")
-    if not PROPERTIES_FILE.exists():
-        log_error(f"配置文件不存在: {PROPERTIES_FILE}")
-        return 1
+    ensure_properties_file()
     props = read_properties(PROPERTIES_FILE)
     cfg = HdImageConfig(props)
     log_info(f"压缩参数: {cfg.describe()}")

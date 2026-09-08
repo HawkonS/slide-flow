@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.core.permissions import require_user, is_super_admin, can_view_resource, can_view_show
+from app.core.permissions import require_user, is_system_admin, can_view_resource, can_view_show
 from app.db import now_iso
 from app.routers.dependencies import db_dep, db_read_dep
 
@@ -55,7 +55,6 @@ def _serialize_resource(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.
     return {
         "id": resource_id,
         "name": row["name"],
-        "resource_type": row["resource_type"],
         "subject": row["subject"],
         "tags": row["tags"],
         "status": row["status"],
@@ -133,11 +132,12 @@ def _serialize_show(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row)
         "tags": row["tags"],
         "status": row["status"],
         "secrecy_level": row["secrecy_level"],
+        "is_standard": bool(row["is_standard"]),
         "visibility_scope": row["visibility_scope"],
         "management_scope": row["management_scope"],
         "owner_id": row["owner_id"],
         "owner": {"id": owner["id"], "name": owner["name"], "username": owner["username"]} if owner else None,
-        "version_no": row["version_no"] if "version_no" in row.keys() else 1,
+        "version_no": row["version_no"],
         "resources": resources,  # 必须包含 resources 字段
         "can_manage": True,  # 简化版，实际需要根据权限判断
         "created_at": row["created_at"],
@@ -283,10 +283,10 @@ def my_home_stats(
 ) -> dict[str, Any]:
     """首页数据概览：仅统计当前用户可见范围；超管看到全部。"""
     user_id = int(user["id"])
-    super_admin = is_super_admin(user)
+    system_admin = is_system_admin(user)
 
     def _visible_count(table: str, vis_table: str, vis_fk: str, *, where_extra: str = "") -> int:
-        if super_admin:
+        if system_admin:
             sql = f"SELECT COUNT(*) FROM {table} t"
             if where_extra:
                 sql += f" WHERE {where_extra}"
@@ -311,11 +311,8 @@ def my_home_stats(
             sql += f" AND ({where_extra})"
         return int(db.execute(sql, (user_id,)).fetchone()[0])
 
-    resources_total = _visible_count(
-        "resources", "resource_visibility", "resource_id",
-        where_extra="t.resource_type = 'asset'",
-    )
-    resources_mine = _mine_count("resources", where_extra="resource_type = 'asset'")
+    resources_total = _visible_count("resources", "resource_visibility", "resource_id")
+    resources_mine = _mine_count("resources")
 
     shows_total = _visible_count("shows", "show_visibility", "show_id")
     shows_mine = _mine_count("shows")

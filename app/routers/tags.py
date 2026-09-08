@@ -8,12 +8,10 @@ import sqlite3
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
-
 from app.config import reload_settings, settings, write_properties
 from app.core.permissions import require_admin, require_user
 from app.db import now_iso
-from app.routers.dependencies import db_dep, db_read_dep
+from app.routers.dependencies import ApiPayload, db_dep, db_read_dep
 
 
 router = APIRouter()
@@ -21,15 +19,15 @@ router = APIRouter()
 
 # ==================== Pydantic 模型 ====================
 
-class TagsCreatePayload(BaseModel):
+class TagsCreatePayload(ApiPayload):
     tags: list[str]
 
 
-class TagUpdatePayload(BaseModel):
+class TagUpdatePayload(ApiPayload):
     name: str
 
 
-class TagsConfigPayload(BaseModel):
+class TagsConfigPayload(ApiPayload):
     user_custom_tags: bool
 
 

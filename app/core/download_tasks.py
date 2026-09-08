@@ -38,6 +38,7 @@ from app.core.ppt import (
     split_pptx_to_single_pages,
 )
 from app.db import get_db
+from app.core.task_events import append_task_event
 
 
 logger = logging.getLogger(__name__)
@@ -70,8 +71,10 @@ def _update_task(
     error_message: str | None = None,
     mark_completed: bool = False,
     total: int | None = None,
-) -> None:
-    """统一的 task 状态更新入口。"""
+    event_owner_id: int | None = None,
+    event_message: dict[str, Any] | None = None,
+) -> bool:
+    """Update task state and its outbound event in one transaction."""
     fields: list[str] = ["updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"]
     args: list[Any] = []
     if status is not None:
@@ -95,8 +98,22 @@ def _update_task(
     if mark_completed:
         fields.append("completed_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime')")
     args.append(task_id)
-    db.execute(f"UPDATE tasks SET {', '.join(fields)} WHERE id = ?", args)
-    db.commit()
+    try:
+        cursor = db.execute(
+            f"UPDATE tasks SET {', '.join(fields)}"
+            " WHERE id = ? AND status <> 'cancelled'",
+            args,
+        )
+        updated = cursor.rowcount > 0
+        if updated and event_message is not None:
+            if event_owner_id is None:
+                raise ValueError("event_owner_id is required with event_message")
+            append_task_event(db, event_owner_id, event_message)
+        db.commit()
+        return updated
+    except Exception:
+        db.rollback()
+        raise
 
 
 def _safe_abs(stored_path: str | None) -> Path | None:
@@ -651,26 +668,12 @@ def _suggest_filename(show_name: str, download_type: str, with_fonts: bool) -> s
     return show_name
 
 
-async def _safe_broadcast(owner_id: int, message: dict) -> None:
-    """包装 broadcast_to_user，任何推送异常都不应中断下载任务主流程。"""
-    from app import main as _main
-    try:
-        await _main.broadcast_to_user(owner_id, message)
-    except Exception as exc:
-        logger.warning(
-            "broadcast 失败 owner_id=%s msg_type=%s err=%s",
-            owner_id,
-            message.get("type") if isinstance(message, dict) else "<non-dict>",
-            exc,
-        )
-
-
 async def execute_download_task(task_id: int, owner_id: int) -> None:
     """异步入口：在 Semaphore 控制下调度下载任务。
 
-    - 先把 status 更新为 ``processing`` 并广播
+    - 先把 status 更新为 ``processing`` 并写入事件流
     - 在线程池中执行真正的文件生成
-    - 成功/失败时更新 DB 状态并通过 WebSocket 推送
+    - 成功/失败时原子更新 DB 状态与待推送事件
     """
     async with _download_semaphore:
         # 读取任务参数
@@ -680,28 +683,29 @@ async def execute_download_task(task_id: int, owner_id: int) -> None:
             if row is None:
                 logger.error("Download task %d not found", task_id)
                 return
+            if row["status"] == "cancelled":
+                return
             params = json.loads(row["params"] or "{}")
-            _update_task(
+            started = _update_task(
                 db,
                 task_id,
                 status="processing",
                 message="正在生成文件...",
                 progress=10,
                 total=100,
+                event_owner_id=owner_id,
+                event_message={
+                    "type": "download_progress",
+                    "task_id": task_id,
+                    "status": "processing",
+                    "progress": 10,
+                    "message": "正在生成文件...",
+                },
             )
         finally:
             db.close()
-
-        await _safe_broadcast(
-            owner_id,
-            {
-                "type": "download_progress",
-                "task_id": task_id,
-                "status": "processing",
-                "progress": 10,
-                "message": "正在生成文件...",
-            },
-        )
+        if not started:
+            return
 
         # 进度追踪：工作线程写入，asyncio 任务读取并广播
         _progress_broadcast: dict[str, Any] = {"progress": 10, "message": "正在生成文件..."}
@@ -712,7 +716,7 @@ async def execute_download_task(task_id: int, owner_id: int) -> None:
 
         async def _broadcast_progress_loop() -> None:
             """定期检查进度变化并广播 + 更新 DB。"""
-            last_progress = -1
+            last_progress = 10
             while not _progress_broadcast.get("done"):
                 try:
                     cur = _progress_broadcast.get("progress", 10)
@@ -722,21 +726,32 @@ async def execute_download_task(task_id: int, owner_id: int) -> None:
                         try:
                             _db = get_db()
                             try:
-                                _update_task(_db, task_id, progress=cur, message=msg, total=100)
+                                updated = _update_task(
+                                    _db,
+                                    task_id,
+                                    progress=cur,
+                                    message=msg,
+                                    total=100,
+                                    event_owner_id=owner_id,
+                                    event_message={
+                                        "type": "download_progress",
+                                        "task_id": task_id,
+                                        "status": "processing",
+                                        "progress": cur,
+                                        "message": msg,
+                                    },
+                                )
                             finally:
                                 _db.close()
+                            if not updated:
+                                _progress_broadcast["done"] = True
+                                return
                         except Exception:
-                            pass
-                        await _safe_broadcast(
-                            owner_id,
-                            {
-                                "type": "download_progress",
-                                "task_id": task_id,
-                                "status": "processing",
-                                "progress": cur,
-                                "message": msg,
-                            },
-                        )
+                            logger.warning(
+                                "Download task %d progress event persist failed",
+                                task_id,
+                                exc_info=True,
+                            )
                     await asyncio.sleep(1)
                 except asyncio.CancelledError:
                     return
@@ -759,17 +774,20 @@ async def execute_download_task(task_id: int, owner_id: int) -> None:
                 pass
             db = get_db()
             try:
-                _update_task(db, task_id, status="failed", error_message=str(exc))
+                _update_task(
+                    db,
+                    task_id,
+                    status="failed",
+                    error_message=str(exc),
+                    event_owner_id=owner_id,
+                    event_message={
+                        "type": "download_failed",
+                        "task_id": task_id,
+                        "error": str(exc),
+                    },
+                )
             finally:
                 db.close()
-            await _safe_broadcast(
-                owner_id,
-                {
-                    "type": "download_failed",
-                    "task_id": task_id,
-                    "error": str(exc),
-                },
-            )
             return
 
         # 标记进度广播循环结束
@@ -782,7 +800,7 @@ async def execute_download_task(task_id: int, owner_id: int) -> None:
 
         db = get_db()
         try:
-            _update_task(
+            completed = _update_task(
                 db,
                 task_id,
                 status="completed",
@@ -791,26 +809,26 @@ async def execute_download_task(task_id: int, owner_id: int) -> None:
                 message="",
                 result_data=result,
                 mark_completed=True,
+                event_owner_id=owner_id,
+                event_message={
+                    "type": "download_completed",
+                    "task_id": task_id,
+                    "file_name": result.get("file_name", ""),
+                    "file_size": int(result.get("file_size", 0)),
+                    "watermark_applied": bool(result.get("watermark_applied", False)),
+                    "watermark_requested": bool((params.get("user_watermark", "") or "").strip()),
+                },
             )
         finally:
             db.close()
+        if not completed:
+            logger.info("Download task %d was cancelled before completion", task_id)
+            return
 
         logger.info(
-            "Download task %d completed file=%s size=%s -> broadcasting to owner_id=%s",
+            "Download task %d completed file=%s size=%s; event persisted for owner_id=%s",
             task_id,
             result.get("file_name"),
             result.get("file_size"),
             owner_id,
-        )
-
-        await _safe_broadcast(
-            owner_id,
-            {
-                "type": "download_completed",
-                "task_id": task_id,
-                "file_name": result.get("file_name", ""),
-                "file_size": int(result.get("file_size", 0)),
-                "watermark_applied": bool(result.get("watermark_applied", False)),
-                "watermark_requested": bool((params.get("user_watermark", "") or "").strip()),
-            },
         )

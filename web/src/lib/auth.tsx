@@ -79,21 +79,23 @@ export function RequireAdmin({ children }: { children: React.ReactNode }) {
   if (!user) {
     return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   }
-  if (user.role !== "admin" && user.role !== "super_admin") {
-    return <Navigate to="/resources" replace />;
+  // 运营管理员和系统管理员均可访问运营管理页面。
+  if (user.role !== "admin" && user.role !== "system_admin") {
+    return <Navigate to="/home" replace />;
   }
   return <>{children}</>;
 }
 
-export function RequireSuperAdmin({ children }: { children: React.ReactNode }) {
+export function RequireSystemAdmin({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
   const location = useLocation();
   if (loading) return <FullscreenLoader />;
   if (!user) {
     return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   }
-  if (user.role !== "super_admin") {
-    return <Navigate to="/resources" replace />;
+  // 系统管理页面仅允许系统管理员访问。
+  if (user.role !== "system_admin") {
+    return <Navigate to="/home" replace />;
   }
   return <>{children}</>;
 }

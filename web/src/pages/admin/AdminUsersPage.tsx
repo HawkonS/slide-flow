@@ -38,12 +38,10 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { api } from "@/lib/api";
-import { useAuth } from "@/lib/auth";
 import { USER_ROLE_LABEL, USER_ROLE_OPTIONS } from "@/lib/constants";
-import { AdminUser, UserRole, isSuperAdminRole } from "@/lib/types";
+import { AdminUser, UserRole } from "@/lib/types";
 import { useUrlPage } from "@/lib/use-url-page";
 import { cn } from "@/lib/utils";
-import { useNavLabel } from "@/lib/nav-config";
 
 interface UsersResponse {
   users: AdminUser[];
@@ -145,7 +143,7 @@ export function AdminUsersPage() {
       {/* 页头 */}
       <header className="flex items-end justify-between gap-4">
         <div className="flex items-center gap-1.5">
-          <h1 className="text-xl font-semibold tracking-tight">{useNavLabel("admin_users", "用户管理")}</h1>
+          <h1 className="text-xl font-semibold tracking-tight">用户管理</h1>
           <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
             {filtered.length === users.length
               ? `共 ${users.length} 条`
@@ -286,7 +284,7 @@ export function AdminUsersPage() {
                       <Badge
                         className="whitespace-nowrap"
                         variant={
-                          u.role === "super_admin"
+                          u.role === "system_admin"
                             ? "default"
                             : u.role === "admin"
                               ? "default"
@@ -508,11 +506,7 @@ function UserFormDialog({
   onSuccess: () => void;
 }) {
   const editing = !!user;
-  const { user: currentUser } = useAuth();
-  // 系统管理员不能授予/查看超级管理员角色
-  const roleOptions = isSuperAdminRole(currentUser?.role)
-    ? USER_ROLE_OPTIONS
-    : USER_ROLE_OPTIONS.filter((o) => o.value !== "super_admin");
+  const roleOptions = USER_ROLE_OPTIONS;
   const [name, setName] = React.useState("");
   const [username, setUsername] = React.useState("");
   const [password, setPassword] = React.useState("");

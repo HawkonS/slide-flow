@@ -88,11 +88,11 @@ export function HomePage() {
               to="/resources"
             />
             <StatCard
-              label="放映"
+              label="放映素材"
               value={stats?.shows.total ?? 0}
               hint={`我的 ${stats?.shows.mine ?? 0}`}
               icon={Layers}
-              to="/shows"
+              to="/manage/shows"
             />
             <StatCard
               label="模板"
@@ -126,7 +126,7 @@ export function HomePage() {
             加载中…
           </div>
         ) : pinnedShows.length === 0 ? (
-          <EmptyPinned hint="在放映仓库点击卡片右上角 ⋯ 选择「置顶首页」" />
+          <EmptyPinned hint="在标准放映或放映素材中点击卡片右上角 ⋯ 选择「置顶首页」" />
         ) : (
           <div className="grid content-start" style={gridStyle}>
             {pinnedShows.map((s) => (
@@ -152,7 +152,7 @@ export function HomePage() {
             加载中…
           </div>
         ) : pinnedResources.length === 0 ? (
-          <EmptyPinned hint="在资源仓库点击卡片右上角 ⋯ 选择「置顶首页」" />
+          <EmptyPinned hint="在单页素材点击卡片右上角 ⋯ 选择「置顶首页」" />
         ) : (
           <div className="grid content-start" style={gridStyle}>
             {pinnedResources.map((r) => (

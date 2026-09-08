@@ -51,7 +51,6 @@ import {
 } from "@/lib/constants";
 import { parseTags, Resource, serializeTags } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { useNavLabel } from "@/lib/nav-config";
 import { useManageResourceFilters, markManageResourceFiltersUrlRestored } from "@/stores/manage-resource-filters";
 import { BatchEditDialog } from "@/components/manage/BatchEditDialog";
 import { usePaginatedQuery } from "@/lib/use-paginated-query";
@@ -171,7 +170,6 @@ export default function ResourceManagePage() {
   /* ---- Build API params ---- */
   const apiParams = React.useMemo(
     () => ({
-      resource_type: "asset" as const,
       manageable_only: true,
       search: filters.query.trim() || undefined,
       subject: filters.subject !== "all" ? filters.subject : undefined,
@@ -309,7 +307,6 @@ export default function ResourceManagePage() {
   const handleSelectAll = async () => {
     try {
       const params = new URLSearchParams();
-      params.set("resource_type", "asset");
       params.set("manageable_only", "true");
       if (apiParams.search) params.set("search", apiParams.search);
       if (apiParams.subject) params.set("subject", apiParams.subject);
@@ -375,7 +372,7 @@ export default function ResourceManagePage() {
       {/* 页头 */}
       <header className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-1.5">
-          <h1 className="text-xl font-semibold tracking-tight">{useNavLabel("manage_resources", "资源管理")}</h1>
+          <h1 className="text-xl font-semibold tracking-tight">单页素材管理</h1>
           <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
             {total > 0 ? `共 ${total} 条` : "共 0 条"}
           </span>

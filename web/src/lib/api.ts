@@ -86,56 +86,6 @@ export async function api<T = unknown>(
   return (await res.text()) as unknown as T;
 }
 
-/** ---------- Link API ---------- */
-
-export interface LinkListResponse {
-  links: import("./types").Link[];
-}
-
-export interface LinkSelectionResponse {
-  link_ids: number[];
-}
-
-export async function fetchLinks() {
-  return api<LinkListResponse>("/api/links");
-}
-
-export async function createLink(data: Record<string, unknown>) {
-  return api<import("./types").Link>("/api/links", {
-    method: "POST",
-    json: data,
-  });
-}
-
-export async function updateLink(id: number, data: Record<string, unknown>) {
-  return api<import("./types").Link>(`/api/links/${id}`, {
-    method: "PUT",
-    json: data,
-  });
-}
-
-export async function deleteLink(id: number) {
-  return api(`/api/links/${id}`, { method: "DELETE" });
-}
-
-export async function fetchAdminDefaultLinks() {
-  return api<LinkSelectionResponse>("/api/links/admin/defaults");
-}
-
-export async function updateAdminDefaultLinks(linkIds: number[]) {
-  return api<LinkSelectionResponse>("/api/links/admin/defaults", {
-    method: "PUT",
-    json: { link_ids: linkIds },
-  });
-}
-
-export async function updateLinksOrder(linkIds: number[]) {
-  return api<{ ok: boolean; ordered: number }>("/api/admin/links/order", {
-    method: "PUT",
-    json: { link_ids: linkIds },
-  });
-}
-
 /** ---------- Preferences API ---------- */
 
 export async function fetchUserPreferences(): Promise<{ preferences: Record<string, string> }> {

@@ -44,13 +44,18 @@ interface PingMessage {
   type: "ping";
 }
 
-type ServerMessage = ProgressMessage | CompletedMessage | FailedMessage | PingMessage | { type: string; [key: string]: unknown };
+interface EventCursorMessage {
+  type: "event_cursor";
+  event_id: number;
+}
+
+type ServerMessage = ProgressMessage | CompletedMessage | FailedMessage | PingMessage | EventCursorMessage | { type: string; [key: string]: unknown };
 
 interface DownloadManagerState {
   tasks: Map<number, DownloadTask>;
   wsConnected: boolean;
   /** WebSocket lifecycle */
-  connect: (token: string) => void;
+  connect: (userKey: string) => void;
   disconnect: () => void;
   /** Task management */
   addTask: (taskId: number, showName: string, trackCode: string) => void;
@@ -68,7 +73,8 @@ interface WsRuntime {
   reconnectAttempts: number;
   reconnectTimer: number | null;
   manuallyClosed: boolean;
-  lastToken: string;
+  userKey: string;
+  lastEventId: number | null;
   givenUp: boolean;
 }
 
@@ -77,11 +83,36 @@ const wsRuntime: WsRuntime = {
   reconnectAttempts: 0,
   reconnectTimer: null,
   manuallyClosed: false,
-  lastToken: "",
+  userKey: "",
+  lastEventId: null,
   givenUp: false,
 };
 
-function buildWsUrl(token: string): string {
+function eventCursorStorageKey(userKey: string): string {
+  return `slide-flow:task-event-cursor:${userKey}`;
+}
+
+function loadEventCursor(userKey: string): number | null {
+  try {
+    const raw = window.sessionStorage.getItem(eventCursorStorageKey(userKey));
+    if (raw == null) return null;
+    const value = Number(raw);
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveEventCursor(userKey: string, eventId: number): void {
+  if (!userKey) return;
+  try {
+    window.sessionStorage.setItem(eventCursorStorageKey(userKey), String(eventId));
+  } catch {
+    // Session storage may be unavailable in restricted browser contexts.
+  }
+}
+
+function buildWsUrl(): string {
   // 开发环境下，如果 Vite 的 /ws 代理因任何原因未生效，可通过环境变量
   // VITE_WS_BACKEND 直接指向后端地址（例如："ws://127.0.0.1:8088"）。
   // 生产环境始终使用同源 host，由 Nginx/FastAPI 处理 Upgrade。
@@ -100,7 +131,12 @@ function buildWsUrl(token: string): string {
     origin = `${protocol}//${window.location.host}`;
   }
   const base = `${origin}/ws/tasks`;
-  return token ? `${base}?token=${encodeURIComponent(token)}` : base;
+  const params = new URLSearchParams();
+  if (wsRuntime.lastEventId != null) {
+    params.set("after", String(wsRuntime.lastEventId));
+  }
+  const query = params.toString();
+  return query ? `${base}?${query}` : base;
 }
 
 /* ---------- Auto-trigger browser download ---------- */
@@ -154,7 +190,18 @@ export const useDownloadManager = create<DownloadManagerState>((set, get) => {
       return;
     }
 
+    const eventId = (msg as { event_id?: unknown }).event_id;
+    if (typeof eventId === "number" && Number.isInteger(eventId) && eventId >= 0) {
+      if (msg.type !== "event_cursor" && wsRuntime.lastEventId != null && eventId <= wsRuntime.lastEventId) {
+        return;
+      }
+      wsRuntime.lastEventId = Math.max(wsRuntime.lastEventId ?? 0, eventId);
+      saveEventCursor(wsRuntime.userKey, wsRuntime.lastEventId);
+    }
+
     switch (msg.type) {
+      case "event_cursor":
+        break;
       case "ping": {
         // Server-side liveness probe – respond with pong if socket is open
         const sock = wsRuntime.socket;
@@ -258,11 +305,11 @@ export const useDownloadManager = create<DownloadManagerState>((set, get) => {
     wsRuntime.reconnectAttempts += 1;
     wsRuntime.reconnectTimer = window.setTimeout(() => {
       wsRuntime.reconnectTimer = null;
-      openSocket(wsRuntime.lastToken);
+      openSocket();
     }, delay);
   }
 
-  function openSocket(token: string) {
+  function openSocket() {
     if (wsRuntime.givenUp) return;
     if (wsRuntime.socket) {
       // Already connected or connecting
@@ -272,7 +319,7 @@ export const useDownloadManager = create<DownloadManagerState>((set, get) => {
 
     let socket: WebSocket;
     try {
-      socket = new WebSocket(buildWsUrl(token));
+      socket = new WebSocket(buildWsUrl());
     } catch (err) {
       console.debug("[download-manager] WebSocket 构造失败", err);
       scheduleReconnect();
@@ -314,9 +361,12 @@ export const useDownloadManager = create<DownloadManagerState>((set, get) => {
     tasks: new Map<number, DownloadTask>(),
     wsConnected: false,
 
-    connect: (token: string) => {
+    connect: (userKey: string) => {
       wsRuntime.manuallyClosed = false;
-      wsRuntime.lastToken = token;
+      if (wsRuntime.userKey !== userKey) {
+        wsRuntime.lastEventId = loadEventCursor(userKey);
+      }
+      wsRuntime.userKey = userKey;
       // 用户主动调用 connect 视为重置“放弃”状态，允许重新尝试一轮
       wsRuntime.givenUp = false;
       if (wsRuntime.reconnectTimer != null) {
@@ -329,7 +379,7 @@ export const useDownloadManager = create<DownloadManagerState>((set, get) => {
         return;
       }
       wsRuntime.reconnectAttempts = 0;
-      openSocket(token);
+      openSocket();
     },
 
     disconnect: () => {

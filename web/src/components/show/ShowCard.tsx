@@ -8,6 +8,8 @@ import {
   Pencil,
   Pin,
   PinOff,
+  Star,
+  StarOff,
   Trash2,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -31,9 +33,10 @@ export interface ShowCardProps {
   onDuplicate?: (show: Show) => void;
   onIterate?: () => void;
   onDelete?: (show: Show) => void;
+  onToggleStandard?: (show: Show) => void;
 }
 
-export function ShowCard({ show, onOpen, onEdit, onDuplicate, onIterate, onDelete }: ShowCardProps) {
+export function ShowCard({ show, onOpen, onEdit, onDuplicate, onIterate, onDelete, onToggleStandard }: ShowCardProps) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const accessibleResources = show.resources.filter(
@@ -129,6 +132,12 @@ export function ShowCard({ show, onOpen, onEdit, onDuplicate, onIterate, onDelet
           </span>
         )}
 
+        {show.is_standard && (
+          <span className="absolute bottom-2 left-2 inline-flex items-center gap-1 rounded bg-primary/90 px-1.5 py-0.5 text-[11px] font-medium text-primary-foreground">
+            <Star className="h-3 w-3 fill-current" /> 标准放映
+          </span>
+        )}
+
         <div className="absolute right-2 top-2 opacity-0 transition group-hover:opacity-100 focus-within:opacity-100">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -155,6 +164,15 @@ export function ShowCard({ show, onOpen, onEdit, onDuplicate, onIterate, onDelet
                     <>
                       <Pin className="mr-2 h-4 w-4" /> 置顶首页
                     </>
+                  )}
+                </DropdownMenuItem>
+              )}
+              {onToggleStandard && (user?.role === "admin" || user?.role === "system_admin") && (
+                <DropdownMenuItem onSelect={() => onToggleStandard(show)}>
+                  {show.is_standard ? (
+                    <><StarOff className="mr-2 h-4 w-4" /> 取消标准放映</>
+                  ) : (
+                    <><Star className="mr-2 h-4 w-4" /> 设为标准放映</>
                   )}
                 </DropdownMenuItem>
               )}

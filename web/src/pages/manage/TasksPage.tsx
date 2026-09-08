@@ -60,7 +60,6 @@ import { api, downloadFile } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { isAdminRole } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { useNavLabel } from "@/lib/nav-config";
 
 /* ---------- types ---------- */
 
@@ -68,14 +67,12 @@ interface TaskOwner {
   id: number;
   username: string;
   name: string | null;
-  display_name?: string | null;
 }
 
 interface TaskParams {
   name_prefix?: string;
   subject?: string;
   tags?: string;
-  resource_type?: string;
   secrecy_level?: string;
   visibility_scope?: string;
   visible_user_ids?: string;
@@ -101,7 +98,6 @@ interface UserOption {
   id: number;
   username: string;
   name: string | null;
-  display_name?: string | null;
   role?: string;
 }
 
@@ -140,8 +136,6 @@ interface TaskListResponse {
   total: number;
   page: number;
   page_size: number;
-  /** 兼容旧后端：如果后端仍返回 tasks，进行回退 */
-  tasks?: Task[];
 }
 
 /**
@@ -210,7 +204,6 @@ type TaskStatus =
   | "cancelled";
 
 const TASK_TYPE_LABEL: Record<string, string> = {
-  split_import: "拆分导入",
   batch_split_import: "批量拆分导入",
 };
 
@@ -334,7 +327,7 @@ function statusIcon(status: string): React.ReactElement {
 
 function ownerDisplay(owner: TaskOwner | null, fallbackId: number): string {
   if (!owner) return `#${fallbackId}`;
-  return owner.display_name || owner.name || owner.username || `#${owner.id}`;
+  return owner.name || owner.username || `#${owner.id}`;
 }
 
 /* ---------- Task Row ---------- */
@@ -530,12 +523,6 @@ function TaskDetail({ task }: { task: Task }) {
         {params.name_prefix && <InfoRow label="名称前缀" value={params.name_prefix} />}
         {params.subject && <InfoRow label="分类" value={params.subject} />}
         {params.tags && <InfoRow label="标签" value={params.tags} />}
-        {params.resource_type && (
-          <InfoRow
-            label="资源类型"
-            value={params.resource_type === "template" ? "模板" : "素材"}
-          />
-        )}
         {params.visibility_scope && (
           <InfoRow
             label="可见范围"
@@ -762,7 +749,7 @@ export default function TasksPage() {
   const tab: "uploads" | "downloads" = rawTab === "uploads" ? "uploads" : "downloads";
   const { user } = useAuth();
   const canManage = isAdminRole(user?.role);
-  const title = useNavLabel("manage_tasks", "任务管理");
+  const title = "任务管理";
 
   const handleTabChange = (value: string) => {
     const next = new URLSearchParams(searchParams);
@@ -878,7 +865,7 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
     // pageSize 首次完成测量前不发起请求，避免无意义的占位查询
     enabled: pageSize > 0,
     refetchInterval: (query) => {
-      const list = query.state.data?.items ?? query.state.data?.tasks ?? [];
+      const list = query.state.data?.items ?? [];
       const hasActive = list.some((t) => ACTIVE_STATUSES.includes(t.status as TaskStatus));
       return hasActive ? 3000 : 15000;
     },
@@ -891,8 +878,8 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
 
   // 后端返回 items；过滤掉下载类任务（后端未限定 task_type，这里按原逻辑保证仅上传类可见）
   const tasks = React.useMemo(
-    () => (data?.items ?? data?.tasks ?? []).filter((t) => t.task_type !== "download"),
-    [data?.items, data?.tasks],
+    () => (data?.items ?? []).filter((t) => t.task_type !== "download"),
+    [data?.items],
   );
   const total = data?.total ?? tasks.length;
   const totalPages = Math.max(1, Math.ceil(total / Math.max(1, pageSize)));
@@ -964,7 +951,7 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
               <SelectItem value="self">仅自己</SelectItem>
               {userOptions.map((u) => (
                 <SelectItem key={u.id} value={String(u.id)}>
-                  {u.display_name || u.name || u.username || `#${u.id}`}
+                  {u.name || u.username || `#${u.id}`}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -1203,7 +1190,7 @@ function DownloadTasksTab({ canManage }: { canManage: boolean }) {
     // pageSize 首次完成测量前不发起请求，避免无意义的占位查询
     enabled: pageSize > 0,
     refetchInterval: (query) => {
-      const list = query.state.data?.items ?? query.state.data?.tasks ?? [];
+      const list = query.state.data?.items ?? [];
       const hasActive = list.some((t) => ACTIVE_STATUSES.includes(t.status as TaskStatus));
       return hasActive ? 3000 : 15000;
     },
@@ -1214,7 +1201,7 @@ function DownloadTasksTab({ canManage }: { canManage: boolean }) {
   // 容器尚未测量完成时（pageSize=0），视为加载态
   const isMeasuring = pageSize === 0;
 
-  const tasks = data?.items ?? data?.tasks ?? [];
+  const tasks = data?.items ?? [];
   const total = data?.total ?? tasks.length;
   const totalPages = Math.max(1, Math.ceil(total / Math.max(1, pageSize)));
 
@@ -1267,7 +1254,7 @@ function DownloadTasksTab({ canManage }: { canManage: boolean }) {
               <SelectItem value="self">仅自己</SelectItem>
               {userOptions.map((u) => (
                 <SelectItem key={u.id} value={String(u.id)}>
-                  {u.display_name || u.name || u.username || `#${u.id}`}
+                  {u.name || u.username || `#${u.id}`}
                 </SelectItem>
               ))}
             </SelectContent>

@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
 from app.config import PROPERTIES_FILE, settings
-from app.core.permissions import require_super_admin
+from app.core.permissions import require_system_admin
 
 
 router = APIRouter()
@@ -25,9 +25,9 @@ logger = logging.getLogger(__name__)
 
 @router.get("/admin/system/status")
 def api_admin_system_status(
-    _: Any = Depends(require_super_admin),
+    _: Any = Depends(require_system_admin),
 ) -> dict[str, Any]:
-    """获取系统运行状态（仅超级管理员）。"""
+    """获取系统运行状态（仅系统管理员）。"""
     # 获取当前进程信息
     backend_pid = os.getpid()
     backend_port = settings.port
@@ -103,9 +103,9 @@ def api_admin_system_status(
 
 @router.post("/admin/system/shutdown")
 def api_admin_system_shutdown(
-    _: Any = Depends(require_super_admin),
+    _: Any = Depends(require_system_admin),
 ) -> dict[str, Any]:
-    """关闭系统服务（仅超级管理员）。"""
+    """关闭系统服务（仅系统管理员）。"""
     
     def do_shutdown():
         """在后台执行关闭操作"""
@@ -134,9 +134,9 @@ def api_admin_system_shutdown(
 
 @router.post("/admin/system/restart")
 def api_admin_system_restart(
-    _: Any = Depends(require_super_admin),
+    _: Any = Depends(require_system_admin),
 ) -> dict[str, Any]:
-    """重启系统服务（仅超级管理员）。"""
+    """重启系统服务（仅系统管理员）。"""
     
     def do_restart():
         """在后台执行重启操作"""
@@ -151,7 +151,7 @@ def api_admin_system_restart(
                 )
             else:
                 stop_script = settings.root_dir / "stop.sh"
-                start_script = settings.root_dir / "start.sh"
+                start_script = settings.root_dir / settings.startup_script
                 
                 subprocess.run(
                     ["bash", str(stop_script)],
@@ -174,9 +174,9 @@ def api_admin_system_restart(
 
 @router.post("/admin/system/upgrade")
 def api_admin_system_upgrade(
-    _: Any = Depends(require_super_admin),
+    _: Any = Depends(require_system_admin),
 ) -> dict[str, Any]:
-    """系统升级：从 Git 拉取最新代码并重启（仅超级管理员）。"""
+    """系统升级：从 Git 拉取最新代码并重启（仅系统管理员）。"""
     
     def do_upgrade():
         """在后台执行升级操作"""
@@ -222,9 +222,9 @@ def api_admin_system_upgrade(
 
 @router.get("/admin/system/logs")
 def api_admin_system_logs(
-    _: Any = Depends(require_super_admin),
+    _: Any = Depends(require_system_admin),
 ) -> list[dict[str, Any]]:
-    """获取日志文件列表（仅超级管理员）。"""
+    """获取日志文件列表（仅系统管理员）。"""
     log_files = []
     log_dir = settings.log_dir
     
@@ -249,9 +249,9 @@ def api_admin_system_logs(
 def api_admin_system_logs_download(
     filename: str,
     download: bool = False,
-    _: Any = Depends(require_super_admin),
+    _: Any = Depends(require_system_admin),
 ) -> FileResponse:
-    """下载日志文件（仅超级管理员）。"""
+    """下载日志文件（仅系统管理员）。"""
     if ".." in filename or "/" in filename or "\\" in filename:
         raise HTTPException(400, "非法文件名")
     

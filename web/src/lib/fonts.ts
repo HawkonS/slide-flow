@@ -1,6 +1,6 @@
 import { ResourceVersion } from "@/lib/types";
 
-/** 字体检测所需的最小输入，资源版本和放映聚合结果都可兼容 */
+/** 字体检测所需的最小输入，供资源版本和放映聚合结果复用 */
 export interface FontDetectSource {
   font_names?: string[] | null;
   font_aliases?: Record<string, string[]> | null;

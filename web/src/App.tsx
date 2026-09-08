@@ -43,10 +43,6 @@ export function App() {
           if (config.logo_svg_path) {
             useSiteConfig.getState().setLogoSvgPath(config.logo_svg_path);
           }
-          // 导航配置
-          if (config.nav_labels && config.nav_order) {
-            useSiteConfig.getState().setNavConfig(config.nav_labels, config.nav_order);
-          }
         }
       })
       .catch(() => { /* ignore */ })

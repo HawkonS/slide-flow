@@ -24,7 +24,6 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { useNavLabel } from "@/lib/nav-config";
 
 interface AdminTag {
   id: number;
@@ -53,7 +52,7 @@ interface CategoryGroup {
 
 export default function TagManagePage() {
   const qc = useQueryClient();
-  const title = useNavLabel("manage_tags", "标签管理");
+  const title = "标签管理";
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["admin", "tags"],

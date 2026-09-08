@@ -6,10 +6,8 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import { AdminConfigPage } from "./AdminConfigPage";
-import { useNavLabel } from "@/lib/nav-config";
 
 // ==================== 升级遮罩 ====================
 
@@ -125,8 +123,8 @@ interface SystemStatus {
   backend_port: number;
   frontend_pid: number | null;
   frontend_port: number;
-  /** "static" = 生产模式前端由后端静态托管；"dev" = Vite dev server 运行中（可选字段，兼容旧后端） */
-  frontend_mode?: "static" | "dev";
+  /** "static" = 生产模式前端由后端静态托管；"dev" = Vite dev server 运行中 */
+  frontend_mode: "static" | "dev";
   start_time: string;
   config_file: string;
   log_dir: string;
@@ -461,7 +459,7 @@ function RuntimeTab() {
             {data.mode === "systemd" ? (
               <>使用 systemd 服务管理（{data.service_name}）。所有配置修改需要重启服务后生效。</>
             ) : (
-              <>使用 start.sh/stop.sh 脚本管理服务。所有配置修改需要重启服务后生效。</>
+              <>使用 run.sh/stop.sh 脚本管理服务。所有配置修改需要重启服务后生效。</>
             )}
           </CardDescription>
         </CardHeader>
@@ -601,39 +599,21 @@ function LogTab() {
 
 // ==================== 主页面 ====================
 
-export function AdminSystemPage() {
+type SystemSection = "runtime" | "config" | "logs";
+
+export function AdminSystemPage({ section = "runtime" }: { section?: SystemSection }) {
+  if (section === "config") {
+    return <AdminConfigPage />;
+  }
+
+  const title = section === "logs" ? "日志管理" : "运行管理";
+
   return (
     <div className="flex h-full flex-col gap-4">
-      {/* 页头 */}
       <header className="flex items-center gap-4">
-        <h1 className="text-xl font-semibold tracking-tight">{useNavLabel("admin_system", "系统管理")}</h1>
+        <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
       </header>
-
-      <Tabs defaultValue="runtime" className="w-full">
-        <TabsList className="h-auto flex-wrap justify-start gap-1 bg-muted/60 p-1">
-          <TabsTrigger value="runtime" className="px-3 py-1.5">
-            运行管理
-          </TabsTrigger>
-          <TabsTrigger value="config" className="px-3 py-1.5">
-            配置管理
-          </TabsTrigger>
-          <TabsTrigger value="logs" className="px-3 py-1.5">
-            日志管理
-          </TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="runtime" className="mt-4">
-          <RuntimeTab />
-        </TabsContent>
-
-        <TabsContent value="config" className="mt-4">
-          <AdminConfigPage />
-        </TabsContent>
-
-        <TabsContent value="logs" className="mt-4">
-          <LogTab />
-        </TabsContent>
-      </Tabs>
+      {section === "logs" ? <LogTab /> : <RuntimeTab />}
     </div>
   );
 }

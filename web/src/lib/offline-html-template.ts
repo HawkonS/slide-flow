@@ -902,7 +902,8 @@ export function generateOfflineJs(): string {
     '  displayWindow: null\n' +
     '};\n' +
     '\n' +
-    'var manifest = window.__OFFLINE_MANIFEST || { shows: {} };\n' +
+    'var manifest = window.__OFFLINE_MANIFEST;\n' +
+    'if (!manifest || manifest.version !== 2) manifest = { version: 2, shows: {} };\n' +
     'var slideCache = {};\n' +
     'var thumbCache = {};\n' +
     '\n' +
@@ -922,7 +923,7 @@ export function generateOfflineJs(): string {
     '  return e;\n' +
     '}\n' +
     '\n' +
-    '// === XOR Image Loading ===\n' +
+    '// === Image Loading ===\n' +
     'var showInfoCache = {};\n' +
     'function loadShowInfo(showId) {\n' +
     '  if (showInfoCache[showId]) return Promise.resolve(showInfoCache[showId]);\n' +
@@ -930,8 +931,12 @@ export function generateOfflineJs(): string {
     '    var script = document.createElement("script");\n' +
     '    script.src = "shows/" + showId + "/info.js";\n' +
     '    script.onload = function() {\n' +
-    '      showInfoCache[showId] = window.__SHOW_INFO;\n' +
-    '      resolve(window.__SHOW_INFO || null);\n' +
+    '      var info = window.__SHOW_INFO;\n' +
+    '      var valid = info && info.format_version === 2 && Array.isArray(info.resources) && info.resources.every(function(resource) {\n' +
+    '        return !!resource.file && !!resource.thumb_file;\n' +
+    '      });\n' +
+    '      if (valid) showInfoCache[showId] = info;\n' +
+    '      resolve(valid ? info : null);\n' +
     '      document.head.removeChild(script);\n' +
     '    };\n' +
     '    script.onerror = function() {\n' +
@@ -942,85 +947,30 @@ export function generateOfflineJs(): string {
     '  });\n' +
     '}\n' +
     '\n' +
-    'function loadSlideImage(showId, resource, xorKey) {\n' +
-    '  if (!xorKey) {\n' +
-    '    // 明文PNG，直接返回相对路径\n' +
-    '    return Promise.resolve("shows/" + showId + "/slides/" + resource.file);\n' +
-    '  }\n' +
-    '  // 向后兼容：旧数据使用XHR + XOR解密\n' +
-    '  return new Promise(function(resolve) {\n' +
-    '    var xhr = new XMLHttpRequest();\n' +
-    '    xhr.open("GET", "shows/" + showId + "/slides/" + resource.file, true);\n' +
-    '    xhr.responseType = "arraybuffer";\n' +
-    '    xhr.onload = function() {\n' +
-    '      if (xhr.status === 200 || xhr.status === 0) {\n' +
-    '        try {\n' +
-    '          var encrypted = new Uint8Array(xhr.response);\n' +
-    '          var decrypted = new Uint8Array(encrypted.length);\n' +
-    '          for (var i = 0; i < encrypted.length; i++) {\n' +
-    '            decrypted[i] = encrypted[i] ^ xorKey;\n' +
-    '          }\n' +
-    '          var blob = new Blob([decrypted], { type: "image/png" });\n' +
-    '          resolve(URL.createObjectURL(blob));\n' +
-    '        } catch(e) {\n' +
-    '          resolve(null);\n' +
-    '        }\n' +
-    '      } else {\n' +
-    '        resolve(null);\n' +
-    '      }\n' +
-    '    };\n' +
-    '    xhr.onerror = function() { resolve(null); };\n' +
-    '    xhr.send();\n' +
-    '  });\n' +
+    'function loadSlideImage(showId, resource) {\n' +
+    '  return Promise.resolve("shows/" + showId + "/slides/" + resource.file);\n' +
     '}\n' +
     '\n' +
-    'function loadThumbImage(showId, resource, xorKey) {\n' +
-    '  if (!resource.thumb_file) return Promise.resolve(null);\n' +
-    '  if (!xorKey) {\n' +
-    '    return Promise.resolve("shows/" + showId + "/slides/" + resource.thumb_file);\n' +
-    '  }\n' +
-    '  return new Promise(function(resolve) {\n' +
-    '    var xhr = new XMLHttpRequest();\n' +
-    '    xhr.open("GET", "shows/" + showId + "/slides/" + resource.thumb_file, true);\n' +
-    '    xhr.responseType = "arraybuffer";\n' +
-    '    xhr.onload = function() {\n' +
-    '      if (xhr.status === 200 || xhr.status === 0) {\n' +
-    '        try {\n' +
-    '          var encrypted = new Uint8Array(xhr.response);\n' +
-    '          var decrypted = new Uint8Array(encrypted.length);\n' +
-    '          for (var i = 0; i < encrypted.length; i++) {\n' +
-    '            decrypted[i] = encrypted[i] ^ xorKey;\n' +
-    '          }\n' +
-    '          var blob = new Blob([decrypted], { type: "image/jpeg" });\n' +
-    '          resolve(URL.createObjectURL(blob));\n' +
-    '        } catch(e) {\n' +
-    '          resolve(null);\n' +
-    '        }\n' +
-    '      } else {\n' +
-    '        resolve(null);\n' +
-    '      }\n' +
-    '    };\n' +
-    '    xhr.onerror = function() { resolve(null); };\n' +
-    '    xhr.send();\n' +
-    '  });\n' +
+    'function loadThumbImage(showId, resource) {\n' +
+    '  return Promise.resolve("shows/" + showId + "/slides/" + resource.thumb_file);\n' +
     '}\n' +
     '\n' +
-    'async function preloadAllSlides(showId, resources, xorKey) {\n' +
+    'async function preloadAllSlides(showId, resources) {\n' +
     '  if (slideCache[showId]) return slideCache[showId];\n' +
     '  var urls = [];\n' +
     '  for (var i = 0; i < resources.length; i++) {\n' +
-    '    var url = await loadSlideImage(showId, resources[i], xorKey);\n' +
+    '    var url = await loadSlideImage(showId, resources[i]);\n' +
     '    urls.push(url);\n' +
     '  }\n' +
     '  slideCache[showId] = urls;\n' +
     '  return urls;\n' +
     '}\n' +
     '\n' +
-    'async function preloadAllThumbs(showId, resources, xorKey) {\n' +
+    'async function preloadAllThumbs(showId, resources) {\n' +
     '  if (thumbCache[showId]) return thumbCache[showId];\n' +
     '  var urls = [];\n' +
     '  for (var i = 0; i < resources.length; i++) {\n' +
-    '    var url = await loadThumbImage(showId, resources[i], xorKey);\n' +
+    '    var url = await loadThumbImage(showId, resources[i]);\n' +
     '    urls.push(url);\n' +
     '  }\n' +
     '  thumbCache[showId] = urls;\n' +
@@ -1041,14 +991,7 @@ export function generateOfflineJs(): string {
     '      loadShowInfo(showId).then(function(info) {\n' +
     '        if (info && info.resources && info.resources.length > 0) {\n' +
     '          var firstFile = info.resources[0].file;\n' +
-    '          var xorKey = info.xor_key || 0;\n' +
-    '          if (!xorKey) {\n' +
-    '            // 明文PNG，直接用路径\n' +
-    '            resolve("shows/" + showId + "/slides/" + firstFile);\n' +
-    '          } else {\n' +
-    '            // 向后兼容：旧数据需要XOR解密\n' +
-    '            loadSlideImage(showId, info.resources[0], xorKey).then(resolve);\n' +
-    '          }\n' +
+    '          resolve("shows/" + showId + "/slides/" + firstFile);\n' +
     '        } else {\n' +
     '          resolve(null);\n' +
     '        }\n' +
@@ -1508,12 +1451,10 @@ export function generateOfflineJs(): string {
     '  view.innerHTML = "<div class=\\"loading-container\\">\\u52A0\\u8F7D\\u4E2D...</div>";\n' +
     '  showView("player");\n' +
     '  var info = await loadShowInfo(id);\n' +
-    '  var show = manifest.shows[id];\n' +
-    '  if (!info) info = show || {};\n' +
+    '  if (!info) { view.innerHTML = "<div class=\\"loading-container\\">离线数据格式无效，请重新缓存</div>"; return; }\n' +
     '  var resources = info.resources || [];\n' +
-    '  var xorKey = info.xor_key || 0;\n' +
-    '  var slideUrls = await preloadAllSlides(id, resources, xorKey);\n' +
-    '  var thumbUrls = await preloadAllThumbs(id, resources, xorKey);\n' +
+    '  var slideUrls = await preloadAllSlides(id, resources);\n' +
+    '  var thumbUrls = await preloadAllThumbs(id, resources);\n' +
     '  renderPlayer(id, info, slideUrls, thumbUrls);\n' +
     '}\n' +
     '\n' +
@@ -1678,12 +1619,10 @@ export function generateOfflineJs(): string {
     '  view.innerHTML = "<div class=\\"loading-container\\">\\u52A0\\u8F7D\\u4E2D...</div>";\n' +
     '  showView("presenter");\n' +
     '  var info = await loadShowInfo(id);\n' +
-    '  var show = manifest.shows[id];\n' +
-    '  if (!info) info = show || {};\n' +
+    '  if (!info) { view.innerHTML = "<div class=\\"loading-container\\">离线数据格式无效，请重新缓存</div>"; return; }\n' +
     '  var resources = info.resources || [];\n' +
-    '  var xorKey = info.xor_key || 0;\n' +
-    '  var slideUrls = await preloadAllSlides(id, resources, xorKey);\n' +
-    '  var thumbUrls = await preloadAllThumbs(id, resources, xorKey);\n' +
+    '  var slideUrls = await preloadAllSlides(id, resources);\n' +
+    '  var thumbUrls = await preloadAllThumbs(id, resources);\n' +
     '  renderPresenterView(id, info, slideUrls, thumbUrls);\n' +
     '}\n' +
     '\n' +
@@ -1958,10 +1897,9 @@ export function generateOfflineJs(): string {
     '  var app = $("#app");\n' +
     '  app.innerHTML = "<div class=\\"loading-container\\">\\u52A0\\u8F7D\\u4E2D...</div>";\n' +
     '  var info = await loadShowInfo(id);\n' +
-    '  if (!info) info = show || {};\n' +
+    '  if (!info) { app.innerHTML = "<div class=\\"loading-container\\">离线数据格式无效，请重新缓存</div>"; return; }\n' +
     '  var resources = info.resources || [];\n' +
-    '  var xorKey = info.xor_key || 0;\n' +
-    '  var slideUrls = await preloadAllSlides(id, resources, xorKey);\n' +
+    '  var slideUrls = await preloadAllSlides(id, resources);\n' +
     '  setupDisplay(id, info, slideUrls);\n' +
     '}\n' +
     '\n' +

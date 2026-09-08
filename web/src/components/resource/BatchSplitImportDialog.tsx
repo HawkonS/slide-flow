@@ -186,10 +186,10 @@ export function BatchSplitImportDialog({
     fd.append("visibility_scope", visibilityScope);
     fd.append("management_scope", managementScope);
     if (visibilityScope === "partial") {
-      fd.append("visible_to_users", JSON.stringify(visibleUserIds));
+      fd.append("visible_user_ids", JSON.stringify(visibleUserIds));
     }
     if (managementScope === "partial") {
-      fd.append("managed_by_users", JSON.stringify(manageUserIds));
+      fd.append("manage_user_ids", JSON.stringify(manageUserIds));
     }
     fd.append("remark_html", remarkHtml);
     for (const img of images) {

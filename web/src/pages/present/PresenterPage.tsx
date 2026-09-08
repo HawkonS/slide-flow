@@ -14,8 +14,6 @@ import {
   Settings2,
   Pen,
   CircleDot,
-  ExternalLink,
-  ArrowLeft,
   Minus,
   Plus,
   ChevronDown,
@@ -57,16 +55,6 @@ import { Show, ShowResource, ShowResourceAccessible, SecrecyLevel } from "@/lib/
 
 interface PresentSessionResponse {
   session_token: string;
-}
-
-interface LinkItem {
-  id: number;
-  name: string;
-  url: string;
-}
-
-interface LinksResponse {
-  links: LinkItem[];
 }
 
 interface ResourceDetailResponse {
@@ -297,10 +285,6 @@ export function PresenterPage() {
   const [currentIndex, setCurrentIndex] = React.useState(0);
   const [drawingMode, setDrawingMode] = React.useState<DrawingMode>("none");
   const [penColor, setPenColor] = React.useState("#ef4444");
-  const [openLinkName, setOpenLinkName] = React.useState<string | null>(null);
-  const [openLinkUrl, setOpenLinkUrl] = React.useState<string | null>(null);
-  const [isMirroring, setIsMirroring] = React.useState(false);
-  // mirrorStreamRef retained; no UI preview needed
   const [remarkFontSizes, setRemarkFontSizes] = React.useState<Record<RemarkKey, number>>({
     common: DEFAULT_FONT_SIZE,
     personal: DEFAULT_FONT_SIZE,
@@ -358,9 +342,6 @@ export function PresenterPage() {
   const canvasRef = React.useRef<DrawingCanvasRef>(null);
   const slideImageRef = React.useRef<HTMLImageElement>(null);
   const displayWindowRef = React.useRef<Window | null>(null);
-  const linkWindowRef = React.useRef<Window | null>(null);
-  const mirrorStreamRef = React.useRef<MediaStream | null>(null);
-  const handleReturnRef = React.useRef<() => void>(() => {});
   const channelRef = usePresentChannel(showId);
   const sessionStartRef = React.useRef(Date.now());
   const dragStartRef = React.useRef<{ x: number; ratio: number } | null>(null);
@@ -409,15 +390,6 @@ export function PresenterPage() {
     return show?.resources ?? [];
   }, [offline, offlineData, show]);
   const canManage = offline ? false : (show?.can_manage ?? false);
-
-  // Links (toolbar quick links)
-  const { data: linksData } = useQuery({
-    queryKey: ["my-links"],
-    queryFn: () => api<LinksResponse>("/api/links/my-selection"),
-    enabled: showId > 0 && !offline,
-    staleTime: 60_000,
-  });
-  const links = linksData?.links ?? [];
 
   // Current resource
   const currentResource =
@@ -549,40 +521,6 @@ export function PresenterPage() {
   const goToSlide = React.useCallback(
     (index: number) => {
       if (index < 0 || index >= resources.length) return;
-      // Auto-return from link when navigating slides
-      if (openLinkName || openLinkUrl) {
-        if (mirrorStreamRef.current) {
-          mirrorStreamRef.current.getTracks().forEach((t) => t.stop());
-          mirrorStreamRef.current = null;
-        }
-        setIsMirroring(false);
-        if (linkWindowRef.current && !linkWindowRef.current.closed) {
-          linkWindowRef.current.close();
-        }
-        linkWindowRef.current = null;
-        const helper = (window as any).__shareHelperWindow;
-        if (helper && !helper.closed) {
-          helper.close();
-        }
-        (window as any).__shareHelperWindow = null;
-        delete (window as any).__onMirrorStream;
-        delete (window as any).__onMirrorEnd;
-        delete (window as any).__onMirrorFallback;
-        channelRef.current?.send({ type: "close-link" });
-        if (displayWindowRef.current && !displayWindowRef.current.closed) {
-          (displayWindowRef.current as any).__mirrorStream = null;
-          try {
-            const loc = displayWindowRef.current.location.href;
-            if (!loc.includes(`/shows/${showId}/display`)) {
-              displayWindowRef.current.location.href = `/shows/${showId}/display`;
-            }
-          } catch {
-            displayWindowRef.current.location.href = `/shows/${showId}/display`;
-          }
-        }
-        setOpenLinkName(null);
-        setOpenLinkUrl(null);
-      }
       setCurrentIndex(index);
       const res = resources[index];
       if (!res || !isAccessible(res)) return;
@@ -592,7 +530,7 @@ export function PresenterPage() {
         index,
       });
     },
-    [resources, channelRef, openLinkName, openLinkUrl, showId],
+    [resources, channelRef],
   );
 
   const goNext = React.useCallback(() => {
@@ -714,180 +652,12 @@ export function PresenterPage() {
 
   // ── End session ──
   const endPresentation = React.useCallback(() => {
-    // 外链清理
-    if (mirrorStreamRef.current) {
-      mirrorStreamRef.current.getTracks().forEach((t) => t.stop());
-      mirrorStreamRef.current = null;
-    }
-    setIsMirroring(false);
-    if (linkWindowRef.current && !linkWindowRef.current.closed) {
-      linkWindowRef.current.close();
-    }
-    linkWindowRef.current = null;
-    const helper = (window as any).__shareHelperWindow;
-    if (helper && !helper.closed) {
-      helper.close();
-    }
-    (window as any).__shareHelperWindow = null;
-    delete (window as any).__onMirrorStream;
-    delete (window as any).__onMirrorEnd;
-    delete (window as any).__onMirrorFallback;
-    if (displayWindowRef.current && !displayWindowRef.current.closed) {
-      (displayWindowRef.current as any).__mirrorStream = null;
-    }
-    setOpenLinkName(null);
-    setOpenLinkUrl(null);
     channelRef.current?.send({ type: "session-end" });
     if (displayWindowRef.current && !displayWindowRef.current.closed) {
       displayWindowRef.current.close();
     }
     navigate("/shows");
-  }, [channelRef, navigate, showId]);
-
-  // ── Link click handler ──
-  const handleLinkClick = React.useCallback(
-    async (link: LinkItem) => {
-      // 1. 打开外部链接弹窗（以最大化尺寸打开，稍后推到后台）
-      const sw = screen.availWidth;
-      const sh = screen.availHeight;
-      const popup = window.open(
-        link.url,
-        "presenter-link",
-        `popup=yes,width=${sw},height=${sh},left=0,top=0`,
-      );
-      linkWindowRef.current = popup;
-
-      // 2. 立即将演讲者视图拉回前台，弹窗去后台
-      if (popup) popup.blur();
-      window.focus();
-
-      // 3. 等待窗口管理器处理焦点切换
-      await new Promise((r) => setTimeout(r, 600));
-
-      // 3. 更新状态
-      setOpenLinkName(link.name);
-      setOpenLinkUrl(link.url);
-
-      // 4. 在演讲者视图调用 getDisplayMedia（选择器在此弹出，弹窗标签页已存在可选）
-      try {
-        const stream = await navigator.mediaDevices.getDisplayMedia({
-          video: { displaySurface: "browser" } as any,
-          audio: false,
-          selfBrowserSurface: "exclude",
-          surfaceSwitching: "exclude",
-        } as any);
-
-        mirrorStreamRef.current = stream;
-        setIsMirroring(true);
-
-        // 传递流给观众窗口（先检查是否还在 display 路由）
-        if (displayWindowRef.current && !displayWindowRef.current.closed) {
-          let displayOk = true;
-          try {
-            const loc = displayWindowRef.current.location.href;
-            if (!loc.includes(`/shows/${showId}/display`)) {
-              // 观众窗口被导航走了，恢复它
-              displayWindowRef.current.location.href = `/shows/${showId}/display`;
-              displayOk = false;
-            }
-          } catch {
-            // 跨域无法读取 location，说明已导航到外部URL，恢复它
-            displayWindowRef.current.location.href = `/shows/${showId}/display`;
-            displayOk = false;
-          }
-
-          if (displayOk) {
-            (displayWindowRef.current as any).__mirrorStream = stream;
-            channelRef.current?.send({ type: "open-link", url: link.url, name: link.name });
-          } else {
-            // 等观众窗口加载完再传流
-            setTimeout(() => {
-              if (displayWindowRef.current && !displayWindowRef.current.closed) {
-                (displayWindowRef.current as any).__mirrorStream = stream;
-                channelRef.current?.send({ type: "open-link", url: link.url, name: link.name });
-              }
-            }, 1500);
-          }
-        }
-
-        // 5. 共享建立后，将弹窗置顶
-        if (popup && !popup.closed) {
-          popup.focus();
-        }
-
-        // 监听流结束（用户在浏览器中点击"停止共享"）
-        stream.getVideoTracks()[0].onended = () => {
-          handleReturnRef.current?.();
-        };
-      } catch (err) {
-        console.warn("getDisplayMedia failed:", err);
-        // 不导航观众窗口（避免破坏 DisplayPage），只把弹窗置顶让用户操作
-        if (popup && !popup.closed) {
-          popup.focus();
-        }
-      }
-
-      // 6. 轮询检测弹窗关闭 → 自动返回
-      const checkClosed = setInterval(() => {
-        if (!linkWindowRef.current || linkWindowRef.current.closed) {
-          clearInterval(checkClosed);
-          handleReturnRef.current?.();
-        }
-      }, 500);
-    },
-    [showId],
-  );
-
-  const handleReturnFromLink = React.useCallback(() => {
-    // 停止流
-    if (mirrorStreamRef.current) {
-      mirrorStreamRef.current.getTracks().forEach((t) => t.stop());
-      mirrorStreamRef.current = null;
-    }
-    setIsMirroring(false);
-
-    // 关闭外部链接弹窗
-    if (linkWindowRef.current && !linkWindowRef.current.closed) {
-      linkWindowRef.current.close();
-    }
-    linkWindowRef.current = null;
-
-    // 清理辅助窗口（如果存在）
-    const helper = (window as any).__shareHelperWindow;
-    if (helper && !helper.closed) {
-      helper.close();
-    }
-    (window as any).__shareHelperWindow = null;
-
-    // 清理回调
-    delete (window as any).__onMirrorStream;
-    delete (window as any).__onMirrorEnd;
-    delete (window as any).__onMirrorFallback;
-
-    // 通知观众恢复
-    channelRef.current?.send({ type: "close-link" });
-
-    // 恢复观众窗口
-    if (displayWindowRef.current && !displayWindowRef.current.closed) {
-      (displayWindowRef.current as any).__mirrorStream = null;
-      try {
-        const loc = displayWindowRef.current.location.href;
-        if (!loc.includes(`/shows/${showId}/display`)) {
-          displayWindowRef.current.location.href = `/shows/${showId}/display`;
-        }
-      } catch {
-        displayWindowRef.current.location.href = `/shows/${showId}/display`;
-      }
-    }
-
-    setOpenLinkName(null);
-    setOpenLinkUrl(null);
-  }, [showId]);
-
-  // Keep handleReturnRef up to date for use in onended callback
-  React.useEffect(() => {
-    handleReturnRef.current = handleReturnFromLink;
-  }, [handleReturnFromLink]);
+  }, [channelRef, navigate]);
 
   // ── Remark toggle (independent) ──
   const toggleRemark = React.useCallback(
@@ -1045,39 +815,6 @@ export function PresenterPage() {
         <div className="flex items-center gap-6 text-sm font-mono tabular-nums">
           <span>{clock}</span>
           <span className="text-gray-400">已演讲 {elapsed}</span>
-        </div>
-        {/* Quick links (center) */}
-        <div className="flex-1 flex items-center justify-center overflow-x-auto">
-          {links.length > 0 && (
-            <div className="flex items-center gap-1">
-              {links.map((link) => (
-                <button
-                  key={link.id}
-                  onClick={() => handleLinkClick(link)}
-                  className={cn(
-                    "flex items-center gap-1 rounded px-2 py-0.5 text-xs transition whitespace-nowrap",
-                    openLinkName === link.name
-                      ? "bg-blue-600 text-white"
-                      : "bg-gray-700/50 text-gray-300 hover:bg-gray-600/70",
-                  )}
-                  title={link.url}
-                >
-                  <ExternalLink className="h-3 w-3" />
-                  {link.name}
-                </button>
-              ))}
-              {openLinkName && (
-                <button
-                  onClick={handleReturnFromLink}
-                  className="flex items-center gap-1 rounded bg-amber-700 px-2 py-0.5 text-xs text-white hover:bg-amber-600 transition whitespace-nowrap"
-                  title="返回放映"
-                >
-                  <ArrowLeft className="h-3 w-3" />
-                  返回放映
-                </button>
-              )}
-            </div>
-          )}
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -1315,36 +1052,7 @@ export function PresenterPage() {
           {/* Main display */}
           <div className="relative min-h-0 flex-1 bg-black flex items-center justify-center">
 
-            {openLinkUrl ? (
-              <div className="absolute inset-0 z-30 bg-gray-900 flex flex-col items-center justify-center gap-6">
-                <ExternalLink className="h-16 w-16 text-blue-400" />
-                <div className="text-center space-y-2">
-                  {isMirroring ? (
-                    <>
-                      <div className="h-3 w-3 bg-red-500 rounded-full animate-pulse" />
-                      <h2 className="text-xl font-bold text-white">正在共享外部网页</h2>
-                    </>
-                  ) : (
-                    <>
-                      <div className="animate-spin h-8 w-8 border-4 border-blue-400 border-t-transparent rounded-full" />
-                      <h2 className="text-xl font-bold text-white">请在弹出的对话框中选择要共享的标签页</h2>
-                    </>
-                  )}
-                  {openLinkName && <p className="text-blue-300 text-base">{openLinkName}</p>}
-                  {openLinkUrl && <p className="text-gray-400 text-sm break-all max-w-lg">{openLinkUrl}</p>}
-                </div>
-                <div className="flex gap-4 mt-4">
-                  <Button
-                    size="lg"
-                    onClick={handleReturnFromLink}
-                    className="bg-amber-600 hover:bg-amber-700 text-white"
-                  >
-                    <ArrowLeft className="h-5 w-5 mr-2" />
-                    返回放映
-                  </Button>
-                </div>
-              </div>
-            ) : currentImageUrl ? (
+            {currentImageUrl ? (
               <>
                 {/* 16:9 aspect-ratio container - centered in the left panel */}
                 <div

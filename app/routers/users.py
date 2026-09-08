@@ -10,12 +10,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.permissions import (
     ADMIN_ROLES,
-    ROLE_ADMIN,
-    ROLE_SUPER_ADMIN,
+    ROLE_OPERATIONS_ADMIN,
+    ROLE_SYSTEM_ADMIN,
     ROLE_USER,
     require_admin,
-    require_super_admin,
-    is_super_admin,
+    require_system_admin,
+    is_system_admin,
 )
 from app.core.security import hash_password
 from app.core.cache import invalidate_user
@@ -37,10 +37,10 @@ router = APIRouter()
 
 @router.get("/admin/users")
 def list_users(
-    _: Any = Depends(require_admin),
+    _: Any = Depends(require_system_admin),
     db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
-    """获取用户列表（管理员）"""
+    """获取用户列表（系统管理员）"""
     rows = db.execute("SELECT * FROM users ORDER BY id").fetchall()
     return {"users": [_serialize_user(row) for row in rows]}
 
@@ -58,14 +58,14 @@ def user_options(
 @router.post("/admin/users")
 def create_user(
     payload: UserPayload,
-    admin: sqlite3.Row = Depends(require_admin),
+    admin: sqlite3.Row = Depends(require_system_admin),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
-    """创建新用户（管理员）"""
-    if payload.role not in {ROLE_SUPER_ADMIN, ROLE_ADMIN, ROLE_USER}:
+    """创建新用户（系统管理员）"""
+    if payload.role not in {ROLE_SYSTEM_ADMIN, ROLE_OPERATIONS_ADMIN, ROLE_USER}:
         raise HTTPException(400, "角色不正确")
-    if payload.role == ROLE_SUPER_ADMIN and not is_super_admin(admin):
-        raise HTTPException(403, "只有超级管理员能创建超级管理员")
+    if payload.role == ROLE_SYSTEM_ADMIN and not is_system_admin(admin):
+        raise HTTPException(403, "只有系统管理员能创建系统管理员")
 
     # 确定密码和是否需要强制修改
     must_change_pwd = 0
@@ -104,33 +104,33 @@ def create_user(
 def update_user(
     user_id: int,
     payload: UserPayload,
-    admin: sqlite3.Row = Depends(require_admin),
+    admin: sqlite3.Row = Depends(require_system_admin),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
-    """更新用户信息（管理员）"""
-    if payload.role not in {ROLE_SUPER_ADMIN, ROLE_ADMIN, ROLE_USER}:
+    """更新用户信息（系统管理员）"""
+    if payload.role not in {ROLE_SYSTEM_ADMIN, ROLE_OPERATIONS_ADMIN, ROLE_USER}:
         raise HTTPException(400, "角色不正确")
     
     existing = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     if existing is None:
         raise HTTPException(404, "用户不存在")
     
-    # 超级管理员的身份只能由超级管理员授予/撤销
-    if not is_super_admin(admin):
-        if existing["role"] == ROLE_SUPER_ADMIN:
-            raise HTTPException(403, "只有超级管理员能修改超级管理员账号")
-        if payload.role == ROLE_SUPER_ADMIN:
-            raise HTTPException(403, "只有超级管理员能授予超级管理员角色")
+    # 系统管理员的身份只能由系统管理员授予/撤销
+    if not is_system_admin(admin):
+        if existing["role"] == ROLE_SYSTEM_ADMIN:
+            raise HTTPException(403, "只有系统管理员能修改系统管理员账号")
+        if payload.role == ROLE_SYSTEM_ADMIN:
+            raise HTTPException(403, "只有系统管理员能授予系统管理员角色")
     
     if int(existing["id"]) == int(admin["id"]) and payload.role not in ADMIN_ROLES:
         raise HTTPException(400, "不能取消自己的管理员角色")
     
     if (
         int(existing["id"]) == int(admin["id"])
-        and existing["role"] == ROLE_SUPER_ADMIN
-        and payload.role != ROLE_SUPER_ADMIN
+        and existing["role"] == ROLE_SYSTEM_ADMIN
+        and payload.role != ROLE_SYSTEM_ADMIN
     ):
-        raise HTTPException(400, "不能取消自己的超级管理员角色")
+        raise HTTPException(400, "不能取消自己的系统管理员角色")
     
     fields: list[Any] = [payload.name, payload.username, payload.feishu_id, payload.role, now_iso()]
     sql = "UPDATE users SET name = ?, username = ?, feishu_id = ?, role = ?, updated_at = ?"
@@ -156,16 +156,16 @@ def update_user(
 @router.delete("/admin/users/{user_id}")
 def delete_user(
     user_id: int,
-    admin: sqlite3.Row = Depends(require_admin),
+    admin: sqlite3.Row = Depends(require_system_admin),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, bool]:
-    """删除用户（管理员）"""
+    """删除用户（系统管理员）"""
     if user_id == int(admin["id"]):
         raise HTTPException(400, "不能删除当前登录用户")
     
     target = db.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
-    if target is not None and target["role"] == ROLE_SUPER_ADMIN and not is_super_admin(admin):
-        raise HTTPException(403, "只有超级管理员能删除超级管理员账号")
+    if target is not None and target["role"] == ROLE_SYSTEM_ADMIN and not is_system_admin(admin):
+        raise HTTPException(403, "只有系统管理员能删除系统管理员账号")
     
     try:
         db.execute("DELETE FROM users WHERE id = ?", (user_id,))
@@ -179,10 +179,10 @@ def delete_user(
 @router.post("/admin/users/bulk-delete")
 def bulk_delete_users(
     payload: UserDeletePayload,
-    admin: sqlite3.Row = Depends(require_admin),
+    admin: sqlite3.Row = Depends(require_system_admin),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
-    """批量删除用户（管理员）"""
+    """批量删除用户（系统管理员）"""
     user_ids = sorted({int(uid) for uid in payload.user_ids if int(uid) > 0})
     if not user_ids:
         raise HTTPException(400, "请选择要删除的用户")
@@ -213,7 +213,7 @@ def bulk_delete_users(
 def transfer_and_delete_user(
     user_id: int,
     payload: UserTransferDeletePayload,
-    admin: sqlite3.Row = Depends(require_admin),
+    admin: sqlite3.Row = Depends(require_system_admin),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
     """将用户关联数据转移给目标用户后删除该用户"""
@@ -226,8 +226,8 @@ def transfer_and_delete_user(
     source = db.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
     if source is None:
         raise HTTPException(404, "源用户不存在")
-    if source["role"] == ROLE_SUPER_ADMIN and not is_super_admin(admin):
-        raise HTTPException(403, "只有超级管理员能删除超级管理员账号")
+    if source["role"] == ROLE_SYSTEM_ADMIN and not is_system_admin(admin):
+        raise HTTPException(403, "只有系统管理员能删除系统管理员账号")
 
     # 验证目标用户存在
     target = db.execute("SELECT id FROM users WHERE id = ?", (payload.target_user_id,)).fetchone()
@@ -245,7 +245,6 @@ def transfer_and_delete_user(
         ("fonts", "uploaded_by"),
         ("shows", "owner_id"),
         ("shows", "updated_by"),
-        ("links", "owner_id"),
         ("tasks", "owner_id"),
     ]
     for table, col in _transfer_tables:

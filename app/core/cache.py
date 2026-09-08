@@ -1,6 +1,6 @@
 """
 SlideFlow 进程内 TTL 缓存
-用于减少高频数据库查询（用户信息、配置等），提升并发性能。
+用于减少高频用户信息查询，提升并发性能。
 注意：这是进程级缓存，多 worker 进程间不共享。
 """
 from __future__ import annotations
@@ -62,8 +62,6 @@ class TTLCache:
 
 # ── 全局缓存实例 ──
 user_cache = TTLCache(ttl_seconds=60, max_size=200)      # 用户信息缓存
-config_cache = TTLCache(ttl_seconds=300, max_size=50)    # 配置缓存
-nav_cache = TTLCache(ttl_seconds=600, max_size=10)       # 导航配置缓存
 
 
 def invalidate_user(user_id: int | None = None) -> None:
@@ -73,13 +71,3 @@ def invalidate_user(user_id: int | None = None) -> None:
     else:
         user_cache.invalidate(f"user:{user_id}")
         user_cache.invalidate(f"session_user:{user_id}")
-
-
-def invalidate_config() -> None:
-    """清除配置缓存"""
-    config_cache.invalidate()
-
-
-def invalidate_nav() -> None:
-    """清除导航缓存"""
-    nav_cache.invalidate()

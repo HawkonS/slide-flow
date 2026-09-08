@@ -136,7 +136,6 @@ export function ResourceEditDialog({
         if (form.management_scope === "partial") {
           fd.append("manage_user_ids", JSON.stringify(form.manage_user_ids));
         }
-        fd.append("resource_type", "asset");
         fd.append("remark_html", form.common_remark_html);
         fd.append("ppt_file", form.pptFile);
         if (form.pngFile) fd.append("png_file", form.pngFile);

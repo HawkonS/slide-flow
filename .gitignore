@@ -14,17 +14,10 @@ node_modules/
 # Logs
 *.log
 
-# Storage data (runtime) - legacy location
-storage/downloads/
-storage/fonts/
-storage/resources/
-storage/templates/
-storage/thumbs/
-
 # 数据目录（DB + 素材 + 日志）
 data/
 
-# Build output (auto-built by start.sh, not tracked)
+# Build output (auto-built by run.sh, not tracked)
 app/static/dist/
 *.tsbuildinfo
 

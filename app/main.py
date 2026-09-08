@@ -5,27 +5,24 @@ import base64
 import concurrent.futures
 import copy
 import io
-import ipaddress
 import json
 import logging
 import os
 import re
 import random
 import shutil
-import socket
 import sqlite3
 import string
 import subprocess
 import tempfile
 import threading
 import time
-import urllib.request
 import uuid
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import quote
 
 import psutil
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
@@ -37,40 +34,30 @@ from PIL import Image
 # PPT 渲染产生的 PNG 是受信任的内部资源，分辨率可能很大，
 # 这里解除 PIL 的 DecompressionBomb 限制，避免 _ensure_preview_thumb 静默失败导致离线缓存缩略图丢失。
 Image.MAX_IMAGE_PIXELS = None
-from pydantic import BaseModel
+from app.routers.dependencies import ApiPayload
 
-from app.config import (
-    CONFIG_GROUPS,
-    CONFIG_META,
-    PROPERTIES_FILE,
-    _coerce_value,
-    read_config_view,
-    reload_settings,
-    settings,
-    write_properties,
-)
+from app.config import settings
 from app.core.fonts import (
     missing_fonts,
     normalize_font_name,
     validate_font_file,
 )
 from app.core.permissions import (
-    ADMIN_ROLES,
-    ROLE_ADMIN,
-    ROLE_SUPER_ADMIN,
-    ROLE_USER,
-    can_manage_link,
+    SESSION_COOKIE,
     can_manage_resource,
     can_manage_show,
-    can_view_link,
     can_view_resource,
     can_view_show,
     is_admin,
-    is_super_admin,
+    is_system_admin,
+    require_admin,
+    require_system_admin,
+    require_user,
 )
 from app.core.ppt import build_image_pptx, detect_ppt_fonts, merge_pptx_files, slide_count, split_pptx_to_single_pages, add_watermark_to_image, add_watermark_to_pptx, _build_watermark_tile, fit_image_to_canvas, determine_pdf_canvas_size
-from app.core.security import create_present_token, create_session_token, hash_password, read_session_token, verify_password, verify_present_token
+from app.core.security import create_present_token, read_session_token, verify_present_token
 from app.core.storage import copy_into, safe_filename, save_upload, unique_child_dir
+from app.core.task_events import fetch_task_events, latest_task_event_id
 from app.db import get_db, init_db, known_font_aliases, now_iso
 
 # ── 任务取消标志: task_id -> threading.Event ──
@@ -83,56 +70,6 @@ _split_semaphore = asyncio.Semaphore(settings.max_concurrent_splits)
 # ── 拆分任务超时（秒）──
 SPLIT_TASK_TIMEOUT = settings.split_task_timeout
 
-# ── WebSocket 连接管理：user_id -> [WebSocket, ...] ──
-_ws_connections: dict[int, list[WebSocket]] = {}
-_ws_lock = asyncio.Lock()
-
-
-async def broadcast_to_user(user_id: int, message: dict) -> None:
-    """向指定用户的所有 WebSocket 连接推送 JSON 消息。
-
-    仅可从运行中的事件循环调用（调用方需在 async 上下文）。本函数会在未以
-    初始化、未连接、发送异常等场景下以警告日志输出诊断信息，但不会报错中
-    断调用者（下载任务成功后的推送不应因为客户端未连接而失败）。
-    """
-    uid = int(user_id)
-    connections = list(_ws_connections.get(uid, []))
-    if not connections:
-        logger.debug(
-            "broadcast_to_user: no active WS for user_id=%s msg_type=%s",
-            uid,
-            message.get("type") if isinstance(message, dict) else "<non-dict>",
-        )
-        return
-    dead: list[WebSocket] = []
-    sent = 0
-    for ws in connections:
-        try:
-            await ws.send_json(message)
-            sent += 1
-        except Exception as exc:
-            logger.warning(
-                "broadcast_to_user: send failed user_id=%s err=%s", uid, exc
-            )
-            dead.append(ws)
-    logger.debug(
-        "broadcast_to_user user_id=%s msg_type=%s sent=%d dead=%d",
-        uid,
-        message.get("type") if isinstance(message, dict) else "<non-dict>",
-        sent,
-        len(dead),
-    )
-    if dead:
-        async with _ws_lock:
-            current = _ws_connections.get(uid, [])
-            for ws in dead:
-                if ws in current:
-                    current.remove(ws)
-            if not current:
-                _ws_connections.pop(uid, None)
-
-
-SESSION_COOKIE = "slide_flow_session"
 PPT_EXTENSIONS = {".pptx"}
 OFFICE_EXTENSIONS = {".ppt", ".pptx", ".pot", ".potx", ".pps", ".ppsx"}
 
@@ -162,7 +99,17 @@ else:
     )
 
 # 注册模块化路由
-from app.routers import pages, config, system, auth, user_center, users, fonts, links, tags
+from app.routers import (
+    auth,
+    config,
+    download_records,
+    fonts,
+    pages,
+    system,
+    tags,
+    user_center,
+    users,
+)
 
 app.include_router(pages.router, prefix="/api", tags=["pages"])
 app.include_router(config.router, prefix="/api", tags=["config"])
@@ -171,8 +118,8 @@ app.include_router(auth.router, prefix="/api", tags=["auth"])
 app.include_router(user_center.router, prefix="/api", tags=["user_center"])
 app.include_router(users.router, prefix="/api", tags=["users"])
 app.include_router(fonts.router, prefix="/api", tags=["fonts"])
-app.include_router(links.router, prefix="/api", tags=["links"])
 app.include_router(tags.router, prefix="/api", tags=["tags"])
+app.include_router(download_records.router, prefix="/api", tags=["download_records"])
 
 # 飞书 SSO 模块：依赖缺失或初始化失败时优雅降级，不影响主应用启动
 try:
@@ -269,9 +216,6 @@ if settings.response_cache_enabled:
 class SecurityHeadersMiddleware:
     """为所有 HTTP 响应添加安全响应头（纯 ASGI，不触碰 receive 流）"""
 
-    # 这些路径需要被 iframe 嵌入，跳过 X-Frame-Options
-    _FRAME_ALLOWED_PATHS = ("/api/proxy/webpage",)
-
     def __init__(self, app):
         self.app = app
 
@@ -280,17 +224,13 @@ class SecurityHeadersMiddleware:
             await self.app(scope, receive, send)
             return
 
-        path = scope.get("path", "")
-        skip_frame_options = any(path.startswith(p) for p in self._FRAME_ALLOWED_PATHS)
-
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
                 raw_headers = list(message.get("headers", []))
                 raw_headers.append((b"x-content-type-options", b"nosniff"))
                 raw_headers.append((b"referrer-policy", b"strict-origin-when-cross-origin"))
                 raw_headers.append((b"x-xss-protection", b"1; mode=block"))
-                if not skip_frame_options:
-                    raw_headers.append((b"x-frame-options", b"SAMEORIGIN"))
+                raw_headers.append((b"x-frame-options", b"SAMEORIGIN"))
                 if settings.web_https:
                     raw_headers.append(
                         (b"strict-transport-security", b"max-age=31536000")
@@ -341,12 +281,7 @@ app.mount(
 )
 
 
-class LoginPayload(BaseModel):
-    username: str
-    password: str
-
-
-class MetadataPayload(BaseModel):
+class MetadataPayload(ApiPayload):
     name: str
     subject: str = ""
     tags: str = ""
@@ -358,46 +293,26 @@ class MetadataPayload(BaseModel):
     secrecy_level: str
 
 
-class CommonRemarkPayload(BaseModel):
+class CommonRemarkPayload(ApiPayload):
     content_html: str
     apply_scope: str = "latest"
     version_id: int | None = None
 
 
-class PersonalRemarkPayload(BaseModel):
+class PersonalRemarkPayload(ApiPayload):
     content_html: str
     version_id: int | None = None
 
 
-class SplitUploadPayload(BaseModel):
-    name_prefix: str = "拆分页"
-    subject: str = ""
-    tags: str = ""
-    status: str = "active"
-    visibility_scope: str = "private"
-    visible_user_ids: list[int] = []
-    management_scope: str = "private"
-    manage_user_ids: list[int] = []
-    secrecy_level: str = "public"
-
-
-class FontDeletePayload(BaseModel):
-    font_ids: list[int]
-
-
-class TaskDeletePayload(BaseModel):
+class TaskDeletePayload(ApiPayload):
     task_ids: list[int]
 
 
-class TemplateDeletePayload(BaseModel):
+class TemplateDeletePayload(ApiPayload):
     template_ids: list[int]
 
 
-class LinkDeletePayload(BaseModel):
-    link_ids: list[int]
-
-
-class TemplatePayload(BaseModel):
+class TemplatePayload(ApiPayload):
     name: str = ""
     series: str
     subject: str
@@ -410,22 +325,22 @@ class TemplatePayload(BaseModel):
     manage_user_ids: list[int] = []
 
 
-class TemplateSeriesOrderPayload(BaseModel):
+class TemplateSeriesOrderPayload(ApiPayload):
     series: str
     template_ids: list[int]
 
 
-class TemplateSubjectOrderPayload(BaseModel):
+class TemplateSubjectOrderPayload(ApiPayload):
     subject: str
     series: list[TemplateSeriesOrderPayload]
 
 
-class TemplateOrderPayload(BaseModel):
+class TemplateOrderPayload(ApiPayload):
     template_ids: list[int] = []
     subjects: list[TemplateSubjectOrderPayload] = []
 
 
-class ShowCreatePayload(BaseModel):
+class ShowCreatePayload(ApiPayload):
     name: str
     subject: str = ""
     tags: str = ""
@@ -439,7 +354,7 @@ class ShowCreatePayload(BaseModel):
     change_note: str = ""
 
 
-class ShowUpdatePayload(BaseModel):
+class ShowUpdatePayload(ApiPayload):
     name: str
     subject: str = ""
     tags: str = ""
@@ -451,76 +366,44 @@ class ShowUpdatePayload(BaseModel):
     manage_user_ids: list[int] = []
 
 
-class ShowResourcesPayload(BaseModel):
+class ShowResourcesPayload(ApiPayload):
     resource_ids: list[int] = []
 
 
-class ShowResourceAppendPayload(BaseModel):
+class ShowResourceAppendPayload(ApiPayload):
     resource_id: int
 
 
-class ShowResourceHiddenPayload(BaseModel):
+class ShowResourceHiddenPayload(ApiPayload):
     hidden: bool
 
 
-class ShowDuplicatePayload(BaseModel):
+class ShowStandardPayload(ApiPayload):
+    standard: bool
+
+
+class ShowDuplicatePayload(ApiPayload):
     name: str
 
 
-class ShowIteratePayload(BaseModel):
+class ShowIteratePayload(ApiPayload):
     change_note: str = ""
     name: str | None = None
     resource_ids: list[int] | None = None
 
 
-class ShowUpgradePayload(BaseModel):
+class ShowUpgradePayload(ApiPayload):
     resource_ids: list[int] = []
 
 
-class ShowIterateUpgradePayload(BaseModel):
+class ShowIterateUpgradePayload(ApiPayload):
     resource_ids: list[int] = []          # 要升级的资源ID列表
     remarks: dict[str, str] = {}          # {resource_id: remark_html} 放映备注
     change_note: str = ""                 # 版本变更说明
 
 
-class ShowRemarkPayload(BaseModel):
+class ShowRemarkPayload(ApiPayload):
     content_html: str = ""
-
-
-class LinkCreatePayload(BaseModel):
-    name: str
-    url: str
-    memo: str = ""
-    visibility_scope: str = "public"
-    management_scope: str = "private"
-    visible_user_ids: list[int] = []
-    manage_user_ids: list[int] = []
-    is_enabled: bool = True
-    network_env: str = "public_net"
-
-
-class LinkUpdatePayload(BaseModel):
-    name: str
-    url: str
-    memo: str = ""
-    visibility_scope: str = "public"
-    management_scope: str = "private"
-    visible_user_ids: list[int] = []
-    manage_user_ids: list[int] = []
-    is_enabled: bool = True
-    network_env: str = "public_net"
-
-
-class LinkSelectionPayload(BaseModel):
-    link_ids: list[int] = []
-
-
-class LinkOrderPayload(BaseModel):
-    link_ids: list[int] = []
-
-
-class UserPreferencesPayload(BaseModel):
-    preferences: dict[str, str] = {}
 
 
 def db_dep():
@@ -575,18 +458,13 @@ def on_startup() -> None:
     asyncio.create_task(_download_cleanup_loop())
 
 
-@app.get("/", response_class=HTMLResponse)
-def spa_index() -> FileResponse:
-    return _serve_spa()
-
-
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return {key: row[key] for key in row.keys()}
 
 
 def _font_aliases_from_row(row: sqlite3.Row) -> list[str]:
-    """从 fonts 表行读取别名 JSON 列表，兼容早期 ' / ' 分隔格式。"""
-    raw = row["aliases"] if "aliases" in row.keys() else ""
+    """从 fonts 表行读取当前格式的别名 JSON 列表。"""
+    raw = row["aliases"]
     aliases: list[str] = []
     seen: set[str] = set()
     try:
@@ -598,13 +476,6 @@ def _font_aliases_from_row(row: sqlite3.Row) -> list[str]:
             if not isinstance(item, str):
                 continue
             alias = item.strip()
-            key = alias.lower()
-            if alias and key not in seen:
-                aliases.append(alias)
-                seen.add(key)
-    if not aliases:
-        for alias in (row["family_name"] or "").split(" / "):
-            alias = alias.strip()
             key = alias.lower()
             if alias and key not in seen:
                 aliases.append(alias)
@@ -662,11 +533,24 @@ def _parse_id_list(raw: str | None) -> list[int]:
         return []
     try:
         value = json.loads(raw)
-        if isinstance(value, list):
+        if isinstance(value, list) and all(isinstance(item, int) for item in value):
             return [int(item) for item in value]
-    except Exception:
+    except (json.JSONDecodeError, TypeError):
         pass
-    return [int(item) for item in raw.split(",") if item.strip().isdigit()]
+    raise HTTPException(400, "用户 ID 列表必须是 JSON 整数数组")
+
+
+def _reject_removed_query_params(request: Request, *names: str) -> None:
+    removed = sorted(name for name in names if name in request.query_params)
+    if removed:
+        raise HTTPException(400, f"当前版本已移除查询参数: {', '.join(removed)}")
+
+
+async def _reject_removed_form_fields(request: Request, *names: str) -> None:
+    form = await request.form()
+    removed = sorted(name for name in names if name in form)
+    if removed:
+        raise HTTPException(400, f"当前版本已移除表单字段: {', '.join(removed)}")
 
 
 def _validate_scope(scope: str) -> str:
@@ -688,17 +572,9 @@ def _validate_resource_status(status: str | None) -> str:
     return value
 
 
-def _validate_template_type(resource_type: str, template_type: str | None) -> str | None:
-    if resource_type == "template":
-        if template_type not in {"cover", "catalog", "content"}:
-            raise HTTPException(400, "模板类型不正确")
-        return template_type
-    return None
-
-
-def _validate_template_subject(resource_type: str, subject: str | None) -> str:
+def _validate_resource_subject(subject: str | None) -> str:
     value = (subject or "").strip()
-    if resource_type != "template" and not value:
+    if not value:
         value = DEFAULT_RESOURCE_SUBJECT
     if not value:
         raise HTTPException(400, "请填写主体")
@@ -749,18 +625,18 @@ def _validate_template_series(series: str | None) -> str:
     return value
 
 
-def _template_display_name(series: str, subject: str, platform: str, ratio: str, template_type: str) -> str:
+def _template_name(series: str, subject: str, platform: str, ratio: str, template_type: str) -> str:
     type_labels = {"cover": "封面", "catalog": "目录", "content": "正文", "other": "其他"}
     platform_labels = {"wps": "WPS", "microsoft": "Microsoft"}
     return f"{subject}-{series}-{type_labels.get(template_type, template_type)}-{platform_labels.get(platform, platform)}-{ratio}"
 
 
 def _template_office_file_name(series: str, subject: str, platform: str, ratio: str, template_type: str, suffix: str) -> str:
-    return safe_filename(f"{_template_display_name(series, subject, platform, ratio, template_type)}{suffix.lower() or '.pptx'}")
+    return safe_filename(f"{_template_name(series, subject, platform, ratio, template_type)}{suffix.lower() or '.pptx'}")
 
 
 def _template_preview_file_name(series: str, subject: str, platform: str, ratio: str, template_type: str) -> str:
-    return safe_filename(f"{_template_display_name(series, subject, platform, ratio, template_type)}_预览.png")
+    return safe_filename(f"{_template_name(series, subject, platform, ratio, template_type)}_预览.png")
 
 
 def _rename_template_file(path: Path, file_name: str) -> Path:
@@ -880,32 +756,6 @@ def _scope_user_ids(db: sqlite3.Connection, table: str, resource_id: int) -> lis
 def _template_scope_user_ids(db: sqlite3.Connection, table: str, template_id: int) -> list[int]:
     rows = db.execute(f"SELECT user_id FROM {table} WHERE template_id = ? ORDER BY user_id", (template_id,)).fetchall()
     return [int(row["user_id"]) for row in rows]
-
-
-def _current_user_from_request(request: Request, db: sqlite3.Connection) -> sqlite3.Row | None:
-    user_id = read_session_token(request.cookies.get(SESSION_COOKIE), settings.secret_key)
-    if not user_id:
-        return None
-    return db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-
-
-def require_user(request: Request, db: sqlite3.Connection = Depends(db_dep)) -> sqlite3.Row:
-    user = _current_user_from_request(request, db)
-    if user is None:
-        raise HTTPException(401, "请先登录")
-    return user
-
-
-def require_admin(user: sqlite3.Row = Depends(require_user)) -> sqlite3.Row:
-    if not is_admin(user):
-        raise HTTPException(403, "需要管理员权限")
-    return user
-
-
-def require_super_admin(user: sqlite3.Row = Depends(require_user)) -> sqlite3.Row:
-    if not is_super_admin(user):
-        raise HTTPException(403, "需要超级管理员权限")
-    return user
 
 
 def _generate_track_code(db: sqlite3.Connection) -> str:
@@ -1203,7 +1053,7 @@ def _linked_template_user_ids(db: sqlite3.Connection, table: str, template_id: i
 
 
 def can_view_template(db: sqlite3.Connection, template: sqlite3.Row, user: sqlite3.Row) -> bool:
-    if is_super_admin(user):
+    if is_system_admin(user):
         return True
     if int(template["owner_id"]) == int(user["id"]):
         return True
@@ -1218,9 +1068,9 @@ def can_view_template(db: sqlite3.Connection, template: sqlite3.Row, user: sqlit
 
 
 def can_manage_template(db: sqlite3.Connection, template: sqlite3.Row, user: sqlite3.Row) -> bool:
-    if is_super_admin(user):
+    if is_system_admin(user):
         return True
-    # 模板仅允许管理员级别（系统管理员 / 超级管理员）维护
+    # 模板仅允许管理员级别（运营管理员 / 系统管理员）维护
     if not is_admin(user):
         return False
     if int(template["owner_id"]) == int(user["id"]):
@@ -1344,8 +1194,7 @@ def _serialize_resource(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.
         {
             "owner": _row_to_dict(owner) if owner else None,
             "updated_by": _row_to_dict(updated_by_user) if updated_by_user else None,
-            "can_manage": can_manage_resource(db, row, user)
-            and not (row["resource_type"] == "template" and not is_admin(user)),
+            "can_manage": can_manage_resource(db, row, user),
             "visible_user_ids": _scope_user_ids(db, "resource_visibility", int(row["id"])),
             "manage_user_ids": _scope_user_ids(db, "resource_management", int(row["id"])),
             "current": current,
@@ -1380,8 +1229,7 @@ def _serialize_resource_lite(db: sqlite3.Connection, row: sqlite3.Row, user: sql
     payload.update(
         {
             "owner": _row_to_dict(owner) if owner else None,
-            "can_manage": can_manage_resource(db, row, user)
-            and not (row["resource_type"] == "template" and not is_admin(user)),
+            "can_manage": can_manage_resource(db, row, user),
             "current": current,
             "has_personal_remark": _has_personal_remark(db, int(row["id"]), int(user["id"])),
             "is_pinned": _is_resource_pinned(db, int(row["id"]), int(user["id"])),
@@ -1392,7 +1240,7 @@ def _serialize_resource_lite(db: sqlite3.Connection, row: sqlite3.Row, user: sql
 
 def _serialize_template(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row) -> dict[str, Any]:
     owner = db.execute("SELECT id, name, username FROM users WHERE id = ?", (row["owner_id"],)).fetchone()
-    font_names = _json_loads(row["font_names"], []) if "font_names" in row.keys() else []
+    font_names = _json_loads(row["font_names"], [])
     payload = _row_to_dict(row)
     payload.pop("office_path", None)
     payload.pop("png_path", None)
@@ -1407,7 +1255,7 @@ def _serialize_template(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.
             "download_url": f"/api/templates/{row['id']}/download",
             "font_names": font_names,
             "font_aliases": _font_alias_map(font_names, db),
-            "missing_fonts": _json_loads(row["missing_fonts"], []) if "missing_fonts" in row.keys() else [],
+            "missing_fonts": _json_loads(row["missing_fonts"], []),
         }
     )
     return payload
@@ -1454,11 +1302,6 @@ def _validate_ppt_upload(upload: UploadFile) -> None:
     suffix = Path(upload.filename or "").suffix.lower()
     if suffix not in PPT_EXTENSIONS:
         raise HTTPException(400, "目前仅支持上传 PPTX 文件")
-
-
-def _require_template_admin(resource: sqlite3.Row, user: sqlite3.Row) -> None:
-    if resource["resource_type"] == "template" and not is_admin(user):
-        raise HTTPException(403, "模板只能由管理员维护")
 
 
 def _show_scope_user_ids(db: sqlite3.Connection, table: str, show_id: int) -> list[int]:
@@ -1564,6 +1407,7 @@ def _serialize_show(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row)
         "visibility_scope": row["visibility_scope"],
         "management_scope": row["management_scope"],
         "secrecy_level": row["secrecy_level"],
+        "is_standard": bool(row["is_standard"]),
         "series_id": row["series_id"],
         "version_no": row["version_no"],
         "change_note": row["change_note"],
@@ -1607,6 +1451,7 @@ def _serialize_show_lite(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3
         "tags": row["tags"],
         "status": row["status"],
         "secrecy_level": row["secrecy_level"],
+        "is_standard": bool(row["is_standard"]),
         "series_id": row["series_id"],
         "version_no": row["version_no"],
         "version_count": version_count,
@@ -1618,294 +1463,6 @@ def _serialize_show_lite(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3
         "is_pinned": _is_show_pinned(db, int(row["id"]), int(user["id"])),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
-    }
-
-
-def _link_scope_user_ids(db: sqlite3.Connection, table: str, link_id: int) -> list[int]:
-    rows = db.execute(f"SELECT user_id FROM {table} WHERE link_id = ? ORDER BY user_id", (link_id,)).fetchall()
-    return [int(row["user_id"]) for row in rows]
-
-
-def _set_link_scope_users(db: sqlite3.Connection, table: str, link_id: int, user_ids: list[int]) -> None:
-    db.execute(f"DELETE FROM {table} WHERE link_id = ?", (link_id,))
-    for uid in sorted(set(user_ids)):
-        db.execute(f"INSERT OR IGNORE INTO {table} (link_id, user_id) VALUES (?, ?)", (link_id, uid))
-
-
-def _link_row(db: sqlite3.Connection, link_id: int) -> sqlite3.Row:
-    row = db.execute("SELECT * FROM links WHERE id = ?", (link_id,)).fetchone()
-    if row is None:
-        raise HTTPException(404, "链接不存在")
-    return row
-
-
-def _serialize_link(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row) -> dict[str, Any]:
-    owner = db.execute("SELECT id, name, username FROM users WHERE id = ?", (row["owner_id"],)).fetchone()
-    visible_user_ids = _link_scope_user_ids(db, "link_visibility", int(row["id"]))
-    manage_user_ids = _link_scope_user_ids(db, "link_management", int(row["id"]))
-    return {
-        "id": row["id"],
-        "name": row["name"],
-        "url": row["url"],
-        "memo": row["memo"],
-        "owner_id": row["owner_id"],
-        "owner": _row_to_dict(owner) if owner else None,
-        "visibility_scope": row["visibility_scope"],
-        "management_scope": row["management_scope"],
-        "is_enabled": bool(row["is_enabled"]),
-        "network_env": row["networkEnv"] if "networkEnv" in row.keys() else "public_net",
-        "sort_order": int(row["sort_order"]) if "sort_order" in row.keys() else 0,
-        "can_manage": can_manage_link(db, row, user),
-        "visible_user_ids": visible_user_ids,
-        "manage_user_ids": manage_user_ids,
-        "created_at": row["created_at"],
-        "updated_at": row["updated_at"],
-    }
-
-
-# ==================== 系统配置和系统管理 API ====================
-# 已迁移到 app/routers/config.py 和 app/routers/system.py
-
-
-
-# ==================== 认证 API ====================
-# 已迁移到 app/routers/auth.py
-
-
-# ==================== 用户管理 API ====================
-# 已迁移到 app/routers/users.py 和 app/routers/user_center.py
-
-@app.get("/api/users/options")
-def user_options(
-    _: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_read_dep),
-) -> dict[str, Any]:
-    rows = db.execute("SELECT id, name, username, role FROM users ORDER BY role, name").fetchall()
-    return {"users": [_row_to_dict(row) for row in rows]}
-def my_personal_remark_summary(
-    user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    """当前用户有非空个人备注的资源 id 汇总（前端筛选用）。"""
-    rows = db.execute(
-        "SELECT DISTINCT resource_id, content_html FROM personal_remarks WHERE user_id = ?",
-        (int(user["id"]),),
-    ).fetchall()
-    ids: set[int] = set()
-    for r in rows:
-        html = r["content_html"] or ""
-        plain = _HTML_TAG_RE.sub("", html).replace("\xa0", " ").strip()
-        if plain:
-            ids.add(int(r["resource_id"]))
-    return {"resource_ids": sorted(ids)}
-
-
-# ────────────────────────────── 首页置顶 / 概览 ──────────────────────────────
-def pin_resource(
-    resource_id: int,
-    user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    row = _resource_row(db, resource_id)
-    if not can_view_resource(db, row, user):
-        raise HTTPException(403, "无权访问该资源")
-    db.execute(
-        "INSERT OR IGNORE INTO user_pinned_resources (user_id, resource_id, pinned_at) VALUES (?, ?, ?)",
-        (int(user["id"]), resource_id, now_iso()),
-    )
-    db.commit()
-    return {"ok": True, "is_pinned": True}
-def unpin_resource(
-    resource_id: int,
-    user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    db.execute(
-        "DELETE FROM user_pinned_resources WHERE user_id = ? AND resource_id = ?",
-        (int(user["id"]), resource_id),
-    )
-    db.commit()
-    return {"ok": True, "is_pinned": False}
-def pin_show(
-    show_id: int,
-    user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    row = _show_row(db, show_id)
-    if not can_view_show(db, row, user):
-        raise HTTPException(403, "无权访问该放映")
-    db.execute(
-        "INSERT OR IGNORE INTO user_pinned_shows (user_id, show_id, pinned_at) VALUES (?, ?, ?)",
-        (int(user["id"]), show_id, now_iso()),
-    )
-    db.commit()
-    return {"ok": True, "is_pinned": True}
-def unpin_show(
-    show_id: int,
-    user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    db.execute(
-        "DELETE FROM user_pinned_shows WHERE user_id = ? AND show_id = ?",
-        (int(user["id"]), show_id),
-    )
-    db.commit()
-    return {"ok": True, "is_pinned": False}
-
-
-@app.get("/api/me/pins")
-def list_my_pins(
-    user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_read_dep),
-) -> dict[str, Any]:
-    """返回当前用户置顶的资源 / 放映；不再可见的项自动过滤。"""
-    res_rows = db.execute(
-        """
-        SELECT r.* FROM user_pinned_resources p
-        JOIN resources r ON r.id = p.resource_id
-        WHERE p.user_id = ?
-        ORDER BY p.pinned_at DESC
-        """,
-        (int(user["id"]),),
-    ).fetchall()
-    resources: list[dict[str, Any]] = []
-    for row in res_rows:
-        if not can_view_resource(db, row, user):
-            continue
-        resources.append(_serialize_resource(db, row, user))
-
-    show_rows = db.execute(
-        """
-        SELECT s.* FROM user_pinned_shows p
-        JOIN shows s ON s.id = p.show_id
-        WHERE p.user_id = ?
-        ORDER BY p.pinned_at DESC
-        """,
-        (int(user["id"]),),
-    ).fetchall()
-    shows: list[dict[str, Any]] = []
-    for row in show_rows:
-        if not can_view_show(db, row, user):
-            continue
-        shows.append(_serialize_show(db, row, user))
-
-    return {"resources": resources, "shows": shows}
-def my_home_stats(
-    user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    """首页数据概览：仅统计当前用户可见范围；超管看到全部。"""
-    user_id = int(user["id"])
-    super_admin = is_super_admin(user)
-
-    def _visible_count(table: str, vis_table: str, vis_fk: str, *, where_extra: str = "") -> int:
-        if super_admin:
-            sql = f"SELECT COUNT(*) FROM {table} t"
-            if where_extra:
-                sql += f" WHERE {where_extra}"
-            return int(db.execute(sql).fetchone()[0])
-        sql = f"""
-            SELECT COUNT(*) FROM {table} t
-            WHERE (
-                t.owner_id = ?
-                OR t.visibility_scope = 'public'
-                OR (t.visibility_scope = 'partial' AND EXISTS (
-                    SELECT 1 FROM {vis_table} v WHERE v.{vis_fk} = t.id AND v.user_id = ?
-                ))
-            )
-        """
-        if where_extra:
-            sql += f" AND ({where_extra})"
-        return int(db.execute(sql, (user_id, user_id)).fetchone()[0])
-
-    def _mine_count(table: str, *, where_extra: str = "") -> int:
-        sql = f"SELECT COUNT(*) FROM {table} WHERE owner_id = ?"
-        if where_extra:
-            sql += f" AND ({where_extra})"
-        return int(db.execute(sql, (user_id,)).fetchone()[0])
-
-    resources_total = _visible_count(
-        "resources", "resource_visibility", "resource_id",
-        where_extra="t.resource_type = 'asset'",
-    )
-    resources_mine = _mine_count("resources", where_extra="resource_type = 'asset'")
-
-    shows_total = _visible_count("shows", "show_visibility", "show_id")
-    shows_mine = _mine_count("shows")
-
-    templates_total = int(db.execute("SELECT COUNT(*) FROM templates").fetchone()[0])
-    fonts_total = int(db.execute("SELECT COUNT(*) FROM fonts").fetchone()[0])
-
-    return {
-        "resources": {"total": resources_total, "mine": resources_mine},
-        "shows": {"total": shows_total, "mine": shows_mine},
-        "templates": {"total": templates_total},
-        "fonts": {"total": fonts_total},
-    }
-def list_users(
-    _: sqlite3.Row = Depends(require_admin),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    rows = db.execute("SELECT * FROM users ORDER BY id").fetchall()
-    return {"users": [_serialize_user(row) for row in rows]}
-
-
-@app.get("/api/admin/download-records")
-def list_download_records(
-    track_code: str = Query(""),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-    user: sqlite3.Row = Depends(require_admin),
-    db: sqlite3.Connection = Depends(db_read_dep),
-):
-    """查询下载记录（管理员）"""
-    base_query = """
-        FROM download_records dr
-        LEFT JOIN users u ON dr.user_id = u.id
-        LEFT JOIN shows s ON dr.show_id = s.id
-    """
-    conditions = []
-    params = []
-
-    if track_code.strip():
-        conditions.append("dr.track_code = ?")
-        params.append(track_code.strip())
-
-    where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
-
-    # 总数
-    count_row = db.execute(f"SELECT COUNT(*) as total {base_query}{where_clause}", params).fetchone()
-    total = count_row["total"]
-
-    # 分页数据
-    offset = (page - 1) * page_size
-    rows = db.execute(f"""
-        SELECT dr.id, dr.track_code, dr.download_type, dr.client_ip, dr.downloaded_at,
-               u.name as user_name, u.username as user_username,
-               s.name as show_name, s.id as show_id
-        {base_query}{where_clause}
-        ORDER BY dr.downloaded_at DESC
-        LIMIT ? OFFSET ?
-    """, params + [page_size, offset]).fetchall()
-
-    return {
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "items": [
-            {
-                "id": r["id"],
-                "track_code": r["track_code"],
-                "user_name": r["user_name"] or "已删除用户",
-                "user_username": r["user_username"] or "",
-                "show_name": r["show_name"] or "已删除放映组",
-                "show_id": r["show_id"],
-                "download_type": r["download_type"],
-                "client_ip": r["client_ip"],
-                "downloaded_at": r["downloaded_at"],
-            }
-            for r in rows
-        ],
     }
 
 
@@ -2011,7 +1568,7 @@ def list_templates(
     uid = int(user["id"])
     # ── 可见性 SQL 条件 ──
     params: dict[str, Any] = {"vis_uid": uid}
-    if is_super_admin(user):
+    if is_system_admin(user):
         vis_cond = "1=1"
     else:
         vis_cond = (
@@ -2133,7 +1690,7 @@ async def create_template(
             _template_preview_file_name(series, subject, platform, ratio, template_type),
         )
         png_path = _compress_hd_image(png_path)
-    display_name = _template_display_name(series, subject, platform, ratio, template_type)
+    template_name = _template_name(series, subject, platform, ratio, template_type)
     subject_order, series_order, sort_order = _template_group_order_values(db, subject, series)
     ts = now_iso()
     db.execute(
@@ -2146,7 +1703,7 @@ async def create_template(
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            display_name,
+            template_name,
             series,
             subject,
             platform,
@@ -2240,18 +1797,13 @@ async def update_template(
             png_path = settings.store_path(
                 _rename_template_file(current_png, _template_preview_file_name(series, subject, platform, ratio, template_type))
             )
-    display_name = _template_display_name(series, subject, platform, ratio, template_type)
+    template_name = _template_name(series, subject, platform, ratio, template_type)
     if row["subject"] != subject or row["series"] != series:
         subject_order, series_order, sort_order = _template_group_order_values(db, subject, series)
     else:
-        subject_order = int(row["subject_order"] or 0) if "subject_order" in row.keys() else 0
-        series_order = int(row["series_order"] or 0) if "series_order" in row.keys() else 0
-        sort_order = int(row["sort_order"] or 0) if "sort_order" in row.keys() else 0
-        if not subject_order or not series_order or not sort_order:
-            fallback_subject_order, fallback_series_order, fallback_sort_order = _template_group_order_values(db, subject, series)
-            subject_order = subject_order or fallback_subject_order
-            series_order = series_order or fallback_series_order
-            sort_order = sort_order or fallback_sort_order
+        subject_order = int(row["subject_order"])
+        series_order = int(row["series_order"])
+        sort_order = int(row["sort_order"])
     db.execute(
         """
         UPDATE templates
@@ -2262,7 +1814,7 @@ async def update_template(
         WHERE id = ?
         """,
         (
-            display_name,
+            template_name,
             series,
             subject,
             platform,
@@ -2357,11 +1909,10 @@ def download_template(
 
 @app.get("/api/resources")
 def list_resources(
-    resource_type: str = Query("asset"),
+    request: Request,
     page: int = Query(1, ge=1),
     page_size: int = Query(30, ge=1, le=200),
     search: str = Query(""),
-    tag: str = Query(""),
     tags: str = Query(""),
     tags_mode: str = Query("any"),
     subject: str = Query(""),
@@ -2375,12 +1926,11 @@ def list_resources(
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
-    if resource_type != "asset":
-        raise HTTPException(400, "模板请使用 /api/templates")
+    _reject_removed_query_params(request, "tag", "resource_type")
     # SQL 级分页：可见性 + 筛选 + 排序全部下推到 SQL
     where_clause, order_sql, params = _build_resource_query_sql(
         user, manageable_only=manageable_only,
-        search=search, tag=tag, tags=tags, tags_mode=tags_mode,
+        search=search, tags=tags, tags_mode=tags_mode,
         subject=subject, status=status, secrecy=secrecy,
         permission=permission, remark_common=remark_common,
         remark_personal=remark_personal, sort=sort,
@@ -2422,9 +1972,8 @@ def list_resources(
 
 @app.get("/api/resources/ids")
 def list_resource_ids(
-    resource_type: str = Query("asset"),
+    request: Request,
     search: str = Query(""),
-    tag: str = Query(""),
     tags: str = Query(""),
     tags_mode: str = Query("any"),
     subject: str = Query(""),
@@ -2442,11 +1991,10 @@ def list_resource_ids(
 
     复用 list_resources 的 SQL WHERE 构建逻辑，确保权限/可见性/筛选行为一致。
     """
-    if resource_type != "asset":
-        raise HTTPException(400, "模板请使用 /api/templates")
+    _reject_removed_query_params(request, "tag", "resource_type")
     where_clause, _, params = _build_resource_query_sql(
         user, manageable_only=manageable_only,
-        search=search, tag=tag, tags=tags, tags_mode=tags_mode,
+        search=search, tags=tags, tags_mode=tags_mode,
         subject=subject, status=status, secrecy=secrecy,
         permission=permission, remark_common=remark_common,
         remark_personal=remark_personal, sort=sort,
@@ -2471,11 +2019,6 @@ def _parse_csv(value: str) -> list[str]:
     return out
 
 
-def _row_tag_set(row: sqlite3.Row) -> set[str]:
-    """提取资源行的标签集合（去空白）"""
-    return {t for t in _parse_csv(row["tags"] or "")}
-
-
 # ── SQL 级分页辅助函数 ──
 
 
@@ -2492,7 +2035,7 @@ def _resource_visibility_sql(
     uid = int(user["id"])
     params: dict[str, Any] = {"vis_uid": uid}
 
-    if is_super_admin(user):
+    if is_system_admin(user):
         cond = "1=1"
     else:
         cond = (
@@ -2504,7 +2047,7 @@ def _resource_visibility_sql(
 
     if manageable_only:
         params["mgmt_uid"] = uid
-        if not is_super_admin(user):
+        if not is_system_admin(user):
             cond += (
                 f" AND ({alias}.owner_id = :mgmt_uid"
                 f" OR {alias}.management_scope = 'public'"
@@ -2533,7 +2076,6 @@ def _build_resource_query_sql(
     *,
     manageable_only: bool = False,
     search: str = "",
-    tag: str = "",
     tags: str = "",
     tags_mode: str = "any",
     subject: str = "",
@@ -2551,7 +2093,7 @@ def _build_resource_query_sql(
     """
     vis_cond, params = _resource_visibility_sql(user, "r", manageable_only)
 
-    where_parts = ["r.resource_type = 'asset'", vis_cond]
+    where_parts = [vis_cond]
 
     # ── 标量筛选 ──
     if status and status != "all":
@@ -2570,7 +2112,7 @@ def _build_resource_query_sql(
         params["perm_uid"] = int(user["id"])
     elif permission == "managed":
         m_uid = int(user["id"])
-        if not is_super_admin(user):
+        if not is_system_admin(user):
             where_parts.append(
                 "(r.owner_id = :m_uid"
                 " OR r.management_scope = 'public'"
@@ -2590,8 +2132,6 @@ def _build_resource_query_sql(
 
     # 标签筛选
     tag_list = _parse_csv(tags)
-    if not tag_list and tag.strip():
-        tag_list = [tag.strip()]
     if tag_list:
         mode = (tags_mode or "any").lower()
         if mode == "all":
@@ -2664,96 +2204,12 @@ _PICK_SORT_KEYS = {
 }
 
 
-def _apply_pick_filters(
-    db: sqlite3.Connection,
-    rows: list[sqlite3.Row],
-    user: sqlite3.Row,
-    *,
-    search: str,
-    subject: str,
-    status: str,
-    secrecy: str,
-    permission: str,
-    remark_common: str,
-    remark_personal: str,
-    tag: str,            # 兼容旧参数：单标签包含
-    tags: str,           # 新：逗号分隔多标签
-    tags_mode: str,      # any | all
-    sort: str,
-) -> list[sqlite3.Row]:
-    result = list(rows)
-
-    # status
-    if status and status != "all":
-        result = [r for r in result if (r["status"] or "active") == status]
-    # subject
-    if subject and subject != "all":
-        result = [r for r in result if (r["subject"] or "") == subject]
-    # secrecy
-    if secrecy and secrecy != "all":
-        result = [r for r in result if (r["secrecy_level"] or "") == secrecy]
-    # permission
-    if permission == "created":
-        uid = int(user["id"])
-        result = [r for r in result if int(r["owner_id"]) == uid]
-    elif permission == "managed":
-        result = [r for r in result if can_manage_resource(db, r, user)]
-    # search
-    q = search.strip().lower()
-    if q:
-        result = [
-            r for r in result
-            if q in (r["name"] or "").lower() or q in (r["subject"] or "").lower()
-        ]
-    # tags（新参数优先；为空则回退旧 tag）
-    tag_list = _parse_csv(tags)
-    if not tag_list and tag.strip():
-        tag_list = [tag.strip()]
-    if tag_list:
-        mode = (tags_mode or "any").lower()
-        wanted = set(tag_list)
-        if mode == "all":
-            result = [r for r in result if wanted.issubset(_row_tag_set(r))]
-        else:
-            result = [r for r in result if wanted & _row_tag_set(r)]
-    # 通用备注（基于当前版本 common_remark_html）
-    if remark_common in {"has", "none"}:
-        def _has_common(rid: int, cur_ver: int) -> bool:
-            ver = db.execute(
-                "SELECT common_remark_html FROM resource_versions WHERE resource_id = ? AND version_no = ?",
-                (rid, cur_ver),
-            ).fetchone()
-            html = (ver["common_remark_html"] if ver else "") or ""
-            plain = _HTML_TAG_RE.sub("", html).replace("\xa0", " ").strip()
-            return bool(plain)
-        if remark_common == "has":
-            result = [r for r in result if _has_common(int(r["id"]), int(r["current_version"]))]
-        else:
-            result = [r for r in result if not _has_common(int(r["id"]), int(r["current_version"]))]
-    # 个人备注
-    if remark_personal in {"has", "none"}:
-        if remark_personal == "has":
-            result = [r for r in result if _has_personal_remark(db, int(r["id"]), int(user["id"]))]
-        else:
-            result = [r for r in result if not _has_personal_remark(db, int(r["id"]), int(user["id"]))]
-
-    # 排序
-    sort_key = sort if sort in _PICK_SORT_KEYS else "updated_desc"
-    if sort_key.startswith("name"):
-        result.sort(key=lambda r: (r["name"] or "").lower(), reverse=sort_key.endswith("_desc"))
-    elif sort_key.startswith("created"):
-        result.sort(key=lambda r: (r["created_at"] or "", int(r["id"])), reverse=sort_key.endswith("_desc"))
-    else:  # updated
-        result.sort(key=lambda r: (r["updated_at"] or "", int(r["id"])), reverse=sort_key.endswith("_desc"))
-    return result
-
-
 @app.get("/api/resources/pick")
 def pick_resources(
+    request: Request,
     page: int = Query(1, ge=1),
     page_size: int = Query(30, ge=1, le=100),
     search: str = Query(""),
-    tag: str = Query(""),
     tags: str = Query(""),
     tags_mode: str = Query("any"),
     subject: str = Query(""),
@@ -2767,8 +2223,9 @@ def pick_resources(
     db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     """轻量级资源选择接口：SQL 级分页 + 多维筛选 + 排序，返回最小数据集"""
+    _reject_removed_query_params(request, "tag", "resource_type")
     where_clause, order_sql, params = _build_resource_query_sql(
-        user, search=search, tag=tag, tags=tags, tags_mode=tags_mode,
+        user, search=search, tags=tags, tags_mode=tags_mode,
         subject=subject, status=status, secrecy=secrecy,
         permission=permission, remark_common=remark_common,
         remark_personal=remark_personal, sort=sort,
@@ -2826,8 +2283,8 @@ def pick_resources(
 
 @app.get("/api/resources/pick-ids")
 def pick_resources_all_ids(
+    request: Request,
     search: str = Query(""),
-    tag: str = Query(""),
     tags: str = Query(""),
     tags_mode: str = Query("any"),
     subject: str = Query(""),
@@ -2841,8 +2298,9 @@ def pick_resources_all_ids(
     db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     """返回当前筛选条件下所有资源的 ID 列表（用于全部全选），SQL 级筛选"""
+    _reject_removed_query_params(request, "tag", "resource_type")
     where_clause, _, params = _build_resource_query_sql(
-        user, search=search, tag=tag, tags=tags, tags_mode=tags_mode,
+        user, search=search, tags=tags, tags_mode=tags_mode,
         subject=subject, status=status, secrecy=secrecy,
         permission=permission, remark_common=remark_common,
         remark_personal=remark_personal, sort=sort,
@@ -2855,6 +2313,7 @@ def pick_resources_all_ids(
 
 @app.post("/api/resources")
 async def create_resource(
+    request: Request,
     name: str = Form(...),
     remark_html: str = Form(""),
     tags: str = Form(""),
@@ -2864,23 +2323,19 @@ async def create_resource(
     manage_user_ids: str = Form(""),
     secrecy_level: str = Form("public"),
     status: str = Form("active"),
-    resource_type: str = Form("asset"),
-    template_type: str | None = Form(None),
     subject: str = Form(DEFAULT_RESOURCE_SUBJECT),
     ppt_file: UploadFile = File(...),
     png_file: UploadFile | None = File(None),
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
-    if resource_type != "asset":
-        raise HTTPException(400, "资源类型不正确")
+    await _reject_removed_form_fields(request, "resource_type", "template_type")
     _validate_ppt_upload(ppt_file)
     visibility_scope = _validate_scope(visibility_scope)
     management_scope = _validate_scope(management_scope)
     secrecy_level = _validate_secrecy(secrecy_level)
     status = _validate_resource_status(status)
-    template_type = None
-    subject = _validate_template_subject(resource_type, subject)
+    subject = _validate_resource_subject(subject)
 
     resource_dir = unique_child_dir(settings.resources_dir)
     ppt_path = await save_upload(ppt_file, resource_dir, "v1_")
@@ -2894,16 +2349,14 @@ async def create_resource(
     db.execute(
         """
         INSERT INTO resources (
-            name, owner_id, resource_type, template_type, subject, tags, status,
+            name, owner_id, subject, tags, status,
             visibility_scope, management_scope, secrecy_level,
             current_version, updated_by, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
         """,
         (
             name,
             user["id"],
-            resource_type,
-            template_type,
             subject,
             tags,
             status,
@@ -2934,190 +2387,10 @@ async def create_resource(
     return {"resource": _serialize_resource(db, row, user)}
 
 
-@app.post("/api/resources/split")
-async def split_upload_to_resources(
-    name_prefix: str = Form("拆分页"),
-    subject: str = Form(DEFAULT_RESOURCE_SUBJECT),
-    tags: str = Form(""),
-    status: str = Form("active"),
-    visibility_scope: str = Form("private"),
-    visible_user_ids: str = Form(""),
-    management_scope: str = Form("private"),
-    manage_user_ids: str = Form(""),
-    secrecy_level: str = Form("public"),
-    ppt_file: UploadFile = File(...),
-    user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    _validate_ppt_upload(ppt_file)
-    visibility_scope = _validate_scope(visibility_scope)
-    management_scope = _validate_scope(management_scope)
-    secrecy_level = _validate_secrecy(secrecy_level)
-    status = _validate_resource_status(status)
-    subject = _validate_template_subject("asset", subject)
-
-    upload_dir = unique_child_dir(settings.resources_dir)
-    source_path = await save_upload(ppt_file, upload_dir, "source_")
-    split_dir = upload_dir / "split"
-
-    def _do_split_and_insert():
-        split_files = split_pptx_to_single_pages(source_path, split_dir)
-        if not split_files:
-            return None
-        created: list[dict[str, Any]] = []
-        BATCH_SIZE = 10
-        for index, ppt_path in enumerate(split_files, start=1):
-            ts = now_iso()
-            db.execute(
-                """
-                INSERT INTO resources (
-                    name, owner_id, resource_type, template_type, subject, tags, status,
-                    visibility_scope, management_scope, secrecy_level,
-                    current_version, updated_by, created_at, updated_at
-                ) VALUES (?, ?, 'asset', NULL, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-                """,
-                (
-                    f"{name_prefix}-{index:02d}",
-                    user["id"],
-                    subject,
-                    tags,
-                    status,
-                    visibility_scope,
-                    management_scope,
-                    secrecy_level,
-                    user["id"],
-                    ts,
-                    ts,
-                ),
-            )
-            resource_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
-            _set_scope_users(db, "resource_visibility", resource_id, _parse_id_list(visible_user_ids))
-            _set_scope_users(db, "resource_management", resource_id, _parse_id_list(manage_user_ids))
-            _insert_version(
-                db,
-                resource_id=resource_id,
-                version_no=1,
-                ppt_path=ppt_path,
-                png_path=None,
-                common_remark_html=remark_html or "",
-                change_note="拆分导入",
-                created_by=int(user["id"]),
-            )
-            created.append(_serialize_resource(db, _resource_row(db, resource_id), user))
-            if index % BATCH_SIZE == 0:
-                db.commit()
-        db.commit()
-        return created
-
-    async with _split_semaphore:
-        created = await asyncio.to_thread(_do_split_and_insert)
-    if created is None:
-        raise HTTPException(400, "未能拆分 PPTX")
-    return {"resources": created}
-
-
 def _natural_sort_key(filename: str) -> list:
     """将文件名转换为自然排序的key，正确处理数字序列。"""
     return [int(part) if part.isdigit() else part.lower()
             for part in re.split(r'(\d+)', filename)]
-
-
-@app.post("/api/resources/batch-split-import")
-async def batch_split_import(
-    name_prefix: str = Form(...),
-    subject: str = Form(DEFAULT_RESOURCE_SUBJECT),
-    secrecy_level: str = Form("public"),
-    status: str = Form("active"),
-    tags: str = Form(""),
-    visibility_scope: str = Form("public"),
-    visible_user_ids: str = Form(""),
-    management_scope: str = Form("private"),
-    manage_user_ids: str = Form(""),
-    remark_html: str = Form(""),
-    ppt_file: UploadFile = File(...),
-    images: list[UploadFile] = File(...),
-    user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    _validate_ppt_upload(ppt_file)
-    visibility_scope = _validate_scope(visibility_scope)
-    management_scope = _validate_scope(management_scope)
-    secrecy_level = _validate_secrecy(secrecy_level)
-    status = _validate_resource_status(status)
-    subject = _validate_template_subject("asset", subject)
-
-    images = sorted(images, key=lambda f: _natural_sort_key(f.filename or ""))
-    temp_dir = Path(tempfile.mkdtemp(prefix="batch_split_"))
-    resource_ids: list[int] = []
-
-    try:
-        ppt_path = await save_upload(ppt_file, temp_dir, "source_")
-        n_slides = slide_count(ppt_path)
-        if n_slides == 0:
-            raise HTTPException(400, "无法读取 PPT 页数")
-        if len(images) != n_slides:
-            raise HTTPException(
-                400,
-                f"PPT 共 {n_slides} 页，但提供了 {len(images)} 张图片，数量不一致",
-            )
-
-        split_dir = temp_dir / "split"
-        split_files = split_pptx_to_single_pages(ppt_path, split_dir)
-        if len(split_files) != n_slides:
-            raise HTTPException(400, "PPT 拆分结果与页数不一致")
-
-        # 编号至少保留 2 位（1→"01"、…、99→"99"、100→"100"），与用户图片名号规则对齐
-        for index, (split_ppt, image) in enumerate(zip(split_files, images), start=1):
-            resource_dir = unique_child_dir(settings.resources_dir)
-            v1_path = copy_into(split_ppt, resource_dir, "v1_")
-            png_path = await save_upload(image, resource_dir, "preview_")
-            png_path = _compress_hd_image(png_path)
-
-            ts = now_iso()
-            db.execute(
-                """
-                INSERT INTO resources (
-                    name, owner_id, resource_type, template_type, subject, tags, status,
-                    visibility_scope, management_scope, secrecy_level,
-                    current_version, updated_by, created_at, updated_at
-                ) VALUES (?, ?, 'asset', NULL, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-                """,
-                (
-                    f"{name_prefix}_{index:02d}",
-                    user["id"],
-                    subject,
-                    tags,
-                    status,
-                    visibility_scope,
-                    management_scope,
-                    secrecy_level,
-                    user["id"],
-                    ts,
-                    ts,
-                ),
-            )
-            resource_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
-            resource_ids.append(resource_id)
-            _set_scope_users(db, "resource_visibility", resource_id, _parse_id_list(visible_user_ids))
-            _set_scope_users(db, "resource_management", resource_id, _parse_id_list(manage_user_ids))
-            _insert_version(
-                db,
-                resource_id=resource_id,
-                version_no=1,
-                ppt_path=v1_path,
-                png_path=png_path,
-                common_remark_html=remark_html,
-                change_note="批量拆分导入",
-                created_by=int(user["id"]),
-            )
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-
-    return {"total": n_slides, "created": len(resource_ids), "resource_ids": resource_ids}
 
 
 @app.get("/api/resources/{resource_id}")
@@ -3142,8 +2415,7 @@ def update_resource_metadata(
     row = _resource_row(db, resource_id)
     if not can_manage_resource(db, row, user):
         raise HTTPException(403, "无管理权限")
-    _require_template_admin(row, user)
-    subject = _validate_template_subject(row["resource_type"], payload.subject)
+    subject = _validate_resource_subject(payload.subject)
     status = _validate_resource_status(payload.status)
     db.execute(
         """
@@ -3185,7 +2457,6 @@ async def create_resource_version(
     row = _resource_row(db, resource_id)
     if not can_manage_resource(db, row, user):
         raise HTTPException(403, "无管理权限")
-    _require_template_admin(row, user)
     mode_aliases = {"edit": "iterate", "reupload": "iterate", "image": "replace"}
     mode = mode_aliases.get(mode, mode)
     if mode not in {"iterate", "replace"}:
@@ -3329,7 +2600,6 @@ def rollback_resource_version(
     row = _resource_row(db, resource_id)
     if not can_manage_resource(db, row, user):
         raise HTTPException(403, "无管理权限")
-    _require_template_admin(row, user)
     paths, version_ids = _delete_latest_resource_version(db, resource_id)
     _delete_resource_files(paths, version_ids)
     return {"resource": _serialize_resource(db, _resource_row(db, resource_id), user)}
@@ -3369,19 +2639,7 @@ def batch_update_resources(
         row = _resource_row(db, rid)
         if not can_manage_resource(db, row, user):
             raise HTTPException(403, f"资源 {rid} 无管理权限")
-        _require_template_admin(row, user)
         rows[rid] = row
-
-    # 预构建标签映射（label→name），用于规范化遗留 CSV 数据
-    _tag_rows = db.execute("SELECT name, label FROM tags").fetchall()
-    _tag_name_set = {r["name"] for r in _tag_rows}
-    _label_to_name: dict[str, str] = {}
-    for _tr in _tag_rows:
-        # 仅当 label≠name 且 label 不是其他标签的 name 时才映射
-        if _tr["label"] != _tr["name"] and _tr["label"] not in _tag_name_set:
-            _label_to_name[_tr["label"]] = _tr["name"]
-    # 反向映射：name→label，用于 remove 模式兜底匹配
-    _name_to_label: dict[str, str] = {r["name"]: r["label"] for r in _tag_rows if r["name"] != r["label"]}
 
     updated = 0
     for rid, row in rows.items():
@@ -3391,7 +2649,7 @@ def batch_update_resources(
             if key in fields:
                 value = fields[key]
                 if key == "subject":
-                    value = _validate_template_subject(row["resource_type"], value)
+                    value = _validate_resource_subject(value)
                 elif validator is not None:
                     value = validator(value)
                 set_clauses.append(f"{key} = ?")
@@ -3400,37 +2658,25 @@ def batch_update_resources(
         # 处理 tags 字段：支持 replace/append/remove 三种模式
         if "tags" in fields:
             tags_field = fields["tags"]
-            # 向下兼容：纯字符串视为 replace
-            if isinstance(tags_field, str):
-                tag_value = tags_field
-            elif isinstance(tags_field, dict):
-                mode = tags_field.get("mode", "replace")
-                values = tags_field.get("values", [])
-                if mode == "replace":
-                    tag_value = ",".join(values)
-                elif mode == "append":
-                    existing_raw = row["tags"] or ""
-                    existing = [t.strip() for t in existing_raw.replace("，", ",").split(",") if t.strip()]
-                    # 规范化遗留标签值
-                    existing = [_label_to_name.get(t, t) for t in existing]
-                    merged = list(dict.fromkeys(existing + values))  # 保序去重
-                    tag_value = ",".join(merged)
-                elif mode == "remove":
-                    existing_raw = row["tags"] or ""
-                    existing = [t.strip() for t in existing_raw.replace("，", ",").split(",") if t.strip()]
-                    # 规范化遗留标签值
-                    existing = [_label_to_name.get(t, t) for t in existing]
-                    # 构建移除集合：包含 name 和对应的 label（兜底匹配遗留数据）
-                    remove_set = set(values)
-                    for v in values:
-                        if v in _name_to_label:
-                            remove_set.add(_name_to_label[v])
-                    remaining = [t for t in existing if t not in remove_set]
-                    tag_value = ",".join(remaining)
-                else:
-                    raise HTTPException(400, f"不支持的 tags mode: {mode}")
+            if not isinstance(tags_field, dict):
+                raise HTTPException(400, "tags 必须是包含 mode 和 values 的对象")
+            mode = tags_field.get("mode")
+            values = tags_field.get("values")
+            if mode not in {"replace", "append", "remove"}:
+                raise HTTPException(400, f"不支持的 tags mode: {mode}")
+            if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+                raise HTTPException(400, "tags.values 必须是字符串数组")
+            values = list(dict.fromkeys(value.strip() for value in values if value.strip()))
+            if mode == "replace":
+                tag_value = ",".join(values)
+            elif mode == "append":
+                existing = _parse_csv(row["tags"] or "")
+                tag_value = ",".join(dict.fromkeys([*existing, *values]))
             else:
-                raise HTTPException(400, "tags 格式错误")
+                remove_set = set(values)
+                tag_value = ",".join(
+                    tag for tag in _parse_csv(row["tags"] or "") if tag not in remove_set
+                )
             set_clauses.append("tags = ?")
             set_values.append(tag_value)
 
@@ -3474,7 +2720,6 @@ def batch_delete_resources(
         row = _resource_row(db, rid)
         if not can_manage_resource(db, row, user):
             raise HTTPException(403, f"资源 {rid} 无管理权限")
-        _require_template_admin(row, user)
 
         versions = db.execute(
             "SELECT id, ppt_path, png_path FROM resource_versions WHERE resource_id = ?",
@@ -3510,7 +2755,6 @@ def delete_resource(
     row = _resource_row(db, resource_id)
     if not can_manage_resource(db, row, user):
         raise HTTPException(403, "无管理权限")
-    _require_template_admin(row, user)
     if scope not in {"all", "latest"}:
         raise HTTPException(400, "删除范围不正确")
     if scope == "latest":
@@ -3672,11 +2916,8 @@ def download_resource(
     db: sqlite3.Connection = Depends(db_read_dep),
 ):
     row = _resource_row(db, resource_id)
-    if row["resource_type"] == "asset":
-        if not can_manage_resource(db, row, user):
-            raise HTTPException(403, "无管理权限，不能下载素材")
-    elif not can_view_resource(db, row, user):
-        raise HTTPException(403, "无可见权限")
+    if not can_manage_resource(db, row, user):
+        raise HTTPException(403, "无管理权限，不能下载素材")
     version = _version_row(db, resource_id, version_id)
     ppt_path = _safe_abs(version["ppt_path"])
     if ppt_path is None or not ppt_path.exists():
@@ -3702,80 +2943,13 @@ def download_resource(
         media_type="application/zip",
         headers={"Content-Disposition": _content_disposition(f"{filename_base}_with_fonts.zip")},
     )
-def list_fonts(
-    _: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    rows = db.execute("SELECT * FROM fonts ORDER BY created_at DESC, id DESC").fetchall()
-    items: list[dict[str, Any]] = []
-    for row in rows:
-        aliases = _font_aliases_from_row(row)
-        family = row["family_name"] or (aliases[0] if aliases else row["file_name"])
-        items.append(
-            {
-                "id": row["id"],
-                "family": family,
-                "aliases": aliases,
-                "file_name": row["file_name"],
-                "download_url": f"/api/fonts/{row['id']}/download",
-                "created_at": row["created_at"],
-            }
-        )
-    return {"fonts": items}
-def delete_font(
-    font_id: int,
-    _: sqlite3.Row = Depends(require_admin),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    row = db.execute("SELECT * FROM fonts WHERE id = ?", (font_id,)).fetchone()
-    if row is None:
-        raise HTTPException(404, "字体不存在")
-    path = _uploaded_font_abs(row["file_path"])
-    db.execute("DELETE FROM fonts WHERE id = ?", (font_id,))
-    db.commit()
-    if path is not None:
-        path.unlink(missing_ok=True)
-    return {"ok": True, "deleted": 1}
-def bulk_delete_fonts(
-    payload: FontDeletePayload,
-    _: sqlite3.Row = Depends(require_admin),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    font_ids = sorted({int(font_id) for font_id in payload.font_ids if int(font_id) > 0})
-    if not font_ids:
-        raise HTTPException(400, "请选择要删除的字体")
-    placeholders = ",".join("?" for _ in font_ids)
-    rows = db.execute(f"SELECT * FROM fonts WHERE id IN ({placeholders})", font_ids).fetchall()
-    if not rows:
-        raise HTTPException(404, "未找到可删除的字体")
-    paths = [_uploaded_font_abs(row["file_path"]) for row in rows]
-    db.execute(f"DELETE FROM fonts WHERE id IN ({placeholders})", font_ids)
-    db.commit()
-    for path in paths:
-        if path is not None:
-            path.unlink(missing_ok=True)
-    return {"ok": True, "deleted": len(rows)}
-def download_uploaded_font(
-    font_id: int,
-    _: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> FileResponse:
-    row = db.execute("SELECT * FROM fonts WHERE id = ?", (font_id,)).fetchone()
-    if row is None:
-        raise HTTPException(404, "字体不存在")
-    path = _uploaded_font_abs(row["file_path"])
-    if path is None or not path.exists():
-        raise HTTPException(404, "字体文件不存在")
-    return FileResponse(path, headers={"Content-Disposition": _content_disposition(row["file_name"])})
-
-
 @app.get("/api/shows")
 def list_shows(
+    request: Request,
     series_id: str | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(30, ge=1, le=200),
     search: str = Query(""),
-    tag: str = Query(""),
     tags: str = Query(""),
     tags_mode: str = Query("any"),
     subject: str = Query(""),
@@ -3783,15 +2957,17 @@ def list_shows(
     secrecy: str = Query("all"),
     permission: str = Query("all"),
     sort: str = Query("updated_desc"),
+    standard_only: bool = Query(False),
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
+    _reject_removed_query_params(request, "tag")
     uid = int(user["id"])
-    super_admin = is_super_admin(user)
+    system_admin = is_system_admin(user)
 
     # ── 可见性 SQL 条件 ──
     vis_params: dict[str, Any] = {"vis_uid": uid}
-    if super_admin:
+    if system_admin:
         vis_cond = "1=1"
     else:
         vis_cond = (
@@ -3814,6 +2990,7 @@ def list_shows(
     cte = f"""
         WITH visible AS (
             SELECT s.* FROM shows s WHERE {vis_cond}
+              {"AND s.is_standard = 1" if standard_only else ""}
         ),
         deduped AS (
             SELECT v.* FROM visible v
@@ -3847,7 +3024,7 @@ def list_shows(
         where_parts.append("owner_id = :perm_uid")
         params["perm_uid"] = uid
     elif permission == "managed":
-        if not super_admin:
+        if not system_admin:
             where_parts.append(
                 "(owner_id = :m_uid"
                 " OR management_scope = 'public'"
@@ -3863,8 +3040,6 @@ def list_shows(
         )
         params["fl_q"] = f"%{q.lower()}%"
     tag_list = _parse_csv(tags)
-    if not tag_list and tag.strip():
-        tag_list = [tag.strip()]
     if tag_list:
         mode = (tags_mode or "any").lower()
         if mode == "all":
@@ -3946,10 +3121,10 @@ def create_show(
     series_id = uuid.uuid4().hex[:10]
     db.execute(
         """
-        INSERT INTO shows (name, owner_id, subject, tags, status, visibility_scope, management_scope, secrecy_level, series_id, version_no, change_note, updated_by, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO shows (name, owner_id, subject, tags, status, visibility_scope, management_scope, secrecy_level, is_standard, series_id, version_no, change_note, updated_by, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (payload.name, user["id"], payload.subject, payload.tags, status, visibility_scope, management_scope, secrecy_level, series_id, 1, payload.change_note, user["id"], ts, ts),
+        (payload.name, user["id"], payload.subject, payload.tags, status, visibility_scope, management_scope, secrecy_level, 0, series_id, 1, payload.change_note, user["id"], ts, ts),
     )
     show_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
     _set_show_scope_users(db, "show_visibility", show_id, payload.visible_user_ids)
@@ -4004,6 +3179,23 @@ def update_show(
     _set_show_scope_users(db, "show_management", show_id, payload.manage_user_ids)
     db.commit()
     return {"show": _serialize_show(db, _show_row(db, show_id), user)}
+
+
+@app.patch("/api/admin/shows/{show_id}/standard")
+def update_show_standard(
+    show_id: int,
+    payload: ShowStandardPayload,
+    _: sqlite3.Row = Depends(require_admin),
+    db: sqlite3.Connection = Depends(db_dep),
+) -> dict[str, Any]:
+    """将整个放映版本系列标记为或取消为标准放映。"""
+    row = _show_row(db, show_id)
+    db.execute(
+        "UPDATE shows SET is_standard = ?, updated_at = ? WHERE series_id = ?",
+        (1 if payload.standard else 0, now_iso(), row["series_id"]),
+    )
+    db.commit()
+    return {"ok": True, "standard": bool(payload.standard), "series_id": row["series_id"]}
 
 
 @app.delete("/api/shows/{show_id}")
@@ -4153,10 +3345,10 @@ def duplicate_show(
     new_series_id = uuid.uuid4().hex[:10]
     db.execute(
         """
-        INSERT INTO shows (name, owner_id, subject, tags, status, visibility_scope, management_scope, secrecy_level, series_id, version_no, change_note, updated_by, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO shows (name, owner_id, subject, tags, status, visibility_scope, management_scope, secrecy_level, is_standard, series_id, version_no, change_note, updated_by, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (payload.name, user["id"], row["subject"], row["tags"], row["status"], row["visibility_scope"], row["management_scope"], row["secrecy_level"], new_series_id, 1, "", user["id"], ts, ts),
+        (payload.name, user["id"], row["subject"], row["tags"], row["status"], row["visibility_scope"], row["management_scope"], row["secrecy_level"], 0, new_series_id, 1, "", user["id"], ts, ts),
     )
     new_show_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
     visible_ids = _show_scope_user_ids(db, "show_visibility", show_id)
@@ -4194,10 +3386,10 @@ def iterate_show(
     ts = now_iso()
     db.execute(
         """
-        INSERT INTO shows (name, owner_id, subject, tags, status, secrecy_level, visibility_scope, management_scope, series_id, version_no, change_note, updated_by, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO shows (name, owner_id, subject, tags, status, secrecy_level, visibility_scope, management_scope, is_standard, series_id, version_no, change_note, updated_by, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (new_name, user["id"], row["subject"], row["tags"], row["status"], row["secrecy_level"], row["visibility_scope"], row["management_scope"], series_id, new_version_no, payload.change_note, user["id"], ts, ts),
+        (new_name, user["id"], row["subject"], row["tags"], row["status"], row["secrecy_level"], row["visibility_scope"], row["management_scope"], row["is_standard"], series_id, new_version_no, payload.change_note, user["id"], ts, ts),
     )
     new_show_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
     # 复制权限记录
@@ -4381,10 +3573,10 @@ def iterate_upgrade_show(
     ts = now_iso()
     db.execute(
         """
-        INSERT INTO shows (name, owner_id, subject, tags, status, secrecy_level, visibility_scope, management_scope, series_id, version_no, change_note, updated_by, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO shows (name, owner_id, subject, tags, status, secrecy_level, visibility_scope, management_scope, is_standard, series_id, version_no, change_note, updated_by, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (row["name"], user["id"], row["subject"], row["tags"], row["status"], row["secrecy_level"], row["visibility_scope"], row["management_scope"], series_id, new_version_no, payload.change_note, user["id"], ts, ts),
+        (row["name"], user["id"], row["subject"], row["tags"], row["status"], row["secrecy_level"], row["visibility_scope"], row["management_scope"], row["is_standard"], series_id, new_version_no, payload.change_note, user["id"], ts, ts),
     )
     new_show_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
     # 2. 复制权限记录
@@ -5112,42 +4304,69 @@ def get_download_file(
 
 @app.websocket("/ws/tasks")
 async def ws_tasks(websocket: WebSocket) -> None:
-    """单个连接推送当前用户的所有任务更新。认证方式：query param ``token`` 或 session cookie。"""
-    token = websocket.query_params.get("token")
-    user_id = read_session_token(token, settings.secret_key) if token else None
-    if not user_id:
-        # Fallback: 尝试从 cookie 中获取 session（httpOnly cookie 在同源 WS 请求时会自动携带）
-        cookie_token = websocket.cookies.get(SESSION_COOKIE)
-        user_id = read_session_token(cookie_token, settings.secret_key) if cookie_token else None
+    """Stream durable task events for the authenticated user."""
+    cookie_token = websocket.cookies.get(SESSION_COOKIE)
+    user_id = read_session_token(cookie_token, settings.secret_key) if cookie_token else None
     if not user_id:
         # 未认证：拒绝握手
         await websocket.close(code=1008)
         return
     user_id = int(user_id)
+
+    latest_event_id = await asyncio.to_thread(latest_task_event_id, user_id)
+    after_raw = websocket.query_params.get("after")
+    if after_raw is None:
+        event_cursor = latest_event_id
+    else:
+        try:
+            event_cursor = min(max(0, int(after_raw)), latest_event_id)
+        except ValueError:
+            await websocket.close(code=1008)
+            return
+
     await websocket.accept()
-    async with _ws_lock:
-        _ws_connections.setdefault(user_id, []).append(websocket)
+    await websocket.send_json({"type": "event_cursor", "event_id": event_cursor})
+    loop = asyncio.get_running_loop()
+    next_ping_at = loop.time() + 30.0
     try:
         while True:
             try:
-                # 接收前端 pong/心跳，最多等 30s；超时主动发 ping
-                await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                events = await asyncio.to_thread(
+                    fetch_task_events,
+                    user_id,
+                    event_cursor,
+                )
+            except Exception:
+                logger.warning(
+                    "Task event poll failed user_id=%s after=%s",
+                    user_id,
+                    event_cursor,
+                    exc_info=True,
+                )
+                await asyncio.sleep(1)
+                continue
+
+            for event_id, payload in events:
+                if payload is not None:
+                    await websocket.send_json(payload)
+                event_cursor = event_id
+            if len(events) >= 100:
+                continue
+
+            now = loop.time()
+            if now >= next_ping_at:
+                await websocket.send_json({"type": "ping"})
+                next_ping_at = now + 30.0
+
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=0.75)
             except asyncio.TimeoutError:
-                try:
-                    await websocket.send_json({"type": "ping"})
-                except Exception:
-                    break
+                pass
             except WebSocketDisconnect:
                 break
             except Exception:
                 break
     finally:
-        async with _ws_lock:
-            current = _ws_connections.get(user_id, [])
-            if websocket in current:
-                current.remove(websocket)
-            if not current:
-                _ws_connections.pop(user_id, None)
         try:
             await websocket.close()
         except Exception:
@@ -5191,6 +4410,10 @@ async def _download_cleanup_loop() -> None:
                         " WHERE id = ?",
                         (json.dumps({"expired": True}), task["id"]),
                     )
+                db.execute(
+                    "DELETE FROM task_events WHERE created_at < ?",
+                    (cutoff,),
+                )
                 db.commit()
             finally:
                 release_db(db, readonly=False)
@@ -5208,6 +4431,8 @@ def get_show_offline_package(
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
+    if auth_mode not in {"none", "required"}:
+        raise HTTPException(400, "auth_mode 必须是 none 或 required")
     row = _show_row(db, show_id)
     if not can_view_show(db, row, user):
         raise HTTPException(403, "无可见权限")
@@ -5230,12 +4455,10 @@ def get_show_offline_package(
             continue
         png_path = r["png_path"]
         if not png_path:
-            slide_index += 1
-            continue
+            raise HTTPException(409, f"资源 {r['resource_id']} 缺少预览图，无法生成离线包")
         abs_png = _safe_abs(png_path)
         if abs_png is None or not abs_png.exists():
-            slide_index += 1
-            continue
+            raise HTTPException(409, f"资源 {r['resource_id']} 的预览图不可用，无法生成离线包")
         png_data = abs_png.read_bytes()
         image_base64 = base64.b64encode(png_data).decode("ascii")
         resource_id = r["resource_id"]
@@ -5249,7 +4472,7 @@ def get_show_offline_package(
                 "离线缓存：生成资源缩略图失败 show_id=%s resource_id=%s version_id=%s png=%s",
                 show_id, resource_id, version_id, abs_png,
             )
-            thumb_base64 = ""
+            raise HTTPException(500, f"资源 {resource_id} 的缩略图生成失败")
         common_remark_html = r["common_remark_html"] or ""
         pr = db.execute(
             "SELECT content_html FROM personal_remarks WHERE resource_id = ? AND version_id = ? AND user_id = ?",
@@ -5317,6 +4540,7 @@ def get_show_offline_package(
         break
 
     return {
+        "format_version": 2,
         "show_id": show_id,
         "name": row["name"],
         "subject": row["subject"],
@@ -5360,8 +4584,7 @@ def get_show_offline_version(
         (latest_show_id,),
     ).fetchall()
     return {
-        # 兼容旧字段：show_id 始终指向系列中最新版本的 show_id，
-        # 前端据此拉取 offline-package 和更新 manifest。
+        # show_id 始终指向系列中的最新版本，前端据此拉取离线包并更新清单。
         "show_id": latest_show_id,
         "queried_show_id": int(show_id),
         "series_id": series_id,
@@ -5408,268 +4631,20 @@ def slide_image(
     return FileResponse(path, media_type="image/png")
 
 
-# ---------- links ----------
-def list_links(
-    user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    rows = db.execute("SELECT * FROM links ORDER BY sort_order ASC, updated_at DESC, id DESC").fetchall()
-    links = [_serialize_link(db, row, user) for row in rows if can_view_link(db, row, user)]
-    return {"links": links}
-def create_link(
-    payload: LinkCreatePayload,
-    user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    visibility_scope = _validate_scope(payload.visibility_scope)
-    management_scope = _validate_scope(payload.management_scope)
-    ts = now_iso()
-    db.execute(
-        """
-        INSERT INTO links (name, url, memo, owner_id, visibility_scope, management_scope, is_enabled, networkEnv, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (payload.name, payload.url, payload.memo, user["id"], visibility_scope, management_scope, 1 if payload.is_enabled else 0, payload.network_env, ts, ts),
-    )
-    link_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
-    _set_link_scope_users(db, "link_visibility", link_id, payload.visible_user_ids)
-    _set_link_scope_users(db, "link_management", link_id, payload.manage_user_ids)
-    db.commit()
-    row = _link_row(db, link_id)
-    return {"link": _serialize_link(db, row, user)}
-def update_link(
-    link_id: int,
-    payload: LinkUpdatePayload,
-    user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    row = _link_row(db, link_id)
-    if not can_manage_link(db, row, user):
-        raise HTTPException(403, "无管理权限")
-    visibility_scope = _validate_scope(payload.visibility_scope)
-    management_scope = _validate_scope(payload.management_scope)
-    db.execute(
-        """
-        UPDATE links
-        SET name = ?, url = ?, memo = ?, visibility_scope = ?, management_scope = ?, is_enabled = ?, networkEnv = ?, updated_at = ?
-        WHERE id = ?
-        """,
-        (payload.name, payload.url, payload.memo, visibility_scope, management_scope, 1 if payload.is_enabled else 0, payload.network_env, now_iso(), link_id),
-    )
-    _set_link_scope_users(db, "link_visibility", link_id, payload.visible_user_ids)
-    _set_link_scope_users(db, "link_management", link_id, payload.manage_user_ids)
-    db.commit()
-    return {"link": _serialize_link(db, _link_row(db, link_id), user)}
-def delete_link(
-    link_id: int,
-    user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    row = _link_row(db, link_id)
-    if not can_manage_link(db, row, user):
-        raise HTTPException(403, "无管理权限")
-    db.execute("DELETE FROM links WHERE id = ?", (link_id,))
-    db.commit()
-    return {"ok": True, "deleted": 1}
-def bulk_delete_links(
-    payload: LinkDeletePayload,
-    _: sqlite3.Row = Depends(require_admin),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    link_ids = sorted({int(lid) for lid in payload.link_ids if int(lid) > 0})
-    if not link_ids:
-        raise HTTPException(400, "请选择要删除的链接")
-    placeholders = ",".join("?" for _ in link_ids)
-    rows = db.execute(f"SELECT id FROM links WHERE id IN ({placeholders})", link_ids).fetchall()
-    if not rows:
-        raise HTTPException(404, "未找到可删除的链接")
-    db.execute(f"DELETE FROM links WHERE id IN ({placeholders})", link_ids)
-    db.commit()
-    return {"ok": True, "deleted": len(rows)}
-def reorder_links(
-    payload: LinkOrderPayload,
-    _: sqlite3.Row = Depends(require_admin),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    link_ids = [int(lid) for lid in payload.link_ids]
-    if not link_ids:
-        raise HTTPException(400, "请选择需要排序的链接")
-    if len(link_ids) != len(set(link_ids)):
-        raise HTTPException(400, "排序列表存在重复链接")
-    placeholders = ",".join("?" for _ in link_ids)
-    rows = db.execute(f"SELECT id FROM links WHERE id IN ({placeholders})", link_ids).fetchall()
-    existing = {int(row["id"]) for row in rows}
-    missing = [lid for lid in link_ids if lid not in existing]
-    if missing:
-        raise HTTPException(404, "部分链接不存在")
-    now = now_iso()
-    for index, lid in enumerate(link_ids, start=1):
-        db.execute(
-            "UPDATE links SET sort_order = ?, updated_at = ? WHERE id = ?",
-            (index * 10, now, lid),
-        )
-    db.commit()
-    return {"ok": True, "ordered": len(link_ids)}
-def get_my_link_selection(
-    user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    # 讲演者快捷链接统一由管理员后台维护，用户不再自行选择
-    rows = db.execute(
-        """
-        SELECT l.* FROM links l
-        JOIN default_selected_links dsl ON dsl.link_id = l.id
-        ORDER BY dsl.sort_order
-        """,
-    ).fetchall()
-    links = [_serialize_link(db, row, user) for row in rows if can_view_link(db, row, user)]
-    return {"links": links}
-def get_default_link_selection(
-    user: sqlite3.Row = Depends(require_super_admin),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    rows = db.execute(
-        """
-        SELECT l.* FROM links l
-        JOIN default_selected_links dsl ON dsl.link_id = l.id
-        ORDER BY dsl.sort_order
-        """,
-    ).fetchall()
-    links = [_serialize_link(db, row, user) for row in rows]
-    return {"links": links}
-def set_default_link_selection(
-    payload: LinkSelectionPayload,
-    user: sqlite3.Row = Depends(require_super_admin),
-    db: sqlite3.Connection = Depends(db_dep),
-) -> dict[str, Any]:
-    if len(payload.link_ids) > 5:
-        raise HTTPException(400, "最多设置5个默认链接")
-    for lid in payload.link_ids:
-        _link_row(db, lid)
-    db.execute("DELETE FROM default_selected_links")
-    for index, lid in enumerate(payload.link_ids):
-        db.execute(
-            "INSERT OR IGNORE INTO default_selected_links (link_id, sort_order) VALUES (?, ?)",
-            (lid, index),
-        )
-    db.commit()
-    return get_default_link_selection(user, db)
-
-
-# ---------- 代理 ----------
-
-
-_CGN_NETWORK = ipaddress.ip_network("100.64.0.0/10")  # Carrier-Grade NAT 网段
-
-
-def _is_private_or_reserved(ip_str: str) -> bool:
-    """检查 IP 地址是否属于私有/保留/环回/链路本地等网段"""
-    try:
-        addr = ipaddress.ip_address(ip_str)
-    except ValueError:
-        return True  # 无法解析为 IP，视为不安全
-    return (
-        addr.is_private
-        or addr.is_loopback
-        or addr.is_link_local
-        or addr.is_reserved
-        or addr.is_multicast
-        or addr in _CGN_NETWORK
-    )
-
-
-def _check_ssrf_url(url: str) -> None:
-    """SSRF 检查：解析 URL 后对 DNS 解析结果中所有 IP 逐一验证，防止 DNS rebinding"""
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise HTTPException(400, "仅支持 http/https URL")
-    hostname = (parsed.hostname or "").lower()
-    if not hostname:
-        raise HTTPException(400, "无效的 URL")
-    try:
-        infos = socket.getaddrinfo(hostname, None)
-    except socket.gaierror:
-        raise HTTPException(400, "无法解析目标域名")
-    for _family, _type, _proto, _canonname, sockaddr in infos:
-        ip_str = sockaddr[0]
-        if _is_private_or_reserved(ip_str):
-            raise HTTPException(400, "禁止访问内网/私有/保留地址")
-
-
-@app.get("/api/proxy/webpage")
-def proxy_webpage(
-    url: str = Query(...),
-    session_token: str = Query(...),
-) -> Response:
-    claims = verify_present_token(session_token, settings.secret_key)
-    if claims is None:
-        raise HTTPException(401, "会话token无效或已过期")
-
-    # SSRF 检查（包含 DNS 解析后验证，防止 DNS rebinding）
-    _check_ssrf_url(url)
-
-    parsed = urlparse(url)  # 保留给后续 <base> 标签注入使用
-
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; SlideFlowProxy/1.0)"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            content = resp.read()
-            content_type = resp.headers.get("Content-Type", "text/html; charset=utf-8")
-    except Exception as exc:
-        error_html = f"""<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><title>代理错误</title></head>
-<body style="padding:2rem;font-family:sans-serif;">
-<h2>无法加载页面</h2>
-<p>{url}</p>
-<p style="color:#888;">{type(exc).__name__}: {exc}</p>
-</body>
-</html>"""
-        return Response(content=error_html.encode("utf-8"), media_type="text/html")
-
-    # 仅对 HTML 内容移除 X-Frame-Options 和 CSP 限制，并注入 <base> 标签以修复相对路径资源加载
-    if "text/html" in content_type:
-        try:
-            text = content.decode("utf-8", errors="replace")
-            # 移除 X-Frame-Options meta 和 header 注入
-            text = re.sub(r"<meta[^>]*http-equiv=[\"']?X-Frame-Options[\"']?[^>]*>", "", text, flags=re.IGNORECASE)
-            # 移除 CSP meta
-            text = re.sub(r"<meta[^>]*http-equiv=[\"']?Content-Security-Policy[\"']?[^>]*>", "", text, flags=re.IGNORECASE)
-
-            # 提取 origin，注入 <base> 标签让相对路径资源（CSS/JS/图片）能正确加载
-            origin = f"{parsed.scheme}://{parsed.netloc}"
-            base_tag = f'<base href="{origin}/">'
-
-            # 如果已有 <base> 标签，替换其 href 为绝对路径
-            existing_base = re.search(r"<base[^>]*href=[\"'][^\"']*[\"'][^>]*>", text, re.IGNORECASE)
-            if existing_base:
-                text = re.sub(
-                    r"<base([^>]*?)href=[\"'][^\"']*[\"']",
-                    f"<base\\1href=\"{origin}/\"",
-                    text,
-                    count=1,
-                    flags=re.IGNORECASE,
-                )
-            elif "<head>" in text:
-                text = text.replace("<head>", f"<head>\n{base_tag}", 1)
-            elif "<HEAD>" in text:
-                text = text.replace("<HEAD>", f"<HEAD>\n{base_tag}", 1)
-            else:
-                text = base_tag + "\n" + text
-
-            # 在 <head> 后注入允许 frame 的 meta
-            if "<head>" in text:
-                text = text.replace("<head>", '<head>\n<meta http-equiv="Content-Security-Policy" content="frame-ancestors *;">', 1)
-            content = text.encode("utf-8")
-        except Exception:
-            pass
-
-    return Response(content=content, media_type=content_type)
-
-
 # ──────────────────────────────────────────────────────────────
 # 任务管理 API
 # ──────────────────────────────────────────────────────────────
+
+
+def _task_is_cancelled(
+    db: sqlite3.Connection,
+    task_id: int,
+    cancel_event: threading.Event | None = None,
+) -> bool:
+    if cancel_event is not None and cancel_event.is_set():
+        return True
+    row = db.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    return row is None or row["status"] == "cancelled"
 
 
 def _execute_split_task(
@@ -5685,15 +4660,19 @@ def _execute_split_task(
     db = get_db()
     db.execute("PRAGMA busy_timeout = 30000")  # 后台线程使用更长超时，避免被轮询请求阻塞
     try:
+        if _task_is_cancelled(db, task_id, cancel_event):
+            return
         # 更新状态为 processing，附带消息告知用户正在拆分
-        db.execute(
+        started = db.execute(
             "UPDATE tasks SET status = 'processing',"
             " message = '正在拆分 PPT 文件...',"
             " updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
-            " WHERE id = ?",
+            " WHERE id = ? AND status <> 'cancelled'",
             (task_id,),
         )
         db.commit()
+        if started.rowcount == 0:
+            return
 
         # 拆分 PPT（带进度回调）
         ppt_path = Path(source_path)
@@ -5702,17 +4681,19 @@ def _execute_split_task(
 
         def on_split_progress(current: int, total: int) -> None:
             db.execute(
-                "UPDATE tasks SET message = ? WHERE id = ?",
+                "UPDATE tasks SET message = ? WHERE id = ? AND status <> 'cancelled'",
                 (f"正在拆分 PPT 文件... ({current}/{total})", task_id),
             )
             db.commit()
 
         split_files = split_pptx_to_single_pages(ppt_path, split_dir, progress_callback=on_split_progress)
+        if _task_is_cancelled(db, task_id, cancel_event):
+            return
         if not split_files:
             db.execute(
                 "UPDATE tasks SET status = 'failed', error_message = '未能拆分 PPTX',"
                 " updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
-                " WHERE id = ?",
+                " WHERE id = ? AND status <> 'cancelled'",
                 (task_id,),
             )
             db.commit()
@@ -5722,24 +4703,24 @@ def _execute_split_task(
         db.execute(
             "UPDATE tasks SET total = ?, message = '正在创建资源...',"
             " updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
-            " WHERE id = ?",
+            " WHERE id = ? AND status <> 'cancelled'",
             (total, task_id),
         )
         db.commit()
         logger.info("Task %d: split complete, %d pages, starting resource creation", task_id, total)
 
         # 参数提取
-        name_prefix = params.get("name_prefix", "拆分页")
-        subject = params.get("subject", DEFAULT_RESOURCE_SUBJECT)
-        tags = params.get("tags", "")
-        resource_status = params.get("status", "active")
-        secrecy_level = params.get("secrecy_level", "public")
-        visibility_scope = params.get("visibility_scope", "public")
-        visible_user_ids = params.get("visible_user_ids", "")
-        management_scope = params.get("management_scope", "private")
-        manage_user_ids = params.get("manage_user_ids", "")
-        remark_html = params.get("remark_html", "")
-        owner_id = params.get("owner_id", 1)
+        name_prefix = params["name_prefix"]
+        subject = params["subject"]
+        tags = params["tags"]
+        resource_status = params["status"]
+        secrecy_level = params["secrecy_level"]
+        visibility_scope = params["visibility_scope"]
+        visible_user_ids = params["visible_user_ids"]
+        management_scope = params["management_scope"]
+        manage_user_ids = params["manage_user_ids"]
+        remark_html = params["remark_html"]
+        owner_id = params["owner_id"]
         has_images = bool(image_paths)
 
         resource_ids: list[int] = []
@@ -5752,15 +4733,8 @@ def _execute_split_task(
                 raise TimeoutError("PPT拆分任务超时")
 
             # 检查取消标志
-            if cancel_event and cancel_event.is_set():
+            if _task_is_cancelled(db, task_id, cancel_event):
                 logger.info("Task %d: cancelled by user at progress %d/%d", task_id, progress, total)
-                db.execute(
-                    "UPDATE tasks SET status = 'cancelled',"
-                    " updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
-                    " WHERE id = ?",
-                    (task_id,),
-                )
-                db.commit()
                 return
 
             # 创建资源目录并复制拆分文件
@@ -5776,10 +4750,10 @@ def _execute_split_task(
             db.execute(
                 """
                 INSERT INTO resources (
-                    name, owner_id, resource_type, template_type, subject, tags, status,
+                    name, owner_id, subject, tags, status,
                     visibility_scope, management_scope, secrecy_level,
                     current_version, updated_by, created_at, updated_at
-                ) VALUES (?, ?, 'asset', NULL, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
                 """,
                 (
                     f"{name_prefix}_{index:02d}",
@@ -5818,7 +4792,7 @@ def _execute_split_task(
             db.execute(
                 "UPDATE tasks SET progress = ?,"
                 " updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
-                " WHERE id = ?",
+                " WHERE id = ? AND status <> 'cancelled'",
                 (progress, task_id),
             )
             db.commit()
@@ -5826,26 +4800,32 @@ def _execute_split_task(
                 logger.info("Task %d: progress %d/%d", task_id, progress, total)
 
         # 任务完成
+        if _task_is_cancelled(db, task_id, cancel_event):
+            return
         result = {"total": total, "created": len(resource_ids), "resource_ids": resource_ids}
-        db.execute(
+        completed = db.execute(
             "UPDATE tasks SET status = 'completed', progress = ?, message = '',"
             " result_data = ?,"
             " updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime'),"
             " completed_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
-            " WHERE id = ?",
+            " WHERE id = ? AND status <> 'cancelled'",
             (total, json.dumps(result, ensure_ascii=False), task_id),
         )
         db.commit()
+        if completed.rowcount == 0:
+            return
         logger.info("Task %d: completed, created %d resources", task_id, len(resource_ids))
 
     except Exception as e:
         logger.exception("Task %d failed: %s", task_id, e)
         db.rollback()
         try:
+            if _task_is_cancelled(db, task_id, cancel_event):
+                return
             db.execute(
                 "UPDATE tasks SET status = 'failed', error_message = ?,"
                 " updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
-                " WHERE id = ?",
+                " WHERE id = ? AND status <> 'cancelled'",
                 (str(e)[:500], task_id),
             )
             db.commit()
@@ -5866,7 +4846,6 @@ _TASK_PARAMS_PUBLIC_KEYS = (
     "name_prefix",
     "subject",
     "tags",
-    "resource_type",
     "secrecy_level",
     "visibility_scope",
     "visible_user_ids",
@@ -5889,7 +4868,6 @@ def _owner_brief(db: sqlite3.Connection, owner_id: int) -> dict[str, Any] | None
         "id": row["id"],
         "username": row["username"],
         "name": row["name"],
-        "display_name": row["name"],
     }
 
 
@@ -6008,8 +4986,6 @@ def list_tasks(
         "total": total,
         "page": page,
         "page_size": page_size,
-        # 兼容旧字段：保留 tasks 以避免破坏老调用方
-        "tasks": items,
     }
 
 
@@ -6030,15 +5006,15 @@ def get_task(
 
 @app.post("/api/tasks/split-import")
 async def create_split_import_task(
+    request: Request,
     name_prefix: str = Form(...),
     subject: str = Form(DEFAULT_RESOURCE_SUBJECT),
     tags: str = Form(""),
-    resource_type: str = Form("asset"),
     secrecy_level: str = Form("public"),
     visibility_scope: str = Form("public"),
-    visible_to_users: str = Form(""),
+    visible_user_ids: str = Form(""),
     management_scope: str = Form("private"),
-    managed_by_users: str = Form(""),
+    manage_user_ids: str = Form(""),
     remark_html: str = Form(""),
     ppt_file: UploadFile = File(...),
     images: list[UploadFile] = File(...),
@@ -6046,13 +5022,14 @@ async def create_split_import_task(
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
     """异步批量拆分导入：创建任务记录后立即返回，后台线程执行拆分"""
+    await _reject_removed_form_fields(
+        request, "resource_type", "visible_to_users", "managed_by_users"
+    )
     _validate_ppt_upload(ppt_file)
     visibility_scope = _validate_scope(visibility_scope)
     management_scope = _validate_scope(management_scope)
     secrecy_level = _validate_secrecy(secrecy_level)
-    subject = _validate_template_subject("asset", subject)
-    if resource_type not in {"asset", "template"}:
-        raise HTTPException(400, "资源类型不正确")
+    subject = _validate_resource_subject(subject)
 
     images = sorted(images, key=lambda f: _natural_sort_key(f.filename or ""))
     temp_dir = Path(tempfile.mkdtemp(prefix="task_split_"))
@@ -6078,12 +5055,11 @@ async def create_split_import_task(
         "name_prefix": name_prefix,
         "subject": subject,
         "tags": tags,
-        "resource_type": resource_type,
         "secrecy_level": secrecy_level,
         "visibility_scope": visibility_scope,
-        "visible_user_ids": visible_to_users,
+        "visible_user_ids": visible_user_ids,
         "management_scope": management_scope,
-        "manage_user_ids": managed_by_users,
+        "manage_user_ids": manage_user_ids,
         "remark_html": remark_html,
         "owner_id": int(user["id"]),
         "source_path": str(source_path),
@@ -6110,7 +5086,8 @@ async def create_split_import_task(
         # 等待信号量前更新状态为排队中
         db_q = get_db()
         db_q.execute(
-            "UPDATE tasks SET message = '排队中...', updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime') WHERE id = ?",
+            "UPDATE tasks SET message = '排队中...', updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
+            " WHERE id = ? AND status <> 'cancelled'",
             (task_id,),
         )
         db_q.commit()
@@ -6152,9 +5129,9 @@ def cancel_task(
     row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     if row is None:
         raise HTTPException(404, "任务不存在")
-    # 仅系统管理员/超级管理员可维护（取消）任务
+    # 仅运营管理员/系统管理员可维护（取消）任务
     if not is_admin(user):
-        raise HTTPException(403, "仅系统管理员可取消任务")
+        raise HTTPException(403, "仅运营管理员或系统管理员可取消任务")
     if row["status"] not in {"uploading", "pending", "processing"}:
         raise HTTPException(400, f"任务状态为 {row['status']}，无法取消")
 

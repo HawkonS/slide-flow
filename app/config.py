@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import stat
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -10,8 +12,10 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 PROPERTIES_FILE = ROOT_DIR / "slide_flow.properties"
 
 
-def _read_properties(path: Path) -> dict[str, str]:
+def read_properties(path: Path = PROPERTIES_FILE) -> dict[str, str]:
     values: dict[str, str] = {}
+    if path == PROPERTIES_FILE:
+        ensure_properties_file(path)
     if not path.exists():
         return values
     for raw_line in path.read_text(encoding="utf-8").splitlines():
@@ -23,71 +27,208 @@ def _read_properties(path: Path) -> dict[str, str]:
     return values
 
 
-# 配置项元数据：标签、分组、是否可热加载、值类型、描述
-CONFIG_META: dict[str, dict[str, Any]] = {
-    # 服务器
-    "site.name": {"label": "站点名称", "group": "server", "hot_reload": True, "type": "str", "desc": "前端页面标题与后端服务名"},
-    "server.port": {"label": "后端服务端口", "group": "server", "hot_reload": False, "type": "int", "desc": "主 API 服务端口，修改后需重启"},
-    "server.web_port": {"label": "前端服务端口", "group": "server", "hot_reload": False, "type": "int", "desc": "前端开发端口，仅 --dev 开发模式启动 Vite 时生效；生产模式前端由后端静态托管，访问入口为 server.port"},
-    "server.workers": {"label": "工作进程数", "group": "server", "hot_reload": False, "type": "int", "desc": "Uvicorn worker 数量"},
-    "server.allowed_host": {"label": "允许的访问域名", "group": "server", "hot_reload": False, "type": "str", "desc": "Vite 开发服务器允许访问的域名，多个域名用逗号分隔"},
-    "server.db_pool_size": {"label": "数据库连接池大小", "group": "server", "hot_reload": False, "type": "int", "desc": "每个 worker 进程的数据库连接池容量"},
-    "server.thread_pool_size": {"label": "线程池大小", "group": "server", "hot_reload": False, "type": "int", "desc": "处理并发同步请求的默认线程池容量"},
-    "server.response_cache": {"label": "启用响应缓存", "group": "server", "hot_reload": True, "type": "bool", "desc": "为 GET API 请求添加 Cache-Control 头以减少重复请求"},
-    "web.https": {"label": "前端启用 HTTPS", "group": "server", "hot_reload": True, "type": "bool", "desc": "是否部署在 HTTPS 反向代理之后（影响 Secure Cookie 与 HSTS），生产模式下 uvicorn 本身不终结 TLS"},
-    # 安全
-    "security.secret_key": {"label": "会话签名密钥", "group": "security", "hot_reload": False, "type": "str", "desc": "会话/演示令牌签名密钥，修改后现有会话会失效"},
-    "security.default_password": {"label": "默认密码", "group": "security", "hot_reload": True, "type": "str", "desc": "新建用户及首次初始化使用的默认密码"},
-    "security.session_ttl_hours": {"label": "会话有效期（小时）", "group": "security", "hot_reload": True, "type": "int", "desc": "登录会话令牌的有效时长"},
-    "security.show_token_ttl_seconds": {"label": "演示令牌有效期（秒）", "group": "security", "hot_reload": True, "type": "int", "desc": "演示分享令牌的有效时长"},
-    # 数据目录
-    "data.dir": {"label": "数据根目录", "group": "data", "hot_reload": False, "type": "str", "desc": "包含数据库、资源文件和日志的根目录"},
-    "data.db_dir": {"label": "数据库目录", "group": "data", "hot_reload": False, "type": "str", "desc": "SQLite 数据库存放目录"},
-    "data.assets_dir": {"label": "资源文件根目录", "group": "data", "hot_reload": False, "type": "str", "desc": "资源文件根目录"},
-    "data.resources_dir": {"label": "素材文件目录", "group": "data", "hot_reload": False, "type": "str", "desc": "素材文件目录"},
-    "data.templates_dir": {"label": "模板文件目录", "group": "data", "hot_reload": False, "type": "str", "desc": "模板文件目录"},
-    "data.fonts_dir": {"label": "字体文件目录", "group": "data", "hot_reload": False, "type": "str", "desc": "字体文件目录"},
-    "data.thumbs_dir": {"label": "缩略图目录", "group": "data", "hot_reload": False, "type": "str", "desc": "缩略图目录"},
-    "data.downloads_dir": {"label": "下载临时目录", "group": "data", "hot_reload": False, "type": "str", "desc": "下载临时文件目录"},
-    # 日志
-    "log.dir": {"label": "日志目录", "group": "log", "hot_reload": False, "type": "str", "desc": "日志文件目录"},
-    "log.max_size_mb": {"label": "日志滚动大小上限（MB）", "group": "log", "hot_reload": False, "type": "int", "desc": "单个日志文件滚动大小上限"},
-    "log.backup_count": {"label": "日志备份数量", "group": "log", "hot_reload": False, "type": "int", "desc": "保留的日志备份文件数量"},
-    # 应用配置
-    "app.default_resource_subject": {"label": "默认资源主题", "group": "app", "hot_reload": True, "type": "str", "desc": "新建资源默认主题（留空表示不设置）"},
-    "app.default_filter_status": {"label": "状态筛选默认值", "group": "app", "hot_reload": True, "type": "str", "desc": "资源状态筛选器默认值（留空=全部；active=正常；disabled=停用）"},
-    "app.default_filter_subject": {"label": "主题筛选默认值", "group": "app", "hot_reload": True, "type": "str", "desc": "资源主题筛选器默认值（留空=全部）"},
-    "app.slow_request_threshold": {"label": "慢请求阈值（秒）", "group": "app", "hot_reload": True, "type": "float", "desc": "超过该阈值的请求会被记录到慢请求日志"},
-    "app.split_task_timeout": {"label": "拆分任务超时（秒）", "group": "app", "hot_reload": False, "type": "int", "desc": "PPT 拆分任务超时时间"},
-    "app.max_concurrent_splits": {"label": "最大并发拆分数", "group": "app", "hot_reload": False, "type": "int", "desc": "最大并发的 PPT 拆分任务数"},
-    "app.user_custom_tags": {"label": "允许用户自定义标签", "group": "app", "hot_reload": True, "type": "bool", "desc": "开启后用户可自由创建标签；关闭后只能选择管理员预设标签"},
-    "image.hd.max_resolution": {"label": "高清图最大分辨率", "group": "app", "hot_reload": False, "type": "int", "desc": "图片最长边像素上限，适配不同比例(16:9/4:3)"},
-    "image.hd.dpi": {"label": "高清图 DPI", "group": "app", "hot_reload": False, "type": "int", "desc": "压缩后图片的 DPI 值"},
-    "image.hd.format": {"label": "高清图格式", "group": "app", "hot_reload": False, "type": "str", "desc": "压缩后图片格式（jpeg/png）"},
-    "image.hd.quality": {"label": "高清图质量", "group": "app", "hot_reload": False, "type": "int", "desc": "JPEG 压缩质量 (1-100)"},
-    "image.thumb.width": {"label": "缩略图宽度", "group": "app", "hot_reload": False, "type": "int", "desc": "缩略图目标宽度（像素）"},
-    "image.thumb.height": {"label": "缩略图高度", "group": "app", "hot_reload": False, "type": "int", "desc": "缩略图目标高度（像素）"},
-    "image.thumb.quality": {"label": "缩略图质量", "group": "app", "hot_reload": False, "type": "int", "desc": "缩略图 JPEG 质量 (1-100)"},
-    # 管理后台
-    "admin.route_prefix": {"label": "管理面板路由前缀", "group": "admin", "hot_reload": False, "type": "str", "desc": "管理面板路由前缀"},
-    # 外观
-    "logo.svg.path": {"label": "Logo 路径", "group": "appearance", "hot_reload": True, "type": "str", "desc": "Logo SVG 文件路径"},
-    # 飞书 SSO
-    "feishu.sso_enabled": {"label": "启用飞书 SSO", "group": "feishu", "hot_reload": True, "type": "bool", "desc": "是否启用飞书单点登录"},
-    "feishu.app_id": {"label": "飞书 App ID", "group": "feishu", "hot_reload": True, "type": "str", "desc": "飞书自建应用的 App ID"},
-    "feishu.app_secret": {"label": "飞书 App Secret", "group": "feishu", "hot_reload": True, "type": "str", "desc": "飞书自建应用的 App Secret"},
-}
+# 配置 Schema 是默认值、后台配置元数据和首次生成文件的唯一来源。
+CONFIG_SCHEMA: list[dict[str, Any]] = [
+    {
+        "key": "server",
+        "label": "服务器配置",
+        "items": [
+            {"key": "site.name", "label": "站点名称", "default": "页流幻灯片管理平台", "type": "str", "hot_reload": True, "desc": "前端页面标题与后端服务名"},
+            {"key": "server.port", "label": "后端服务端口", "default": "8088", "type": "int", "hot_reload": False, "desc": "主 API 服务端口，修改后需重启"},
+            {"key": "server.web_port", "label": "前端服务端口", "default": "5173", "type": "int", "hot_reload": False, "desc": "前端开发端口，仅 --dev 开发模式启动 Vite 时生效；生产模式前端由后端静态托管，访问入口为 server.port"},
+            {"key": "server.workers", "label": "工作进程数", "default": "4", "type": "int", "hot_reload": False, "desc": "Gunicorn/Uvicorn ASGI worker 数量；任务事件通过 SQLite 跨进程分发"},
+            {"key": "server.allowed_host", "label": "允许的访问域名", "default": "", "type": "str", "hot_reload": False, "desc": "Vite 开发服务器允许访问的域名，多个域名用逗号分隔"},
+            {"key": "server.db_pool_size", "label": "数据库连接池大小", "default": "10", "type": "int", "hot_reload": False, "desc": "每个 worker 进程的数据库连接池容量"},
+            {"key": "server.thread_pool_size", "label": "线程池大小", "default": "20", "type": "int", "hot_reload": False, "desc": "处理并发同步请求的默认线程池容量"},
+            {"key": "server.response_cache", "label": "启用响应缓存", "default": "true", "type": "bool", "hot_reload": True, "desc": "为 GET API 请求添加 Cache-Control 头以减少重复请求"},
+            {"key": "web.https", "label": "前端启用 HTTPS", "default": "false", "type": "bool", "hot_reload": True, "desc": "是否部署在 HTTPS 反向代理之后（影响 Secure Cookie 与 HSTS），应用服务器本身不终结 TLS"},
+        ],
+    },
+    {
+        "key": "security",
+        "label": "安全配置",
+        "items": [
+            {"key": "security.secret_key", "label": "会话签名密钥", "default": "slide-flow-local-dev-secret", "type": "str", "hot_reload": False, "desc": "会话/演示令牌签名密钥，也可通过环境变量 SLIDE_FLOW_SECRET 覆盖"},
+            {"key": "security.default_password", "label": "默认密码", "default": "123456", "type": "str", "hot_reload": True, "desc": "新建用户及首次初始化使用的默认密码"},
+            {"key": "security.session_ttl_hours", "label": "会话有效期（小时）", "default": "12", "type": "int", "hot_reload": True, "desc": "登录会话令牌的有效时长"},
+            {"key": "security.show_token_ttl_seconds", "label": "演示令牌有效期（秒）", "default": "7200", "type": "int", "hot_reload": True, "desc": "演示分享令牌的有效时长"},
+        ],
+    },
+    {
+        "key": "data",
+        "label": "数据目录",
+        "items": [
+            {"key": "data.dir", "label": "数据根目录", "default": "data", "type": "str", "hot_reload": False, "desc": "包含数据库、资源文件和日志的根目录"},
+            {"key": "data.db_dir", "label": "数据库目录", "default": "data/db", "type": "str", "hot_reload": False, "desc": "SQLite 数据库存放目录"},
+            {"key": "data.assets_dir", "label": "资源文件根目录", "default": "data/assets", "type": "str", "hot_reload": False, "desc": "资源文件根目录"},
+            {"key": "data.resources_dir", "label": "素材文件目录", "default": "data/assets/resources", "type": "str", "hot_reload": False, "desc": "素材文件目录"},
+            {"key": "data.templates_dir", "label": "模板文件目录", "default": "data/assets/templates", "type": "str", "hot_reload": False, "desc": "模板文件目录"},
+            {"key": "data.fonts_dir", "label": "字体文件目录", "default": "data/assets/fonts", "type": "str", "hot_reload": False, "desc": "字体文件目录"},
+            {"key": "data.thumbs_dir", "label": "缩略图目录", "default": "data/assets/thumbs", "type": "str", "hot_reload": False, "desc": "缩略图目录"},
+            {"key": "data.downloads_dir", "label": "下载临时目录", "default": "data/assets/downloads", "type": "str", "hot_reload": False, "desc": "下载临时文件目录"},
+        ],
+    },
+    {
+        "key": "log",
+        "label": "日志配置",
+        "items": [
+            {"key": "log.dir", "label": "日志目录", "default": "data/logs", "type": "str", "hot_reload": False, "desc": "日志文件目录"},
+            {"key": "log.max_size_mb", "label": "日志滚动大小上限（MB）", "default": "50", "type": "int", "hot_reload": False, "desc": "单个日志文件滚动大小上限"},
+            {"key": "log.backup_count", "label": "日志备份数量", "default": "5", "type": "int", "hot_reload": False, "desc": "保留的日志备份文件数量"},
+        ],
+    },
+    {
+        "key": "app",
+        "label": "应用配置",
+        "items": [
+            {"key": "app.default_resource_subject", "label": "默认资源主题", "default": "", "type": "str", "hot_reload": True, "desc": "新建资源默认主题（留空表示不设置）"},
+            {"key": "app.default_filter_status", "label": "状态筛选默认值", "default": "active", "type": "str", "hot_reload": True, "desc": "资源状态筛选器默认值（留空=全部；active=正常；disabled=停用）"},
+            {"key": "app.default_filter_subject", "label": "主题筛选默认值", "default": "", "type": "str", "hot_reload": True, "desc": "资源主题筛选器默认值（留空=全部）"},
+            {"key": "app.slow_request_threshold", "label": "慢请求阈值（秒）", "default": "1.0", "type": "float", "hot_reload": True, "desc": "超过该阈值的请求会被记录到慢请求日志"},
+            {"key": "app.split_task_timeout", "label": "拆分任务超时（秒）", "default": "600", "type": "int", "hot_reload": False, "desc": "PPT 拆分任务超时时间"},
+            {"key": "app.max_concurrent_splits", "label": "最大并发拆分数", "default": "2", "type": "int", "hot_reload": False, "desc": "最大并发的 PPT 拆分任务数"},
+            {"key": "app.user_custom_tags", "label": "允许用户自定义标签", "default": "false", "type": "bool", "hot_reload": True, "desc": "开启后用户可自由创建标签；关闭后只能选择管理员预设标签"},
+        ],
+    },
+    {
+        "key": "image",
+        "label": "图片配置",
+        "items": [
+            {"key": "image.hd.max_resolution", "label": "高清图最大分辨率", "default": "2560", "type": "int", "hot_reload": False, "desc": "图片最长边像素上限，适配不同比例（16:9/4:3）"},
+            {"key": "image.hd.dpi", "label": "高清图 DPI", "default": "300", "type": "int", "hot_reload": False, "desc": "压缩后图片的 DPI 值"},
+            {"key": "image.hd.format", "label": "高清图格式", "default": "png", "type": "str", "hot_reload": False, "desc": "压缩后图片格式（jpeg/png）"},
+            {"key": "image.hd.quality", "label": "高清图质量", "default": "90", "type": "int", "hot_reload": False, "desc": "JPEG 压缩质量（1-100）"},
+            {"key": "image.thumb.width", "label": "缩略图宽度", "default": "640", "type": "int", "hot_reload": False, "desc": "缩略图目标宽度（像素）"},
+            {"key": "image.thumb.height", "label": "缩略图高度", "default": "360", "type": "int", "hot_reload": False, "desc": "缩略图目标高度（像素）"},
+            {"key": "image.thumb.quality", "label": "缩略图质量", "default": "74", "type": "int", "hot_reload": False, "desc": "缩略图 JPEG 质量（1-100）"},
+        ],
+    },
+    {
+        "key": "appearance",
+        "label": "外观配置",
+        "items": [
+            {"key": "logo.svg.path", "label": "Logo 路径", "default": "app/static/img/logo.svg", "type": "str", "hot_reload": True, "desc": "Logo SVG 文件路径"},
+        ],
+    },
+    {
+        "key": "feishu",
+        "label": "飞书 SSO",
+        "items": [
+            {"key": "feishu.sso_enabled", "label": "启用飞书 SSO", "default": "false", "type": "bool", "hot_reload": True, "desc": "是否启用飞书单点登录"},
+            {"key": "feishu.app_id", "label": "飞书 App ID", "default": "", "type": "str", "hot_reload": True, "desc": "飞书自建应用的 App ID"},
+            {"key": "feishu.app_secret", "label": "飞书 App Secret", "default": "", "type": "str", "hot_reload": True, "desc": "飞书自建应用的 App Secret"},
+        ],
+    },
+]
+
+# 运维脚本使用但不在管理后台展示的配置。
+OPERATION_CONFIG_SCHEMA: list[dict[str, Any]] = [
+    {
+        "key": "system",
+        "label": "系统管理配置",
+        "items": [
+            {"key": "startup.script", "default": "run.sh", "desc": "后台执行启动/重启时使用的脚本"},
+            {"key": "system.sudo_password", "default": "", "desc": "免交互执行 systemd 操作的 sudo 密码；留空时由 sudo 自行认证"},
+            {"key": "system.service_name", "default": "slide-flow", "desc": "systemd 服务名"},
+        ],
+    },
+]
 
 CONFIG_GROUPS: list[dict[str, str]] = [
-    {"key": "server", "label": "服务器配置"},
-    {"key": "security", "label": "安全配置"},
-    {"key": "data", "label": "数据目录"},
-    {"key": "log", "label": "日志配置"},
-    {"key": "app", "label": "应用配置"},
-    {"key": "admin", "label": "管理后台"},
-    {"key": "appearance", "label": "外观配置"},
-    {"key": "feishu", "label": "飞书 SSO"},
+    {"key": group["key"], "label": group["label"]} for group in CONFIG_SCHEMA
 ]
+CONFIG_META: dict[str, dict[str, Any]] = {
+    item["key"]: {**item, "group": group["key"]}
+    for group in CONFIG_SCHEMA
+    for item in group["items"]
+}
+DEFAULT_PROPERTIES: dict[str, str] = {
+    item["key"]: str(item["default"])
+    for group in (*CONFIG_SCHEMA, *OPERATION_CONFIG_SCHEMA)
+    for item in group["items"]
+}
+
+
+def _render_properties(values: dict[str, str]) -> str:
+    lines = [
+        "# =============================================",
+        "# SlideFlow 配置文件",
+        "# 由 app/config.py 在首次启动时自动生成",
+        "# 所有相对路径均基于项目根目录解析",
+        "# =============================================",
+        "",
+    ]
+    for group in (*CONFIG_SCHEMA, *OPERATION_CONFIG_SCHEMA):
+        lines.append(f"# ===== {group['label']} =====")
+        for item in group["items"]:
+            lines.append(f"{item['key']}={values[item['key']]}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _render_default_properties() -> str:
+    return _render_properties(DEFAULT_PROPERTIES)
+
+
+def _validate_properties(values: dict[str, str]) -> None:
+    expected = set(DEFAULT_PROPERTIES)
+    actual = set(values)
+    missing = sorted(expected - actual)
+    unknown = sorted(actual - expected)
+    errors: list[str] = []
+    if missing:
+        errors.append(f"缺少配置项: {', '.join(missing)}")
+    if unknown:
+        errors.append(f"包含未知配置项: {', '.join(unknown)}")
+    if errors:
+        raise ValueError(
+            "slide_flow.properties 不符合当前版本配置格式；"
+            + "；".join(errors)
+            + "。请修正文件，或删除后重新启动以生成新配置。"
+        )
+
+
+def _write_text_atomic(path: Path, content: str) -> None:
+    real_path = Path(os.path.realpath(path))
+    real_path.parent.mkdir(parents=True, exist_ok=True)
+    old_stat = None
+    try:
+        old_stat = real_path.stat()
+    except OSError:
+        pass
+
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{real_path.name}.", suffix=".tmp", dir=real_path.parent
+    )
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp_path, stat.S_IRUSR | stat.S_IWUSR)
+        os.replace(temp_path, real_path)
+        os.chmod(real_path, stat.S_IRUSR | stat.S_IWUSR)
+        if old_stat is not None:
+            try:
+                os.chown(real_path, old_stat.st_uid, old_stat.st_gid)
+            except (AttributeError, PermissionError, OSError):
+                pass
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def ensure_properties_file(path: Path = PROPERTIES_FILE) -> bool:
+    """确保配置文件存在并限制为仅当前用户可读写；新建时返回 True。"""
+    real_path = Path(os.path.realpath(path))
+    if real_path.exists():
+        try:
+            os.chmod(real_path, stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
+        return False
+    _write_text_atomic(path, _render_default_properties())
+    return True
 
 # 配置项 key -> Settings 属性名
 _PROP_TO_ATTR: dict[str, str] = {
@@ -128,13 +269,21 @@ _PROP_TO_ATTR: dict[str, str] = {
     "image.thumb.width": "image_thumb_width",
     "image.thumb.height": "image_thumb_height",
     "image.thumb.quality": "image_thumb_quality",
-    "admin.route_prefix": "admin_route_prefix",
     "logo.svg.path": "logo_svg_path",
     "web.https": "web_https",
     "feishu.sso_enabled": "feishu_sso_enabled",
     "feishu.app_id": "feishu_app_id",
     "feishu.app_secret": "feishu_app_secret",
 }
+
+
+def _parse_bool(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise ValueError(f"布尔配置只能填写 true 或 false，当前值为: {value!r}")
 
 
 def _resolve_path(raw: str) -> Path:
@@ -150,69 +299,66 @@ class Settings:
     root_dir: Path
 
     # 基础配置
-    site_name: str = "页流幻灯片管理平台"
-    port: int = 8088
-    web_port: int = 5173
-    workers: int = 4
-    startup_script: str = "start.sh"
-    allowed_host: str = ""
+    site_name: str = DEFAULT_PROPERTIES["site.name"]
+    port: int = int(DEFAULT_PROPERTIES["server.port"])
+    web_port: int = int(DEFAULT_PROPERTIES["server.web_port"])
+    workers: int = int(DEFAULT_PROPERTIES["server.workers"])
+    startup_script: str = DEFAULT_PROPERTIES["startup.script"]
+    allowed_host: str = DEFAULT_PROPERTIES["server.allowed_host"]
     # 是否部署在 HTTPS 反向代理之后（影响 Secure Cookie 与 HSTS），缺省 false 避免纯 HTTP 部署丢失登录态
-    web_https: bool = False
+    web_https: bool = _parse_bool(DEFAULT_PROPERTIES["web.https"])
 
     # 并发配置
-    db_pool_size: int = 10
-    thread_pool_size: int = 20
-    response_cache_enabled: bool = True
+    db_pool_size: int = int(DEFAULT_PROPERTIES["server.db_pool_size"])
+    thread_pool_size: int = int(DEFAULT_PROPERTIES["server.thread_pool_size"])
+    response_cache_enabled: bool = _parse_bool(DEFAULT_PROPERTIES["server.response_cache"])
 
     # 安全配置
-    secret_key: str = "slide-flow-local-dev-secret"
-    default_password: str = "123456"
-    session_ttl_hours: int = 12
-    show_token_ttl_seconds: int = 7200
+    secret_key: str = DEFAULT_PROPERTIES["security.secret_key"]
+    default_password: str = DEFAULT_PROPERTIES["security.default_password"]
+    session_ttl_hours: int = int(DEFAULT_PROPERTIES["security.session_ttl_hours"])
+    show_token_ttl_seconds: int = int(DEFAULT_PROPERTIES["security.show_token_ttl_seconds"])
 
     # 数据目录
-    data_dir: Path = field(default_factory=lambda: ROOT_DIR / "data")
-    db_dir: Path = field(default_factory=lambda: ROOT_DIR / "data" / "db")
-    assets_dir: Path = field(default_factory=lambda: ROOT_DIR / "data" / "assets")
-    resources_dir: Path = field(default_factory=lambda: ROOT_DIR / "data" / "assets" / "resources")
-    templates_dir: Path = field(default_factory=lambda: ROOT_DIR / "data" / "assets" / "templates")
-    fonts_dir: Path = field(default_factory=lambda: ROOT_DIR / "data" / "assets" / "fonts")
-    thumbs_dir: Path = field(default_factory=lambda: ROOT_DIR / "data" / "assets" / "thumbs")
-    downloads_dir: Path = field(default_factory=lambda: ROOT_DIR / "data" / "assets" / "downloads")
+    data_dir: Path = field(default_factory=lambda: _resolve_path(DEFAULT_PROPERTIES["data.dir"]))
+    db_dir: Path = field(default_factory=lambda: _resolve_path(DEFAULT_PROPERTIES["data.db_dir"]))
+    assets_dir: Path = field(default_factory=lambda: _resolve_path(DEFAULT_PROPERTIES["data.assets_dir"]))
+    resources_dir: Path = field(default_factory=lambda: _resolve_path(DEFAULT_PROPERTIES["data.resources_dir"]))
+    templates_dir: Path = field(default_factory=lambda: _resolve_path(DEFAULT_PROPERTIES["data.templates_dir"]))
+    fonts_dir: Path = field(default_factory=lambda: _resolve_path(DEFAULT_PROPERTIES["data.fonts_dir"]))
+    thumbs_dir: Path = field(default_factory=lambda: _resolve_path(DEFAULT_PROPERTIES["data.thumbs_dir"]))
+    downloads_dir: Path = field(default_factory=lambda: _resolve_path(DEFAULT_PROPERTIES["data.downloads_dir"]))
 
     # 日志配置
-    log_dir: Path = field(default_factory=lambda: ROOT_DIR / "data" / "logs")
-    log_max_size_mb: int = 50
-    log_backup_count: int = 5
+    log_dir: Path = field(default_factory=lambda: _resolve_path(DEFAULT_PROPERTIES["log.dir"]))
+    log_max_size_mb: int = int(DEFAULT_PROPERTIES["log.max_size_mb"])
+    log_backup_count: int = int(DEFAULT_PROPERTIES["log.backup_count"])
 
     # 应用配置
-    default_resource_subject: str = ""
-    default_filter_status: str = ""
-    default_filter_subject: str = ""
-    slow_request_threshold: float = 1.0
-    split_task_timeout: int = 600
-    max_concurrent_splits: int = 2
-    user_custom_tags: bool = False
+    default_resource_subject: str = DEFAULT_PROPERTIES["app.default_resource_subject"]
+    default_filter_status: str = DEFAULT_PROPERTIES["app.default_filter_status"]
+    default_filter_subject: str = DEFAULT_PROPERTIES["app.default_filter_subject"]
+    slow_request_threshold: float = float(DEFAULT_PROPERTIES["app.slow_request_threshold"])
+    split_task_timeout: int = int(DEFAULT_PROPERTIES["app.split_task_timeout"])
+    max_concurrent_splits: int = int(DEFAULT_PROPERTIES["app.max_concurrent_splits"])
+    user_custom_tags: bool = _parse_bool(DEFAULT_PROPERTIES["app.user_custom_tags"])
 
     # 图片压缩配置
-    image_hd_max_resolution: int = 2560
-    image_hd_dpi: int = 300
-    image_hd_format: str = "png"
-    image_hd_quality: int = 90
-    image_thumb_width: int = 640
-    image_thumb_height: int = 360
-    image_thumb_quality: int = 74
-
-    # 管理后台
-    admin_route_prefix: str = "/admin"
+    image_hd_max_resolution: int = int(DEFAULT_PROPERTIES["image.hd.max_resolution"])
+    image_hd_dpi: int = int(DEFAULT_PROPERTIES["image.hd.dpi"])
+    image_hd_format: str = DEFAULT_PROPERTIES["image.hd.format"]
+    image_hd_quality: int = int(DEFAULT_PROPERTIES["image.hd.quality"])
+    image_thumb_width: int = int(DEFAULT_PROPERTIES["image.thumb.width"])
+    image_thumb_height: int = int(DEFAULT_PROPERTIES["image.thumb.height"])
+    image_thumb_quality: int = int(DEFAULT_PROPERTIES["image.thumb.quality"])
 
     # 外观
-    logo_svg_path: str = "app/static/img/logo.svg"
+    logo_svg_path: str = DEFAULT_PROPERTIES["logo.svg.path"]
 
     # 飞书 SSO
-    feishu_sso_enabled: bool = False
-    feishu_app_id: str = ""
-    feishu_app_secret: str = ""
+    feishu_sso_enabled: bool = _parse_bool(DEFAULT_PROPERTIES["feishu.sso_enabled"])
+    feishu_app_id: str = DEFAULT_PROPERTIES["feishu.app_id"]
+    feishu_app_secret: str = DEFAULT_PROPERTIES["feishu.app_secret"]
 
     # 数据库路径（派生）
     db_path: Path = field(default_factory=lambda: ROOT_DIR / "data" / "db" / "slide_flow.db")
@@ -250,11 +396,6 @@ class Settings:
         ):
             d.mkdir(parents=True, exist_ok=True)
 
-
-def _parse_bool(value: str) -> bool:
-    return value.lower() in ("true", "1", "yes", "on")
-
-
 def _coerce_value(raw: str, value_type: str) -> Any:
     """根据 CONFIG_META 中声明的类型将原始字符串转换为实际值。"""
     if value_type == "int":
@@ -266,66 +407,27 @@ def _coerce_value(raw: str, value_type: str) -> Any:
     return raw
 
 
-def get_config_value_str(key: str) -> str:
-    """返回运行时 settings 中指定配置项的字符串化值。"""
-    attr = _PROP_TO_ATTR.get(key)
-    if attr is None:
-        return ""
-    val = getattr(settings, attr, "")
-    if isinstance(val, bool):
-        return "true" if val else "false"
-    if isinstance(val, Path):
-        # 优先展示相对路径（以 ROOT_DIR 为基准）
-        try:
-            return str(val.resolve().relative_to(settings.root_dir))
-        except ValueError:
-            return str(val)
-    return str(val)
-
-
 def read_config_view() -> dict[str, str]:
-    """读取 properties 文件中的原始值，缺失时回退到运行时 settings 值。"""
-    props = _read_properties(PROPERTIES_FILE)
-    out: dict[str, str] = {}
-    for key in CONFIG_META:
-        if key in props:
-            out[key] = props[key]
-        else:
-            out[key] = get_config_value_str(key)
-    return out
+    """读取当前版本 properties 文件中的后台可管理配置。"""
+    props = read_properties(PROPERTIES_FILE)
+    _validate_properties(props)
+    return {key: props[key] for key in CONFIG_META}
 
 
 def write_properties(updates: dict[str, str]) -> None:
-    """更新 slide_flow.properties 文件，保留原有注释与顺序。未出现的 key 追加到文件末尾。写入前备份为 .bak。"""
+    """按当前 schema 重写配置文件，写入前备份为 .bak。"""
     path = PROPERTIES_FILE
-    if path.exists():
-        backup = path.with_suffix(path.suffix + ".bak")
-        backup.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
-        original_lines = path.read_text(encoding="utf-8").splitlines()
-    else:
-        original_lines = []
-
-    remaining = dict(updates)
-    new_lines: list[str] = []
-    for raw in original_lines:
-        stripped = raw.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            new_lines.append(raw)
-            continue
-        key = stripped.split("=", 1)[0].strip()
-        if key in remaining:
-            new_lines.append(f"{key}={remaining.pop(key)}")
-        else:
-            new_lines.append(raw)
-
-    if remaining:
-        if new_lines and new_lines[-1].strip() != "":
-            new_lines.append("")
-        new_lines.append("# ===== 追加配置项 =====")
-        for key, value in remaining.items():
-            new_lines.append(f"{key}={value}")
-
-    path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    ensure_properties_file(path)
+    original = path.read_text(encoding="utf-8")
+    backup = path.with_suffix(path.suffix + ".bak")
+    _write_text_atomic(backup, original)
+    values = read_properties(path)
+    _validate_properties(values)
+    unknown = sorted(set(updates) - set(DEFAULT_PROPERTIES))
+    if unknown:
+        raise ValueError(f"不支持的配置项: {', '.join(unknown)}")
+    values.update(updates)
+    _write_text_atomic(path, _render_properties(values))
 
 
 def reload_settings() -> set[str]:
@@ -342,73 +444,74 @@ def reload_settings() -> set[str]:
 
 
 def load_settings() -> Settings:
-    props = _read_properties(PROPERTIES_FILE)
+    props = read_properties(PROPERTIES_FILE)
+    _validate_properties(props)
+
+    def get_value(key: str) -> str:
+        return props[key]
 
     # 基础配置
-    site_name = props.get("site.name", "页流幻灯片管理平台")
-    port = int(props.get("server.port", "8088"))
-    web_port = int(props.get("server.web_port", "5173"))
-    workers = int(props.get("server.workers", "4"))
-    allowed_host = props.get("server.allowed_host", "")
-    startup_script = props.get("startup.script", "start.sh")
+    site_name = get_value("site.name")
+    port = int(get_value("server.port"))
+    web_port = int(get_value("server.web_port"))
+    workers = int(get_value("server.workers"))
+    allowed_host = get_value("server.allowed_host")
+    startup_script = get_value("startup.script")
 
     # 并发配置
-    db_pool_size = int(props.get("server.db_pool_size", "10"))
-    thread_pool_size = int(props.get("server.thread_pool_size", "20"))
-    response_cache_enabled = _parse_bool(props.get("server.response_cache", "true"))
+    db_pool_size = int(get_value("server.db_pool_size"))
+    thread_pool_size = int(get_value("server.thread_pool_size"))
+    response_cache_enabled = _parse_bool(get_value("server.response_cache"))
 
     # 安全配置
-    secret_key = os.getenv("SLIDE_FLOW_SECRET", props.get("security.secret_key", "slide-flow-local-dev-secret"))
-    default_password = props.get("security.default_password", "123456")
-    session_ttl_hours = int(props.get("security.session_ttl_hours", "12"))
-    show_token_ttl_seconds = int(props.get("security.show_token_ttl_seconds", "7200"))
+    secret_key = os.getenv("SLIDE_FLOW_SECRET", get_value("security.secret_key"))
+    default_password = get_value("security.default_password")
+    session_ttl_hours = int(get_value("security.session_ttl_hours"))
+    show_token_ttl_seconds = int(get_value("security.show_token_ttl_seconds"))
 
     # 数据目录
-    data_dir = _resolve_path(props.get("data.dir", "data"))
-    db_dir = _resolve_path(props.get("data.db_dir", str(data_dir / "db")))
-    assets_dir = _resolve_path(props.get("data.assets_dir", str(data_dir / "assets")))
-    resources_dir = _resolve_path(props.get("data.resources_dir", str(assets_dir / "resources")))
-    templates_dir = _resolve_path(props.get("data.templates_dir", str(assets_dir / "templates")))
-    fonts_dir = _resolve_path(props.get("data.fonts_dir", str(assets_dir / "fonts")))
-    thumbs_dir = _resolve_path(props.get("data.thumbs_dir", str(assets_dir / "thumbs")))
-    downloads_dir = _resolve_path(props.get("data.downloads_dir", str(assets_dir / "downloads")))
+    data_dir = _resolve_path(get_value("data.dir"))
+    db_dir = _resolve_path(get_value("data.db_dir"))
+    assets_dir = _resolve_path(get_value("data.assets_dir"))
+    resources_dir = _resolve_path(get_value("data.resources_dir"))
+    templates_dir = _resolve_path(get_value("data.templates_dir"))
+    fonts_dir = _resolve_path(get_value("data.fonts_dir"))
+    thumbs_dir = _resolve_path(get_value("data.thumbs_dir"))
+    downloads_dir = _resolve_path(get_value("data.downloads_dir"))
 
     # 日志配置
-    log_dir = _resolve_path(props.get("log.dir", str(data_dir / "logs")))
-    log_max_size_mb = int(props.get("log.max_size_mb", "50"))
-    log_backup_count = int(props.get("log.backup_count", "5"))
+    log_dir = _resolve_path(get_value("log.dir"))
+    log_max_size_mb = int(get_value("log.max_size_mb"))
+    log_backup_count = int(get_value("log.backup_count"))
 
     # 应用配置
-    default_resource_subject = props.get("app.default_resource_subject", "")
-    default_filter_status = props.get("app.default_filter_status", "")
-    default_filter_subject = props.get("app.default_filter_subject", "")
-    slow_request_threshold = float(props.get("app.slow_request_threshold", "1.0"))
-    split_task_timeout = int(props.get("app.split_task_timeout", "600"))
-    max_concurrent_splits = int(props.get("app.max_concurrent_splits", "2"))
-    user_custom_tags = _parse_bool(props.get("app.user_custom_tags", "false"))
+    default_resource_subject = get_value("app.default_resource_subject")
+    default_filter_status = get_value("app.default_filter_status")
+    default_filter_subject = get_value("app.default_filter_subject")
+    slow_request_threshold = float(get_value("app.slow_request_threshold"))
+    split_task_timeout = int(get_value("app.split_task_timeout"))
+    max_concurrent_splits = int(get_value("app.max_concurrent_splits"))
+    user_custom_tags = _parse_bool(get_value("app.user_custom_tags"))
 
     # 图片压缩配置
-    image_hd_max_resolution = int(props.get("image.hd.max_resolution", "2560"))
-    image_hd_dpi = int(props.get("image.hd.dpi", "300"))
-    image_hd_format = props.get("image.hd.format", "png")
-    image_hd_quality = int(props.get("image.hd.quality", "90"))
-    image_thumb_width = int(props.get("image.thumb.width", "640"))
-    image_thumb_height = int(props.get("image.thumb.height", "360"))
-    image_thumb_quality = int(props.get("image.thumb.quality", "74"))
-
-    # 管理后台
-    admin_route_prefix = props.get("admin.route_prefix", "/admin")
+    image_hd_max_resolution = int(get_value("image.hd.max_resolution"))
+    image_hd_dpi = int(get_value("image.hd.dpi"))
+    image_hd_format = get_value("image.hd.format")
+    image_hd_quality = int(get_value("image.hd.quality"))
+    image_thumb_width = int(get_value("image.thumb.width"))
+    image_thumb_height = int(get_value("image.thumb.height"))
+    image_thumb_quality = int(get_value("image.thumb.quality"))
 
     # 外观
-    logo_svg_path = props.get("logo.svg.path", "app/static/img/logo.svg")
+    logo_svg_path = get_value("logo.svg.path")
 
     # HTTPS 反向代理标记（缺省 false：纯 HTTP 部署时不发 Secure Cookie）
-    web_https = _parse_bool(props.get("web.https", "false"))
+    web_https = _parse_bool(get_value("web.https"))
 
     # 飞书 SSO
-    feishu_sso_enabled = _parse_bool(props.get("feishu.sso_enabled", "false"))
-    feishu_app_id = props.get("feishu.app_id", "")
-    feishu_app_secret = props.get("feishu.app_secret", "")
+    feishu_sso_enabled = _parse_bool(get_value("feishu.sso_enabled"))
+    feishu_app_id = get_value("feishu.app_id")
+    feishu_app_secret = get_value("feishu.app_secret")
 
     # 数据库路径
     db_path = db_dir / "slide_flow.db"
@@ -453,7 +556,6 @@ def load_settings() -> Settings:
         image_thumb_width=image_thumb_width,
         image_thumb_height=image_thumb_height,
         image_thumb_quality=image_thumb_quality,
-        admin_route_prefix=admin_route_prefix,
         logo_svg_path=logo_svg_path,
         web_https=web_https,
         feishu_sso_enabled=feishu_sso_enabled,

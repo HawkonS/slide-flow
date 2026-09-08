@@ -4,7 +4,7 @@ import basicSsl from "@vitejs/plugin-basic-ssl";
 import path from "node:path";
 
 const backend = process.env.SLIDE_FLOW_BACKEND || "http://127.0.0.1:8088";
-// dev server 端口：优先读取 start.sh 从 slide_flow.properties 解析后注入的
+// dev server 端口：优先读取 run.sh 从 slide_flow.properties 解析后注入的
 // SLIDE_FLOW_WEB_PORT，手动 npm run dev 时缺省回退 5173
 const webPort = Number(process.env.SLIDE_FLOW_WEB_PORT) || 5173;
 // 通过环境变量控制是否启用 HTTPS（缺省 false，与后端保持统一）

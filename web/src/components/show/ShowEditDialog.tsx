@@ -219,7 +219,7 @@ export function ShowEditDialog({
           <DialogTitle>
             {isCreate ? "创建放映" : "编辑信息"}
           </DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="sr-only">
             {isCreate
               ? "创建新的放映，选择要包含的资源并配置元数据与访问范围"
               : "修改放映的元数据与访问范围"}

@@ -1,18 +1,19 @@
-export type UserRole = "super_admin" | "admin" | "member" | "user";
+export type UserRole = "system_admin" | "admin" | "user";
 
-/** 是否为管理员级别（系统管理员或超级管理员） */
+/** 角色语义：system_admin=系统管理员，admin=运营管理员，user=普通用户。 */
+
+/** 是否为运营管理员或系统管理员 */
 export const isAdminRole = (role?: UserRole | string | null): boolean =>
-  role === "super_admin" || role === "admin";
+  role === "system_admin" || role === "admin";
 
-/** 是否为超级管理员 */
-export const isSuperAdminRole = (role?: UserRole | string | null): boolean =>
-  role === "super_admin";
+/** 是否为系统管理员 */
+export const isSystemAdminRole = (role?: UserRole | string | null): boolean =>
+  role === "system_admin";
 
 export interface CurrentUser {
   id: number;
   username: string;
   name: string | null;
-  display_name?: string | null;
   role: UserRole;
   feishu_id?: string | null;
   must_change_pwd?: boolean;
@@ -22,7 +23,6 @@ export interface UserOption {
   id: number;
   username: string;
   name: string | null;
-  display_name?: string | null;
 }
 
 export type VisibilityScope = "public" | "partial" | "private";
@@ -47,8 +47,6 @@ export interface Resource {
   id: number;
   name: string;
   owner_id: number;
-  resource_type: "asset" | "template";
-  template_type: string | null;
   subject: string | null;
   /** 逗号/空格分隔的标签字符串 */
   tags: string;
@@ -159,33 +157,6 @@ export interface ShowResourceInaccessible {
 
 export type ShowResource = ShowResourceAccessible | ShowResourceInaccessible;
 
-export type NetworkEnv = "company_intranet" | "private_cloud" | "public_net";
-
-export const NETWORK_ENV_LABELS: Record<NetworkEnv, string> = {
-  company_intranet: "公司内网",
-  private_cloud: "私有云内网",
-  public_net: "公网访问",
-};
-
-export interface Link {
-  id: number;
-  name: string;
-  url: string;
-  memo: string;
-  owner_id: number;
-  owner: { id: number; name: string; username: string } | null;
-  visibility_scope: string;
-  management_scope: string;
-  is_enabled: boolean;
-  network_env: NetworkEnv;
-  sort_order?: number;
-  can_manage: boolean;
-  visible_user_ids: number[];
-  manage_user_ids: number[];
-  created_at: string;
-  updated_at: string;
-}
-
 export interface Show {
   id: number;
   name: string;
@@ -198,6 +169,7 @@ export interface Show {
   visibility_scope: VisibilityScope;
   management_scope: VisibilityScope;
   secrecy_level: SecrecyLevel;
+  is_standard: boolean;
   can_manage: boolean;
   visible_user_ids?: number[];
   manage_user_ids?: number[];

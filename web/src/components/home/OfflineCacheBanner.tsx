@@ -114,7 +114,7 @@ export function OfflineCacheBanner() {
           </span>
         }
         description="选择一个本地文件夹用于离线缓存，断网或异地放映时也能流畅播放。"
-        actionLabel="前往维护"
+        actionLabel="设置缓存"
         actionToneClass="bg-amber-600 text-white hover:bg-amber-700 dark:bg-amber-500 dark:hover:bg-amber-600"
       />
     );

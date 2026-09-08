@@ -30,7 +30,7 @@ export const RESOURCE_REMARK_STATE_OPTIONS = [
   { value: "none", label: "无" },
 ] as const;
 
-/** 列表排序选项（资源仓库 / 放映仓库通用） */
+/** 列表排序选项（单页素材 / 标准放映通用） */
 export type SortKey =
   | "updated_desc"
   | "updated_asc"
@@ -123,27 +123,13 @@ export const TEMPLATE_RATIO_OPTIONS = [
 
 /** 用户角色 */
 export const USER_ROLE_LABEL: Record<string, string> = {
-  super_admin: "超级管理员",
-  admin: "系统管理员",
-  user: "系统用户",
-  member: "系统用户",
+  system_admin: "系统管理员",
+  admin: "运营管理员",
+  user: "普通用户",
 };
 
 export const USER_ROLE_OPTIONS = [
-  { value: "user", label: "系统用户" },
-  { value: "admin", label: "系统管理员" },
-  { value: "super_admin", label: "超级管理员" },
+  { value: "user", label: "普通用户" },
+  { value: "admin", label: "运营管理员" },
+  { value: "system_admin", label: "系统管理员" },
 ] as const;
-
-/** 链接网络环境 */
-export const NETWORK_ENV_OPTIONS = [
-  { value: "company_intranet", label: "公司内网" },
-  { value: "private_cloud", label: "私有云内网" },
-  { value: "public_net", label: "公网访问" },
-] as const;
-
-export const NETWORK_ENV_LABEL: Record<string, string> = {
-  company_intranet: "公司内网",
-  private_cloud: "私有云内网",
-  public_net: "公网访问",
-};

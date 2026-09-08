@@ -18,7 +18,6 @@ import { toast } from "sonner";
 import { serializeTags, Show } from "@/lib/types";
 import { useResponsiveGrid } from "@/lib/use-grid-layout";
 import { useEncodedUrlState } from "@/lib/use-encoded-url-state";
-import { useNavLabel } from "@/lib/nav-config";
 import { useShowFilters } from "@/stores/show-filters";
 import { DEFAULT_SORT_KEY, type SortKey } from "@/lib/constants";
 import { usePaginatedQuery } from "@/lib/use-paginated-query";
@@ -41,7 +40,11 @@ const URL_DEFAULTS: ShowUrlState = {
   tags: [], tm: "all", sort: DEFAULT_SORT_KEY, p: 1,
 };
 
-export function ShowsPage() {
+export interface ShowsPageProps {
+  standardOnly?: boolean;
+}
+
+export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
   const { user } = useAuth();
   const filters = useShowFilters();
   const queryClient = useQueryClient();
@@ -116,8 +119,9 @@ export function ShowsPage() {
       tags: filters.tags.length > 0 ? serializeTags(filters.tags) : undefined,
       tags_mode: filters.tagsMode,
       sort: filters.sort,
+      standard_only: standardOnly || undefined,
     }),
-    [filters],
+    [filters, standardOnly],
   );
 
   const {
@@ -153,6 +157,19 @@ export function ShowsPage() {
   const [editOpen, setEditOpen] = React.useState(false);
   const [iterateShow, setIterateShow] = React.useState<Show | null>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<Show | null>(null);
+
+  const standardMutation = useMutation({
+    mutationFn: (show: Show) =>
+      api<{ ok: boolean; standard: boolean }>(`/api/admin/shows/${show.id}/standard`, {
+        method: "PATCH",
+        json: { standard: !show.is_standard },
+      }),
+    onSuccess: (data) => {
+      toast.success(data.standard ? "已设为标准放映" : "已取消标准放映");
+      queryClient.invalidateQueries({ queryKey: ["shows"] });
+    },
+    onError: (err: Error) => toast.error(err.message || "标准放映设置失败"),
+  });
 
   const deleteMutation = useMutation({
     mutationFn: ({ id, scope }: { id: number; scope: DeleteScope }) =>
@@ -215,7 +232,9 @@ export function ShowsPage() {
       {/* 页头 */}
       <header className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-1.5">
-          <h1 className="text-xl font-semibold tracking-tight">{useNavLabel("shows", "放映仓库")}</h1>
+          <h1 className="text-xl font-semibold tracking-tight">
+            {standardOnly ? "标准放映" : "放映素材"}
+          </h1>
           <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
             {total > 0 ? `共 ${total} 条` : "共 0 条"}
           </span>
@@ -226,7 +245,7 @@ export function ShowsPage() {
         subjects={subjects}
         tags={tags}
         actions={
-          user ? (
+          user && !standardOnly ? (
             <Button
               size="sm"
               onClick={() => setCreateOpen(true)}
@@ -251,7 +270,7 @@ export function ShowsPage() {
           </div>
         ) : shows.length === 0 ? (
           <div className="rounded-md border border-dashed py-16 text-center text-sm text-muted-foreground">
-            没有匹配的放映
+            {standardOnly ? "暂无标准放映" : "没有匹配的放映素材"}
           </div>
         ) : (
           <div className="grid content-start" style={gridStyle}>
@@ -260,8 +279,8 @@ export function ShowsPage() {
                 key={s.id}
                 show={s}
                 onOpen={handleOpenDetail}
-                onEdit={handleEdit}
-                onDuplicate={(s) => {
+                onEdit={standardOnly ? undefined : handleEdit}
+                onDuplicate={standardOnly ? undefined : (s) => {
                   const newName = window.prompt("请输入副本名称", `${s.name} - 副本`);
                   if (newName?.trim()) {
                     api(`/api/shows/${s.id}/duplicate`, { method: "POST", json: { name: newName.trim() } })
@@ -272,8 +291,9 @@ export function ShowsPage() {
                       .catch((err: Error) => toast.error(err.message || "创建副本失败"));
                   }
                 }}
-                onIterate={() => setIterateShow(s)}
-                onDelete={handleDelete}
+                onIterate={standardOnly ? undefined : () => setIterateShow(s)}
+                onDelete={standardOnly ? undefined : handleDelete}
+                onToggleStandard={standardOnly ? undefined : (show) => standardMutation.mutate(show)}
               />
             ))}
           </div>
@@ -336,12 +356,12 @@ export function ShowsPage() {
           if (!open) setDetailShowId(null);
         }}
         show={detailShow}
-        onEdit={(s) => {
+        onEdit={standardOnly ? undefined : (s) => {
           setEditShow(s);
           setEditOpen(true);
           setDetailShowId(null);
         }}
-        onDuplicate={(s) => {
+        onDuplicate={standardOnly ? undefined : (s) => {
           const newName = window.prompt("请输入副本名称", `${s.name} - 副本`);
           if (newName?.trim()) {
             api(`/api/shows/${s.id}/duplicate`, { method: "POST", json: { name: newName.trim() } })
@@ -353,7 +373,7 @@ export function ShowsPage() {
               .catch((err: Error) => toast.error(err.message || "创建副本失败"));
           }
         }}
-        onIterate={(newShow) => {
+        onIterate={standardOnly ? undefined : (newShow) => {
           // 创建新版本成功后，切换详情卡片到最新版本
           setDetailShowId(null);
           setTimeout(() => setDetailShowId(newShow.id), 0);

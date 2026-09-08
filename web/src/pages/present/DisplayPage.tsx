@@ -36,18 +36,11 @@ export function DisplayPage() {
   const canvasRef = useRef<DrawingCanvasRef>(null);
   const cursorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const slideImageRef = useRef<HTMLImageElement>(null);
-  // 镜像流推迟赋值的 animation frame id，用于组件卸载时取消，
-  // 避免在已卸载的元素上 setState/赋值 srcObject。
-  const mirrorFrameRef = useRef<number | null>(null);
-
   // Slide state (synced from Presenter via BroadcastChannel)
   const [sessionToken, setSessionToken] = useState<string>("");
   const [resourceId, setResourceId] = useState<number>(0);
   const [currentSlide, setCurrentSlide] = useState<number>(0);
   const [imageFit, setImageFit] = useState<"contain" | "fill">("contain");
-
-  const [mirrorActive, setMirrorActive] = useState(false);
-  const videoRef = useRef<HTMLVideoElement>(null);
 
   // UI state
   const [ended, setEnded] = useState(false);
@@ -151,37 +144,7 @@ export function DisplayPage() {
           setImageFit(msg.imageFit);
           break;
         }
-        case "open-link": {
-          // 读取从 PresenterPage 传递的流
-          const stream = (window as any).__mirrorStream as MediaStream | null;
-          if (stream) {
-            setMirrorActive(true);
-            // 使用 requestAnimationFrame 等待 video 元素渲染完成，
-            // 比 setTimeout 更稳定；cleanup 中需取消。
-            const frameId = requestAnimationFrame(() => {
-              mirrorFrameRef.current = null;
-              if (videoRef.current && stream.active) {
-                videoRef.current.srcObject = stream;
-              }
-            });
-            mirrorFrameRef.current = frameId;
-          }
-          break;
-        }
-        case "close-link": {
-          if (videoRef.current) {
-            videoRef.current.srcObject = null;
-          }
-          (window as any).__mirrorStream = null;
-          setMirrorActive(false);
-          break;
-        }
         case "session-end": {
-          if (videoRef.current) {
-            videoRef.current.srcObject = null;
-          }
-          (window as any).__mirrorStream = null;
-          setMirrorActive(false);
           setEnded(true);
           setTimeout(() => {
             window.close();
@@ -192,10 +155,6 @@ export function DisplayPage() {
     });
 
     return () => {
-      if (mirrorFrameRef.current != null) {
-        cancelAnimationFrame(mirrorFrameRef.current);
-        mirrorFrameRef.current = null;
-      }
       unsubscribe();
     };
   }, []);
@@ -231,39 +190,26 @@ export function DisplayPage() {
         className="relative w-full h-full max-w-full max-h-full"
         style={{ aspectRatio: "16/9" }}
       >
-        {mirrorActive ? (
-          <video
-            ref={videoRef}
-            autoPlay
-            muted
-            playsInline
-            className="absolute inset-0 w-full h-full object-contain bg-black"
+        {/* Slide image - fills the 16:9 container exactly */}
+        {imageUrl && (
+          <img
+            ref={slideImageRef}
+            src={imageUrl}
+            alt={`幻灯片 ${currentSlide + 1}`}
+            className={`absolute inset-0 w-full h-full ${imageFit === "contain" ? "object-contain" : "object-fill"}`}
+            draggable={false}
+            onLoad={() => setImageLoaded(true)}
+            onError={() => setImageLoaded(false)}
           />
-        ) : (
-          <>
-            {/* Slide image - fills the 16:9 container exactly */}
-            {imageUrl && (
-              <img
-                ref={slideImageRef}
-                src={imageUrl}
-                alt={`幻灯片 ${currentSlide + 1}`}
-                className={`absolute inset-0 w-full h-full ${imageFit === "contain" ? "object-contain" : "object-fill"}`}
-                draggable={false}
-                onLoad={() => setImageLoaded(true)}
-                onError={() => setImageLoaded(false)}
-              />
-            )}
-
-            {/* DrawingCanvas overlay - exact match with image area */}
-            <DrawingCanvas
-              ref={canvasRef}
-              mode="none"
-              mirror={true}
-              className="absolute inset-0"
-              imageElement={imageFit === "contain" ? slideImageRef.current : undefined}
-            />
-          </>
         )}
+
+        <DrawingCanvas
+          ref={canvasRef}
+          mode="none"
+          mirror={true}
+          className="absolute inset-0"
+          imageElement={imageFit === "contain" ? slideImageRef.current : undefined}
+        />
       </div>
 
       {/* Waiting state */}

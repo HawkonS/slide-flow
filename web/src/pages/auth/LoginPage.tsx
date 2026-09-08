@@ -72,7 +72,7 @@ export function LoginPage() {
     defaultValues: { username: "", password: "" },
   });
 
-  const from = ((location.state as { from?: string } | null)?.from) || "/resources";
+  const from = ((location.state as { from?: string } | null)?.from) || "/home";
 
   // 加载飞书 SSO 配置
   useEffect(() => {
@@ -153,7 +153,7 @@ export function LoginPage() {
       const user = res.user;
       // 登录接口已返回完整用户信息，直接跳转，无需再请求 /api/me
       setUser(user);
-      toast.success(`欢迎回来，${user.display_name || user.name || user.username}`);
+      toast.success(`欢迎回来，${user.name || user.username}`);
       navigate(from, { replace: true });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "登录失败");

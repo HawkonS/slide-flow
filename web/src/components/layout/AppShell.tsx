@@ -1,18 +1,16 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
-  ChevronRight,
   FolderOpen,
-  HardDrive,
   Home,
   LayoutTemplate,
-  Link2,
   ListTodo,
   LogOut,
   Menu,
-  Monitor,
+  MonitorPlay,
   Settings,
-  SlidersHorizontal,
+  ScrollText,
+  Server,
   Tag,
   Type,
   Users,
@@ -36,69 +34,43 @@ type NavItem = {
   icon: React.ElementType;
 };
 
-/** 导航项注册表（图标与路径固定，标签与排序从 store 动态读取） */
-const NAV_ICONS: Record<string, React.ElementType> = {
-  resources: FolderOpen,
-  templates: LayoutTemplate,
-  shows: Monitor,
-  fonts: Type,
-  links: Link2,
-  manage_resources: Settings,
-  manage_tasks: ListTodo,
-  manage_offline: HardDrive,
-  manage_tags: Tag,
-  admin_users: Users,
-  admin_templates: LayoutTemplate,
-  admin_fonts: Type,
-  admin_links: Link2,
-  admin_system: SlidersHorizontal,
-};
+/** 固定导航结构：标签和顺序由产品定义，不从配置文件读取。 */
+const NAV_SECTIONS: { title: string; items: NavItem[] }[] = [
+  {
+    title: "素材",
+    items: [
+      { key: "single-resources", to: "/resources", label: "单页素材", icon: FolderOpen },
+      { key: "show-resources", to: "/manage/shows", label: "放映素材", icon: MonitorPlay },
+    ],
+  },
+  {
+    title: "模板",
+    items: [
+      { key: "standard-templates", to: "/templates", label: "标准模板", icon: LayoutTemplate },
+      { key: "standard-fonts", to: "/fonts", label: "标准字体", icon: Type },
+    ],
+  },
+  {
+    title: "管理",
+    items: [
+      { key: "tasks", to: "/manage/tasks", label: "任务管理", icon: ListTodo },
+      { key: "tags", to: "/manage/tags", label: "标签管理", icon: Tag },
+    ],
+  },
+  {
+    title: "系统",
+    items: [
+      { key: "users", to: "/admin/users", label: "用户管理", icon: Users },
+      { key: "runtime", to: "/admin/runtime", label: "运行管理", icon: Server },
+      { key: "config", to: "/admin/config", label: "配置管理", icon: Settings },
+      { key: "logs", to: "/admin/logs", label: "日志管理", icon: ScrollText },
+    ],
+  },
+];
 
-/** 默认标签（回退值） */
-const DEFAULT_LABELS: Record<string, string> = {
-  home: "首页",
-  resources: "资源仓库",
-  templates: "模板仓库",
-  shows: "放映仓库",
-  fonts: "字体仓库",
-  links: "链接仓库",
-  manage_resources: "资源管理",
-  manage_tasks: "任务管理",
-  manage_offline: "离线缓存",
-  manage_tags: "标签管理",
-  admin_users: "用户管理",
-  admin_templates: "模板管理",
-  admin_fonts: "字体管理",
-  admin_links: "链接管理",
-  admin_system: "系统管理",
-  section_material: "素材",
-  section_manage: "维护",
-  section_system: "系统",
-};
-
-/** 分组成员定义（key + 路径） */
-const SECTION_MEMBERS: Record<string, { key: string; to: string }[]> = {
-  material: [
-    { key: "resources", to: "/resources" },
-    { key: "templates", to: "/templates" },
-    { key: "shows", to: "/shows" },
-    { key: "fonts", to: "/fonts" },
-    { key: "links", to: "/links" },
-  ],
-  manage: [
-    { key: "manage_resources", to: "/manage/resources" },
-    { key: "manage_tasks", to: "/manage/tasks" },
-    { key: "manage_offline", to: "/manage/offline-cache" },
-    { key: "manage_tags", to: "/manage/tags" },
-  ],
-  system: [
-    { key: "admin_users", to: "/admin/users" },
-    { key: "admin_templates", to: "/admin/templates" },
-    { key: "admin_fonts", to: "/admin/fonts" },
-    { key: "admin_links", to: "/admin/links" },
-    { key: "admin_system", to: "/admin/system" },
-  ],
-};
+// 运营管理员和系统管理员都可进行运营管理；系统管理仅限系统管理员。
+const ADMIN_ONLY_KEYS = new Set(["tags"]);
+const SYSTEM_ADMIN_ONLY_KEYS = new Set(["users", "runtime", "config", "logs"]);
 
 function NavItemLink({ item }: { item: NavItem }) {
   const Icon = item.icon;
@@ -119,42 +91,6 @@ function NavItemLink({ item }: { item: NavItem }) {
   );
 }
 
-function CollapsibleSection({
-  title,
-  children,
-  defaultOpen = true,
-  forceOpen,
-}: {
-  title: string;
-  children: React.ReactNode;
-  defaultOpen?: boolean;
-  forceOpen?: boolean;
-}) {
-  const [open, setOpen] = useState(defaultOpen);
-
-  useEffect(() => {
-    if (forceOpen) setOpen(true);
-  }, [forceOpen]);
-
-  return (
-    <div className="px-3">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
-      >
-        <ChevronRight
-          className={cn(
-            "h-3 w-3 shrink-0 transition-transform duration-200",
-            open && "rotate-90",
-          )}
-        />
-        {title}
-      </button>
-      {open && <div className="mt-0.5 flex flex-col gap-0.5">{children}</div>}
-    </div>
-  );
-}
-
 function SectionLabel({ title }: { title: string }) {
   return (
     <div className="px-3">
@@ -167,106 +103,49 @@ function SectionLabel({ title }: { title: string }) {
 
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const { user } = useAuth();
-  const location = useLocation();
   const versionCommit = useSiteConfig((s) => s.versionCommit);
   const versionUpdatedAt = useSiteConfig((s) => s.versionUpdatedAt);
-  const navLabels = useSiteConfig((s) => s.navLabels);
-  const navOrder = useSiteConfig((s) => s.navOrder);
-
-  const isAdmin = user?.role === "admin" || user?.role === "super_admin";
-  const isSuperAdmin = user?.role === "super_admin";
-  const isHomeActive = location.pathname.startsWith("/home");
-  const isOnSystemRoute = location.pathname.startsWith("/admin");
-
-  const getLabel = (key: string): string => navLabels[key] || DEFAULT_LABELS[key] || key;
-
-  // 动态构建分组导航数组，并按 navOrder 排序
-  const materialNav = useMemo<NavItem[]>(
-    () =>
-      SECTION_MEMBERS.material
-        .map((m) => ({ key: m.key, to: m.to, label: getLabel(m.key), icon: NAV_ICONS[m.key] || FolderOpen }))
-        .sort((a, b) => (navOrder[a.key] ?? 99) - (navOrder[b.key] ?? 99)),
-    [navLabels, navOrder],
-  );
-
-  const manageNav = useMemo<NavItem[]>(
-    () =>
-      SECTION_MEMBERS.manage
-        .map((m) => ({ key: m.key, to: m.to, label: getLabel(m.key), icon: NAV_ICONS[m.key] || Settings }))
-        .sort((a, b) => (navOrder[a.key] ?? 99) - (navOrder[b.key] ?? 99)),
-    [navLabels, navOrder],
-  );
-
-  const systemNav = useMemo<NavItem[]>(
-    () => {
-      const members = isSuperAdmin
-        ? SECTION_MEMBERS.system
-        : SECTION_MEMBERS.system.filter((m) => m.key !== "admin_system");
-      return members
-        .map((m) => ({ key: m.key, to: m.to, label: getLabel(m.key), icon: NAV_ICONS[m.key] || Users }))
-        .sort((a, b) => (navOrder[a.key] ?? 99) - (navOrder[b.key] ?? 99));
-    },
-    [navLabels, navOrder, isSuperAdmin],
-  );
+  const isAdmin = user?.role === "admin" || user?.role === "system_admin";
+  const isSystemAdmin = user?.role === "system_admin";
 
   return (
     <div className="flex h-full flex-col select-none">
-      {/* 常驻首页 */}
+      {/* 常驻一级入口 */}
       <div className="shrink-0 px-3 pt-3 pb-1">
         <div onClick={onNavigate}>
-          <NavLink
-            to="/home"
-            className={cn(
-              "flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors",
-              isHomeActive
-                ? "bg-[hsl(var(--primary-weak))] font-medium text-primary"
-                : "text-foreground/70 hover:bg-accent hover:text-foreground",
-            )}
-          >
-            <Home className="h-4 w-4 shrink-0" />
-            <span>{getLabel("home")}</span>
-          </NavLink>
+          <NavItemLink
+            item={{ key: "home", to: "/home", label: "用户首页", icon: Home }}
+          />
+        </div>
+        <div className="mt-0.5" onClick={onNavigate}>
+          <NavItemLink
+            item={{ key: "standard-show", to: "/shows", label: "标准放映", icon: MonitorPlay }}
+          />
         </div>
       </div>
 
       {/* 中部可滚动区域 */}
       <div className="flex-1 overflow-y-auto scrollbar-hide">
-        {/* 素材 - 始终展开 */}
-        <div className="mt-1">
-          <SectionLabel title={getLabel("section_material")} />
-          <div className="mt-0.5 flex flex-col gap-0.5 px-3">
-            {materialNav.map((item) => (
-              <div key={item.to} onClick={onNavigate}>
-                <NavItemLink item={item} />
+        {NAV_SECTIONS.map((section) => {
+          const visible = section.items.filter((item) => {
+            if (SYSTEM_ADMIN_ONLY_KEYS.has(item.key)) return isSystemAdmin;
+            if (ADMIN_ONLY_KEYS.has(item.key)) return isAdmin;
+            return true;
+          });
+          if (visible.length === 0) return null;
+          return (
+            <div className="mt-3" key={section.title}>
+              <SectionLabel title={section.title} />
+              <div className="mt-0.5 flex flex-col gap-0.5 px-3">
+                {visible.map((item) => (
+                  <div key={item.to} onClick={onNavigate}>
+                    <NavItemLink item={item} />
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        </div>
-
-        {/* 维护 - 始终展开 */}
-        <div className="mt-3">
-          <SectionLabel title={getLabel("section_manage")} />
-          <div className="mt-0.5 flex flex-col gap-0.5 px-3">
-            {manageNav.map((item) => (
-              <div key={item.to} onClick={onNavigate}>
-                <NavItemLink item={item} />
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* 系统 - 默认折叠 */}
-        {isAdmin && (
-          <div className="mt-3">
-            <CollapsibleSection title={getLabel("section_system")} defaultOpen={false} forceOpen={isOnSystemRoute}>
-              {systemNav.map((item) => (
-                <div key={item.to} onClick={onNavigate}>
-                  <NavItemLink item={item} />
-                </div>
-              ))}
-            </CollapsibleSection>
-          </div>
-        )}
+            </div>
+          );
+        })}
       </div>
 
       {/* 底部版本号 - 固定不动 */}
@@ -288,23 +167,23 @@ export function AppShell() {
   }, [location.pathname]);
 
   // 用户登录后初始化全局 WebSocket 连接，用于接收异步任务推送
-  // 项目采用 cookie 鉴权，同源 WebSocket 会自动携带会话，token 仅作占位
+  // 同源 WebSocket 通过 httpOnly Cookie 鉴权；用户 ID 只用于隔离事件游标。
   useEffect(() => {
     if (!user) return;
-    const token = String(user.id ?? "");
-    useDownloadManager.getState().connect(token);
+    const userKey = String(user.id);
+    useDownloadManager.getState().connect(userKey);
     return () => {
       useDownloadManager.getState().disconnect();
     };
   }, [user?.id]);
 
-  const userDisplayName = user?.display_name || user?.name || user?.username || "";
+  const userDisplayName = user?.name || user?.username || "";
   const userRoleText =
-    user?.role === "super_admin"
-      ? "超级管理员"
+    user?.role === "system_admin"
+      ? "系统管理员"
       : user?.role === "admin"
-        ? "系统管理员"
-        : "系统用户";
+        ? "运营管理员"
+        : "普通用户";
 
   const siteName = useSiteConfig((s) => s.siteName);
   const logoSvgPath = useSiteConfig((s) => s.logoSvgPath);

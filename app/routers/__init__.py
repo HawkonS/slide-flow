@@ -9,7 +9,8 @@ from app.routers import (
     user_center,
     users,
     fonts,
-    links,
+    download_records,
+    tags,
     feishu_auth,
 )
 
@@ -21,6 +22,7 @@ __all__ = [
     "user_center",
     "users",
     "fonts",
-    "links",
+    "download_records",
+    "tags",
     "feishu_auth",
 ]
