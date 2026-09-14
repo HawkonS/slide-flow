@@ -107,8 +107,7 @@ def feishu_sso_callback(
     try:
         user_token = get_user_access_token(tenant_token, payload.code)
     except FeishuAPIError as e:
-        logger.warning("获取 user_access_token 失败: code=%s, msg=%s, 授权码前8位=%s",
-                       e.code, e.msg, payload.code[:8] if payload.code else 'None')
+        logger.warning("获取 user_access_token 失败: code=%s, msg=%s", e.code, e.msg)
         raise HTTPException(401, f"飞书授权码无效或已过期：[{e.code}] {e.msg}")
 
     # 3. 获取飞书用户信息

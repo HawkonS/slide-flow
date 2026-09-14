@@ -67,6 +67,9 @@ def create_user(
     if payload.role == ROLE_SYSTEM_ADMIN and not is_system_admin(admin):
         raise HTTPException(403, "只有系统管理员能创建系统管理员")
 
+    if payload.password and len(payload.password) < 8:
+        raise HTTPException(400, "密码长度不能少于 8 位")
+
     # 确定密码和是否需要强制修改
     must_change_pwd = 0
     plain_password: str | None = None
@@ -110,6 +113,8 @@ def update_user(
     """更新用户信息（系统管理员）"""
     if payload.role not in {ROLE_SYSTEM_ADMIN, ROLE_OPERATIONS_ADMIN, ROLE_USER}:
         raise HTTPException(400, "角色不正确")
+    if payload.password and len(payload.password) < 8:
+        raise HTTPException(400, "密码长度不能少于 8 位")
     
     existing = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     if existing is None:

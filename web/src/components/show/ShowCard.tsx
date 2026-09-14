@@ -22,7 +22,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Show, ShowResourceAccessible } from "@/lib/types";
+import { isAdminRole, Show, ShowResourceAccessible } from "@/lib/types";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
@@ -167,7 +167,7 @@ export function ShowCard({ show, onOpen, onEdit, onDuplicate, onIterate, onDelet
                   )}
                 </DropdownMenuItem>
               )}
-              {onToggleStandard && (user?.role === "admin" || user?.role === "system_admin") && (
+              {onToggleStandard && isAdminRole(user?.role) && (
                 <DropdownMenuItem onSelect={() => onToggleStandard(show)}>
                   {show.is_standard ? (
                     <><StarOff className="mr-2 h-4 w-4" /> 取消标准放映</>

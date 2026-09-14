@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 _download_semaphore = asyncio.Semaphore(3)
 
 # 异步任务的最终产物存放目录（与缓存目录平级，便于清理逻辑统一）
-_DOWNLOAD_TASKS_DIR = settings.assets_dir / "downloads" / "tasks"
+_DOWNLOAD_TASKS_DIR = settings.downloads_dir / "tasks"
 
 # 允许的 download_type
 ALLOWED_DOWNLOAD_TYPES = {"pdf", "pptx_images", "pptx", "pptx_pages", "zip"}
@@ -778,12 +778,13 @@ async def execute_download_task(task_id: int, owner_id: int) -> None:
                     db,
                     task_id,
                     status="failed",
-                    error_message=str(exc),
+                    # 原始异常可能包含服务器路径、命令行参数或凭据；详情只写服务日志。
+                    error_message="下载任务处理失败，请重试或联系管理员",
                     event_owner_id=owner_id,
                     event_message={
                         "type": "download_failed",
                         "task_id": task_id,
-                        "error": str(exc),
+                        "error": "下载任务处理失败",
                     },
                 )
             finally:

@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { Navigate, useLocation } from "react-router-dom";
 
 import { api, setUnauthorizedHandler } from "@/lib/api";
-import type { CurrentUser } from "@/lib/types";
+import { isAdminRole, isSystemAdminRole, type CurrentUser } from "@/lib/types";
 
 interface AuthContextValue {
   user: CurrentUser | null;
@@ -80,7 +80,7 @@ export function RequireAdmin({ children }: { children: React.ReactNode }) {
     return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   }
   // 运营管理员和系统管理员均可访问运营管理页面。
-  if (user.role !== "admin" && user.role !== "system_admin") {
+  if (!isAdminRole(user.role)) {
     return <Navigate to="/home" replace />;
   }
   return <>{children}</>;
@@ -94,7 +94,7 @@ export function RequireSystemAdmin({ children }: { children: React.ReactNode }) 
     return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   }
   // 系统管理页面仅允许系统管理员访问。
-  if (user.role !== "system_admin") {
+  if (!isSystemAdminRole(user.role)) {
     return <Navigate to="/home" replace />;
   }
   return <>{children}</>;

@@ -56,6 +56,7 @@ from app.core.permissions import (
 )
 from app.core.ppt import build_image_pptx, detect_ppt_fonts, merge_pptx_files, slide_count, split_pptx_to_single_pages, add_watermark_to_image, add_watermark_to_pptx, _build_watermark_tile, fit_image_to_canvas, determine_pdf_canvas_size
 from app.core.security import create_present_token, read_session_token, verify_present_token
+from app.core.sanitize import sanitize_html
 from app.core.storage import copy_into, safe_filename, save_upload, unique_child_dir
 from app.core.task_events import fetch_task_events, latest_task_event_id
 from app.db import get_db, init_db, known_font_aliases, now_iso
@@ -172,7 +173,14 @@ class ResponseCacheMiddleware:
     """为 GET API 请求添加 Cache-Control 头，减少前端重复请求"""
 
     # 不缓存的路径前缀（需要实时性的接口）
-    _NO_CACHE_PATHS = ("/api/tasks", "/api/me", "/api/auth")
+    _NO_CACHE_PATHS = (
+        "/api/tasks",
+        "/api/me",
+        "/api/auth",
+        "/api/admin",
+        "/api/user",
+        "/api/downloads",
+    )
 
     def __init__(self, app):
         self.app = app
@@ -185,24 +193,27 @@ class ResponseCacheMiddleware:
         method = scope.get("method", "")
         path = scope.get("path", "")
 
-        # 仅对 GET /api/* 请求添加缓存头（排除实时接口）
-        should_cache = (
-            method == "GET"
-            and path.startswith("/api/")
-            and not any(path.startswith(p) for p in self._NO_CACHE_PATHS)
-        )
-
-        if not should_cache:
+        # 所有 GET API 都明确声明缓存策略；用户/管理员/下载接口一律禁止缓存。
+        is_get_api = method == "GET" and path.startswith("/api/")
+        if not is_get_api:
             await self.app(scope, receive, send)
             return
+        no_store = any(path.startswith(p) for p in self._NO_CACHE_PATHS)
 
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
-                headers = dict(message.get("headers", []))
-                # 添加 5 秒私有缓存
-                cache_header = (b"cache-control", b"private, max-age=5")
+                headers = {
+                    key.lower(): value for key, value in message.get("headers", [])
+                }
+                # 业务路由若已明确设置缓存策略则保留，避免重复响应头。
+                if b"cache-control" in headers:
+                    await send(message)
+                    return
+                # 添加 5 秒私有缓存，或对敏感接口彻底禁止缓存。
                 raw_headers = list(message.get("headers", []))
-                raw_headers.append(cache_header)
+                raw_headers.append(
+                    (b"cache-control", b"private, no-store" if no_store else b"private, max-age=5")
+                )
                 message = {**message, "headers": raw_headers}
             await send(message)
 
@@ -218,6 +229,13 @@ class SecurityHeadersMiddleware:
 
     def __init__(self, app):
         self.app = app
+        self._no_store_prefixes = (
+            "/api/admin",
+            "/api/me",
+            "/api/user",
+            "/api/tasks",
+            "/api/downloads",
+        )
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -231,6 +249,18 @@ class SecurityHeadersMiddleware:
                 raw_headers.append((b"referrer-policy", b"strict-origin-when-cross-origin"))
                 raw_headers.append((b"x-xss-protection", b"1; mode=block"))
                 raw_headers.append((b"x-frame-options", b"SAMEORIGIN"))
+                raw_headers.append(
+                    (
+                        b"content-security-policy",
+                        b"default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; font-src 'self' data:",
+                    )
+                )
+                if (
+                    scope.get("method") == "GET"
+                    and any(scope.get("path", "").startswith(p) for p in self._no_store_prefixes)
+                    and not any(k.lower() == b"cache-control" for k, _ in raw_headers)
+                ):
+                    raw_headers.append((b"cache-control", b"private, no-store"))
                 if settings.web_https:
                     raw_headers.append(
                         (b"strict-transport-security", b"max-age=31536000")
@@ -791,7 +821,9 @@ def _compose_watermark_text(track_code: str, extra: str) -> str:
 
 
 # ── 放映下载缓存 ────────────────────────────────────────────────
-_DOWNLOAD_CACHE_DIR = settings.assets_dir / "downloads"
+# 下载缓存与任务产物统一置于可配置的 downloads_dir，避免自定义目录时
+# 生成文件落到白名单之外而无法下载。
+_DOWNLOAD_CACHE_DIR = settings.downloads_dir / "cache"
 _DOWNLOAD_CACHE_TTL = 24 * 3600  # 24 小时
 
 
@@ -1125,7 +1157,7 @@ def _serialize_version(resource_id: int, version: sqlite3.Row, db: sqlite3.Conne
         "font_names": font_names,
         "font_aliases": _font_alias_map(font_names, db),
         "missing_fonts": _json_loads(version["missing_fonts"], []),
-        "common_remark_html": version["common_remark_html"],
+        "common_remark_html": sanitize_html(version["common_remark_html"]),
         "change_note": version["change_note"],
         "created_by": version["created_by"],
         "created_at": version["created_at"],
@@ -1289,7 +1321,7 @@ def _insert_version(
             settings.store_path(png_path) if png_path else None,
             json.dumps(fonts, ensure_ascii=False),
             json.dumps(missing, ensure_ascii=False),
-            common_remark_html,
+            sanitize_html(common_remark_html),
             change_note,
             created_by,
             ts,
@@ -2378,7 +2410,7 @@ async def create_resource(
         version_no=1,
         ppt_path=ppt_path,
         png_path=png_path,
-        common_remark_html=remark_html,
+        common_remark_html=sanitize_html(remark_html),
         change_note="创建资源",
         created_by=int(user["id"]),
     )
@@ -2539,7 +2571,7 @@ async def create_resource_version(
         version_no=version_no,
         ppt_path=ppt_path,
         png_path=png_path,
-        common_remark_html=common_remark_html or "",
+        common_remark_html=sanitize_html(common_remark_html or ""),
         change_note=change_note or "迭代",
         created_by=int(user["id"]),
     )
@@ -2547,15 +2579,18 @@ async def create_resource_version(
     if inherit_personal_remarks:
         old_version_id = latest["id"]
         new_version_id = new_ver["id"]
-        db.execute(
-            """
-            INSERT INTO personal_remarks (resource_id, version_id, user_id, content_html, updated_at)
-            SELECT resource_id, ?, user_id, content_html, ?
-            FROM personal_remarks
-            WHERE resource_id = ? AND version_id = ?
-            """,
-            (new_version_id, now_iso(), resource_id, old_version_id),
-        )
+        old_remarks = db.execute(
+            "SELECT user_id, content_html FROM personal_remarks WHERE resource_id = ? AND version_id = ?",
+            (resource_id, old_version_id),
+        ).fetchall()
+        for old_remark in old_remarks:
+            db.execute(
+                """
+                INSERT INTO personal_remarks (resource_id, version_id, user_id, content_html, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (resource_id, new_version_id, old_remark["user_id"], sanitize_html(old_remark["content_html"]), now_iso()),
+            )
     db.execute("UPDATE resources SET current_version = ?, updated_by = ?, updated_at = ? WHERE id = ?", (version_no, user["id"], now_iso(), resource_id))
     db.commit()
     return {"resource": _serialize_resource(db, _resource_row(db, resource_id), user)}
@@ -2800,7 +2835,7 @@ def update_common_remark(
     if payload.apply_scope == "all":
         db.execute(
             "UPDATE resource_versions SET common_remark_html = ? WHERE resource_id = ?",
-            (payload.content_html, resource_id),
+            (sanitize_html(payload.content_html), resource_id),
         )
     elif payload.apply_scope == "selected":
         if payload.version_id is None:
@@ -2808,13 +2843,13 @@ def update_common_remark(
         version = _version_row(db, resource_id, payload.version_id)
         db.execute(
             "UPDATE resource_versions SET common_remark_html = ? WHERE id = ?",
-            (payload.content_html, version["id"]),
+            (sanitize_html(payload.content_html), version["id"]),
         )
     else:
         latest = _version_row(db, resource_id)
         db.execute(
             "UPDATE resource_versions SET common_remark_html = ? WHERE id = ?",
-            (payload.content_html, latest["id"]),
+            (sanitize_html(payload.content_html), latest["id"]),
         )
     db.execute("UPDATE resources SET updated_at = ? WHERE id = ?", (now_iso(), resource_id))
     db.commit()
@@ -2840,7 +2875,7 @@ def get_personal_remark(
         (resource_id, version["id"], user["id"]),
     ).fetchone()
     return {
-        "content_html": remark["content_html"] if remark else "",
+        "content_html": sanitize_html(remark["content_html"]) if remark else "",
         "version_id": version["id"],
     }
 
@@ -2863,7 +2898,7 @@ def update_personal_remark(
         ON CONFLICT(resource_id, version_id, user_id)
         DO UPDATE SET content_html = excluded.content_html, updated_at = excluded.updated_at
         """,
-        (resource_id, version["id"], user["id"], payload.content_html, now_iso()),
+        (resource_id, version["id"], user["id"], sanitize_html(payload.content_html), now_iso()),
     )
     db.commit()
     return {"ok": True}
@@ -3621,7 +3656,7 @@ def iterate_upgrade_show(
             """INSERT INTO show_remarks (show_id, resource_id, user_id, content_html, updated_at)
             VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(show_id, resource_id, user_id) DO UPDATE SET content_html = excluded.content_html, updated_at = excluded.updated_at""",
-            (new_show_id, rm["resource_id"], rm["user_id"], rm["content_html"], rm["updated_at"]),
+            (new_show_id, rm["resource_id"], rm["user_id"], sanitize_html(rm["content_html"]), rm["updated_at"]),
         )
     # 覆盖当前用户指定资源的备注
     for res_id_str, remark_html in payload.remarks.items():
@@ -3630,7 +3665,7 @@ def iterate_upgrade_show(
             """INSERT INTO show_remarks (show_id, resource_id, user_id, content_html, updated_at)
             VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(show_id, resource_id, user_id) DO UPDATE SET content_html = excluded.content_html, updated_at = excluded.updated_at""",
-            (new_show_id, res_id, user["id"], remark_html, ts),
+            (new_show_id, res_id, user["id"], sanitize_html(remark_html), ts),
         )
     # 5. 提交并返回
     db.commit()
@@ -3695,15 +3730,15 @@ def get_resource_diff(
     ]
     # common_remark 对比
     common_remark_diff = {
-        "current_html": current_ver["common_remark_html"] if current_ver else "",
-        "latest_html": latest_ver["common_remark_html"] if latest_ver else "",
+        "current_html": sanitize_html(current_ver["common_remark_html"]) if current_ver else "",
+        "latest_html": sanitize_html(latest_ver["common_remark_html"]) if latest_ver else "",
     }
     # 获取当前用户的放映备注
     remark_row = db.execute(
         "SELECT content_html FROM show_remarks WHERE show_id = ? AND resource_id = ? AND user_id = ?",
         (show_id, resource_id, user["id"]),
     ).fetchone()
-    show_remark_html = remark_row["content_html"] if remark_row else ""
+    show_remark_html = sanitize_html(remark_row["content_html"]) if remark_row else ""
     return {
         "resource_id": resource_id,
         "resource_name": resource["name"],
@@ -3733,7 +3768,7 @@ def get_show_remark(
         "SELECT content_html FROM show_remarks WHERE show_id = ? AND resource_id = ? AND user_id = ?",
         (show_id, resource_id, user["id"]),
     ).fetchone()
-    return {"content_html": remark_row["content_html"] if remark_row else ""}
+    return {"content_html": sanitize_html(remark_row["content_html"]) if remark_row else ""}
 
 
 @app.put("/api/shows/{show_id}/remarks/{resource_id}")
@@ -3754,10 +3789,10 @@ def update_show_remark(
         VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(show_id, resource_id, user_id) DO UPDATE SET content_html = excluded.content_html, updated_at = excluded.updated_at
         """,
-        (show_id, resource_id, user["id"], payload.content_html, ts),
+        (show_id, resource_id, user["id"], sanitize_html(payload.content_html), ts),
     )
     db.commit()
-    return {"content_html": payload.content_html}
+    return {"content_html": sanitize_html(payload.content_html)}
 
 
 @app.get("/api/shows/{show_id}/download/pdf")
@@ -4284,7 +4319,13 @@ def get_download_file(
     fp = result.get("file_path")
     if not fp:
         raise HTTPException(410, "下载文件不可用")
-    file_path = Path(fp)
+    try:
+        file_path = Path(fp).resolve(strict=False)
+        downloads_root = settings.downloads_dir.resolve(strict=False)
+        file_path.relative_to(downloads_root)
+    except (TypeError, ValueError, OSError):
+        logger.warning("拒绝访问下载目录外的任务文件 task_id=%s", task_id)
+        raise HTTPException(410, "下载文件不可用") from None
     if not file_path.exists():
         raise HTTPException(410, "下载文件已过期或被清理")
     file_name = result.get("file_name") or file_path.name
@@ -4473,17 +4514,17 @@ def get_show_offline_package(
                 show_id, resource_id, version_id, abs_png,
             )
             raise HTTPException(500, f"资源 {resource_id} 的缩略图生成失败")
-        common_remark_html = r["common_remark_html"] or ""
+        common_remark_html = sanitize_html(r["common_remark_html"] or "")
         pr = db.execute(
             "SELECT content_html FROM personal_remarks WHERE resource_id = ? AND version_id = ? AND user_id = ?",
             (resource_id, version_id, user["id"]),
         ).fetchone()
-        personal_remark_html = pr["content_html"] if pr else ""
+        personal_remark_html = sanitize_html(pr["content_html"]) if pr else ""
         sr_remark = db.execute(
             "SELECT content_html FROM show_remarks WHERE show_id = ? AND resource_id = ? AND user_id = ?",
             (show_id, resource_id, user["id"]),
         ).fetchone()
-        show_remark_html = sr_remark["content_html"] if sr_remark else ""
+        show_remark_html = sanitize_html(sr_remark["content_html"]) if sr_remark else ""
         resources.append({
             "id": resource_id,
             "name": r["resource_name"],
@@ -4563,11 +4604,14 @@ def get_show_offline_package(
 @app.get("/api/shows/{show_id}/offline-version")
 def get_show_offline_version(
     show_id: int,
+    user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     row = db.execute("SELECT * FROM shows WHERE id = ?", (show_id,)).fetchone()
     if row is None:
         raise HTTPException(404, "放映不存在")
+    if not can_view_show(db, row, user):
+        raise HTTPException(403, "无可见权限")
     # 同一 series 的迭代版本是新的 shows 行（新 id、递增 version_no），
     # 需要按 series_id 查找系列中的最新版本，否则离线缓存的旧 show_id
     # 永远无法检测到系列中发布的新版本。
@@ -4578,6 +4622,8 @@ def get_show_offline_version(
     ).fetchone()
     if latest_row is None:
         latest_row = row
+    if not can_view_show(db, latest_row, user):
+        raise HTTPException(403, "无可见权限")
     latest_show_id = int(latest_row["id"])
     sr_rows = db.execute(
         "SELECT resource_id, version_no FROM show_resources WHERE show_id = ?",
@@ -4826,7 +4872,7 @@ def _execute_split_task(
                 "UPDATE tasks SET status = 'failed', error_message = ?,"
                 " updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
                 " WHERE id = ? AND status <> 'cancelled'",
-                (str(e)[:500], task_id),
+                ("批量导入任务处理失败，请重试或联系管理员", task_id),
             )
             db.commit()
         except Exception as inner_e:
@@ -4875,11 +4921,26 @@ def _serialize_task(row: sqlite3.Row, db: sqlite3.Connection | None = None) -> d
     """将任务行序列化为前端可用的字典"""
     raw_params = json.loads(row["params"] or "{}")
     safe_params = {k: raw_params[k] for k in _TASK_PARAMS_PUBLIC_KEYS if k in raw_params}
+    if "remark_html" in safe_params:
+        safe_params["remark_html"] = sanitize_html(str(safe_params["remark_html"] or ""))
     # 附加图片数量（若存在）但不暴露原始路径
     if isinstance(raw_params.get("image_paths"), list):
         safe_params["image_count"] = len(raw_params["image_paths"])
 
-    result_data = json.loads(row["result_data"] or "{}")
+    try:
+        raw_result_data = json.loads(row["result_data"] or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        raw_result_data = {}
+
+    # 任务结果可能包含服务器绝对路径、临时目录等内部信息；只返回前端展示所需字段。
+    if isinstance(raw_result_data, dict):
+        result_data = {
+            key: raw_result_data[key]
+            for key in ("total", "created", "resource_ids", "message", "expired")
+            if key in raw_result_data
+        }
+    else:
+        result_data = {}
 
     # 下载任务特殊处理：暴露前端展示所需字段（白名单之外）
     if row["task_type"] == "download":
@@ -4898,13 +4959,18 @@ def _serialize_task(row: sqlite3.Row, db: sqlite3.Connection | None = None) -> d
             except Exception:
                 pass
         # 文件名 / 文件大小来自 result_data
-        if isinstance(result_data, dict):
-            if "file_name" in result_data:
-                safe_params["file_name"] = result_data["file_name"]
-            if "file_size" in result_data:
-                safe_params["file_size"] = result_data["file_size"]
+        if isinstance(raw_result_data, dict):
+            if "file_name" in raw_result_data:
+                safe_params["file_name"] = raw_result_data["file_name"]
+            if "file_size" in raw_result_data:
+                safe_params["file_size"] = raw_result_data["file_size"]
 
     owner = _owner_brief(db, int(row["owner_id"])) if db is not None else None
+    raw_error = row["error_message"]
+    safe_error = None
+    if raw_error:
+        # 旧任务记录可能保存了异常字符串（包含绝对路径/命令行参数）；接口只返回通用提示。
+        safe_error = raw_error if raw_error in {"服务重启，任务中断", "未能拆分 PPTX"} else "任务处理失败，请重试或联系管理员"
     return {
         "id": row["id"],
         "task_type": row["task_type"],
@@ -4916,7 +4982,7 @@ def _serialize_task(row: sqlite3.Row, db: sqlite3.Connection | None = None) -> d
         "total": row["total"],
         "message": row["message"],
         "result_data": result_data,
-        "error_message": row["error_message"],
+        "error_message": safe_error,
         "params": safe_params,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
@@ -5060,7 +5126,7 @@ async def create_split_import_task(
         "visible_user_ids": visible_user_ids,
         "management_scope": management_scope,
         "manage_user_ids": manage_user_ids,
-        "remark_html": remark_html,
+        "remark_html": sanitize_html(remark_html),
         "owner_id": int(user["id"]),
         "source_path": str(source_path),
         "image_paths": image_paths,

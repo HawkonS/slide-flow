@@ -18,13 +18,20 @@ class ApiPayload(BaseModel):
 
 
 class LoginPayload(ApiPayload):
-    username: str
-    password: str
+    username: str = Field(..., min_length=1, max_length=50)
+    password: str = Field(..., min_length=1, max_length=200)
+
+
+class OfflineVerifyPayload(ApiPayload):
+    username: str = Field(..., min_length=1, max_length=50)
+    password: str = Field(..., min_length=1, max_length=200)
+    show_id: int = Field(..., ge=1)
 
 
 class UserPayload(ApiPayload):
     name: str = Field(..., min_length=1, max_length=100)
     username: str = Field(..., min_length=2, max_length=50)
+    # 空字符串表示编辑用户时不修改密码；非空密码由路由统一校验至少 8 位。
     password: str | None = Field(default=None, max_length=200)
     feishu_id: str = Field(default="", max_length=100)
     role: str = ROLE_USER
@@ -48,8 +55,8 @@ class UserPreferencesPayload(ApiPayload):
 
 
 class ChangePasswordPayload(ApiPayload):
-    old_password: str
-    new_password: str
+    old_password: str = Field(..., min_length=1, max_length=200)
+    new_password: str = Field(..., min_length=8, max_length=200)
 
 
 def db_dep():

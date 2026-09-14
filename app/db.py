@@ -415,6 +415,15 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime'))
             );
 
+            -- 持久化登录失败计数，确保多 Gunicorn worker 共享限流状态。
+            CREATE TABLE IF NOT EXISTS auth_login_attempts (
+                key TEXT PRIMARY KEY,
+                failure_count INTEGER NOT NULL DEFAULT 0,
+                window_started_at REAL NOT NULL,
+                locked_until REAL NOT NULL DEFAULT 0,
+                updated_at REAL NOT NULL
+            );
+
             """
         )
         db.execute(f"PRAGMA user_version = {DB_SCHEMA_VERSION}")
@@ -461,9 +470,9 @@ def seed_default_users(db: sqlite3.Connection) -> None:
     db.execute(
         """
         INSERT OR IGNORE INTO users (
-            name, username, password_hash, feishu_id, role, created_at, updated_at
+            name, username, password_hash, feishu_id, role, must_change_pwd, created_at, updated_at
         )
-        SELECT ?, ?, ?, ?, ?, ?, ?
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?
         WHERE NOT EXISTS (SELECT 1 FROM users)
         """,
         (
@@ -472,6 +481,7 @@ def seed_default_users(db: sqlite3.Connection) -> None:
             hash_password(settings.default_password),
             "",
             "system_admin",
+            int(len(settings.default_password) < 8),
             ts,
             ts,
         ),

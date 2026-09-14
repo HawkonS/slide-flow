@@ -236,7 +236,6 @@ def api_admin_system_logs(
             stat = file_path.stat()
             log_files.append({
                 "filename": file_path.name,
-                "path": str(file_path),
                 "size_bytes": stat.st_size,
                 "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
             })
@@ -261,7 +260,9 @@ def api_admin_system_logs_download(
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(404, "日志文件不存在")
     
-    if not str(file_path.resolve()).startswith(str(log_dir.resolve())):
+    try:
+        file_path.resolve().relative_to(log_dir.resolve())
+    except ValueError:
         raise HTTPException(400, "非法文件路径")
     
     if download:

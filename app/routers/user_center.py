@@ -8,7 +8,14 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.core.permissions import require_user, is_system_admin, can_view_resource, can_view_show
+from app.core.permissions import (
+    require_user,
+    is_system_admin,
+    can_view_resource,
+    can_view_show,
+    can_manage_resource,
+    can_manage_show,
+)
 from app.db import now_iso
 from app.routers.dependencies import db_dep, db_read_dep
 
@@ -70,7 +77,7 @@ def _serialize_resource(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.
             "preview_url": f"/api/resources/{resource_id}/preview-thumb?version_id={version_id}" if png_path else None,
             "original_preview_url": f"/api/resources/{resource_id}/preview?version_id={version_id}" if png_path else None,
         } if current_version else None,
-        "can_manage": True,  # 简化版，在置顶列表中说明可以管理
+        "can_manage": can_manage_resource(db, row, user),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "is_pinned": True,  # 在置顶列表中，所以一定是 True
@@ -110,17 +117,20 @@ def _serialize_show(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row)
             
             # 获取资源的密级
             resource_row = db.execute(
-                "SELECT secrecy_level FROM resources WHERE id = ?",
+                "SELECT * FROM resources WHERE id = ?",
                 (resource_id,),
             ).fetchone()
             
+            resource_accessible = bool(resource_row and can_view_resource(db, resource_row, user))
+            if not resource_accessible:
+                continue
             resources.append({
                 "id": resource_id,
                 "name": sr["resource_name"],
                 "version_no": version_no,
                 "is_hidden": bool(sr["is_hidden"]),
                 "secrecy_level": resource_row["secrecy_level"] if resource_row else "public",
-                "accessible": True,
+                "accessible": resource_accessible,
                 "preview_url": f"/api/resources/{resource_id}/preview-thumb?version_id={version_id}" if png_path else None,
                 "original_preview_url": f"/api/resources/{resource_id}/preview?version_id={version_id}" if png_path else None,
             })
@@ -139,7 +149,7 @@ def _serialize_show(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row)
         "owner": {"id": owner["id"], "name": owner["name"], "username": owner["username"]} if owner else None,
         "version_no": row["version_no"],
         "resources": resources,  # 必须包含 resources 字段
-        "can_manage": True,  # 简化版，实际需要根据权限判断
+        "can_manage": can_manage_show(db, row, user),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "is_pinned": True,  # 在置顶列表中，所以一定是 True

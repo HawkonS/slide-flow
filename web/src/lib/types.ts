@@ -105,6 +105,8 @@ export interface FontItem {
   aliases?: string[];
   file_name: string;
   download_url: string;
+  uploaded_by?: string;
+  installed_on_server?: boolean;
   created_at?: string;
 }
 

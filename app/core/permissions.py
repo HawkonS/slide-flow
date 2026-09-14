@@ -6,7 +6,6 @@ from fastapi import Depends, HTTPException, Request
 
 from app.db import get_read_db, release_db
 from app.core.security import read_session_token
-from app.core.cache import user_cache
 from app.config import settings
 
 
@@ -23,7 +22,12 @@ SESSION_COOKIE = "slide_flow_session"
 
 
 def _current_user_from_request(request: Request, db: sqlite3.Connection) -> dict | None:
-    """从请求中提取当前登录用户（带缓存）"""
+    """从请求中提取当前登录用户。
+
+    角色信息必须从数据库实时读取。应用通常以多个 Gunicorn worker 运行，
+    进程内缓存无法在用户角色变更后同步到其它 worker，会导致刚授予系统
+    管理员权限的用户在一段时间内仍被旧角色拦截（尤其是用户管理页面）。
+    """
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
         return None
@@ -31,21 +35,12 @@ def _current_user_from_request(request: Request, db: sqlite3.Connection) -> dict
     if user_id is None:
         return None
 
-    # 尝试从缓存获取
-    cache_key = f"user:{int(user_id)}"
-    cached = user_cache.get(cache_key)
-    if cached is not None:
-        return cached
-
-    # 缓存未命中，查库
+    # 每次鉴权都查库，确保多 worker 下角色变更立即生效。
     row = db.execute("SELECT * FROM users WHERE id = ?", (int(user_id),)).fetchone()
     if row is None:
         return None
 
-    # 转为 dict 缓存，确保不依赖数据库连接
-    user_dict = dict(row)
-    user_cache.set(cache_key, user_dict)
-    return user_dict
+    return dict(row)
 
 
 def _auth_db_dep():

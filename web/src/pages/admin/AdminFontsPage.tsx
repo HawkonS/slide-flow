@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronDown, Download, FolderUp, Loader2, Search, Trash2, Upload, X } from "lucide-react";
+import { Check, ChevronDown, Download, FolderUp, HardDriveDownload, Loader2, Search, Server, Trash2, Upload, X } from "lucide-react";
 
 import {
   DropdownMenu,
@@ -11,7 +11,11 @@ import {
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
   DialogContent,
@@ -146,6 +150,9 @@ export function AdminFontsPage() {
               ? `共 ${fonts.length} 条`
               : `筛选后 ${filtered.length} / ${fonts.length} 条`}
           </span>
+          <span className="hidden text-xs text-muted-foreground sm:inline">
+            仅管理员可上传和删除，其他用户可下载
+          </span>
         </div>
       </header>
 
@@ -251,6 +258,8 @@ export function AdminFontsPage() {
                   </TableHead>
                   <TableHead>字体</TableHead>
                   <TableHead>文件</TableHead>
+                  <TableHead>服务器</TableHead>
+                  <TableHead>上传者</TableHead>
                   <TableHead>创建时间</TableHead>
                   <TableHead className="w-32 text-right">操作</TableHead>
                 </TableRow>
@@ -276,6 +285,14 @@ export function AdminFontsPage() {
                         )}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">{f.file_name}</TableCell>
+                      <TableCell>
+                        {f.installed_on_server ? (
+                          <Badge variant="success" className="gap-1 text-[11px]"><Server className="h-3 w-3" />已安装</Badge>
+                        ) : (
+                          <Badge variant="outline" className="gap-1 text-[11px] text-muted-foreground"><HardDriveDownload className="h-3 w-3" />未安装</Badge>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{f.uploaded_by || "-"}</TableCell>
                       <TableCell className="text-sm text-muted-foreground">
                         {f.created_at || "-"}
                       </TableCell>
@@ -362,6 +379,8 @@ function AdminFontUploadDialog({
 
   const [mode, setMode] = React.useState<Mode>("file");
   const [files, setFiles] = React.useState<File[]>([]);
+  const [displayName, setDisplayName] = React.useState("");
+  const [installOnServer, setInstallOnServer] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
   const [progress, setProgress] = React.useState<{ done: number; total: number }>({
     done: 0,
@@ -372,6 +391,8 @@ function AdminFontUploadDialog({
     if (!open) {
       setMode("file");
       setFiles([]);
+      setDisplayName("");
+      setInstallOnServer(false);
       setLoading(false);
       setProgress({ done: 0, total: 0 });
     }
@@ -403,6 +424,9 @@ function AdminFontUploadDialog({
     for (const f of files) {
       const body = new FormData();
       body.append("font_file", f);
+      // 单文件时允许设置展示名；批量上传沿用字体文件内置名称。
+      if (mode === "file" && displayName.trim()) body.append("display_name", displayName.trim());
+      body.append("install_on_server", String(installOnServer));
       try {
         const res = await fetch("/api/fonts/upload", {
           method: "POST",
@@ -471,6 +495,37 @@ function AdminFontUploadDialog({
                 </button>
               );
             })}
+          </div>
+
+          {mode === "file" && (
+            <div className="grid gap-2">
+              <Label htmlFor="font-display-name">字体展示名（可选）</Label>
+              <Input
+                id="font-display-name"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="例如：思源黑体 Bold"
+                maxLength={100}
+                disabled={loading}
+              />
+              <p className="text-xs text-muted-foreground">留空时自动使用字体文件内置名称。</p>
+            </div>
+          )}
+
+          <div className="flex items-start justify-between gap-3 rounded-md border bg-muted/20 px-3 py-2.5">
+            <div className="space-y-1">
+              <Label htmlFor="font-install-server" className="flex items-center gap-1.5">
+                <Server className="h-3.5 w-3.5 text-primary" />安装到服务器
+              </Label>
+              <p className="text-xs text-muted-foreground">安装到当前服务账号的字体目录，并刷新字体缓存（如系统支持）。</p>
+            </div>
+            <Switch
+              id="font-install-server"
+              checked={installOnServer}
+              onCheckedChange={setInstallOnServer}
+              disabled={loading}
+              aria-label="安装到服务器"
+            />
           </div>
 
           {/* 虚线拾取区 */}

@@ -89,6 +89,9 @@ export function FontsPage() {
               ? `共 ${fonts.length} 条`
               : `筛选后 ${filtered.length} / ${fonts.length} 条`}
           </span>
+          <span className="hidden text-xs text-muted-foreground sm:inline">
+            普通用户仅可下载字体
+          </span>
         </div>
       </header>
 

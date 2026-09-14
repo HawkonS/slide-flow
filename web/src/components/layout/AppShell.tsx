@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { isAdminRole, isSystemAdminRole } from "@/lib/types";
 import { useSiteConfig } from "@/stores/site-config";
 import { useDownloadManager } from "@/stores/download-manager";
 import { useAuth } from "@/lib/auth";
@@ -55,6 +56,7 @@ const NAV_SECTIONS: { title: string; items: NavItem[] }[] = [
     items: [
       { key: "tasks", to: "/manage/tasks", label: "任务管理", icon: ListTodo },
       { key: "tags", to: "/manage/tags", label: "标签管理", icon: Tag },
+      { key: "font-management", to: "/admin/fonts", label: "字体管理", icon: Type },
     ],
   },
   {
@@ -68,8 +70,9 @@ const NAV_SECTIONS: { title: string; items: NavItem[] }[] = [
   },
 ];
 
-// 运营管理员和系统管理员都可进行运营管理；系统管理仅限系统管理员。
-const ADMIN_ONLY_KEYS = new Set(["tags"]);
+// 运营管理员和系统管理员都可进行运营管理；用户管理、运行管理、配置管理、
+// 日志管理属于系统管理，仅系统管理员可见。
+const ADMIN_ONLY_KEYS = new Set(["tags", "font-management"]);
 const SYSTEM_ADMIN_ONLY_KEYS = new Set(["users", "runtime", "config", "logs"]);
 
 function NavItemLink({ item }: { item: NavItem }) {
@@ -105,8 +108,8 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const { user } = useAuth();
   const versionCommit = useSiteConfig((s) => s.versionCommit);
   const versionUpdatedAt = useSiteConfig((s) => s.versionUpdatedAt);
-  const isAdmin = user?.role === "admin" || user?.role === "system_admin";
-  const isSystemAdmin = user?.role === "system_admin";
+  const isAdmin = isAdminRole(user?.role);
+  const isSystemAdmin = isSystemAdminRole(user?.role);
 
   return (
     <div className="flex h-full flex-col select-none">

@@ -65,12 +65,9 @@ def create_session_token(user_id: int, secret_key: str, ttl_seconds: int | None 
     return f"{payload_b64}.{_b64(signature)}"
 
 
-PRESENT_TOKEN_TTL = settings.show_token_ttl_seconds
-
-
 def create_present_token(show_id: int, user_id: int, secret_key: str) -> str:
-    """创建放映会话token，有效期2小时"""
-    expires = int(time.time()) + PRESENT_TOKEN_TTL
+    """创建放映会话 token，使用当前配置中的有效期。"""
+    expires = int(time.time()) + int(settings.show_token_ttl_seconds)
     payload = f"{show_id}:{user_id}:{expires}"
     signature = hmac.new(secret_key.encode(), payload.encode(), hashlib.sha256).hexdigest()
     return f"{payload}:{signature}"

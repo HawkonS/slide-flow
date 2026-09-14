@@ -7,8 +7,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
-from app.config import CONFIG_GROUPS, CONFIG_META, PROPERTIES_FILE, ROOT_DIR, _coerce_value, read_config_view, settings, write_properties
+from fastapi import APIRouter, Depends, HTTPException, Response
+from app.config import CONFIG_GROUPS, CONFIG_META, CONFIG_SECRET_MASK, PROPERTIES_FILE, ROOT_DIR, _coerce_value, read_config_secret, read_config_view, settings, write_properties
 from app.core.permissions import require_system_admin
 from app.routers.dependencies import ApiPayload
 router = APIRouter()
@@ -21,9 +21,12 @@ class AdminConfigUpdatePayload(ApiPayload):
 
 @router.get("/admin/config")
 def api_admin_config_get(
+    response: Response,
     _: Any = Depends(require_system_admin),
 ) -> dict[str, Any]:
     """读取全部可管理的配置项及其元数据（仅系统管理员）。"""
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Pragma"] = "no-cache"
     values = read_config_view()
     config: dict[str, dict[str, Any]] = {}
     for key, meta in CONFIG_META.items():
@@ -33,9 +36,26 @@ def api_admin_config_get(
             "group": meta["group"],
             "hot_reload": meta["hot_reload"],
             "type": meta["type"],
+            "secret": bool(meta.get("secret", False)),
             "desc": meta["desc"],
         }
     return {"config": config, "groups": CONFIG_GROUPS}
+
+
+@router.get("/admin/config/secret/{key}")
+def api_admin_config_secret(
+    key: str,
+    response: Response,
+    _: Any = Depends(require_system_admin),
+) -> dict[str, str]:
+    """按需读取单个敏感配置；不会在普通配置列表中返回。"""
+    try:
+        value = read_config_secret(key)
+    except KeyError:
+        raise HTTPException(404, "敏感配置项不存在") from None
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Pragma"] = "no-cache"
+    return {"key": key, "value": value}
 
 
 @router.put("/admin/config")
@@ -48,20 +68,30 @@ def api_admin_config_put(
     if invalid:
         raise HTTPException(400, f"未知配置项: {', '.join(invalid)}")
 
-    for key, raw in payload.items.items():
+    # 前端不会把掩码写回配置；即使有人手工提交，也不能将真实密钥覆盖成星号。
+    updates = {
+        key: raw for key, raw in payload.items.items()
+        if not (CONFIG_META[key].get("secret") and raw == CONFIG_SECRET_MASK)
+    }
+
+    for key, raw in updates.items():
         meta = CONFIG_META[key]
+        if key == "security.secret_key" and not raw.strip():
+            raise HTTPException(400, "会话签名密钥不能为空")
+        if key == "security.default_password" and len(raw) < 8:
+            raise HTTPException(400, "默认密码长度不能少于 8 位")
         try:
             _coerce_value(raw, meta["type"])
         except Exception:
             raise HTTPException(400, f"配置项 {key} 类型不正确，应为 {meta['type']}")
 
-    if not payload.items:
+    if not updates:
         return {"applied": [], "pending_restart": []}
 
-    write_properties(payload.items)
+    write_properties(updates)
 
     # 所有配置都需要重启生效
-    pending: list[str] = list(payload.items.keys())
+    pending: list[str] = list(updates.keys())
 
     return {"applied": [], "pending_restart": pending}
 

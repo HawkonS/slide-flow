@@ -48,8 +48,8 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
         "key": "security",
         "label": "安全配置",
         "items": [
-            {"key": "security.secret_key", "label": "会话签名密钥", "default": "slide-flow-local-dev-secret", "type": "str", "hot_reload": False, "desc": "会话/演示令牌签名密钥，也可通过环境变量 SLIDE_FLOW_SECRET 覆盖"},
-            {"key": "security.default_password", "label": "默认密码", "default": "123456", "type": "str", "hot_reload": True, "desc": "新建用户及首次初始化使用的默认密码"},
+            {"key": "security.secret_key", "label": "会话签名密钥", "default": "slide-flow-local-dev-secret", "type": "str", "hot_reload": False, "secret": True, "desc": "会话/演示令牌签名密钥，也可通过环境变量 SLIDE_FLOW_SECRET 覆盖"},
+            {"key": "security.default_password", "label": "默认密码", "default": "123456", "type": "str", "hot_reload": True, "secret": True, "desc": "新建用户及首次初始化使用的默认密码；建议部署后立即修改，也可通过 SLIDE_FLOW_DEFAULT_PASSWORD 环境变量提供"},
             {"key": "security.session_ttl_hours", "label": "会话有效期（小时）", "default": "12", "type": "int", "hot_reload": True, "desc": "登录会话令牌的有效时长"},
             {"key": "security.show_token_ttl_seconds", "label": "演示令牌有效期（秒）", "default": "7200", "type": "int", "hot_reload": True, "desc": "演示分享令牌的有效时长"},
         ],
@@ -116,7 +116,7 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
         "items": [
             {"key": "feishu.sso_enabled", "label": "启用飞书 SSO", "default": "false", "type": "bool", "hot_reload": True, "desc": "是否启用飞书单点登录"},
             {"key": "feishu.app_id", "label": "飞书 App ID", "default": "", "type": "str", "hot_reload": True, "desc": "飞书自建应用的 App ID"},
-            {"key": "feishu.app_secret", "label": "飞书 App Secret", "default": "", "type": "str", "hot_reload": True, "desc": "飞书自建应用的 App Secret"},
+            {"key": "feishu.app_secret", "label": "飞书 App Secret", "default": "", "type": "str", "hot_reload": True, "secret": True, "desc": "飞书自建应用的 App Secret，也可通过 FEISHU_APP_SECRET 环境变量提供"},
         ],
     },
 ]
@@ -407,11 +407,42 @@ def _coerce_value(raw: str, value_type: str) -> Any:
     return raw
 
 
-def read_config_view() -> dict[str, str]:
-    """读取当前版本 properties 文件中的后台可管理配置。"""
+CONFIG_SECRET_MASK = "********"
+
+
+def read_config_view(*, mask_secrets: bool = True) -> dict[str, str]:
+    """读取当前版本 properties 文件中的后台可管理配置。
+
+    敏感配置默认只返回掩码，避免后台列表、浏览器缓存或代理日志意外暴露密钥。
+    """
     props = read_properties(PROPERTIES_FILE)
     _validate_properties(props)
-    return {key: props[key] for key in CONFIG_META}
+    result: dict[str, str] = {}
+    for key in CONFIG_META:
+        if mask_secrets and CONFIG_META[key].get("secret"):
+            result[key] = CONFIG_SECRET_MASK
+        else:
+            result[key] = props[key]
+    return result
+
+
+def read_config_secret(key: str) -> str:
+    """读取单个敏感配置的真实值，仅供受保护的显式查询接口使用。"""
+    meta = CONFIG_META.get(key)
+    if meta is None or not meta.get("secret"):
+        raise KeyError(key)
+    props = read_properties(PROPERTIES_FILE)
+    _validate_properties(props)
+    env_overrides = {
+        "security.secret_key": "SLIDE_FLOW_SECRET",
+        "security.default_password": "SLIDE_FLOW_DEFAULT_PASSWORD",
+        "feishu.app_secret": "FEISHU_APP_SECRET",
+    }
+    env_name = env_overrides.get(key)
+    if env_name:
+        # 环境变量覆盖值才是实际生效的配置。
+        return os.getenv(env_name, props[key])
+    return props[key]
 
 
 def write_properties(updates: dict[str, str]) -> None:
@@ -465,7 +496,7 @@ def load_settings() -> Settings:
 
     # 安全配置
     secret_key = os.getenv("SLIDE_FLOW_SECRET", get_value("security.secret_key"))
-    default_password = get_value("security.default_password")
+    default_password = os.getenv("SLIDE_FLOW_DEFAULT_PASSWORD", get_value("security.default_password"))
     session_ttl_hours = int(get_value("security.session_ttl_hours"))
     show_token_ttl_seconds = int(get_value("security.show_token_ttl_seconds"))
 
@@ -511,7 +542,7 @@ def load_settings() -> Settings:
     # 飞书 SSO
     feishu_sso_enabled = _parse_bool(get_value("feishu.sso_enabled"))
     feishu_app_id = get_value("feishu.app_id")
-    feishu_app_secret = get_value("feishu.app_secret")
+    feishu_app_secret = os.getenv("FEISHU_APP_SECRET", get_value("feishu.app_secret"))
 
     # 数据库路径
     db_path = db_dir / "slide_flow.db"

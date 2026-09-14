@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, RotateCcw, Save } from "lucide-react";
+import { Eye, EyeOff, Loader2, RotateCcw, Save } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -23,6 +23,7 @@ interface ConfigItem {
   group: string;
   hot_reload: boolean;
   type: "str" | "int" | "float" | "bool";
+  secret: boolean;
   desc: string;
 }
 
@@ -58,6 +59,19 @@ export function AdminConfigPage() {
 
   // 当前编辑中的值
   const [draft, setDraft] = React.useState<Record<string, string>>({});
+  const [revealed, setRevealed] = React.useState<Record<string, boolean>>({});
+  const [secretOriginals, setSecretOriginals] = React.useState<Record<string, string>>({});
+
+  const revealMut = useMutation({
+    mutationFn: async (key: string) =>
+      api<{ key: string; value: string }>(`/api/admin/config/secret/${encodeURIComponent(key)}`),
+    onSuccess: (res) => {
+      setSecretOriginals((prev) => ({ ...prev, [res.key]: res.value }));
+      setDraft((prev) => ({ ...prev, [res.key]: res.value }));
+      setRevealed((prev) => ({ ...prev, [res.key]: true }));
+    },
+    onError: (err: Error) => toast.error(err.message || "读取敏感配置失败"),
+  });
 
   // 数据加载完成后，将当前值同步到 draft
   React.useEffect(() => {
@@ -67,16 +81,21 @@ export function AdminConfigPage() {
       next[key] = item.value;
     }
     setDraft(next);
+    setRevealed({});
+    setSecretOriginals({});
   }, [data]);
 
   const dirtyKeys = React.useMemo(() => {
     if (!data) return [] as string[];
     const keys: string[] = [];
     for (const [key, item] of Object.entries(data.config)) {
-      if ((draft[key] ?? "") !== item.value) keys.push(key);
+      const baseline = item.secret && secretOriginals[key] !== undefined
+        ? secretOriginals[key]
+        : item.value;
+      if ((draft[key] ?? "") !== baseline) keys.push(key);
     }
     return keys;
-  }, [data, draft]);
+  }, [data, draft, secretOriginals]);
 
   const invalidKeys = React.useMemo(() => {
     if (!data) return [] as string[];
@@ -125,6 +144,8 @@ export function AdminConfigPage() {
       next[key] = item.value;
     }
     setDraft(next);
+    setRevealed({});
+    setSecretOriginals({});
   };
 
   if (isLoading) {
@@ -228,20 +249,48 @@ export function AdminConfigPage() {
                               </span>
                             </div>
                           ) : (
-                            <Input
-                              type={item.type === "int" || item.type === "float" ? "text" : "text"}
-                              value={value}
-                              onChange={(e) =>
-                                setDraft((prev) => ({
-                                  ...prev,
-                                  [key]: e.target.value,
-                                }))
-                              }
-                              className={cn(
-                                "max-w-md",
-                                !valid && "border-destructive focus-visible:ring-destructive"
+                            <div className="relative max-w-md">
+                              <Input
+                                type={item.secret ? "password" : "text"}
+                                value={item.secret && !revealed[key] ? "********" : value}
+                                readOnly={item.secret && !revealed[key]}
+                                onChange={(e) =>
+                                  setDraft((prev) => ({
+                                    ...prev,
+                                    [key]: e.target.value,
+                                  }))
+                                }
+                                className={cn(
+                                  "max-w-md pr-10",
+                                  !valid && "border-destructive focus-visible:ring-destructive"
+                                )}
+                              />
+                              {item.secret && (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="absolute right-0 top-0 h-10 w-10"
+                                  aria-label={revealed[key] ? "隐藏敏感配置" : "显示敏感配置"}
+                                  disabled={revealMut.isPending && revealMut.variables === key}
+                                  onClick={() => {
+                                    if (revealed[key]) {
+                                      setRevealed((prev) => ({ ...prev, [key]: false }));
+                                    } else {
+                                      revealMut.mutate(key);
+                                    }
+                                  }}
+                                >
+                                  {revealMut.isPending && revealMut.variables === key ? (
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                  ) : revealed[key] ? (
+                                    <EyeOff className="h-4 w-4" />
+                                  ) : (
+                                    <Eye className="h-4 w-4" />
+                                  )}
+                                </Button>
                               )}
-                            />
+                            </div>
                           )}
                         </div>
                         <div className="flex items-start gap-3">
