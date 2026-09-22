@@ -4,7 +4,7 @@ import json
 import os
 import queue
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from app.config import settings
@@ -180,6 +180,13 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS resource_import_commits (
+                session_id TEXT PRIMARY KEY,
+                owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                result_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS resources (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
@@ -277,6 +284,21 @@ def init_db() -> None:
                 uploaded_by INTEGER NOT NULL REFERENCES users(id),
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS renderer_font_tasks (
+                task_id TEXT PRIMARY KEY,
+                font_id INTEGER NOT NULL REFERENCES fonts(id) ON DELETE CASCADE,
+                sha256 TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued', 'running', 'completed', 'failed')),
+                lease_until REAL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                error_code TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(font_id, sha256)
+            );
+            CREATE INDEX IF NOT EXISTS idx_renderer_font_tasks_claim
+                ON renderer_font_tasks(status, lease_until, created_at);
 
             CREATE TABLE IF NOT EXISTS shows (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -430,6 +452,11 @@ def init_db() -> None:
         db.commit()
         _recover_interrupted_tasks(db)
         seed_default_users(db)
+        # Idempotency receipts are only needed long enough for a lost client
+        # response to be checked; retaining them forever would itself become
+        # a small metadata leak.
+        cutoff = (datetime.utcnow() - timedelta(days=7)).isoformat(timespec="seconds") + "Z"
+        db.execute("DELETE FROM resource_import_commits WHERE created_at < ?", (cutoff,))
         db.commit()
 
 

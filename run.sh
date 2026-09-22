@@ -217,6 +217,59 @@ else
   log_info "生产模式：前端将构建后由 FastAPI 托管静态产物"
 fi
 
+# 启动前先检查端口，避免第二次运行脚本覆盖日志后才报
+# "Address already in use"，同时避免健康检查误把旧进程当成新进程。
+REUSE_BACKEND="false"
+port_is_listening() {
+  if command -v lsof &>/dev/null; then
+    local pids
+    pids="$(lsof -ti "tcp:${PORT}" 2>/dev/null || true)"
+    [ -n "$pids" ]
+    return
+  fi
+  "$PYTHON_CMD" - "$PORT" <<'PY' >/dev/null 2>&1
+import socket
+import sys
+
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    sock.settimeout(0.5)
+    raise SystemExit(0 if sock.connect_ex(("127.0.0.1", int(sys.argv[1]))) == 0 else 1)
+PY
+}
+
+probe_backend() {
+  "$PYTHON_CMD" - "$PORT" <<'PY' >/dev/null 2>&1
+import sys
+import urllib.request
+
+try:
+    with urllib.request.urlopen(f"http://127.0.0.1:{sys.argv[1]}/api/config", timeout=1) as response:
+        raise SystemExit(0 if response.status == 200 else 1)
+except Exception:
+    raise SystemExit(1)
+PY
+}
+
+if port_is_listening; then
+  if probe_backend; then
+    if [ "$DEV_MODE" = "true" ]; then
+      REUSE_BACKEND="true"
+      log_warn "检测到后端已在运行 (端口 $PORT)，开发模式将复用该后端并仅启动 Vite"
+    else
+      log_warn "后端已在运行并可访问: http://127.0.0.1:$PORT"
+      log_info "如需加载最新代码，请先执行 ./stop.sh，再重新执行 ./run.sh"
+      exit 0
+    fi
+  else
+    log_error "端口 $PORT 已被其他进程占用，后端无法启动"
+    if command -v lsof &>/dev/null; then
+      lsof -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true
+    fi
+    log_error "请停止占用该端口的进程，或修改 slide_flow.properties 中的 server.port"
+    exit 1
+  fi
+fi
+
 # ===========================================================
 # Step 3 - Python 虚拟环境
 # ===========================================================
@@ -224,6 +277,17 @@ log_info "正在配置 Python 虚拟环境..."
 
 PYTHON_BIN="$PYTHON_CMD"
 PIP_INSTALL=("$PYTHON_BIN" -m pip install --user)
+
+# 已存在的虚拟环境可能由系统 Python 3.9 创建；这种环境会在 Pydantic
+# 解析 `str | None` 时才失败，提前检测并重建可直接给出正确启动路径。
+if [ -x ".venv/bin/python" ] && [ -f ".venv/bin/activate" ]; then
+  VENV_PYTHON_OK="$(.venv/bin/python -c 'import sys; print(int(sys.version_info >= (3, 10)))' 2>/dev/null || echo 0)"
+  if [ "$VENV_PYTHON_OK" != "1" ]; then
+    VENV_PYTHON_VERSION="$(.venv/bin/python --version 2>&1 || echo unknown)"
+    log_warn "现有 .venv 使用 $VENV_PYTHON_VERSION，低于 Python 3.10，正在重建虚拟环境"
+    rm -rf .venv
+  fi
+fi
 
 # 检查 .venv 是否已存在且可用
 if [ ! -x ".venv/bin/python" ] || [ ! -f ".venv/bin/activate" ]; then
@@ -284,7 +348,7 @@ export SLIDEFLOW_BOOT_ID="${SLIDEFLOW_BOOT_ID:-$($PYTHON_BIN -c 'import uuid; pr
 log_info "正在检查 Python 依赖..."
 
 if ! "$PYTHON_BIN" - <<'PY' >/dev/null 2>&1
-import fastapi, uvicorn, multipart, fontTools, PIL, psutil, httpx
+import fastapi, uvicorn, multipart, fontTools, PIL, psutil, httpx, oss2
 PY
 then
   log_warn "部分依赖缺失，正在安装..."
@@ -547,7 +611,10 @@ wait_for_backend() {
 
 log_info "正在启动后端服务..."
 ACTIVE_BACKEND_SERVER=""
-if [ "$BACKEND_SERVER" = "gunicorn" ]; then
+if [ "$REUSE_BACKEND" = "true" ]; then
+  ACTIVE_BACKEND_SERVER="existing"
+  log_info "复用已运行的后端服务 (端口: $PORT)"
+elif [ "$BACKEND_SERVER" = "gunicorn" ]; then
   log_info "生产服务器: Gunicorn + Uvicorn Worker (workers: $WORKERS)"
   start_gunicorn_backend
 else
@@ -560,7 +627,7 @@ else
 fi
 
 # 等待真实 HTTP 健康检查通过。Gunicorn 未就绪时终止残留进程并回退。
-if ! wait_for_backend; then
+if [ "$REUSE_BACKEND" != "true" ] && ! wait_for_backend; then
   if [ "$ACTIVE_BACKEND_SERVER" = "gunicorn" ]; then
     log_warn "Gunicorn 启动或健康检查失败，正在回退到 Uvicorn..."
     tail -n 20 "$BACKEND_LOG" | sed 's/^/  /' || true
@@ -573,7 +640,7 @@ if ! wait_for_backend; then
     start_uvicorn_backend append
   fi
 fi
-if ! wait_for_backend; then
+if [ "$REUSE_BACKEND" != "true" ] && ! wait_for_backend; then
   log_error "后端启动失败！请查看错误日志："
   log_error "  $BACKEND_LOG"
   echo ""

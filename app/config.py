@@ -24,6 +24,10 @@ def read_properties(path: Path = PROPERTIES_FILE) -> dict[str, str]:
             continue
         key, value = line.split("=", 1)
         values[key.strip()] = value.strip()
+    # New settings are additive: an existing installation must not lose its
+    # settings/secrets or require deletion of its properties file.
+    for key, default in DEFAULT_PROPERTIES.items():
+        values.setdefault(key, default)
     return values
 
 
@@ -60,12 +64,27 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
         "items": [
             {"key": "data.dir", "label": "数据根目录", "default": "data", "type": "str", "hot_reload": False, "desc": "包含数据库、资源文件和日志的根目录"},
             {"key": "data.db_dir", "label": "数据库目录", "default": "data/db", "type": "str", "hot_reload": False, "desc": "SQLite 数据库存放目录"},
-            {"key": "data.assets_dir", "label": "资源文件根目录", "default": "data/assets", "type": "str", "hot_reload": False, "desc": "资源文件根目录"},
-            {"key": "data.resources_dir", "label": "素材文件目录", "default": "data/assets/resources", "type": "str", "hot_reload": False, "desc": "素材文件目录"},
-            {"key": "data.templates_dir", "label": "模板文件目录", "default": "data/assets/templates", "type": "str", "hot_reload": False, "desc": "模板文件目录"},
+            {"key": "data.assets_dir", "label": "本地工作目录", "default": "data/assets", "type": "str", "hot_reload": False, "desc": "字体、下载缓存和 OSS 临时处理文件的本地根目录"},
+            {"key": "data.resources_dir", "label": "素材兼容目录", "default": "data/assets/resources", "type": "str", "hot_reload": False, "desc": "仅用于读取历史本地素材；新 PPT/PNG 持久化到 OSS"},
+            {"key": "data.templates_dir", "label": "模板兼容目录", "default": "data/assets/templates", "type": "str", "hot_reload": False, "desc": "仅用于读取历史本地模板；新 PPT/PNG 持久化到 OSS"},
             {"key": "data.fonts_dir", "label": "字体文件目录", "default": "data/assets/fonts", "type": "str", "hot_reload": False, "desc": "字体文件目录"},
-            {"key": "data.thumbs_dir", "label": "缩略图目录", "default": "data/assets/thumbs", "type": "str", "hot_reload": False, "desc": "缩略图目录"},
+            {"key": "data.thumbs_dir", "label": "历史缩略图缓存目录", "default": "data/assets/thumbs", "type": "str", "hot_reload": False, "desc": "兼容历史本地图片及离线包；在线小图使用 OSS 图片处理"},
             {"key": "data.downloads_dir", "label": "下载临时目录", "default": "data/assets/downloads", "type": "str", "hot_reload": False, "desc": "下载临时文件目录"},
+        ],
+    },
+    {
+        "key": "storage",
+        "label": "对象存储",
+        "items": [
+            {"key": "storage.backend", "label": "资源存储后端", "default": "oss", "type": "str", "hot_reload": False, "desc": "PPT/PNG 持久化后端；使用 OSS 时上传默认先落 OSS 临时目录，再下载到本地临时目录处理，最终结果回传 OSS"},
+            {"key": "oss.endpoint", "label": "OSS 外网 Endpoint", "default": "", "type": "str", "hot_reload": False, "desc": "例如 https://oss-cn-hangzhou.aliyuncs.com"},
+            {"key": "oss.internal_endpoint", "label": "OSS 内网 Endpoint", "default": "", "type": "str", "hot_reload": False, "desc": "阿里云服务器建议填写同地域内网 Endpoint，留空则使用外网 Endpoint"},
+            {"key": "oss.public_endpoint", "label": "OSS 展示 Endpoint", "default": "", "type": "str", "hot_reload": False, "desc": "浏览器访问图片的 Endpoint 或自定义域名；留空使用 oss.endpoint"},
+            {"key": "oss.bucket", "label": "OSS Bucket", "default": "", "type": "str", "hot_reload": False, "desc": "存放 PPT 和 PNG 的 Bucket 名称"},
+            {"key": "oss.prefix", "label": "OSS Bucket 内目录", "default": "slide-flow", "type": "str", "hot_reload": False, "desc": "Bucket 内的对象目录/前缀，支持多级目录（例如 prod/slide-flow）；留空则直接写入 Bucket 根目录"},
+            {"key": "oss.access_key_id", "label": "OSS AccessKey ID", "default": "", "type": "str", "hot_reload": False, "secret": True, "desc": "推荐使用环境变量 ALIBABA_CLOUD_ACCESS_KEY_ID，或在 ECS 上使用 ALIBABA_CLOUD_RAM_ROLE_NAME"},
+            {"key": "oss.access_key_secret", "label": "OSS AccessKey Secret", "default": "", "type": "str", "hot_reload": False, "secret": True, "desc": "推荐使用环境变量 ALIBABA_CLOUD_ACCESS_KEY_SECRET；不要提交到 Git"},
+            {"key": "oss.url_expire_seconds", "label": "签名 URL 有效期（秒）", "default": "900", "type": "int", "hot_reload": False, "desc": "前台图片和下载链接的有效期"},
         ],
     },
     {
@@ -94,13 +113,29 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
         "key": "image",
         "label": "图片配置",
         "items": [
-            {"key": "image.hd.max_resolution", "label": "高清图最大分辨率", "default": "2560", "type": "int", "hot_reload": False, "desc": "图片最长边像素上限，适配不同比例（16:9/4:3）"},
-            {"key": "image.hd.dpi", "label": "高清图 DPI", "default": "300", "type": "int", "hot_reload": False, "desc": "压缩后图片的 DPI 值"},
-            {"key": "image.hd.format", "label": "高清图格式", "default": "png", "type": "str", "hot_reload": False, "desc": "压缩后图片格式（jpeg/png）"},
-            {"key": "image.hd.quality", "label": "高清图质量", "default": "90", "type": "int", "hot_reload": False, "desc": "JPEG 压缩质量（1-100）"},
-            {"key": "image.thumb.width", "label": "缩略图宽度", "default": "640", "type": "int", "hot_reload": False, "desc": "缩略图目标宽度（像素）"},
-            {"key": "image.thumb.height", "label": "缩略图高度", "default": "360", "type": "int", "hot_reload": False, "desc": "缩略图目标高度（像素）"},
-            {"key": "image.thumb.quality", "label": "缩略图质量", "default": "74", "type": "int", "hot_reload": False, "desc": "缩略图 JPEG 质量（1-100）"},
+            {"key": "image.hd.max_resolution", "label": "高清图最大分辨率", "default": "3840", "type": "int", "hot_reload": False, "desc": "仅保留一张 4K PNG，图片最长边像素上限；小图由 OSS 图片处理参数生成"},
+            {"key": "image.hd.dpi", "label": "高清图 DPI", "default": "288", "type": "int", "hot_reload": False, "desc": "4K PNG 的 DPI 元数据"},
+            {"key": "image.hd.format", "label": "高清图格式", "default": "png", "type": "str", "hot_reload": False, "desc": "兼容配置；OSS 原图固定保存为 PNG"},
+            {"key": "image.hd.quality", "label": "高清图质量", "default": "90", "type": "int", "hot_reload": False, "desc": "兼容配置；PNG 原图使用无损编码"},
+            {"key": "image.thumb.width", "label": "OSS 小图宽度", "default": "640", "type": "int", "hot_reload": False, "desc": "OSS 图片处理参数中的目标宽度（像素）"},
+            {"key": "image.thumb.height", "label": "OSS 小图高度", "default": "360", "type": "int", "hot_reload": False, "desc": "OSS 图片处理参数中的目标高度（像素）"},
+            {"key": "image.thumb.quality", "label": "OSS 小图质量", "default": "74", "type": "int", "hot_reload": False, "desc": "OSS 输出 JPEG 小图的质量（1-100）"},
+        ],
+    },
+    {
+        "key": "render",
+        "label": "Windows WPS 渲染服务",
+        "items": [
+            {"key": "render.url", "label": "渲染服务地址", "default": "", "type": "str", "hot_reload": False, "desc": "例如 https://10.0.2.15:8766（内网 IP 证书须含 IP SAN）；HTTP 仅允许本机 SSH 隧道。留空时禁用自动转图，不回退其他引擎"},
+            {"key": "render.token", "label": "渲染服务密钥", "default": "", "type": "str", "hot_reload": False, "secret": True, "desc": "与 Windows WPS_RENDER_TOKEN 一致；推荐环境变量 SLIDE_FLOW_RENDER_TOKEN"},
+            {"key": "render.token_file", "label": "渲染密钥文件", "default": "", "type": "str", "hot_reload": False, "desc": "可选，权限受限的 UTF-8 密钥文件路径；优先级：环境变量 > token_file > render.token"},
+            {"key": "render.ca_file", "label": "TLS CA 证书", "default": "", "type": "str", "hot_reload": False, "desc": "私有 CA 文件绝对路径；留空使用系统信任库，不允许关闭证书校验"},
+            {"key": "render.connect_timeout", "label": "连接超时（秒）", "default": "5", "type": "int", "hot_reload": False, "desc": "单次连接超时"},
+            {"key": "render.read_timeout", "label": "传输超时（秒）", "default": "30", "type": "int", "hot_reload": False, "desc": "单次读写空闲超时"},
+            {"key": "render.total_timeout", "label": "整批总超时（秒）", "default": "1800", "type": "int", "hot_reload": False, "desc": "含排队及重试的整个导入渲染时间上限"},
+            {"key": "render.retries", "label": "网络重试次数", "default": "2", "type": "int", "hot_reload": False, "desc": "仅重试可恢复网络/服务忙错误，使用幂等键避免重复执行"},
+            {"key": "render.batch_size", "label": "每批页数", "default": "2", "type": "int", "hot_reload": False, "desc": "1–4 页；低配 Windows 建议 1 或 2 页，串行提交"},
+            {"key": "render.dpi", "label": "渲染 DPI", "default": "288", "type": "int", "hot_reload": False, "desc": "72–300，默认 288；按 4K PNG 渲染，前台小图由 OSS 图片处理参数生成"},
         ],
     },
     {
@@ -252,6 +287,15 @@ _PROP_TO_ATTR: dict[str, str] = {
     "data.fonts_dir": "fonts_dir",
     "data.thumbs_dir": "thumbs_dir",
     "data.downloads_dir": "downloads_dir",
+    "storage.backend": "storage_backend",
+    "oss.endpoint": "oss_endpoint",
+    "oss.internal_endpoint": "oss_internal_endpoint",
+    "oss.public_endpoint": "oss_public_endpoint",
+    "oss.bucket": "oss_bucket",
+    "oss.prefix": "oss_prefix",
+    "oss.access_key_id": "oss_access_key_id",
+    "oss.access_key_secret": "oss_access_key_secret",
+    "oss.url_expire_seconds": "oss_url_expire_seconds",
     "log.dir": "log_dir",
     "log.max_size_mb": "log_max_size_mb",
     "log.backup_count": "log_backup_count",
@@ -298,6 +342,16 @@ def _resolve_path(raw: str) -> Path:
 class Settings:
     root_dir: Path
 
+    render_url: str = ""
+    render_token: str = field(default="", repr=False)
+    render_ca_file: str = ""
+    render_connect_timeout: int = 5
+    render_read_timeout: int = 30
+    render_total_timeout: int = 1800
+    render_retries: int = 2
+    render_batch_size: int = 2
+    render_dpi: int = int(DEFAULT_PROPERTIES["render.dpi"])
+
     # 基础配置
     site_name: str = DEFAULT_PROPERTIES["site.name"]
     port: int = int(DEFAULT_PROPERTIES["server.port"])
@@ -328,6 +382,17 @@ class Settings:
     fonts_dir: Path = field(default_factory=lambda: _resolve_path(DEFAULT_PROPERTIES["data.fonts_dir"]))
     thumbs_dir: Path = field(default_factory=lambda: _resolve_path(DEFAULT_PROPERTIES["data.thumbs_dir"]))
     downloads_dir: Path = field(default_factory=lambda: _resolve_path(DEFAULT_PROPERTIES["data.downloads_dir"]))
+
+    # Object storage.  Only transient validation/export files use the local filesystem.
+    storage_backend: str = DEFAULT_PROPERTIES["storage.backend"]
+    oss_endpoint: str = DEFAULT_PROPERTIES["oss.endpoint"]
+    oss_internal_endpoint: str = DEFAULT_PROPERTIES["oss.internal_endpoint"]
+    oss_public_endpoint: str = DEFAULT_PROPERTIES["oss.public_endpoint"]
+    oss_bucket: str = DEFAULT_PROPERTIES["oss.bucket"]
+    oss_prefix: str = DEFAULT_PROPERTIES["oss.prefix"]
+    oss_access_key_id: str = field(default=DEFAULT_PROPERTIES["oss.access_key_id"], repr=False)
+    oss_access_key_secret: str = field(default=DEFAULT_PROPERTIES["oss.access_key_secret"], repr=False)
+    oss_url_expire_seconds: int = int(DEFAULT_PROPERTIES["oss.url_expire_seconds"])
 
     # 日志配置
     log_dir: Path = field(default_factory=lambda: _resolve_path(DEFAULT_PROPERTIES["log.dir"]))
@@ -437,8 +502,13 @@ def read_config_secret(key: str) -> str:
         "security.secret_key": "SLIDE_FLOW_SECRET",
         "security.default_password": "SLIDE_FLOW_DEFAULT_PASSWORD",
         "feishu.app_secret": "FEISHU_APP_SECRET",
+        "render.token": "SLIDE_FLOW_RENDER_TOKEN",
+        "oss.access_key_id": "ALIBABA_CLOUD_ACCESS_KEY_ID",
+        "oss.access_key_secret": "ALIBABA_CLOUD_ACCESS_KEY_SECRET",
     }
     env_name = env_overrides.get(key)
+    if key == "render.token" and props.get("render.token_file") and "SLIDE_FLOW_RENDER_TOKEN" not in os.environ:
+        return _resolve_path(props["render.token_file"]).read_text(encoding="utf-8").strip()
     if env_name:
         # 环境变量覆盖值才是实际生效的配置。
         return os.getenv(env_name, props[key])
@@ -544,11 +614,36 @@ def load_settings() -> Settings:
     feishu_app_id = get_value("feishu.app_id")
     feishu_app_secret = os.getenv("FEISHU_APP_SECRET", get_value("feishu.app_secret"))
 
+    # OSS credentials may come from the instance RAM role or environment.
+    storage_backend = get_value("storage.backend")
+    oss_endpoint = get_value("oss.endpoint")
+    oss_internal_endpoint = get_value("oss.internal_endpoint")
+    oss_public_endpoint = get_value("oss.public_endpoint")
+    oss_bucket = get_value("oss.bucket")
+    oss_prefix = get_value("oss.prefix")
+    oss_access_key_id = os.getenv("ALIBABA_CLOUD_ACCESS_KEY_ID", get_value("oss.access_key_id"))
+    oss_access_key_secret = os.getenv("ALIBABA_CLOUD_ACCESS_KEY_SECRET", get_value("oss.access_key_secret"))
+    oss_url_expire_seconds = int(get_value("oss.url_expire_seconds"))
+
     # 数据库路径
     db_path = db_dir / "slide_flow.db"
 
+    render_token = get_value("render.token")
+    if get_value("render.token_file") and "SLIDE_FLOW_RENDER_TOKEN" not in os.environ:
+        render_token = _resolve_path(get_value("render.token_file")).read_text(encoding="utf-8").strip()
+    render_token = os.getenv("SLIDE_FLOW_RENDER_TOKEN", render_token)
+
     s = Settings(
         root_dir=ROOT_DIR,
+        render_url=os.getenv("SLIDE_FLOW_RENDER_URL", get_value("render.url")),
+        render_token=render_token,
+        render_ca_file=str(_resolve_path(get_value("render.ca_file"))) if get_value("render.ca_file") else "",
+        render_connect_timeout=int(get_value("render.connect_timeout")),
+        render_read_timeout=int(get_value("render.read_timeout")),
+        render_total_timeout=int(get_value("render.total_timeout")),
+        render_retries=int(get_value("render.retries")),
+        render_batch_size=int(get_value("render.batch_size")),
+        render_dpi=int(get_value("render.dpi")),
         site_name=site_name,
         port=port,
         web_port=web_port,
@@ -570,6 +665,15 @@ def load_settings() -> Settings:
         fonts_dir=fonts_dir,
         thumbs_dir=thumbs_dir,
         downloads_dir=downloads_dir,
+        storage_backend=storage_backend,
+        oss_endpoint=oss_endpoint,
+        oss_internal_endpoint=oss_internal_endpoint,
+        oss_public_endpoint=oss_public_endpoint,
+        oss_bucket=oss_bucket,
+        oss_prefix=oss_prefix,
+        oss_access_key_id=oss_access_key_id,
+        oss_access_key_secret=oss_access_key_secret,
+        oss_url_expire_seconds=oss_url_expire_seconds,
         log_dir=log_dir,
         log_max_size_mb=log_max_size_mb,
         log_backup_count=log_backup_count,

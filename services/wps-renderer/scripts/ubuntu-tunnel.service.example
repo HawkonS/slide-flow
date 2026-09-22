@@ -1,0 +1,21 @@
+[Unit]
+Description=SlideFlow encrypted tunnel to Windows WPS renderer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=slideflow
+# Create a dedicated key and manually verify the Windows SSH host key before
+# enabling this unit. Keep the key readable only by this service account.
+# Replace HOST / SSH_PORT and key paths for your installation.
+ExecStart=/usr/bin/ssh -NT -i /etc/slideflow/wps-ssh-key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/slideflow/wps-known-hosts -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -L 127.0.0.1:18765:127.0.0.1:8765 -p SSH_PORT renderer@HOST
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

@@ -211,9 +211,12 @@ export async function downloadWithProgress(
   fallbackName: string,
   onProgress?: (percent: number | null, bytes: number) => void,
   onPhaseChange?: (phase: DownloadPhase) => void,
+  requestInit: RequestInit = {},
 ): Promise<void> {
   onPhaseChange?.("generating");
-  const response = await fetch(url, { credentials: "include" });
+  // Same-origin still sends the SlideFlow session cookie to the API, while a
+  // redirect to signed OSS must not turn into a credentialed CORS request.
+  const response = await fetch(url, { ...requestInit, credentials: "same-origin" });
   if (!response.ok) {
     let detail = "下载失败";
     try {

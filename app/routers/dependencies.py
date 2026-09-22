@@ -6,15 +6,10 @@ import json
 import sqlite3
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
 from app.core.permissions import ROLE_USER, SESSION_COOKIE
-
-
-class ApiPayload(BaseModel):
-    """Current-version API payloads reject fields outside their declared schema."""
-
-    model_config = ConfigDict(extra="forbid")
+from app.schemas.base import ApiPayload
 
 
 class LoginPayload(ApiPayload):
@@ -42,6 +37,10 @@ class FontDeletePayload(ApiPayload):
     font_ids: list[int]
 
 
+class FontDownloadPayload(ApiPayload):
+    font_ids: list[int] = Field(..., min_length=1, max_length=500)
+
+
 class UserDeletePayload(ApiPayload):
     user_ids: list[int]
 
@@ -60,25 +59,13 @@ class ChangePasswordPayload(ApiPayload):
 
 
 def db_dep():
-    """Provide a pooled read/write database connection."""
-    from app.db import get_write_db, release_db
-
-    db = get_write_db()
-    try:
-        yield db
-    finally:
-        release_db(db, readonly=False)
+    from app.services.db import db_dep as _db_dep
+    yield from _db_dep()
 
 
 def db_read_dep():
-    """Provide a pooled read-only database connection."""
-    from app.db import get_read_db, release_db
-
-    db = get_read_db()
-    try:
-        yield db
-    finally:
-        release_db(db, readonly=True)
+    from app.services.db import db_read_dep as _db_read_dep
+    yield from _db_read_dep()
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:

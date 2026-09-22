@@ -1,11 +1,20 @@
 export class ApiError extends Error {
   status: number;
   data: unknown;
-  constructor(status: number, message: string, data?: unknown) {
+  retryAfterMs: number | undefined;
+  constructor(status: number, message: string, data?: unknown, retryAfterMs?: number) {
     super(message);
     this.status = status;
     this.data = data;
+    this.retryAfterMs = retryAfterMs;
   }
+}
+
+export function parseRetryAfter(value: string | null, now = Date.now()): number | undefined {
+  if (!value?.trim()) return undefined;
+  const seconds = Number(value);
+  const delay = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(value) - now;
+  return Number.isFinite(delay) ? Math.max(0, Math.min(30_000, delay)) : undefined;
 }
 
 export interface FetchOptions extends RequestInit {
@@ -38,15 +47,13 @@ export async function api<T = unknown>(
 ): Promise<T> {
   const { json, params, raw, headers, ...init } = options;
 
-  const finalHeaders: Record<string, string> = {
-    Accept: "application/json",
-    ...(headers as Record<string, string> | undefined),
-  };
+  const finalHeaders = new Headers(headers);
+  if (!finalHeaders.has("Accept")) finalHeaders.set("Accept", "application/json");
 
   let body: BodyInit | undefined = init.body as BodyInit | undefined;
   if (json !== undefined) {
     body = JSON.stringify(json);
-    finalHeaders["Content-Type"] = "application/json";
+    finalHeaders.set("Content-Type", "application/json");
   }
 
   const res = await fetch(buildUrl(path, params), {
@@ -72,7 +79,7 @@ export async function api<T = unknown>(
     if (res.status === 401 && !path.startsWith("/api/auth/")) {
       unauthorizedHandler?.();
     }
-    throw new ApiError(res.status, detail, data);
+    throw new ApiError(res.status, detail, data, parseRetryAfter(res.headers.get("Retry-After")));
   }
 
   if (raw) return res as unknown as T;
@@ -84,6 +91,101 @@ export async function api<T = unknown>(
     return (await res.json()) as T;
   }
   return (await res.text()) as unknown as T;
+}
+
+/** Consume bounded UTF-8 NDJSON without buffering the complete render result.
+ * Older servers may return their regular JSON response instead. A transport
+ * EOF is not a completed job: the caller must require a completed event.
+ */
+export async function apiNdjson<TEvent, TJson = unknown>(
+  path: string,
+  onEvent: (event: TEvent) => void | Promise<void>,
+  options: FetchOptions & { idleTimeoutMs?: number; maxBytes?: number } = {},
+): Promise<TJson | undefined> {
+  const { idleTimeoutMs = 45_000, maxBytes = 16 * 1024 * 1024, ...fetchOptions } = options;
+  const headers = new Headers(fetchOptions.headers);
+  headers.set("Accept", "application/x-ndjson, application/json");
+  const controller = new AbortController();
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  let rejectAbort: (reason: unknown) => void = () => {};
+  const interrupted = new Promise<never>((_, reject) => { rejectAbort = reject; });
+  // Observe even an already-aborted request before the first fetch race starts.
+  void interrupted.catch(() => undefined);
+  const abortError = () => new DOMException(timedOut ? "渲染连接长时间无响应，请检查网络后重试" : "渲染已取消", timedOut ? "TimeoutError" : "AbortError");
+  const abort = () => controller.abort();
+  const onAbort = () => { void reader?.cancel().catch(() => undefined); rejectAbort(abortError()); };
+  controller.signal.addEventListener("abort", onAbort, { once: true });
+  fetchOptions.signal?.addEventListener("abort", abort, { once: true });
+  const armTimeout = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => { timedOut = true; controller.abort(); }, Math.max(1, idleTimeoutMs));
+  };
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const maxLineLength = 256 * 1024;
+  let pending = "";
+  let finished = false;
+  let byteCount = 0;
+  const checkAbort = () => {
+    if (controller.signal.aborted) throw abortError();
+  };
+  const consume = async (line: string) => {
+    checkAbort();
+    if (line.length > maxLineLength) throw new Error("渲染事件过大，已停止接收");
+    if (!line.trim()) return;
+    let event: TEvent;
+    try { event = JSON.parse(line) as TEvent; }
+    catch { throw new Error("渲染事件格式错误，请重试"); }
+    await onEvent(event);
+  };
+  try {
+    if (fetchOptions.signal?.aborted) controller.abort();
+    checkAbort();
+    armTimeout();
+    const response = await Promise.race([api<Response>(path, { ...fetchOptions, headers, raw: true, signal: controller.signal }), interrupted]);
+    const contentType = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
+    if (contentType !== "application/json" && contentType !== "application/x-ndjson" && contentType !== "application/ndjson") {
+      void response.body?.cancel().catch(() => undefined);
+      throw new Error("渲染服务返回了不支持的响应格式，请重试");
+    }
+    if (!response.body) throw new Error("渲染响应流不可用，请重试");
+    reader = response.body.getReader();
+    while (true) {
+      const { done, value } = await Promise.race([reader.read(), interrupted]);
+      checkAbort();
+      byteCount += value?.byteLength || 0;
+      if (byteCount > maxBytes) throw new Error("渲染响应超过安全大小限制，已停止接收");
+      armTimeout();
+      pending += done ? decoder.decode() : decoder.decode(value, { stream: true });
+      if (contentType === "application/json") {
+        if (pending.length > maxLineLength) throw new Error("渲染响应过大，已停止接收");
+        if (done) { finished = true; return JSON.parse(pending) as TJson; }
+        continue;
+      }
+      let newline: number;
+      while ((newline = pending.indexOf("\n")) >= 0) {
+        await consume(pending.slice(0, newline));
+        pending = pending.slice(newline + 1);
+      }
+      if (pending.length > maxLineLength) throw new Error("渲染事件过大，已停止接收");
+      if (done) {
+        await consume(pending);
+        finished = true;
+        break;
+      }
+    }
+  } finally {
+    clearTimeout(timer);
+    fetchOptions.signal?.removeEventListener("abort", abort);
+    if (!finished) {
+      controller.abort();
+      // Never block UI cancellation on a broken underlying stream's cancel().
+      void reader?.cancel().catch(() => undefined);
+    }
+    controller.signal.removeEventListener("abort", onAbort);
+    reader?.releaseLock();
+  }
 }
 
 /** ---------- Preferences API ---------- */

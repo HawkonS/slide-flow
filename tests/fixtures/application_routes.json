@@ -1,0 +1,1002 @@
+[
+  {
+    "kind": "http",
+    "methods": [
+      "GET",
+      "HEAD"
+    ],
+    "name": "openapi",
+    "path": "/openapi.json"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET",
+      "HEAD"
+    ],
+    "name": "swagger_ui_html",
+    "path": "/docs"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET",
+      "HEAD"
+    ],
+    "name": "swagger_ui_redirect",
+    "path": "/docs/oauth2-redirect"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET",
+      "HEAD"
+    ],
+    "name": "redoc_html",
+    "path": "/redoc"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "spa_index",
+    "path": "/api/"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "api_admin_config_get",
+    "path": "/api/admin/config"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "api_admin_config_secret",
+    "path": "/api/admin/config/secret/{key}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ],
+    "name": "api_admin_config_put",
+    "path": "/api/admin/config"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "api_config",
+    "path": "/api/config"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "api_version",
+    "path": "/api/version"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "api_admin_system_status",
+    "path": "/api/admin/system/status"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "api_admin_system_shutdown",
+    "path": "/api/admin/system/shutdown"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "api_admin_system_restart",
+    "path": "/api/admin/system/restart"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "api_admin_system_upgrade",
+    "path": "/api/admin/system/upgrade"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "api_admin_system_logs",
+    "path": "/api/admin/system/logs"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "api_admin_system_logs_download",
+    "path": "/api/admin/system/logs/{filename}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "login",
+    "path": "/api/auth/login"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "logout",
+    "path": "/api/auth/logout"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "me",
+    "path": "/api/me"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "verify_offline_login",
+    "path": "/api/auth/verify-offline"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "verify_offline_login",
+    "path": "/api/auth/verify-offline"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "get_user_preferences",
+    "path": "/api/user/preferences"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ],
+    "name": "update_user_preferences",
+    "path": "/api/user/preferences"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ],
+    "name": "change_password",
+    "path": "/api/auth/change-password"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "my_personal_remark_summary",
+    "path": "/api/me/personal-remarks"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "pin_resource",
+    "path": "/api/me/pins/resources/{resource_id}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "DELETE"
+    ],
+    "name": "unpin_resource",
+    "path": "/api/me/pins/resources/{resource_id}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "pin_show",
+    "path": "/api/me/pins/shows/{show_id}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "DELETE"
+    ],
+    "name": "unpin_show",
+    "path": "/api/me/pins/shows/{show_id}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "list_my_pins",
+    "path": "/api/me/pins"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "my_home_stats",
+    "path": "/api/me/home/stats"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "list_users",
+    "path": "/api/admin/users"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "user_options",
+    "path": "/api/users/options"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "create_user",
+    "path": "/api/admin/users"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ],
+    "name": "update_user",
+    "path": "/api/admin/users/{user_id}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "DELETE"
+    ],
+    "name": "delete_user",
+    "path": "/api/admin/users/{user_id}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "bulk_delete_users",
+    "path": "/api/admin/users/bulk-delete"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "transfer_and_delete_user",
+    "path": "/api/admin/users/{user_id}/transfer-and-delete"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "list_fonts",
+    "path": "/api/fonts"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "upload_font",
+    "path": "/api/fonts/upload"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "DELETE"
+    ],
+    "name": "delete_font",
+    "path": "/api/admin/fonts/{font_id}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "bulk_delete_fonts",
+    "path": "/api/admin/fonts/bulk-delete"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "bulk_download_fonts",
+    "path": "/api/fonts/bulk-download"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "download_uploaded_font",
+    "path": "/api/fonts/{font_id}/download"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "list_tags",
+    "path": "/api/tags"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "admin_list_tags",
+    "path": "/api/admin/tags"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "admin_create_tags",
+    "path": "/api/admin/tags"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ],
+    "name": "admin_update_tags_config",
+    "path": "/api/admin/tags/config"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ],
+    "name": "admin_update_tag",
+    "path": "/api/admin/tags/{tag_id}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "DELETE"
+    ],
+    "name": "admin_delete_tag",
+    "path": "/api/admin/tags/{tag_id}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "list_download_records",
+    "path": "/api/admin/download-records"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "feishu_sso_config",
+    "path": "/api/auth/feishu/config"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "feishu_sso_callback",
+    "path": "/api/auth/feishu/callback"
+  },
+  {
+    "kind": "mount",
+    "methods": [],
+    "name": "static",
+    "path": "/static"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "resource_import_result",
+    "path": "/api/resource-import/{session_id}/result"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "prepare_resource_import",
+    "path": "/api/resource-import/prepare"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "resource_import_preview",
+    "path": "/api/resource-import/{session_id}/preview/{index}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "generate_resource_import_previews",
+    "path": "/api/resource-import/{session_id}/previews"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "replace_resource_import_fonts",
+    "path": "/api/resource-import/{session_id}/replace-fonts"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "commit_resource_import",
+    "path": "/api/resource-import/{session_id}/commit"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "DELETE"
+    ],
+    "name": "cancel_resource_import",
+    "path": "/api/resource-import/{session_id}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "DELETE"
+    ],
+    "name": "delete_template",
+    "path": "/api/admin/templates/{template_id}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "bulk_delete_templates",
+    "path": "/api/admin/templates/bulk-delete"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ],
+    "name": "reorder_templates",
+    "path": "/api/admin/templates/order"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "list_templates",
+    "path": "/api/templates"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "create_template",
+    "path": "/api/templates"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ],
+    "name": "update_template",
+    "path": "/api/templates/{template_id}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "template_preview",
+    "path": "/api/templates/{template_id}/preview"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "template_preview_thumb",
+    "path": "/api/templates/{template_id}/preview-thumb"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "download_template",
+    "path": "/api/templates/{template_id}/download"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "list_resources",
+    "path": "/api/resources"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "list_resource_ids",
+    "path": "/api/resources/ids"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "pick_resources",
+    "path": "/api/resources/pick"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "pick_resources_all_ids",
+    "path": "/api/resources/pick-ids"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "create_resource",
+    "path": "/api/resources"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "get_resource",
+    "path": "/api/resources/{resource_id}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ],
+    "name": "update_resource_metadata",
+    "path": "/api/resources/{resource_id}/metadata"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "create_resource_version",
+    "path": "/api/resources/{resource_id}/versions"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "rollback_resource_version",
+    "path": "/api/resources/{resource_id}/versions/rollback"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ],
+    "name": "batch_update_resources",
+    "path": "/api/resources/batch"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "DELETE"
+    ],
+    "name": "batch_delete_resources",
+    "path": "/api/resources/batch"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "DELETE"
+    ],
+    "name": "delete_resource",
+    "path": "/api/resources/{resource_id}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "update_common_remark",
+    "path": "/api/resources/{resource_id}/common-remark"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "get_personal_remark",
+    "path": "/api/resources/{resource_id}/personal-remark"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ],
+    "name": "update_personal_remark",
+    "path": "/api/resources/{resource_id}/personal-remark"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "resource_preview",
+    "path": "/api/resources/{resource_id}/preview"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "resource_preview_thumb",
+    "path": "/api/resources/{resource_id}/preview-thumb"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "download_resource",
+    "path": "/api/resources/{resource_id}/download"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "list_shows",
+    "path": "/api/shows"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "create_show",
+    "path": "/api/shows"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "get_show",
+    "path": "/api/shows/{show_id}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ],
+    "name": "update_show",
+    "path": "/api/shows/{show_id}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "PATCH"
+    ],
+    "name": "update_show_standard",
+    "path": "/api/admin/shows/{show_id}/standard"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "DELETE"
+    ],
+    "name": "delete_show",
+    "path": "/api/shows/{show_id}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "PATCH"
+    ],
+    "name": "update_show_resource_hidden",
+    "path": "/api/shows/{show_id}/resources/{resource_id}/hidden"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ],
+    "name": "update_show_resources",
+    "path": "/api/shows/{show_id}/resources"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "append_show_resource",
+    "path": "/api/shows/{show_id}/resources/append"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "duplicate_show",
+    "path": "/api/shows/{show_id}/duplicate"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "iterate_show",
+    "path": "/api/shows/{show_id}/iterate"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "show_versions",
+    "path": "/api/shows/{show_id}/versions"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "check_show_updates",
+    "path": "/api/shows/{show_id}/check-updates"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "upgrade_show_resources",
+    "path": "/api/shows/{show_id}/upgrade"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "iterate_upgrade_show",
+    "path": "/api/shows/{show_id}/iterate-upgrade"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "get_resource_diff",
+    "path": "/api/shows/{show_id}/resource-diff/{resource_id}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "get_show_remark",
+    "path": "/api/shows/{show_id}/remarks/{resource_id}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ],
+    "name": "update_show_remark",
+    "path": "/api/shows/{show_id}/remarks/{resource_id}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "download_show_pdf",
+    "path": "/api/shows/{show_id}/download/pdf"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "download_show_pptx_images",
+    "path": "/api/shows/{show_id}/download/pptx-images"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "show_fonts",
+    "path": "/api/shows/{show_id}/fonts"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "download_show_pptx",
+    "path": "/api/shows/{show_id}/download/pptx"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "download_show_zip",
+    "path": "/api/shows/{show_id}/download/zip"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "create_download_task",
+    "path": "/api/downloads/create"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "get_download_file",
+    "path": "/api/downloads/{task_id}/file"
+  },
+  {
+    "kind": "websocket",
+    "methods": [],
+    "name": "ws_tasks",
+    "path": "/ws/tasks"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "get_show_offline_package",
+    "path": "/api/shows/{show_id}/offline-package"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "get_show_offline_version",
+    "path": "/api/shows/{show_id}/offline-version"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "create_present_session",
+    "path": "/api/shows/{show_id}/present-session"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "slide_image",
+    "path": "/api/slides/{resource_id}/image"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "list_tasks",
+    "path": "/api/tasks"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "get_task",
+    "path": "/api/tasks/{task_id}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "create_split_import_task",
+    "path": "/api/tasks/split-import"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "cancel_task",
+    "path": "/api/tasks/{task_id}/cancel"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "bulk_delete_tasks",
+    "path": "/api/admin/tasks/bulk-delete"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "DELETE"
+    ],
+    "name": "delete_task",
+    "path": "/api/admin/tasks/{task_id}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "spa_fallback",
+    "path": "/{full_path:path}"
+  }
+]

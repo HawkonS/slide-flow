@@ -15,6 +15,7 @@ export interface RichTextEditorProps {
   /** 是否带自己的边框。宿主已经提供边框时传 false 避免 "框套框" */
   bordered?: boolean;
   disabled?: boolean;
+  ariaLabelledBy?: string;
 }
 
 /**
@@ -30,9 +31,10 @@ export function RichTextEditor({
   maxHeight,
   bordered = true,
   disabled,
+  ariaLabelledBy,
 }: RichTextEditorProps) {
   const editorRef = React.useRef<HTMLDivElement | null>(null);
-  const lastEmittedRef = React.useRef<string>(value || "");
+  const lastEmittedRef = React.useRef<string | null>(null);
 
   // 受控：外部 value 变化且与当前内容不一致时同步，避免覆盖用户正在输入
   React.useEffect(() => {
@@ -75,6 +77,7 @@ export function RichTextEditor({
     e.preventDefault();
     const text = e.clipboardData.getData("text/plain");
     document.execCommand("insertText", false, text);
+    handleInput();
   };
 
   const isEmpty = !value || value === "<br>" || value === "<p><br></p>";
@@ -89,24 +92,24 @@ export function RichTextEditor({
       )}
     >
       <div className="flex flex-wrap items-center gap-0.5 border-b px-1.5 py-1">
-        <ToolButton label="加粗 (Ctrl+B)" onClick={() => exec("bold")}>
+        <ToolButton disabled={disabled} label="加粗 (Ctrl+B)" onClick={() => exec("bold")}>
           <Bold className="h-3.5 w-3.5" />
         </ToolButton>
-        <ToolButton label="斜体 (Ctrl+I)" onClick={() => exec("italic")}>
+        <ToolButton disabled={disabled} label="斜体 (Ctrl+I)" onClick={() => exec("italic")}>
           <Italic className="h-3.5 w-3.5" />
         </ToolButton>
-        <ToolButton label="下划线 (Ctrl+U)" onClick={() => exec("underline")}>
+        <ToolButton disabled={disabled} label="下划线 (Ctrl+U)" onClick={() => exec("underline")}>
           <Underline className="h-3.5 w-3.5" />
         </ToolButton>
         <div className="mx-1 h-4 w-px bg-border" />
-        <ToolButton label="无序列表" onClick={() => exec("insertUnorderedList")}>
+        <ToolButton disabled={disabled} label="无序列表" onClick={() => exec("insertUnorderedList")}>
           <List className="h-3.5 w-3.5" />
         </ToolButton>
-        <ToolButton label="有序列表" onClick={() => exec("insertOrderedList")}>
+        <ToolButton disabled={disabled} label="有序列表" onClick={() => exec("insertOrderedList")}>
           <ListOrdered className="h-3.5 w-3.5" />
         </ToolButton>
         <div className="mx-1 h-4 w-px bg-border" />
-        <ToolButton label="清除格式" onClick={() => exec("removeFormat")}>
+        <ToolButton disabled={disabled} label="清除格式" onClick={() => exec("removeFormat")}>
           <RemoveFormatting className="h-3.5 w-3.5" />
         </ToolButton>
       </div>
@@ -115,6 +118,11 @@ export function RichTextEditor({
         <div
           ref={editorRef}
           contentEditable={!disabled}
+          role="textbox"
+          aria-multiline="true"
+          aria-labelledby={ariaLabelledBy}
+          aria-label={ariaLabelledBy ? undefined : "备注内容"}
+          aria-disabled={disabled}
           suppressContentEditableWarning
           onInput={handleInput}
           onBlur={handleInput}
@@ -143,20 +151,24 @@ function ToolButton({
   label,
   onClick,
   children,
+  disabled,
 }: {
   label: string;
   onClick: () => void;
   children: React.ReactNode;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       title={label}
+      aria-label={label}
+      disabled={disabled}
       // mousedown preventDefault 防止失去编辑区焦点
       onMouseDown={(e) => {
         e.preventDefault();
-        onClick();
       }}
+      onClick={onClick}
       className={cn(
         "inline-flex h-7 w-7 items-center justify-center rounded-sm text-muted-foreground",
         "hover:bg-accent hover:text-foreground",

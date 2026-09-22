@@ -1,0 +1,5 @@
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+fonttools>=4.55,<5
+Pillow>=11.1,<13
+defusedxml>=0.7.1,<1

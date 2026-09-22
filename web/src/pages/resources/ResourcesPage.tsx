@@ -1,10 +1,16 @@
 import * as React from "react";
+import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Scissors, Upload } from "lucide-react";
+import { Check, ChevronDown, LayoutGrid, LayoutList, ListChecks, Loader2, Pencil, Plus, Trash2, Upload, X } from "lucide-react";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import { BatchSplitImportDialog } from "@/components/resource/BatchSplitImportDialog";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { BatchEditDialog } from "@/components/manage/BatchEditDialog";
 import { ResourceCard } from "@/components/resource/ResourceCard";
+import { ResourceListView } from "@/components/resource/ResourceListView";
 import { ResourceDetailDialog } from "@/components/resource/ResourceDetailDialog";
 import { ResourceDownloadDialog } from "@/components/resource/ResourceDownloadDialog";
 import { ResourceEditDialog } from "@/components/resource/ResourceEditDialog";
@@ -14,7 +20,7 @@ import { ResourceNewVersionDialog } from "@/components/resource/ResourceNewVersi
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { serializeTags } from "@/lib/types";
-import { Resource, ResourceVersion } from "@/lib/types";
+import { Resource, ResourceVersion, Show } from "@/lib/types";
 import { useResponsiveGrid } from "@/lib/use-grid-layout";
 import { useEncodedUrlState } from "@/lib/use-encoded-url-state";
 import { useResourceFilters, markResourceFiltersUrlRestored } from "@/stores/resource-filters";
@@ -34,25 +40,44 @@ interface ResourceUrlState {
   tm: string;
   sort: string;
   p: number;
+  view: "card" | "list";
 }
 
 const URL_DEFAULTS: ResourceUrlState = {
   q: "", sub: "all", sec: "all", sta: "all", perm: "all",
   rc: "all", rp: "all", tags: [], tm: "all",
-  sort: DEFAULT_SORT_KEY, p: 1,
+  sort: DEFAULT_SORT_KEY, p: 1, view: "card",
 };
 
 export function ResourcesPage() {
   const { user } = useAuth();
-  const filters = useResourceFilters();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const filters = useResourceFilters();
 
   // 列数与每页大小由共享 hook 按容器宽度连续计算
   const contentRef = React.useRef<HTMLDivElement>(null);
-  const { pageSize, gridStyle } = useResponsiveGrid(contentRef);
+  const { pageSize: cardPageSize, gridStyle } = useResponsiveGrid(contentRef);
+  const [listPageSize, setListPageSize] = React.useState(12);
+  React.useEffect(() => {
+    const el = contentRef.current;
+    if (!el) return;
+    const compute = () => {
+      if (el.clientHeight) setListPageSize(Math.max(5, Math.floor((el.clientHeight - 42) / 60)));
+    };
+    compute();
+    const observer = new ResizeObserver(compute);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   // 筛选 + 页码统一编码到 URL ?s=…
   const [urlState, setUrlState] = useEncodedUrlState({ defaults: URL_DEFAULTS });
+  const viewMode = urlState.view === "list" ? "list" : "card";
+  const pageSize = viewMode === "list" ? listPageSize : cardPageSize;
+  const setViewMode = (view: "card" | "list") => {
+    setUrlState((prev) => ({ ...prev, view, p: 1 }));
+  };
 
   // URL → zustand store（仅首次挂载时同步）
   const initialized = React.useRef(false);
@@ -88,6 +113,7 @@ export function ResourcesPage() {
     const filtersChanged = prevFiltersKey.current !== "";
     prevFiltersKey.current = key;
     setUrlState((prev) => ({
+      ...prev,
       q: filters.query, sub: filters.subject, sec: filters.secrecy,
       sta: filters.status, perm: filters.permission,
       rc: filters.remarkCommon, rp: filters.remarkPersonal,
@@ -158,10 +184,8 @@ export function ResourcesPage() {
   const [detailResourceId, setDetailResourceId] = React.useState<number | null>(null);
   const [editResource, setEditResource] = React.useState<Resource | null>(null);
   const [newVersionResource, setNewVersionResource] = React.useState<Resource | null>(null);
-  const [createOpen, setCreateOpen] = React.useState(false);
   const [editOpen, setEditOpen] = React.useState(false);
   const [newVersionOpen, setNewVersionOpen] = React.useState(false);
-  const [batchSplitOpen, setBatchSplitOpen] = React.useState(false);
   const [downloadCtx, setDownloadCtx] = React.useState<
     { resource: Resource; version: ResourceVersion } | null
   >(null);
@@ -211,6 +235,127 @@ export function ResourcesPage() {
     setPreviewResource(r);
   }, []);
 
+  // 列表选择可跨页；筛选条件变化时清空，避免批量操作作用到隐藏的旧结果。
+  const [selectedIds, setSelectedIds] = React.useState<Set<number>>(new Set());
+  const [manageableIds, setManageableIds] = React.useState<Set<number>>(new Set());
+  const resourceCacheRef = React.useRef<Map<number, Resource>>(new Map());
+  const clearSelection = React.useCallback(() => {
+    setSelectedIds(new Set());
+    setManageableIds(new Set());
+    resourceCacheRef.current.clear();
+  }, []);
+  const selectionKey = JSON.stringify(apiParams);
+  const previousSelectionKey = React.useRef(selectionKey);
+  React.useEffect(() => {
+    if (previousSelectionKey.current !== selectionKey) {
+      previousSelectionKey.current = selectionKey;
+      clearSelection();
+    }
+  }, [selectionKey, clearSelection]);
+  React.useEffect(() => {
+    if (viewMode === "card") clearSelection();
+  }, [viewMode, clearSelection]);
+  React.useEffect(() => {
+    resources.forEach((r) => resourceCacheRef.current.set(r.id, r));
+    setManageableIds((prev) => {
+      const next = new Set(prev);
+      resources.forEach((r) => { if (r.can_manage) next.add(r.id); else next.delete(r.id); });
+      return next;
+    });
+  }, [resources]);
+
+  const toggleSelect = (id: number) => setSelectedIds((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const togglePage = (checked: boolean) => setSelectedIds((prev) => {
+    const next = new Set(prev);
+    resources.forEach((r) => { if (checked) next.add(r.id); else next.delete(r.id); });
+    return next;
+  });
+  const allPageSelected = resources.length > 0 && resources.every((r) => selectedIds.has(r.id));
+  const somePageSelected = resources.some((r) => selectedIds.has(r.id)) && !allPageSelected;
+  const allManageable = selectedIds.size > 0 && [...selectedIds].every((id) => manageableIds.has(id));
+  const [selectingAll, setSelectingAll] = React.useState(false);
+  const selectAll = async () => {
+    setSelectingAll(true);
+    try {
+      const [all, managed] = await Promise.all([
+        api<{ ids: number[] }>("/api/resources/ids", { params: apiParams }),
+        api<{ ids: number[] }>("/api/resources/ids", { params: { ...apiParams, manageable_only: true } }),
+      ]);
+      setSelectedIds(new Set(all.ids));
+      setManageableIds(new Set(managed.ids));
+      toast.success(`已选中当前筛选的 ${all.ids.length} 项素材`);
+    } catch (err) {
+      toast.error((err as Error).message || "全选失败");
+    } finally {
+      setSelectingAll(false);
+    }
+  };
+
+  const [batchEditOpen, setBatchEditOpen] = React.useState(false);
+  const [deleteOpen, setDeleteOpen] = React.useState(false);
+  const [deleting, setDeleting] = React.useState(false);
+  const deleteSelected = async () => {
+    if (!allManageable) return;
+    setDeleting(true);
+    try {
+      await api("/api/resources/batch", { method: "DELETE", json: { resource_ids: [...selectedIds] } });
+      toast.success(`已删除 ${selectedIds.size} 项素材`);
+      clearSelection();
+      setDeleteOpen(false);
+      await queryClient.invalidateQueries({ queryKey: ["resources"] });
+    } catch (err) {
+      toast.error((err as Error).message || "批量删除失败");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const [addOpen, setAddOpen] = React.useState(false);
+  const [adding, setAdding] = React.useState(false);
+  const { data: showsData, isLoading: showsLoading } = useQuery({
+    queryKey: ["shows"],
+    queryFn: () => api<{ items: Show[] }>("/api/shows"),
+    enabled: addOpen && !!user,
+    staleTime: 60_000,
+  });
+  const addSelectedToShow = async (show: Show) => {
+    setAddOpen(false);
+    setAdding(true);
+    const ids = [...selectedIds];
+    const succeeded: number[] = [];
+    let added = 0;
+    try {
+      // 限制并发，避免跨页全选后瞬间发送大量请求。
+      for (let i = 0; i < ids.length; i += 8) {
+        const results = await Promise.allSettled(ids.slice(i, i + 8).map((id) =>
+          api<{ added: boolean }>(`/api/shows/${show.id}/resources/append`, { method: "POST", json: { resource_id: id } }),
+        ));
+        results.forEach((result, index) => {
+          if (result.status === "fulfilled") {
+            succeeded.push(ids[i + index]);
+            if (result.value.added) added++;
+          }
+        });
+      }
+      if (succeeded.length < ids.length) toast.error(`${ids.length - succeeded.length} 项添加失败，可重试剩余选择`);
+      else toast.success(`已添加 ${added} 项到「${show.name}」${ids.length > added ? `，${ids.length - added} 项原已存在` : ""}`);
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        succeeded.forEach((id) => next.delete(id));
+        return next;
+      });
+      await queryClient.invalidateQueries({ queryKey: ["shows"] });
+    } catch (err) {
+      toast.error((err as Error).message || "添加到放映失败");
+    } finally {
+      setAdding(false);
+    }
+  };
+
   const pageStart = (page - 1) * pageSize;
 
   return (
@@ -223,6 +368,10 @@ export function ResourcesPage() {
             {total > 0 ? `共 ${total} 条` : "共 0 条"}
           </span>
         </div>
+        <div className="flex shrink-0 items-center rounded-md border p-0.5" aria-label="素材视图">
+          <button type="button" aria-label="卡片视图" aria-pressed={viewMode === "card"} onClick={() => setViewMode("card")} className={`rounded p-1.5 ${viewMode === "card" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent"}`}><LayoutGrid className="h-4 w-4" /></button>
+          <button type="button" aria-label="列表视图" aria-pressed={viewMode === "list"} onClick={() => setViewMode("list")} className={`rounded p-1.5 ${viewMode === "list" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent"}`}><LayoutList className="h-4 w-4" /></button>
+        </div>
       </header>
 
       <ResourceFilters
@@ -232,26 +381,45 @@ export function ResourcesPage() {
           user ? (
             <>
               <Button
-                variant="outline"
                 size="sm"
-                onClick={() => setBatchSplitOpen(true)}
-                className="h-8 gap-1.5 rounded-full px-3 text-sm"
-              >
-                <Scissors className="h-3.5 w-3.5" />
-                拆分导入
-              </Button>
-              <Button
-                size="sm"
-                onClick={() => setCreateOpen(true)}
+                onClick={() => navigate("/resources/import")}
                 className="h-8 gap-1.5 rounded-full px-3 text-sm"
               >
                 <Upload className="h-3.5 w-3.5" />
-                资源导入
+                导入素材
               </Button>
             </>
           ) : null
         }
       />
+
+      {viewMode === "list" && (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <Checkbox checked={allPageSelected ? true : somePageSelected ? "indeterminate" : false} onCheckedChange={(checked) => togglePage(checked === true)} aria-label="选择本页素材" />
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild><Button variant="ghost" size="sm" className="h-7 gap-1 px-1">选择 <ChevronDown className="h-3.5 w-3.5" /></Button></DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              <DropdownMenuItem onSelect={() => togglePage(true)}><Check className="mr-2 h-4 w-4" />全选本页</DropdownMenuItem>
+              <DropdownMenuItem onSelect={selectAll} disabled={total === 0 || selectingAll}><ListChecks className="mr-2 h-4 w-4" />全选所有筛选结果 ({total})</DropdownMenuItem>
+              <DropdownMenuItem onSelect={clearSelection}><X className="mr-2 h-4 w-4" />清空选择</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          {selectedIds.size > 0 && <>
+            <span className="text-muted-foreground">已选 <span className="font-medium text-primary">{selectedIds.size}</span> 项</span>
+            <Button variant="ghost" size="sm" className="h-7 px-1" onClick={clearSelection}>清空</Button>
+          </>}
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            {user && <DropdownMenu open={addOpen} onOpenChange={setAddOpen}>
+              <DropdownMenuTrigger asChild><Button variant="outline" size="sm" className="h-8 gap-1" disabled={!selectedIds.size || adding}><Plus className="h-3.5 w-3.5" />添加到放映</Button></DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {showsLoading ? <DropdownMenuItem disabled>加载中…</DropdownMenuItem> : (showsData?.items.filter((s) => s.can_manage) ?? []).length === 0 ? <DropdownMenuItem disabled>没有可管理的放映</DropdownMenuItem> : showsData?.items.filter((s) => s.can_manage).map((s) => <DropdownMenuItem key={s.id} onSelect={() => { void addSelectedToShow(s); }}>{s.name}</DropdownMenuItem>)}
+              </DropdownMenuContent>
+            </DropdownMenu>}
+            <Button variant="outline" size="sm" className="h-8 gap-1" disabled={!allManageable} title={selectedIds.size && !allManageable ? "批量编辑仅支持所选素材全部可管理时使用" : undefined} onClick={() => setBatchEditOpen(true)}><Pencil className="h-3.5 w-3.5" />批量编辑</Button>
+            <Button variant="outline" size="sm" className="h-8 gap-1 text-destructive hover:text-destructive" disabled={!allManageable} title={selectedIds.size && !allManageable ? "批量删除仅支持所选素材全部可管理时使用" : undefined} onClick={() => setDeleteOpen(true)}><Trash2 className="h-3.5 w-3.5" />批量删除</Button>
+          </div>
+        </div>
+      )}
 
       {/* 内容区 */}
       <div ref={contentRef} className="min-h-0 flex-1 overflow-auto">
@@ -268,7 +436,19 @@ export function ResourcesPage() {
             没有匹配的资源
           </div>
         ) : (
-          <div className="grid content-start" style={gridStyle}>
+          viewMode === "list" ? <ResourceListView
+            resources={resources}
+            selectedIds={selectedIds}
+            allPageSelected={allPageSelected}
+            somePageSelected={somePageSelected}
+            onToggle={toggleSelect}
+            onTogglePage={togglePage}
+            onOpen={handleOpenDetail}
+            onPreview={handlePreview}
+            onDownload={(r) => handleDownload(r, r.current)}
+            onEdit={handleEdit}
+            onNewVersion={handleNewVersion}
+          /> : <div className="grid content-start" style={gridStyle}>
             {resources.map((r) => (
               <ResourceCard
                 key={r.id}
@@ -328,14 +508,6 @@ export function ResourcesPage() {
       />
 
       <ResourceEditDialog
-        open={createOpen}
-        onOpenChange={setCreateOpen}
-        resource={null}
-        tagSuggestions={tags}
-        subjectSuggestions={subjects}
-      />
-
-      <ResourceEditDialog
         open={editOpen}
         onOpenChange={(open) => {
           setEditOpen(open);
@@ -372,13 +544,27 @@ export function ResourcesPage() {
         resource={previewResource}
       />
 
-      <BatchSplitImportDialog
-        open={batchSplitOpen}
-        onOpenChange={setBatchSplitOpen}
+      <BatchEditDialog
+        open={batchEditOpen}
+        onOpenChange={setBatchEditOpen}
+        resourceIds={[...selectedIds]}
+        resources={[...selectedIds].map((id) => resourceCacheRef.current.get(id)).filter((r): r is Resource => !!r)}
         onSuccess={() => {
+          clearSelection();
           queryClient.invalidateQueries({ queryKey: ["resources"] });
         }}
       />
+      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>确认批量删除</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground">确定删除选中的 {selectedIds.size} 项素材吗？此操作不可撤销。</p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteOpen(false)} disabled={deleting}>取消</Button>
+            <Button variant="destructive" onClick={deleteSelected} disabled={deleting || !allManageable}>{deleting && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}确认删除</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
     </div>
   );
 }

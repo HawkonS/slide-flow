@@ -1,0 +1,150 @@
+#requires -Version 5.1
+<###
+Shared, deliberately boring helpers for the Windows renderer management
+scripts.  The token is always stored in a protected file; it is never placed
+in a Scheduled Task command line or echoed to the console.
+###>
+
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version 2.0
+
+function Assert-RendererAdministrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object -TypeName System.Security.Principal.WindowsPrincipal -ArgumentList @($identity)
+    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        throw "Run this renderer management script from an elevated PowerShell window."
+    }
+}
+
+function Resolve-RendererPath([string]$Value) {
+    if ([IO.Path]::IsPathRooted($Value)) {
+        return [IO.Path]::GetFullPath($Value)
+    }
+    return [IO.Path]::GetFullPath((Join-Path (Get-Location).Path $Value))
+}
+
+function Resolve-RendererExecutable([string]$Value, [string]$Label) {
+    $command = Get-Command $Value -ErrorAction SilentlyContinue
+    if ($command -and $command.Source) { return [IO.Path]::GetFullPath($command.Source) }
+    if (Test-Path -LiteralPath $Value -PathType Leaf) {
+        return [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Value).Path)
+    }
+    throw "$Label executable was not found: $Value"
+}
+
+function Get-RendererLayout([string]$InstallRoot, [string]$Config) {
+    $scriptRoot = Split-Path -Parent $PSScriptRoot
+    $root = Resolve-RendererPath $InstallRoot
+    $current = Join-Path $root "current"
+    $shared = Join-Path $root "shared"
+    if (Test-Path -LiteralPath (Join-Path $current "wps_renderer") -PathType Container) {
+        $codeRoot = $current
+    } else {
+        # This also makes the scripts usable directly from a checked-out
+        # services/wps-renderer directory before Install.ps1 is used.
+        $codeRoot = $scriptRoot
+    }
+    if ([IO.Path]::IsPathRooted($Config)) { $configPath = [IO.Path]::GetFullPath($Config) }
+    else { $configPath = Join-Path $shared $Config }
+    [pscustomobject]@{
+        InstallRoot = $root
+        CodeRoot = $codeRoot
+        Shared = $shared
+        Config = $configPath
+        Token = Join-Path $shared "token.txt"
+        TaskName = "SlideFlow-WPS-Renderer"
+    }
+}
+
+function Protect-RendererPath([string]$Path, [string]$Account, [switch]$Directory) {
+    if ($Directory) {
+        & icacls.exe $Path /inheritance:r /grant:r "${Account}:(OI)(CI)F" "SYSTEM:(OI)(CI)F" /T /C | Out-Null
+    } else {
+        & icacls.exe $Path /inheritance:r /grant:r "${Account}:(F)" "SYSTEM:(F)" | Out-Null
+    }
+    if ($LASTEXITCODE -ne 0) { throw "Could not restrict ACL for $Path." }
+}
+
+function Assert-RendererToken([string]$Token) {
+    if ([string]::IsNullOrWhiteSpace($Token) -or $Token.Length -lt 32 -or $Token.Length -gt 4096 -or $Token -match '\s') {
+        throw "Token must contain 32-4096 non-whitespace characters."
+    }
+    if ($Token -match '[^\x21-\x7e]') { throw "Token must contain printable ASCII characters only." }
+}
+
+function New-RendererToken {
+    $bytes = New-Object byte[] 48
+    $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+    return [Convert]::ToBase64String($bytes)
+}
+
+function Set-RendererToken([string]$TokenPath, [string]$Token, [string]$Account) {
+    $parent = Split-Path -Parent $TokenPath
+    New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    if (-not $Token) {
+        if (Test-Path -LiteralPath $TokenPath -PathType Leaf) {
+            $Token = (Get-Content -LiteralPath $TokenPath -Raw).Trim()
+        } else {
+            $Token = New-RendererToken
+        }
+    }
+    Assert-RendererToken $Token
+    $utf8 = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList @($false)
+    [IO.File]::WriteAllText($TokenPath, $Token, $utf8)
+    Protect-RendererPath $TokenPath $Account
+    return $Token
+}
+
+function Read-RendererToken([string]$TokenPath) {
+    if (-not (Test-Path -LiteralPath $TokenPath -PathType Leaf)) { throw "Renderer token file does not exist: $TokenPath" }
+    $token = (Get-Content -LiteralPath $TokenPath -Raw).Trim()
+    Assert-RendererToken $token
+    return $token
+}
+
+function Set-RendererJsonProperty($Object, [string]$Name, $Value) {
+    $Object | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force
+}
+
+function Read-RendererConfig($Layout) {
+    if (Test-Path -LiteralPath $Layout.Config -PathType Leaf) {
+        return Get-Content -LiteralPath $Layout.Config -Raw | ConvertFrom-Json
+    }
+    $example = Join-Path $Layout.CodeRoot "config.example.json"
+    if (-not (Test-Path -LiteralPath $example -PathType Leaf)) { throw "Renderer config does not exist: $($Layout.Config)" }
+    return Get-Content -LiteralPath $example -Raw | ConvertFrom-Json
+}
+
+function Write-RendererConfig($Layout, $ConfigObject) {
+    New-Item -ItemType Directory -Path (Split-Path -Parent $Layout.Config) -Force | Out-Null
+    $ConfigObject | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $Layout.Config -Encoding UTF8
+}
+
+function Assert-RendererListen([string]$ListenHost, [int]$Port, [switch]$AllowNetworkBind, [string]$TlsCertFile, [string]$TlsKeyFile) {
+    if ([string]::IsNullOrWhiteSpace($ListenHost) -or $ListenHost -match '[\s/\\]') { throw "ListenHost must be a host name or IP address." }
+    if ($Port -lt 1 -or $Port -gt 65535) { throw "Port must be between 1 and 65535." }
+    $loopback = @("127.0.0.1", "::1", "localhost") -contains $ListenHost.ToLowerInvariant()
+    if (-not $loopback -and -not $AllowNetworkBind) { throw "Non-loopback listeners require -AllowNetworkBind and HTTPS certificate/key files." }
+    $hasCert = ([string]::IsNullOrWhiteSpace($TlsCertFile) -eq $false)
+    $hasKey = ([string]::IsNullOrWhiteSpace($TlsKeyFile) -eq $false)
+    if ($TlsCertFile -or $TlsKeyFile) { if (-not ($TlsCertFile -and $TlsKeyFile)) { throw "TlsCertFile and TlsKeyFile must be provided together." } }
+    if (-not $loopback -and (-not $hasCert -or -not $hasKey)) { throw "Non-loopback listeners require TlsCertFile and TlsKeyFile." }
+    if ($hasCert -and -not (Test-Path -LiteralPath $TlsCertFile -PathType Leaf)) { throw "TLS certificate does not exist: $TlsCertFile" }
+    if ($hasKey -and -not (Test-Path -LiteralPath $TlsKeyFile -PathType Leaf)) { throw "TLS private key does not exist: $TlsKeyFile" }
+}
+
+function Get-RendererTask([string]$TaskName) {
+    return Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+}
+
+function Wait-RendererProcessExit([string]$ConfigPath, [int]$Seconds = 45) {
+    $needle = [regex]::Escape([IO.Path]::GetFullPath($ConfigPath))
+    for ($i = 0; $i -lt ($Seconds * 2); $i++) {
+        $running = Get-CimInstance Win32_Process -Filter "Name = 'python.exe' OR Name = 'pythonw.exe'" |
+            Where-Object { $_.CommandLine -and $_.CommandLine -match 'wps_renderer' -and $_.CommandLine -match $needle }
+        if (-not $running) { return $true }
+        Start-Sleep -Milliseconds 500
+    }
+    return $false
+}

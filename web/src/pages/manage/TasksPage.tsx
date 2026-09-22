@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   AlertCircle,
   CheckCircle2,
@@ -88,10 +88,17 @@ interface TaskParams {
   download_type?: string;
   watermark?: string;
   with_fonts?: boolean;
-  file_name?: string;
   file_size?: number;
   track_code?: string;
   client_ip?: string;
+  task_id?: number;
+  session_id?: string;
+  file_name?: string;
+  workflow_state?: string;
+  slide_count?: number;
+  fonts?: string[];
+  missing_fonts?: string[];
+  preview_status?: string;
 }
 
 interface UserOption {
@@ -204,7 +211,7 @@ type TaskStatus =
   | "cancelled";
 
 const TASK_TYPE_LABEL: Record<string, string> = {
-  batch_split_import: "批量拆分导入",
+  batch_split_import: "PPT 上传",
 };
 
 const STATUS_LABEL: Record<TaskStatus, string> = {
@@ -345,6 +352,7 @@ interface TaskRowProps {
 }
 
 function TaskRow({ task, expanded, onToggle, onCancel, canManage, showOwner, isAdmin, isSelected, onSelectToggle }: TaskRowProps) {
+  const navigate = useNavigate();
   const status = task.status as TaskStatus;
   const isActive = ACTIVE_STATUSES.includes(status);
   const isCompleted = status === "completed";
@@ -448,7 +456,20 @@ function TaskRow({ task, expanded, onToggle, onCancel, canManage, showOwner, isA
         </TableCell>
 
         <TableCell className="w-20">
-          {canManage && isActive ? (
+          {task.params.session_id && !isCompleted && !isCancelled ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1 text-xs"
+              onClick={(e) => {
+                e.stopPropagation();
+                navigate(`/resources/import?task_id=${task.id}`);
+              }}
+            >
+              <Upload className="h-3.5 w-3.5" />
+              继续
+            </Button>
+          ) : canManage && isActive ? (
             <Button
               variant="outline"
               size="sm"
@@ -490,6 +511,7 @@ function TaskRow({ task, expanded, onToggle, onCancel, canManage, showOwner, isA
 /* ---------- Task Detail Panel ---------- */
 
 function TaskDetail({ task }: { task: Task }) {
+  const navigate = useNavigate();
   const params = task.params || {};
   const result = task.result_data || {};
   const resourceIds = Array.isArray(result.resource_ids) ? result.resource_ids : [];
@@ -521,6 +543,9 @@ function TaskDetail({ task }: { task: Task }) {
       {/* 提交参数 */}
       <DetailCard icon={<FileText className="h-3.5 w-3.5" />} title="提交参数">
         {params.name_prefix && <InfoRow label="名称前缀" value={params.name_prefix} />}
+        {params.file_name && <InfoRow label="PPT 文件" value={params.file_name} />}
+        {params.workflow_state && <InfoRow label="处理阶段" value={params.workflow_state === "font_check" ? "字体检测" : params.workflow_state === "rendering" ? "图片渲染" : params.workflow_state === "awaiting_confirmation" ? "等待确认导入" : params.workflow_state === "completed" ? "已完成" : params.workflow_state} />}
+        {typeof params.slide_count === "number" && <InfoRow label="页数" value={`${params.slide_count} 页`} />}
         {params.subject && <InfoRow label="分类" value={params.subject} />}
         {params.tags && <InfoRow label="标签" value={params.tags} />}
         {params.visibility_scope && (
@@ -551,6 +576,14 @@ function TaskDetail({ task }: { task: Task }) {
           </div>
         )}
       </DetailCard>
+
+      {params.session_id && task.status !== "completed" && task.status !== "cancelled" && (
+        <div className="flex items-end">
+          <Button type="button" className="gap-1.5" onClick={() => navigate(`/resources/import?task_id=${task.id}`)}>
+            <Upload className="h-3.5 w-3.5" />继续维护导入
+          </Button>
+        </div>
+      )}
 
       {/* 执行结果 / 错误 */}
       <DetailCard

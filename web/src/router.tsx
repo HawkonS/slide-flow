@@ -10,6 +10,7 @@ import { RequireAdmin, RequireAuth, RequireSystemAdmin } from "@/lib/auth";
 const LoginPage = lazy(() => import("@/pages/auth/LoginPage").then((m) => ({ default: m.LoginPage })));
 const HomePage = lazy(() => import("@/pages/home/HomePage").then((m) => ({ default: m.HomePage })));
 const ResourcesPage = lazy(() => import("@/pages/resources/ResourcesPage").then((m) => ({ default: m.ResourcesPage })));
+const ResourceImportPage = lazy(() => import("@/pages/resources/ResourceImportPage").then((m) => ({ default: m.ResourceImportPage })));
 const TemplatesPage = lazy(() => import("@/pages/templates/TemplatesPage").then((m) => ({ default: m.TemplatesPage })));
 const FontsPage = lazy(() => import("@/pages/fonts/FontsPage").then((m) => ({ default: m.FontsPage })));
 const ShowsPage = lazy(() => import("@/pages/shows/ShowsPage").then((m) => ({ default: m.ShowsPage })));
@@ -23,7 +24,6 @@ const OfflineCachePage = lazy(() => import("@/pages/manage/OfflineCachePage"));
 const TagManagePage = lazy(() => import("@/pages/manage/TagManagePage"));
 const AdminUsersPage = lazy(() => import("@/pages/admin/AdminUsersPage").then((m) => ({ default: m.AdminUsersPage })));
 const AdminTemplatesPage = lazy(() => import("@/pages/admin/AdminTemplatesPage").then((m) => ({ default: m.AdminTemplatesPage })));
-const AdminFontsPage = lazy(() => import("@/pages/admin/AdminFontsPage").then((m) => ({ default: m.AdminFontsPage })));
 const AdminSystemPage = lazy(() => import("@/pages/admin/AdminSystemPage").then((m) => ({ default: m.AdminSystemPage })));
 
 // 全屏加载指示器：路由懒加载挂起时显示
@@ -64,6 +64,7 @@ export const router = createBrowserRouter([
       { path: "/", element: <Navigate to="/home" replace /> },
       { path: "/home", element: <HomePage /> },
       { path: "/resources", element: <ResourcesPage /> },
+      { path: "/resources/import", element: <ResourceImportPage /> },
       { path: "/templates", element: <TemplatesPage /> },
       { path: "/fonts", element: <FontsPage /> },
       { path: "/shows", element: <StandardShowsPage /> },
@@ -92,14 +93,6 @@ export const router = createBrowserRouter([
         element: (
           <RequireAdmin>
             <AdminTemplatesPage />
-          </RequireAdmin>
-        ),
-      },
-      {
-        path: "/admin/fonts",
-        element: (
-          <RequireAdmin>
-            <AdminFontsPage />
           </RequireAdmin>
         ),
       },

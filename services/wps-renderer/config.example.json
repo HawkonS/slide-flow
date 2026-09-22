@@ -1,0 +1,22 @@
+{
+  "wpscli": "C:\\Users\\YOUR_ACCOUNT\\AppData\\Local\\Kingsoft\\WPS Office\\YOUR_VERSION\\clitool\\wpscli.exe",
+  "data_dir": "./data",
+  "token_file": "./token.txt",
+  "host": "127.0.0.1",
+  "port": 8765,
+  "tls_cert_file": "",
+  "tls_key_file": "",
+  "max_queue": 4,
+  "max_pages": 4,
+  "max_input_file_bytes": 125829120,
+  "max_dpi": 300,
+  "render_timeout_seconds": 120,
+  "process_memory_limit_bytes": 1610612736,
+  "retention_seconds": 600,
+  "max_upload_bytes": 134217728,
+  "max_expanded_bytes": 268435456,
+  "max_output_bytes": 67108864,
+  "max_total_bytes": 805306368,
+  "min_free_bytes": 536870912,
+  "min_free_ratio": 0.05
+}

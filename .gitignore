@@ -32,6 +32,7 @@ Thumbs.db
 # Config with secrets
 slide_flow.properties
 slide_flow.properties.bak
+.secrets/
 
 # Legacy admin credentials
 legacy-admin/.credentials.json

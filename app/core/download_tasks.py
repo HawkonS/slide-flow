@@ -1,14 +1,12 @@
 """异步放映下载任务执行框架。
 
-与 ``app/main.py`` 中现有的同步下载 API 共存：
+与 ``app.routers.shows.downloads`` 中现有的同步下载 API 共存：
 - 同步 API（``/api/shows/{id}/download/...``）用于直接返回 FileResponse 的小文件场景
 - 本模块提供基于 tasks 表 + asyncio.Semaphore 的异步执行框架，
   通过 WebSocket 推送进度，前端可在生成期间继续操作。
 
-复用：
-- ``app/main.py`` 中的缓存函数（``_show_download_cache_key`` / ``_get_cached_download`` / ``_save_to_cache``）
-- ``app/main.py`` 中的资源收集与字体聚合工具
-- ``app/core/ppt.py`` 中的 PPT/图片处理函数
+缓存、字体打包和水印追踪通过 services 层的正向依赖共享，避免业务代码
+反向导入应用入口。
 """
 
 from __future__ import annotations
@@ -39,6 +37,10 @@ from app.core.ppt import (
 )
 from app.db import get_db
 from app.core.task_events import append_task_event
+from app.services.downloads.cache import _get_cached_download, _save_to_cache, _show_download_cache_key
+from app.services.downloads.fonts import _build_fonts_bundle, _write_fonts_into_zip
+from app.services.downloads.tracking import _compose_watermark_text
+from app.services.files import materialization_scope, _resource_file_abs
 
 
 logger = logging.getLogger(__name__)
@@ -117,13 +119,8 @@ def _update_task(
 
 
 def _safe_abs(stored_path: str | None) -> Path | None:
-    """复用 main.py 中的安全路径解析逻辑（去循环依赖：在此独立实现一份精简版）。"""
-    if not stored_path:
-        return None
-    p = settings.abs_path(stored_path)
-    if p is None:
-        return None
-    return p
+    """解析存储路径并保持下载任务与同步下载 API 的安全边界一致。"""
+    return _resource_file_abs(stored_path)
 
 
 def _collect_resources(db: sqlite3.Connection, show_id: int) -> list[dict[str, Any]]:
@@ -427,9 +424,6 @@ def _generate_pptx(
     *,
     progress_callback: "Callable[[int, int], None] | None" = None,
 ) -> tuple[Path, str, bool]:
-    # 复用 main.py 中的字体打包逻辑
-    from app import main as _main
-
     input_paths: list[Path] = []
     hidden_flags: list[bool] = []
     for item in items:
@@ -462,10 +456,10 @@ def _generate_pptx(
             return out_path, f"{show_name}.pptx", watermark_ok
         # 打包字体
         agg = _aggregate_fonts(items)
-        fonts, _ = _main._build_fonts_bundle(db, agg["font_names"])
+        fonts, _ = _build_fonts_bundle(db, agg["font_names"])
         with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.write(merged_path, arcname=f"{show_name}.pptx")
-            _main._write_fonts_into_zip(zf, fonts, agg["missing_fonts"])
+            _write_fonts_into_zip(zf, fonts, agg["missing_fonts"])
         return out_path, f"{show_name}_with_fonts.zip", watermark_ok
     finally:
         merged_path.unlink(missing_ok=True)
@@ -482,8 +476,6 @@ def _generate_zip(
     *,
     progress_callback: "Callable[[int, int], None] | None" = None,
 ) -> tuple[Path, str, bool]:
-    from app import main as _main
-
     # ── 收集有效资源 ──
     valid_items: list[tuple[dict, Path, str]] = []  # (item, ppt_path, arcname)
     for item in items:
@@ -537,8 +529,8 @@ def _generate_zip(
             }
             zf.writestr("fonts.json", json.dumps(fonts_info, ensure_ascii=False, indent=2))
             if with_fonts:
-                fonts, _ = _main._build_fonts_bundle(db, agg["font_names"])
-                _main._write_fonts_into_zip(zf, fonts, agg["missing_fonts"])
+                fonts, _ = _build_fonts_bundle(db, agg["font_names"])
+                _write_fonts_into_zip(zf, fonts, agg["missing_fonts"])
     finally:
         for p in wm_paths.values():
             p.unlink(missing_ok=True)
@@ -557,8 +549,6 @@ def _generate_download_file_sync(
 
     返回字典：``{"file_path": str, "file_name": str, "file_size": int}``
     """
-    from app import main as _main
-
     show_id = int(params["show_id"])
     download_type = params["download_type"]
     user_watermark = params.get("user_watermark", "") or ""
@@ -568,11 +558,13 @@ def _generate_download_file_sync(
     # 是否需要嵌入水印（用户传入了水印 → 嵌入；否则纯净版本可缓存）
     wm_text = ""
     if user_watermark:  # 前端传了非空值就启用水印（追踪码总包含）
-        wm_text = _main._compose_watermark_text(track_code, user_watermark)
+        wm_text = _compose_watermark_text(track_code, user_watermark)
 
     db = get_db()
-    db.execute("PRAGMA busy_timeout = 30000")
+    materialization = materialization_scope()
+    materialization.__enter__()
     try:
+        db.execute("PRAGMA busy_timeout = 30000")
         show_row = db.execute("SELECT id, name FROM shows WHERE id = ?", (show_id,)).fetchone()
         if show_row is None:
             raise RuntimeError("放映组不存在")
@@ -596,8 +588,8 @@ def _generate_download_file_sync(
         # 无水印时尝试缓存命中
         cache_key = ""
         if not wm_text:
-            cache_key = _main._show_download_cache_key(show_id, cache_key_type, db)
-            cached = _main._get_cached_download(cache_key, ext)
+            cache_key = _show_download_cache_key(show_id, cache_key_type, db)
+            cached = _get_cached_download(cache_key, ext)
             if cached and cached.exists():
                 # 复制到任务输出目录，避免后续清理误删缓存文件
                 out_path = _output_path(task_id, ext)
@@ -637,7 +629,7 @@ def _generate_download_file_sync(
         # 无水印时写入缓存
         if cache_key and out_path.exists():
             try:
-                _main._save_to_cache(out_path, cache_key, ext)
+                _save_to_cache(out_path, cache_key, ext)
             except Exception:
                 logger.warning("写入下载缓存失败 task_id=%s type=%s", task_id, download_type, exc_info=True)
 
@@ -652,6 +644,7 @@ def _generate_download_file_sync(
             db.close()
         except Exception:
             pass
+        materialization.__exit__(None, None, None)
 
 
 def _suggest_filename(show_name: str, download_type: str, with_fonts: bool) -> str:

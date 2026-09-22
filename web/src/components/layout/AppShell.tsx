@@ -56,7 +56,6 @@ const NAV_SECTIONS: { title: string; items: NavItem[] }[] = [
     items: [
       { key: "tasks", to: "/manage/tasks", label: "任务管理", icon: ListTodo },
       { key: "tags", to: "/manage/tags", label: "标签管理", icon: Tag },
-      { key: "font-management", to: "/admin/fonts", label: "字体管理", icon: Type },
     ],
   },
   {
@@ -72,7 +71,7 @@ const NAV_SECTIONS: { title: string; items: NavItem[] }[] = [
 
 // 运营管理员和系统管理员都可进行运营管理；用户管理、运行管理、配置管理、
 // 日志管理属于系统管理，仅系统管理员可见。
-const ADMIN_ONLY_KEYS = new Set(["tags", "font-management"]);
+const ADMIN_ONLY_KEYS = new Set(["tags"]);
 const SYSTEM_ADMIN_ONLY_KEYS = new Set(["users", "runtime", "config", "logs"]);
 
 function NavItemLink({ item }: { item: NavItem }) {

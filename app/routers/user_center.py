@@ -18,6 +18,7 @@ from app.core.permissions import (
 )
 from app.db import now_iso
 from app.routers.dependencies import db_dep, db_read_dep
+from app.services.files import asset_preview_url
 
 
 router = APIRouter()
@@ -74,8 +75,8 @@ def _serialize_resource(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.
         "current": {
             "id": version_id,
             "version_no": current_version["version_no"] if current_version else 1,
-            "preview_url": f"/api/resources/{resource_id}/preview-thumb?version_id={version_id}" if png_path else None,
-            "original_preview_url": f"/api/resources/{resource_id}/preview?version_id={version_id}" if png_path else None,
+            "preview_url": asset_preview_url(png_path, thumb=True) or (f"/api/resources/{resource_id}/preview-thumb?version_id={version_id}" if png_path else None),
+            "original_preview_url": asset_preview_url(png_path) or (f"/api/resources/{resource_id}/preview?version_id={version_id}" if png_path else None),
         } if current_version else None,
         "can_manage": can_manage_resource(db, row, user),
         "created_at": row["created_at"],
@@ -131,8 +132,8 @@ def _serialize_show(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row)
                 "is_hidden": bool(sr["is_hidden"]),
                 "secrecy_level": resource_row["secrecy_level"] if resource_row else "public",
                 "accessible": resource_accessible,
-                "preview_url": f"/api/resources/{resource_id}/preview-thumb?version_id={version_id}" if png_path else None,
-                "original_preview_url": f"/api/resources/{resource_id}/preview?version_id={version_id}" if png_path else None,
+                "preview_url": asset_preview_url(png_path, thumb=True) or (f"/api/resources/{resource_id}/preview-thumb?version_id={version_id}" if png_path else None),
+                "original_preview_url": asset_preview_url(png_path) or (f"/api/resources/{resource_id}/preview?version_id={version_id}" if png_path else None),
             })
     
     return {

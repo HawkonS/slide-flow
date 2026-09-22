@@ -8,20 +8,25 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
+import zipfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 
 from app.core.fonts import validate_font_file
 from app.core.permissions import require_user, require_admin
-from app.core.storage import save_upload
+from app.core.storage import safe_filename, save_upload
 from app.db import now_iso
+from app.services.resource_import.font_tasks import create_font_task
 from app.config import settings
 from app.routers.dependencies import (
     FontDeletePayload,
+    FontDownloadPayload,
     db_dep,
     db_read_dep,
     _font_aliases_from_row,
@@ -178,6 +183,9 @@ async def upload_font(
         ),
     )
     font_id = int(cursor.lastrowid)
+    # Every uploaded font is synchronized to Windows through the pull queue.
+    # The renderer never receives a PPT font manifest or font bytes inline.
+    create_font_task(db, font_id, path)
     installed_path: Path | None = None
     if install_on_server:
         try:
@@ -258,6 +266,71 @@ def bulk_delete_fonts(
         _refresh_font_cache()
     
     return {"ok": True, "deleted": len(rows)}
+
+
+@router.post("/fonts/bulk-download")
+def bulk_download_fonts(
+    payload: FontDownloadPayload,
+    _: Any = Depends(require_user),
+    db: sqlite3.Connection = Depends(db_read_dep),
+) -> FileResponse:
+    """将当前用户选择的字体打包为 ZIP 下载。"""
+    font_ids = list(dict.fromkeys(int(font_id) for font_id in payload.font_ids if int(font_id) > 0))
+    if not font_ids:
+        raise HTTPException(400, "请选择要下载的字体")
+
+    placeholders = ",".join("?" for _ in font_ids)
+    rows = db.execute(
+        f"SELECT id, file_name, file_path FROM fonts WHERE id IN ({placeholders})",
+        font_ids,
+    ).fetchall()
+    rows_by_id = {int(row["id"]): row for row in rows}
+    available = []
+    for font_id in font_ids:
+        row = rows_by_id.get(font_id)
+        if row is None:
+            continue
+        path = _uploaded_font_abs(row["file_path"])
+        if path is not None and path.is_file():
+            available.append((row, path))
+
+    if not available:
+        raise HTTPException(404, "所选字体文件不存在")
+
+    settings.downloads_dir.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(
+        prefix="fonts_",
+        suffix=".zip",
+        dir=settings.downloads_dir,
+        delete=False,
+    )
+    archive_path = Path(handle.name)
+    handle.close()
+
+    used_names: set[str] = set()
+    try:
+        with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as archive:
+            for row, path in available:
+                original = safe_filename(row["file_name"] or path.name)
+                candidate = original
+                stem = Path(original).stem
+                suffix = Path(original).suffix
+                index = 2
+                while candidate.lower() in used_names:
+                    candidate = f"{stem}_{index}{suffix}"
+                    index += 1
+                used_names.add(candidate.lower())
+                archive.write(path, arcname=candidate)
+    except Exception:
+        archive_path.unlink(missing_ok=True)
+        raise
+
+    return FileResponse(
+        archive_path,
+        media_type="application/zip",
+        headers={"Content-Disposition": _content_disposition(f"标准字体_{len(available)}个.zip")},
+        background=BackgroundTask(archive_path.unlink, missing_ok=True),
+    )
 
 
 @router.get("/fonts/{font_id}/download")
