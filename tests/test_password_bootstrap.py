@@ -161,6 +161,81 @@ class PasswordBootstrapTests(unittest.TestCase):
                     password="another-secure-password",
                 )
 
+    def test_localhost_setup_uses_http_only_cookie_without_manual_token(self):
+        db = _db()
+        self.addCleanup(db.close)
+        with patch.object(settings, "root_dir", self.root):
+            prepare_initial_admin(db)
+            app = _test_app(db)
+            with TestClient(
+                app,
+                base_url="http://127.0.0.1",
+                client=("127.0.0.1", 50000),
+            ) as client:
+                status = client.get("/api/auth/setup")
+                self.assertEqual(status.status_code, 200, status.text)
+                self.assertEqual(status.json(), {"required": True, "automatic": True})
+                self.assertNotIn("setup_token", status.text)
+                self.assertIn("HttpOnly", status.headers["set-cookie"])
+                self.assertIn("SameSite=strict", status.headers["set-cookie"])
+
+                completed = client.post(
+                    "/api/auth/setup",
+                    headers={"Origin": "http://127.0.0.1"},
+                    json={
+                        "name": "System Owner",
+                        "username": "owner",
+                        "password": "correct-horse-battery-staple",
+                    },
+                )
+                self.assertEqual(completed.status_code, 200, completed.text)
+                self.assertFalse(initial_setup_file().exists())
+                self.assertFalse(completed.json()["user"]["must_change_pwd"])
+
+    def test_remote_setup_still_requires_manual_token(self):
+        db = _db()
+        self.addCleanup(db.close)
+        with patch.object(settings, "root_dir", self.root):
+            prepare_initial_admin(db)
+            app = _test_app(db)
+            with TestClient(app, base_url="http://example.test") as client:
+                status = client.get("/api/auth/setup")
+                self.assertEqual(status.json(), {"required": True, "automatic": False})
+                denied = client.post(
+                    "/api/auth/setup",
+                    json={
+                        "name": "System Owner",
+                        "username": "owner",
+                        "password": "correct-horse-battery-staple",
+                    },
+                )
+                self.assertEqual(denied.status_code, 400, denied.text)
+                self.assertIn("需要一次性令牌", denied.json()["detail"])
+
+    def test_local_setup_cookie_rejects_cross_site_origin(self):
+        db = _db()
+        self.addCleanup(db.close)
+        with patch.object(settings, "root_dir", self.root):
+            prepare_initial_admin(db)
+            app = _test_app(db)
+            with TestClient(
+                app,
+                base_url="http://127.0.0.1",
+                client=("127.0.0.1", 50000),
+            ) as client:
+                client.get("/api/auth/setup")
+                denied = client.post(
+                    "/api/auth/setup",
+                    headers={"Origin": "https://attacker.example"},
+                    json={
+                        "name": "System Owner",
+                        "username": "owner",
+                        "password": "correct-horse-battery-staple",
+                    },
+                )
+                self.assertEqual(denied.status_code, 400, denied.text)
+                self.assertIn("需要一次性令牌", denied.json()["detail"])
+
     def test_legacy_shared_password_is_disabled_and_requires_setup(self):
         db = _db()
         self.addCleanup(db.close)

@@ -22,6 +22,7 @@ from app.routers.resource_import import resource_import_result
 from app.services import files as import_files
 from app.services.resource_import import commit as import_commit
 from app.services.resource_import import jobs as import_jobs
+from app.services.resource_import import render_tasks
 from app.services.resource_import import sessions as import_sessions
 from app.services.resource_import.remote_fonts import sha256_file
 from app.services.resource_import.rendering import RESOURCE_IMPORT_RENDERER_VERSION
@@ -246,6 +247,15 @@ class ResourceImportTransactionTests(unittest.TestCase):
             self.assertTrue(directory.is_dir())
         import_sessions._cleanup_expired_resource_imports()
         self.assertFalse(directory.exists())
+
+    def test_expiry_cancels_durable_windows_render_before_deleting_session(self):
+        session = self.session(expired=True)
+        session["render_task_id"] = "d" * 32
+        import_sessions._write_resource_import_session(session)
+        with patch.object(render_tasks, "cancel_render_tasks") as cancel:
+            import_sessions._cleanup_expired_resource_imports()
+        cancel.assert_called_once_with(self.db, session["session_id"])
+        self.assertFalse(Path(session["temp_dir"]).exists())
 
     def test_stale_in_memory_session_cannot_revive_deleted_metadata(self):
         session = self.session()

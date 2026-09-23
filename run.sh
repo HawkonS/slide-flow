@@ -655,7 +655,7 @@ fi
 log_info "后端服务启动成功 ($ACTIVE_BACKEND_SERVER, PID: $BACKEND_PID)"
 if [ -f ".secrets/initial-admin-setup.json" ]; then
   log_warn "系统管理员尚未完成安全初始化"
-  log_warn "请在服务器本机读取 .secrets/initial-admin-setup.json，并访问 /setup 完成设置"
+  log_warn "请在服务器本机访问 http://127.0.0.1:${PORT}/setup，直接设置管理员账号和密码"
 fi
 
 # 启动前端

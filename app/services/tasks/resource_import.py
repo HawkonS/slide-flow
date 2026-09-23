@@ -10,7 +10,7 @@ from __future__ import annotations
 from app.core.fonts import missing_fonts
 from app.core.ppt import detect_ppt_fonts, slide_count
 from app.db import get_db, known_font_aliases
-from app.services.resource_import.previews import _render_and_publish_ppt_previews
+from app.services.resource_import.render_tasks import ensure_render_task
 from app.services.resource_import.rendering import _normalize_import_ppt
 from app.services.resource_import.sessions import (
     _resource_import_file,
@@ -119,23 +119,12 @@ def _execute_resource_import_task(task_id: int, session_id: str) -> None:
 
         if cancel_event and cancel_event.is_set():
             return
-        _task_update(db, task_id, status="processing", message="正在渲染高清图片…")
+        _task_update(db, task_id, status="pending", message="等待 Windows 转换节点领取任务…")
         with _resource_import_operation(session, wait=True):
             session = _session_for_task(session_id)
-
-            def emit(event: dict) -> None:
-                if cancel_event and cancel_event.is_set():
-                    return
-                message = event.get("message") if isinstance(event, dict) else None
-                index = event.get("index") if isinstance(event, dict) else None
-                if isinstance(index, int):
-                    _task_update(db, task_id, progress=index + 1, message=message or f"已渲染 {index + 1} / {count} 页")
-                elif isinstance(message, str) and message:
-                    _task_update(db, task_id, message=message)
-
-            _render_and_publish_ppt_previews(session, emit=emit, cancel=cancel_event)
-        params.update({"workflow_state": "awaiting_confirmation", "preview_status": "ready"})
-        _task_update(db, task_id, status="pending", message="图片已渲染，等待确认导入", progress=count, total=count, params=params)
+            ensure_render_task(session)
+        params.update({"workflow_state": "rendering", "preview_status": "rendering"})
+        _task_update(db, task_id, status="pending", message="等待 Windows 转换节点领取任务…", progress=0, total=count, params=params)
     except Exception as exc:
         logger.exception("Resource import task %s failed", task_id)
         row = db.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()

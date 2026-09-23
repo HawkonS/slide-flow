@@ -10,6 +10,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 from pathlib import Path
 
 from .font_validation import preflight_font
@@ -27,8 +28,12 @@ class FontSync:
         self.interval = max(1, min(300, int(config.get("interval", 5))))
         configured = config.get("install_dir") or os.path.join(os.environ.get("LOCALAPPDATA", str(Path.home())), "Microsoft", "Windows", "Fonts")
         self.install_dir = Path(configured).expanduser()
-        if not re.fullmatch(r"https?://[^/]+", self.base_url):
-            raise ValueError("font task URL must contain only scheme, host and port")
+        parsed = urllib.parse.urlsplit(self.base_url)
+        loopback = (parsed.hostname or "").lower() in {"127.0.0.1", "localhost", "::1"}
+        if (parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username
+                or parsed.password or parsed.query or parsed.fragment or parsed.path not in {"", "/"}
+                or (parsed.scheme == "http" and not loopback)):
+            raise ValueError("font task URL must use HTTPS unless connected through a loopback tunnel")
         if len(self.token) < 32 or any(ord(char) < 33 or ord(char) > 126 for char in self.token):
             raise ValueError("font task token is invalid")
         self.register_existing()

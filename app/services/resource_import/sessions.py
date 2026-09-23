@@ -208,6 +208,16 @@ def _cleanup_resource_import_session(session_id: str, session: dict[str, Any] | 
     candidate = _resource_import_root().resolve() / session_id
     if candidate.is_symlink():
         return
+    # New pull-based render tasks outlive browser requests and application
+    # workers. Cancel the durable queue row before deleting its session files;
+    # otherwise an expired session could leave a Windows worker processing an
+    # OSS task whose result can no longer be published. The import is local to
+    # avoid a module cycle: render_tasks itself uses the session helpers.
+    if session and session.get("render_task_id"):
+        from app.services.resource_import.render_tasks import cancel_render_tasks
+
+        with get_db() as db:
+            cancel_render_tasks(db, session_id)
     with _resource_import_lock:
         _resource_import_sessions.pop(session_id, None)
     shutil.rmtree(candidate, ignore_errors=True)

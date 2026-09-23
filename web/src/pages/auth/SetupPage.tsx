@@ -11,7 +11,7 @@ import { useAuth } from "@/lib/auth";
 import type { CurrentUser } from "@/lib/types";
 import { useSiteConfig } from "@/stores/site-config";
 
-type SetupStatus = { required: boolean };
+type SetupStatus = { required: boolean; automatic?: boolean };
 
 export function SetupPage() {
   const navigate = useNavigate();
@@ -19,6 +19,7 @@ export function SetupPage() {
   const siteName = useSiteConfig((s) => s.siteName);
   const logoSvgPath = useSiteConfig((s) => s.logoSvgPath);
   const [checking, setChecking] = useState(true);
+  const [automatic, setAutomatic] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [token, setToken] = useState("");
   const [name, setName] = useState("Hawkon");
@@ -33,14 +34,15 @@ export function SetupPage() {
           navigate("/login", { replace: true });
           return;
         }
+        setAutomatic(!!status.automatic);
       })
       .catch((error) => toast.error(error instanceof Error ? error.message : "无法读取初始化状态"))
       .finally(() => setChecking(false));
   }, [navigate]);
 
   const submit = async () => {
-    if (!token.trim() || !name.trim() || !username.trim()) {
-      toast.error("初始化令牌、姓名和用户名均为必填项");
+    if ((!automatic && !token.trim()) || !name.trim() || !username.trim()) {
+      toast.error(automatic ? "姓名和用户名均为必填项" : "初始化令牌、姓名和用户名均为必填项");
       return;
     }
     if (password.trim().length < 10) {
@@ -56,7 +58,7 @@ export function SetupPage() {
       const result = await api<{ user: CurrentUser }>("/api/auth/setup", {
         method: "POST",
         json: {
-          token: token.trim(),
+          token: automatic ? "" : token.trim(),
           name: name.trim(),
           username: username.trim(),
           password,
@@ -93,25 +95,27 @@ export function SetupPage() {
               <ShieldCheck className="h-5 w-5 text-primary" />
             </div>
             <p className="mt-1.5 text-sm leading-6 text-muted-foreground">
-              设置首个系统管理员。初始化令牌保存在服务器本地的
-              <code className="mx-1 rounded bg-muted px-1.5 py-0.5 text-xs">.secrets/initial-admin-setup.json</code>
-              中，完成后会自动删除。
+              {automatic
+                ? "当前通过本机安全访问，初始化凭证已自动验证。请直接设置管理员账号和密码。"
+                : "当前不是本机访问。请从服务器安全文件 .secrets/initial-admin-setup.json 中获取一次性令牌。"}
             </p>
           </div>
         </div>
 
         <div className="space-y-4">
-          <div className="space-y-1.5">
-            <Label htmlFor="setup-token">一次性初始化令牌</Label>
-            <Input
-              id="setup-token"
-              type="password"
-              value={token}
-              onChange={(event) => setToken(event.target.value)}
-              autoComplete="off"
-              placeholder="从服务器安全文件中复制"
-            />
-          </div>
+          {!automatic && (
+            <div className="space-y-1.5">
+              <Label htmlFor="setup-token">一次性初始化令牌</Label>
+              <Input
+                id="setup-token"
+                type="password"
+                value={token}
+                onChange={(event) => setToken(event.target.value)}
+                autoComplete="off"
+                placeholder="从服务器安全文件中复制"
+              />
+            </div>
+          )}
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="setup-name">姓名</Label>

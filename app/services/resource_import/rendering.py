@@ -4,7 +4,7 @@ import shutil
 import uuid
 from app.core.resource_import_fonts import replace_ppt_fonts
 
-RESOURCE_IMPORT_RENDERER_VERSION = "wps-remote-v2-4k"
+RESOURCE_IMPORT_RENDERER_VERSION = "wps-pull-v3-4k"
 IMPORT_EXTENSIONS = {".pptx", ".potx", ".ppsx"}
 
 

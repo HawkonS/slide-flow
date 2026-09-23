@@ -11,6 +11,7 @@ from app.db import init_db
 from app.services.downloads.cleanup import _download_cleanup_loop
 from app.services.files import _init_allowed_file_dirs
 from app.services.resource_import.sessions import _cleanup_expired_resource_imports, _resource_import_cleanup_loop
+from app.services.resource_import.render_tasks import cleanup_terminal_render_task_objects, render_task_cleanup_loop
 from app.services.tasks.runtime import _heavy_executor
 
 
@@ -25,10 +26,12 @@ async def lifespan(app):
     )
     init_db()
     _cleanup_expired_resource_imports()
+    cleanup_terminal_render_task_objects()
     _init_allowed_file_dirs()
     cleanup_tasks = [
         asyncio.create_task(_download_cleanup_loop(), name="download-cleanup"),
         asyncio.create_task(_resource_import_cleanup_loop(), name="resource-import-cleanup"),
+        asyncio.create_task(render_task_cleanup_loop(), name="render-task-object-cleanup"),
     ]
     try:
         yield

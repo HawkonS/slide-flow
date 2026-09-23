@@ -18,6 +18,8 @@ $task = Get-RendererTask $TaskName
 if (-not $task) { throw "Renderer task is not registered. Run Register.ps1 first." }
 $fontTask = Get-ScheduledTask -TaskName "SlideFlow-WPS-Font-Sync" -ErrorAction SilentlyContinue
 if ($fontTask -and $fontTask.State -ne 'Running') { Start-ScheduledTask -TaskName "SlideFlow-WPS-Font-Sync" }
+$pullTask = Get-ScheduledTask -TaskName "SlideFlow-WPS-Render-Pull" -ErrorAction SilentlyContinue
+if ($pullTask -and $pullTask.State -ne 'Running') { Start-ScheduledTask -TaskName "SlideFlow-WPS-Render-Pull" }
 if ($task.State -eq 'Running') { Write-Host "Renderer task '$TaskName' is already running."; return }
 Start-ScheduledTask -TaskName $TaskName
 Write-Host "Renderer task '$TaskName' start requested."

@@ -41,6 +41,7 @@ from app.services.resource_import.validation import (
     _save_resource_import_upload,
     _validate_import_ppt_package,
 )
+from app.services.resource_import.render_tasks import cancel_render_tasks, cancel_render_tasks_for_parent
 from app.services.tasks.resource_import import schedule_resource_import_task
 from app.services.tasks.records import (
     _cleanup_task_temp,
@@ -437,6 +438,15 @@ def cancel_task(
                 shutil.rmtree(Path(temp_dir_str), ignore_errors=True)
         except Exception:
             pass
+    try:
+        params = json.loads(row["params"] or "{}")
+        session_id = params.get("session_id")
+        if isinstance(session_id, str):
+            cancel_render_tasks(db, session_id)
+        else:
+            cancel_render_tasks_for_parent(db, task_id)
+    except Exception:
+        logger.exception("Failed to cancel renderer task for parent task %s", task_id)
 
     # 更新数据库状态
     db.execute(
@@ -461,6 +471,8 @@ def bulk_delete_tasks(
         raise HTTPException(400, "请选择要删除的任务")
     placeholders = ",".join("?" for _ in task_ids)
     rows = db.execute(f"SELECT * FROM tasks WHERE id IN ({placeholders})", task_ids).fetchall()
+    for task_id in task_ids:
+        cancel_render_tasks_for_parent(db, task_id)
     cur = db.execute(f"DELETE FROM tasks WHERE id IN ({placeholders})", task_ids)
     db.commit()
     for row in rows:
@@ -478,6 +490,7 @@ def delete_task(
     row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     if row is None:
         raise HTTPException(404, "任务不存在")
+    cancel_render_tasks_for_parent(db, task_id)
     db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
     db.commit()
     _cleanup_task_temp(row)

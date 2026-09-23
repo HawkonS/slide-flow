@@ -62,7 +62,9 @@ class ChangePasswordPayload(ApiPayload):
 
 
 class InitialSetupPayload(ApiPayload):
-    token: str = Field(..., min_length=32, max_length=200)
+    # Localhost setup uses a short-lived HttpOnly cookie. Remote recovery can
+    # still submit the one-time token stored on the server.
+    token: str = Field(default="", max_length=200)
     name: str = Field(..., min_length=1, max_length=100)
     username: str = Field(..., min_length=2, max_length=50)
     password: str = Field(..., min_length=10, max_length=200)

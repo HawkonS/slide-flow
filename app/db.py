@@ -15,7 +15,7 @@ from app.config import (
 from app.core.bootstrap import prepare_initial_admin
 from app.core.fonts import normalize_font_name
 
-DB_SCHEMA_VERSION = 6
+DB_SCHEMA_VERSION = 8
 
 
 def now_iso() -> str:
@@ -331,6 +331,30 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_renderer_font_tasks_claim
                 ON renderer_font_tasks(status, lease_until, created_at);
 
+            CREATE TABLE IF NOT EXISTS renderer_ppt_tasks (
+                task_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                render_attempt TEXT NOT NULL,
+                parent_task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+                status TEXT NOT NULL DEFAULT 'queued'
+                    CHECK(status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
+                lease_token_hash TEXT,
+                lease_until REAL,
+                worker_id TEXT,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                source_manifest TEXT NOT NULL,
+                result_manifest TEXT,
+                error_code TEXT,
+                objects_cleaned_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(session_id, render_attempt)
+            );
+            CREATE INDEX IF NOT EXISTS idx_renderer_ppt_tasks_claim
+                ON renderer_ppt_tasks(status, lease_until, created_at);
+            CREATE INDEX IF NOT EXISTS idx_renderer_ppt_tasks_session
+                ON renderer_ppt_tasks(session_id, created_at DESC);
+
             CREATE TABLE IF NOT EXISTS shows (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
@@ -515,6 +539,12 @@ def _migrate_schema(db: sqlite3.Connection, schema_version: int) -> None:
         db.execute("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1")
     if "temporary_password_expires_at" not in columns:
         db.execute("ALTER TABLE users ADD COLUMN temporary_password_expires_at TEXT")
+    render_columns = {
+        row["name"]
+        for row in db.execute("PRAGMA table_info(renderer_ppt_tasks)").fetchall()
+    }
+    if "objects_cleaned_at" not in render_columns:
+        db.execute("ALTER TABLE renderer_ppt_tasks ADD COLUMN objects_cleaned_at TEXT")
 
 
 def _recover_interrupted_tasks(db: sqlite3.Connection) -> None:
@@ -541,9 +571,21 @@ def _recover_interrupted_tasks(db: sqlite3.Connection) -> None:
         should_recover = marker.rowcount > 0
 
     if should_recover:
+        # Windows pull jobs are durable and intentionally survive an API
+        # restart. Their worker will either finish the active lease or let it
+        # expire and be reclaimed. Keep the user-facing parent task pending.
+        db.execute(
+            "UPDATE tasks SET status = 'pending', message = '等待 Windows 转换节点领取任务…',"
+            " updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
+            " WHERE status IN ('pending', 'processing')"
+            " AND task_type = 'batch_split_import'"
+            " AND json_extract(params, '$.workflow_state') = 'rendering'"
+        )
         db.execute(
             "UPDATE tasks SET status = 'failed', error_message = '服务重启，任务中断',"
             " updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
             " WHERE status IN ('uploading', 'pending', 'processing')"
+            " AND NOT (task_type = 'batch_split_import'"
+            " AND json_extract(params, '$.workflow_state') = 'rendering')"
         )
     db.commit()

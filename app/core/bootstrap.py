@@ -67,6 +67,17 @@ def remove_initial_setup_file() -> None:
     initial_setup_file().unlink(missing_ok=True)
 
 
+def read_initial_setup_token() -> str | None:
+    """Read the local-only setup token without exposing it through an API body."""
+    path = initial_setup_file()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, json.JSONDecodeError):
+        return None
+    token = payload.get("setup_token") if isinstance(payload, dict) else None
+    return token.strip() if isinstance(token, str) and token.strip() else None
+
+
 def _state(db: sqlite3.Connection) -> dict[str, object] | None:
     row = db.execute("SELECT value FROM runtime_state WHERE key = ?", (INITIAL_SETUP_STATE_KEY,)).fetchone()
     if row is None:

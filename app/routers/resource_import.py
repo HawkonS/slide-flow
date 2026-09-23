@@ -43,6 +43,7 @@ from app.services.resource_import.rendering import (
     _replace_ppt_fonts,
 )
 from app.services.resource_import.streaming import preview_stream
+from app.services.resource_import.render_tasks import cancel_render_tasks
 from app.services.resource_import.sessions import (
     _cleanup_expired_resource_imports,
     _cleanup_resource_import_session,
@@ -295,6 +296,11 @@ async def replace_resource_import_fonts(
             # 字体变化后旧预览已经失效，清掉它们；新图由独立的 /previews 请求生成。
             preview_paths = []
             preview_status = "blocked" if missing else "pending"
+            cancel_db = get_db()
+            try:
+                cancel_render_tasks(cancel_db, session_id)
+            finally:
+                cancel_db.close()
         with _resource_import_lock:
             session["preview_paths"] = [str(p) for p in preview_paths]
             session["fonts"] = fonts
@@ -375,5 +381,10 @@ def cancel_resource_import(
     session: dict[str, Any] = Depends(_resource_import_locked_session),
     _: None = Depends(_require_resource_import_origin),
 ) -> dict[str, Any]:
+    cancel_db = get_db()
+    try:
+        cancel_render_tasks(cancel_db, session_id)
+    finally:
+        cancel_db.close()
     _cleanup_resource_import_session(session_id, session)
     return {"ok": True}

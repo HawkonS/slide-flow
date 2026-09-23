@@ -22,3 +22,8 @@ if ($fontTask -and $fontTask.Description -eq 'SlideFlow WPS font pull protocol v
     if ($fontTask.State -eq 'Running') { Stop-ScheduledTask -TaskName "SlideFlow-WPS-Font-Sync" }
     Unregister-ScheduledTask -TaskName "SlideFlow-WPS-Font-Sync" -Confirm:$false
 }
+$pullTask = Get-ScheduledTask -TaskName "SlideFlow-WPS-Render-Pull" -ErrorAction SilentlyContinue
+if ($pullTask -and $pullTask.Description -eq 'SlideFlow WPS render pull protocol v1' -and $PSCmdlet.ShouldProcess("SlideFlow-WPS-Render-Pull", "Unregister render pull task")) {
+    if ($pullTask.State -eq 'Running') { Stop-ScheduledTask -TaskName "SlideFlow-WPS-Render-Pull" }
+    Unregister-ScheduledTask -TaskName "SlideFlow-WPS-Render-Pull" -Confirm:$false
+}

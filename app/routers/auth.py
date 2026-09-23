@@ -4,11 +4,13 @@
 """
 import sqlite3
 import time
+import ipaddress
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 
-from app.core.bootstrap import complete_initial_setup, initial_setup_status
+from app.core.bootstrap import complete_initial_setup, initial_setup_status, read_initial_setup_token
 from app.core.permissions import can_view_show, require_user
 from app.core.security import create_session_token, hash_password, password_policy_error, verify_password
 from app.db import now_iso
@@ -26,21 +28,77 @@ from app.config import settings
 
 
 router = APIRouter()
+SETUP_COOKIE = "slide_flow_setup"
+SETUP_COOKIE_TTL_SECONDS = 10 * 60
+
+
+def _is_loopback_host(value: str | None) -> bool:
+    if not value:
+        return False
+    host = value.strip().strip("[]").casefold()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _is_local_setup_request(request: Request) -> bool:
+    """Require both the connection peer and requested URL to be loopback."""
+    peer = request.client.host if request.client else None
+    return _is_loopback_host(peer) and _is_loopback_host(request.url.hostname)
+
+
+def _same_local_origin(request: Request) -> bool:
+    """Reject cross-site browser submissions to a localhost setup endpoint."""
+    source = request.headers.get("origin") or request.headers.get("referer")
+    if not source:
+        return False
+    try:
+        parsed = urlparse(source)
+        request_port = request.url.port or (443 if request.url.scheme == "https" else 80)
+        source_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == request.url.scheme
+        and parsed.hostname == request.url.hostname
+        and source_port == request_port
+        and _is_loopback_host(parsed.hostname)
+    )
 
 
 @router.get("/auth/setup")
 def setup_status(
+    request: Request,
     response: Response,
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, object]:
     """Return whether one-time local administrator setup is pending."""
     response.headers["Cache-Control"] = "no-store"
-    return initial_setup_status(db)
+    status = initial_setup_status(db)
+    automatic = False
+    if status["required"] and _is_local_setup_request(request):
+        token = read_initial_setup_token()
+        if token:
+            response.set_cookie(
+                SETUP_COOKIE,
+                token,
+                httponly=True,
+                samesite="strict",
+                max_age=SETUP_COOKIE_TTL_SECONDS,
+                secure=settings.web_https,
+                path="/api/auth/setup",
+            )
+            automatic = True
+    return {**status, "automatic": automatic}
 
 
 @router.post("/auth/setup")
 def setup_initial_admin(
     payload: InitialSetupPayload,
+    request: Request,
     response: Response,
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
@@ -51,10 +109,17 @@ def setup_initial_admin(
     policy_error = password_policy_error(payload.password, username=username)
     if policy_error:
         raise HTTPException(400, policy_error)
+    token = payload.token.strip()
+    if not token:
+        if not _is_local_setup_request(request) or not _same_local_origin(request):
+            raise HTTPException(400, "远程初始化需要一次性令牌")
+        token = request.cookies.get(SETUP_COOKIE, "").strip()
+        if not token:
+            raise HTTPException(400, "本机初始化凭证已过期，请刷新页面后重试")
     try:
         user = complete_initial_setup(
             db,
-            token=payload.token.strip(),
+            token=token,
             name=name,
             username=username,
             password=payload.password,
@@ -75,6 +140,7 @@ def setup_initial_admin(
         max_age=settings.session_ttl_hours * 3600,
         secure=settings.web_https,
     )
+    response.delete_cookie(SETUP_COOKIE, path="/api/auth/setup")
     response.headers["Cache-Control"] = "no-store"
     return {"user": _serialize_user(user)}
 

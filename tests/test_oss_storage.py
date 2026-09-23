@@ -131,6 +131,22 @@ class OSSStorageTests(unittest.TestCase):
             "image/resize,m_lfit,w_640,h_360/quality,q_74/format,jpg",
         )
 
+    def test_signed_put_url_binds_png_content_type(self):
+        bucket = _SignedBucket()
+        storage = OSSStorage()
+        with (
+            patch.object(storage, "_public", return_value=bucket),
+            patch.object(settings, "oss_bucket", "slides"),
+            patch.object(settings, "oss_url_expire_seconds", 900),
+        ):
+            storage.signed_put_url(
+                "oss://slides/_render_tasks/task/output/0000.png",
+                content_type="image/png",
+            )
+        method, key, expires, kwargs = bucket.calls[0]
+        self.assertEqual((method, key, expires), ("PUT", "_render_tasks/task/output/0000.png", 900))
+        self.assertEqual(kwargs["headers"], {"Content-Type": "image/png"})
+
     def test_key_uses_configured_bucket_directory(self):
         storage = OSSStorage()
         with patch.object(settings, "oss_prefix", "prod/slide-flow"):

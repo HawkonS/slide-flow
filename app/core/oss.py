@@ -324,6 +324,24 @@ class OSSStorage:
             slash_safe=True,
         )
 
+    def signed_put_url(
+        self, ref: str, *, expires_seconds: int | None = None,
+        content_type: str = "application/octet-stream",
+    ) -> str:
+        """Return a short-lived public PUT URL for a preselected object key.
+
+        The Windows worker receives only this capability URL. It never gets
+        the OSS AccessKey and cannot choose a different bucket/object key.
+        """
+        bucket = self._public()
+        return bucket.sign_url(
+            "PUT",
+            oss_key(ref),
+            max(60, int(expires_seconds or settings.oss_url_expire_seconds)),
+            headers={"Content-Type": content_type},
+            slash_safe=True,
+        )
+
     def materialize(self, ref: str, suffix: str = "") -> Path:
         """Download an OSS object to a disposable temp file for server-side work."""
         suffix = suffix or Path(oss_key(ref)).suffix

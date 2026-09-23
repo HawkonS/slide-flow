@@ -64,7 +64,7 @@ def create_app() -> FastAPI:
     app.add_middleware(GZipMiddleware, minimum_size=1000)
 
     from app.routers import auth, config, download_records, feishu_auth, fonts, pages, system, tags, user_center, users
-    from app.routers import downloads, presentation, resource_import, resource_shares, task_events, tasks, templates, renderer_font_tasks
+    from app.routers import downloads, presentation, resource_import, resource_shares, task_events, tasks, templates, renderer_font_tasks, renderer_render_tasks
     from app.routers.resources import files as resource_files
     from app.routers.resources import mutations as resource_mutations
     from app.routers.resources import queries as resource_queries
@@ -81,6 +81,7 @@ def create_app() -> FastAPI:
         templates, show_catalog, show_versions, show_remarks, show_downloads,
         downloads, task_events, presentation, tasks,
         renderer_font_tasks,
+        renderer_render_tasks,
     ):
         app.include_router(module.router)
     try:

@@ -17,6 +17,10 @@ param(
     [string]$FontTaskToken = "",
     [string]$FontTaskTokenFile = "",
     [int]$FontPollSeconds = 5,
+    [string]$RenderTaskUrl = "",
+    [string]$RenderTaskToken = "",
+    [string]$RenderTaskTokenFile = "",
+    [string]$RenderWorkerId = "",
     [switch]$Start
 )
 . (Join-Path $PSScriptRoot "Renderer-Common.ps1")
@@ -72,4 +76,11 @@ if ($FontTaskUrl) {
     if ($FontTaskToken) { $fontArgs.Token = $FontTaskToken }
     if ($FontTaskTokenFile) { $fontArgs.TokenFile = $FontTaskTokenFile }
     & (Join-Path $PSScriptRoot "Register-FontSync.ps1") @fontArgs
+}
+if ($RenderTaskUrl) {
+    $pullArgs = @{ InstallRoot = $InstallRoot; Python = (Join-Path $layout.CodeRoot ".venv\Scripts\python.exe"); Url = $RenderTaskUrl; RendererUrl = ("http://127.0.0.1:{0}" -f $Port) }
+    if ($RenderTaskToken) { $pullArgs.Token = $RenderTaskToken }
+    if ($RenderTaskTokenFile) { $pullArgs.TokenFile = $RenderTaskTokenFile }
+    if ($RenderWorkerId) { $pullArgs.WorkerId = $RenderWorkerId }
+    & (Join-Path $PSScriptRoot "Register-RenderPull.ps1") @pullArgs
 }
