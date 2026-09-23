@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from app.config import settings
 from app.core.permissions import SESSION_COOKIE
-from app.core.security import read_session_token
+from app.core.security import read_session_claims
 from app.core.task_events import fetch_task_events
 from app.core.task_events import latest_task_event_id
 from fastapi import APIRouter
@@ -22,9 +22,21 @@ router = APIRouter()
 async def ws_tasks(websocket: WebSocket) -> None:
     """Stream durable task events for the authenticated user."""
     cookie_token = websocket.cookies.get(SESSION_COOKIE)
-    user_id = read_session_token(cookie_token, settings.secret_key) if cookie_token else None
-    if not user_id:
+    claims = read_session_claims(cookie_token, settings.secret_key) if cookie_token else None
+    if not claims:
         # 未认证：拒绝握手
+        await websocket.close(code=1008)
+        return
+    user_id, session_version = claims
+    from app.db import get_read_db, release_db
+    db = get_read_db()
+    try:
+        user = db.execute(
+            "SELECT session_version, must_change_pwd FROM users WHERE id = ?", (int(user_id),)
+        ).fetchone()
+    finally:
+        release_db(db, readonly=True)
+    if user is None or int(user["session_version"]) != int(session_version) or user["must_change_pwd"]:
         await websocket.close(code=1008)
         return
     user_id = int(user_id)

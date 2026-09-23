@@ -132,10 +132,10 @@ def feishu_sso_callback(
         try:
             db.execute(
                 """
-                INSERT INTO users (name, username, password_hash, feishu_id, role, created_at, updated_at)
-                VALUES (?, ?, ?, ?, 'user', ?, ?)
+                INSERT INTO users (name, username, password_hash, feishu_id, avatar_url, role, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 'user', ?, ?)
                 """,
-                (feishu_user.name, username, random_pwd, feishu_user.open_id, ts, ts),
+                (feishu_user.name, username, random_pwd, feishu_user.open_id, feishu_user.avatar_url, ts, ts),
             )
             db.commit()
             user = db.execute(
@@ -153,12 +153,31 @@ def feishu_sso_callback(
         # 避免在 INFO 日志中完整记录 open_id，仅保留尾部 8 位以供审计追踪
         masked = feishu_user.open_id[-8:] if feishu_user.open_id else ""
         logger.info("飞书 SSO 自动创建用户: %s (id=...%s)", feishu_user.name, masked)
+    else:
+        # Keep the directory profile current without allowing an empty or
+        # malformed provider response to erase a manually maintained avatar.
+        updates: list[str] = []
+        values: list[str] = []
+        if feishu_user.name and feishu_user.name != user["name"]:
+            updates.append("name = ?")
+            values.append(feishu_user.name)
+        if feishu_user.avatar_url and feishu_user.avatar_url != user["avatar_url"]:
+            updates.append("avatar_url = ?")
+            values.append(feishu_user.avatar_url)
+        if updates:
+            updates.append("updated_at = ?")
+            values.append(now_iso())
+            values.append(str(user["id"]))
+            db.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = ?", values)
+            db.commit()
+            user = db.execute("SELECT * FROM users WHERE id = ?", (int(user["id"]),)).fetchone()
 
     # 6. 创建 session cookie
     token = create_session_token(
         int(user["id"]),
         settings.secret_key,
         ttl_seconds=settings.session_ttl_hours * 3600,
+        session_version=int(user["session_version"]),
     )
     response.set_cookie(
         SESSION_COOKIE,

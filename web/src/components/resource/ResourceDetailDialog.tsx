@@ -45,7 +45,7 @@ interface PersonalRemarkResponse {
   version_id: number;
 }
 
-function resolveVersion(resource: Resource, versionId: number | null): ResourceVersion {
+export function resolveVersion(resource: Resource, versionId: number | null): ResourceVersion {
   if (!versionId) return resource.current;
   return resource.versions?.find((v) => v.id === versionId) ?? resource.current;
 }
@@ -226,7 +226,7 @@ function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
 }
 
 /** 通用备注：详情页只读展示；编辑入口在「编辑信息」对话框内 */
-function CommonRemarkView({ html }: { html: string }) {
+export function CommonRemarkView({ html }: { html: string }) {
   return (
     <section className="flex min-h-0 flex-col overflow-hidden rounded-md border">
       <header className="flex items-center justify-between border-b bg-muted/40 px-3 py-2 text-sm font-medium">
@@ -250,7 +250,7 @@ function CommonRemarkView({ html }: { html: string }) {
 }
 
 /** 个人备注：常驻编辑态，富文本编辑器 + 保存按钮；内部高度固定、内容超出滚动 */
-function PersonalRemarkEditor({
+export function PersonalRemarkEditor({
   resourceId,
   versionId,
   open,

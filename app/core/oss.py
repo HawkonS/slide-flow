@@ -10,6 +10,7 @@ from __future__ import annotations
 from app.config import settings
 from pathlib import Path
 from typing import BinaryIO
+import logging
 import mimetypes
 import os
 import tempfile
@@ -23,6 +24,7 @@ except ImportError:  # pragma: no cover - exercised only in minimal dev envs
 
 
 OSS_REF_PREFIX = "oss://"
+logger = logging.getLogger(__name__)
 
 
 class StorageConfigurationError(RuntimeError):
@@ -64,6 +66,13 @@ def _is_cname(endpoint: str) -> bool:
     return not (host == "oss.aliyuncs.com" or host.endswith(".aliyuncs.com"))
 
 
+def _is_internal_endpoint(endpoint: str) -> bool:
+    if not endpoint:
+        return False
+    host = (urlparse(endpoint if "://" in endpoint else f"https://{endpoint}").hostname or "").lower()
+    return host.endswith("-internal.aliyuncs.com")
+
+
 def public_asset_origin() -> str | None:
     """Return the exact browser origin used by generated OSS URLs for CSP."""
     endpoint = (settings.oss_public_endpoint or settings.oss_endpoint).strip()
@@ -84,6 +93,7 @@ class OSSStorage:
 
     def __init__(self) -> None:
         self._bucket = None
+        self._fallback_bucket = None
         self._public_bucket = None
 
     @property
@@ -105,6 +115,15 @@ class OSSStorage:
             return "OSS 存储未安装，请先安装 oss2 依赖"
         if not settings.oss_endpoint or not settings.oss_bucket:
             return "OSS 未配置完整，请填写 oss.endpoint 和 oss.bucket"
+        public_endpoint = self._normalise_endpoint(settings.oss_public_endpoint)
+        internal_endpoint = self._normalise_endpoint(settings.oss_internal_endpoint)
+        external_endpoint = self._normalise_endpoint(settings.oss_endpoint)
+        if _is_internal_endpoint(external_endpoint):
+            return "oss.endpoint 必须是外网回退地址，不能填写 OSS 内网 Endpoint"
+        if public_endpoint and _is_internal_endpoint(public_endpoint):
+            return "oss.public_endpoint 不能使用 OSS 内网 Endpoint，请填写浏览器可访问的外网地址"
+        if internal_endpoint and internal_endpoint == external_endpoint:
+            return "oss.endpoint 必须是外网回退地址，不能与 oss.internal_endpoint 相同"
         if bool(settings.oss_access_key_id) != bool(settings.oss_access_key_secret):
             return "OSS AccessKey ID 和 Secret 必须同时配置"
         if not settings.oss_access_key_id and not os.getenv("ALIBABA_CLOUD_RAM_ROLE_NAME", "").strip():
@@ -125,10 +144,71 @@ class OSSStorage:
             raise StorageConfigurationError("当前未启用 OSS 存储，请检查 storage.backend")
         self.ensure_configured()
         if self._bucket is None:
-            auth = self._auth()
-            endpoint = settings.oss_internal_endpoint or settings.oss_endpoint
-            self._bucket = oss2.Bucket(auth, endpoint, settings.oss_bucket, is_cname=_is_cname(endpoint))
+            self._bucket = self._build_bucket(self._primary_endpoint())
         return self._bucket
+
+    @staticmethod
+    def _normalise_endpoint(endpoint: str) -> str:
+        return endpoint.strip().rstrip("/")
+
+    def _primary_endpoint(self) -> str:
+        return self._normalise_endpoint(settings.oss_internal_endpoint or settings.oss_endpoint)
+
+    def _fallback_endpoint(self) -> str | None:
+        """Return the public service endpoint only when an internal endpoint is configured."""
+        primary = self._primary_endpoint()
+        external = self._normalise_endpoint(settings.oss_endpoint)
+        if not external or external == primary:
+            return None
+        return external
+
+    def _build_bucket(self, endpoint: str):
+        auth = self._auth()
+        return oss2.Bucket(
+            auth,
+            endpoint,
+            settings.oss_bucket,
+            is_cname=_is_cname(endpoint),
+            connect_timeout=max(1, int(settings.oss_connect_timeout_seconds)),
+        )
+
+    def _fallback_bucket_or_none(self):
+        endpoint = self._fallback_endpoint()
+        if endpoint is None:
+            return None
+        if self._fallback_bucket is None:
+            self._fallback_bucket = self._build_bucket(endpoint)
+        return self._fallback_bucket
+
+    @staticmethod
+    def _is_retryable_endpoint_error(exc: Exception) -> bool:
+        """Only retry connectivity and transient server failures on the other endpoint."""
+        if oss2 is None:
+            return False
+        exceptions = oss2.exceptions
+        if isinstance(exc, exceptions.RequestError):
+            return True
+        if isinstance(exc, exceptions.ServerError):
+            status = getattr(exc, "status", 0) or 0
+            return status >= 500
+        return False
+
+    def _with_endpoint_fallback(self, operation: str, action):
+        primary = self._require_bucket()
+        try:
+            return action(primary)
+        except Exception as exc:
+            if not self._is_retryable_endpoint_error(exc):
+                raise
+            fallback = self._fallback_bucket_or_none()
+            if fallback is None:
+                raise
+            logger.warning(
+                "OSS internal endpoint failed; retrying %s through external endpoint",
+                operation,
+                exc_info=False,
+            )
+            return action(fallback)
 
     @staticmethod
     def _auth():
@@ -159,11 +239,10 @@ class OSSStorage:
         bucket = self._require_bucket()
         endpoint = settings.oss_public_endpoint or settings.oss_endpoint
         internal = settings.oss_internal_endpoint or settings.oss_endpoint
-        if endpoint == internal:
+        if self._normalise_endpoint(endpoint) == self._normalise_endpoint(internal):
             return bucket
         if self._public_bucket is None:
-            auth = self._auth()
-            self._public_bucket = oss2.Bucket(auth, endpoint, settings.oss_bucket, is_cname=_is_cname(endpoint))
+            self._public_bucket = self._build_bucket(self._normalise_endpoint(endpoint))
         return self._public_bucket
 
     @staticmethod
@@ -184,33 +263,52 @@ class OSSStorage:
         return "/".join(parts) + suffix
 
     def upload_file(self, source: Path, key: str, *, content_type: str | None = None) -> str:
-        bucket = self._require_bucket()
         headers = {"Content-Type": content_type or _content_type(source)}
-        bucket.put_object_from_file(key, str(source), headers=headers)
+        self._with_endpoint_fallback(
+            "file upload",
+            lambda bucket: bucket.put_object_from_file(key, str(source), headers=headers),
+        )
         return oss_ref(key)
 
     def upload_fileobj(self, source: BinaryIO, key: str, *, content_type: str | None = None) -> str:
         """Upload an already-open file object without making a durable local copy."""
-        bucket = self._require_bucket()
         headers = {"Content-Type": content_type or "application/octet-stream"}
-        bucket.put_object(key, source, headers=headers)
+        try:
+            initial_position = source.tell()
+        except (AttributeError, OSError):
+            initial_position = None
+
+        def upload(bucket):
+            if initial_position is not None:
+                source.seek(initial_position)
+            return bucket.put_object(key, source, headers=headers)
+
+        self._with_endpoint_fallback("stream upload", upload)
         return oss_ref(key)
 
     def upload_bytes(self, content: bytes, key: str, *, content_type: str = "application/octet-stream") -> str:
-        bucket = self._require_bucket()
-        bucket.put_object(key, content, headers={"Content-Type": content_type})
+        self._with_endpoint_fallback(
+            "byte upload",
+            lambda bucket: bucket.put_object(key, content, headers={"Content-Type": content_type}),
+        )
         return oss_ref(key)
 
     def download_file(self, ref: str, destination: Path) -> Path:
-        bucket = self._require_bucket()
         destination.parent.mkdir(parents=True, exist_ok=True)
-        bucket.get_object_to_file(oss_key(ref), str(destination))
+        key = oss_key(ref)
+
+        def download(bucket):
+            destination.unlink(missing_ok=True)
+            return bucket.get_object_to_file(key, str(destination))
+
+        self._with_endpoint_fallback("file download", download)
         return destination
 
     def delete(self, ref: str | None) -> None:
         if not ref or not is_oss_ref(ref):
             return
-        self._require_bucket().delete_object(oss_key(ref))
+        key = oss_key(ref)
+        self._with_endpoint_fallback("object deletion", lambda bucket: bucket.delete_object(key))
 
     def signed_url(self, ref: str, *, process: str | None = None, filename: str | None = None, download: bool = False) -> str:
         bucket = self._public()

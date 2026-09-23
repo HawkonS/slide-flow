@@ -706,7 +706,7 @@ function FilterChip({
       type="button"
       onClick={onClick}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors",
+        "inline-flex items-center gap-1.5 rounded-md border px-3 py-1 text-xs transition-colors",
         active
           ? "border-primary bg-primary text-primary-foreground shadow-sm"
           : "border-border bg-background text-muted-foreground hover:border-foreground/30 hover:text-foreground",
@@ -795,10 +795,10 @@ export default function TasksPage() {
   };
 
   return (
-    <div className="flex h-full flex-col gap-4">
+    <div className="page-shell">
       {/* 页头 */}
       <header className="flex items-center gap-3">
-        <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
+        <h1 className="page-title">{title}</h1>
         {canManage ? (
           <Badge variant="blue" className="gap-1 text-[11px]">
             <ShieldCheck className="h-3 w-3" />
@@ -976,7 +976,7 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
       <div className="flex flex-wrap items-center gap-2">
         {isAdmin && (
           <Select value={ownerFilter} onValueChange={(v) => setOwnerFilter(v)}>
-            <SelectTrigger className="h-8 w-[180px] rounded-full text-xs">
+            <SelectTrigger className="h-8 w-[180px] rounded-md text-xs">
               <SelectValue placeholder="选择用户" />
             </SelectTrigger>
             <SelectContent>
@@ -1008,7 +1008,7 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
               if (!window.confirm(`确认删除选中的 ${selected.size} 个任务记录？`)) return;
               bulkDelMut.mutate(Array.from(selected));
             }}
-            className="h-8 gap-1.5 rounded-full px-3 text-sm text-destructive hover:text-destructive"
+            className="h-8 gap-1.5 px-3 text-sm text-destructive hover:text-destructive"
           >
             <Trash2 className="h-3.5 w-3.5" />
             删除选中{selected.size ? `（${selected.size}）` : ""}
@@ -1279,7 +1279,7 @@ function DownloadTasksTab({ canManage }: { canManage: boolean }) {
       <div className="flex flex-wrap items-center gap-2">
         {isAdmin && (
           <Select value={ownerFilter} onValueChange={(v) => setOwnerFilter(v)}>
-            <SelectTrigger className="h-8 w-[180px] rounded-full text-xs">
+            <SelectTrigger className="h-8 w-[180px] rounded-md text-xs">
               <SelectValue placeholder="选择用户" />
             </SelectTrigger>
             <SelectContent>
@@ -1309,7 +1309,7 @@ function DownloadTasksTab({ canManage }: { canManage: boolean }) {
             onChange={(e) => setSearchInput(e.target.value)}
             placeholder="搜索追踪码"
             className={cn(
-              "h-8 w-full sm:w-48 rounded-full border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition",
+              "h-8 w-full rounded-md border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition sm:w-48",
               "placeholder:text-muted-foreground",
               "focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
               search.trim() !== "" && "border-primary/40 bg-primary/5",
@@ -1325,7 +1325,7 @@ function DownloadTasksTab({ canManage }: { canManage: boolean }) {
               if (!window.confirm(`确认删除选中的 ${selected.size} 个任务记录？`)) return;
               bulkDelMut.mutate(Array.from(selected));
             }}
-            className="h-8 gap-1.5 rounded-full px-3 text-sm text-destructive hover:text-destructive"
+            className="h-8 gap-1.5 px-3 text-sm text-destructive hover:text-destructive"
           >
             <Trash2 className="h-3.5 w-3.5" />
             删除选中{selected.size ? `（${selected.size}）` : ""}

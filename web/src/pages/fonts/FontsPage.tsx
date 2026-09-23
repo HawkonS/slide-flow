@@ -249,11 +249,11 @@ export function FontsPage() {
   };
 
   return (
-    <div className="flex h-full flex-col gap-5">
+    <div className="page-shell">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-xl font-semibold tracking-tight">标准字体</h1>
+            <h1 className="page-title">标准字体</h1>
             <Badge variant="secondary" className="rounded-md px-2 text-[11px]">{fonts.length} 个字体</Badge>
           </div>
           <p className="mt-1.5 text-sm text-muted-foreground">

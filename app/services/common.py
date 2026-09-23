@@ -61,6 +61,14 @@ def _validate_scope(scope: str) -> str:
     return scope
 
 
+def _validate_required_scope(scope: str | None, label: str) -> str:
+    """Require an explicit scope selection for new resource imports."""
+    value = (scope or "").strip()
+    if not value:
+        raise HTTPException(400, f"请选择{label}")
+    return _validate_scope(value)
+
+
 def _validate_secrecy(level: str) -> str:
     if level not in {"public", "confidential", "secret"}:
         raise HTTPException(400, "涉密等级不正确")

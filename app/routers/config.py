@@ -78,8 +78,6 @@ def api_admin_config_put(
         meta = CONFIG_META[key]
         if key == "security.secret_key" and not raw.strip():
             raise HTTPException(400, "会话签名密钥不能为空")
-        if key == "security.default_password" and len(raw) < 8:
-            raise HTTPException(400, "默认密码长度不能少于 8 位")
         try:
             _coerce_value(raw, meta["type"])
         except Exception:

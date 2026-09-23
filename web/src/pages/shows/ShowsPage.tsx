@@ -228,14 +228,14 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
   const pageStart = (page - 1) * pageSize;
 
   return (
-    <div className="flex h-full flex-col gap-4">
+    <div className="page-shell">
       {/* 页头 */}
       <header className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-1.5">
-          <h1 className="text-xl font-semibold tracking-tight">
+          <h1 className="page-title">
             {standardOnly ? "标准放映" : "放映素材"}
           </h1>
-          <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
+          <span className="page-count">
             {total > 0 ? `共 ${total} 条` : "共 0 条"}
           </span>
         </div>
@@ -249,7 +249,7 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
             <Button
               size="sm"
               onClick={() => setCreateOpen(true)}
-              className="h-8 gap-1.5 rounded-full px-3 text-sm"
+              className="h-8 gap-1.5 px-3 text-sm"
             >
               <Plus className="h-3.5 w-3.5" />
               创建放映

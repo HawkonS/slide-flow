@@ -29,8 +29,22 @@ import sqlite3
 
 
 def _set_scope_users(db: sqlite3.Connection, table: str, resource_id: int, user_ids: list[int]) -> None:
+    ids = sorted({int(user_id) for user_id in user_ids if int(user_id) > 0})
+    if len(ids) > 1000:
+        raise HTTPException(400, "单个范围最多选择 1000 位用户")
+    if ids:
+        placeholders = ",".join("?" for _ in ids)
+        existing = {
+            int(row["id"])
+            for row in db.execute(f"SELECT id FROM users WHERE id IN ({placeholders})", ids).fetchall()
+        }
+        if existing != set(ids):
+            raise HTTPException(400, "可见/管理范围中存在无效用户，请重新选择")
+    # Validate the complete replacement set before deleting existing rows. This
+    # keeps a rejected metadata update from leaving an open partial write in a
+    # pooled SQLite connection.
     db.execute(f"DELETE FROM {table} WHERE resource_id = ?", (resource_id,))
-    for user_id in sorted(set(user_ids)):
+    for user_id in ids:
         db.execute(f"INSERT OR IGNORE INTO {table} (resource_id, user_id) VALUES (?, ?)", (resource_id, user_id))
 
 
@@ -130,13 +144,17 @@ def _serialize_resource(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.
     if current is None:
         current = _serialize_version(int(row["id"]), current_version, db)
     payload = _row_to_dict(row)
+    can_manage = can_manage_resource(db, row, user)
     payload.update(
         {
             "owner": _row_to_dict(owner) if owner else None,
             "updated_by": _row_to_dict(updated_by_user) if updated_by_user else None,
-            "can_manage": can_manage_resource(db, row, user),
-            "visible_user_ids": _scope_user_ids(db, "resource_visibility", int(row["id"])),
-            "manage_user_ids": _scope_user_ids(db, "resource_management", int(row["id"])),
+            "can_manage": can_manage,
+            # Exact member lists are management metadata. A viewer receives
+            # the scope label but not the identities of everyone granted
+            # access.
+            "visible_user_ids": _scope_user_ids(db, "resource_visibility", int(row["id"])) if can_manage else [],
+            "manage_user_ids": _scope_user_ids(db, "resource_management", int(row["id"])) if can_manage else [],
             "current": current,
             "versions": versions,
             "has_personal_remark": _has_personal_remark(

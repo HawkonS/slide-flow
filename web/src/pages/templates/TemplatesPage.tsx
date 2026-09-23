@@ -66,11 +66,11 @@ export function TemplatesPage() {
   }, [templates]);
 
   return (
-    <div className="flex h-full flex-col gap-4">
+    <div className="page-shell">
       <header className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-1.5">
-          <h1 className="text-xl font-semibold tracking-tight">标准模板</h1>
-          <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
+          <h1 className="page-title">标准模板</h1>
+          <span className="page-count">
             {total} 个模板
           </span>
         </div>
@@ -99,7 +99,7 @@ export function TemplatesPage() {
                   <div className="flex items-center gap-3">
                     <span className="inline-block h-6 w-1 rounded-full bg-primary" />
                     <h2 className="text-lg font-semibold tracking-tight">{subject}</h2>
-                    <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                    <span className="rounded-md bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
                       {subjectCount}
                     </span>
                   </div>

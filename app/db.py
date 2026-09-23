@@ -7,11 +7,15 @@ import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from app.config import settings
+from app.config import (
+    legacy_default_password_candidates,
+    remove_legacy_default_password_config,
+    settings,
+)
+from app.core.bootstrap import prepare_initial_admin
 from app.core.fonts import normalize_font_name
-from app.core.security import hash_password
 
-DB_SCHEMA_VERSION = 2
+DB_SCHEMA_VERSION = 6
 
 
 def now_iso() -> str:
@@ -142,6 +146,14 @@ def release_db(conn: sqlite3.Connection, readonly: bool = False) -> None:
     if readonly:
         _read_pool.release(conn)
     else:
+        # A route may raise after a write but before its explicit commit.
+        # Never return that open transaction to the pool, where a later
+        # request could observe or accidentally commit partial state.
+        if conn.in_transaction:
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
         _write_pool.release(conn)
 
 
@@ -161,10 +173,10 @@ def init_db() -> None:
             ).fetchall()
         }
         schema_version = int(db.execute("PRAGMA user_version").fetchone()[0])
-        if existing_tables and schema_version != DB_SCHEMA_VERSION:
+        if existing_tables and schema_version > DB_SCHEMA_VERSION:
             raise RuntimeError(
-                f"数据库 schema 版本不受支持（当前 {schema_version}，要求 {DB_SCHEMA_VERSION}）。"
-                "本版本不提供数据迁移，请删除 data/db/slide_flow.db 后重新启动。"
+                f"数据库 schema 版本过高（当前 {schema_version}，应用支持到 {DB_SCHEMA_VERSION}）。"
+                "请先升级应用，避免旧版本覆盖新数据。"
             )
         db.executescript(
             """
@@ -174,8 +186,12 @@ def init_db() -> None:
                 username TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
                 feishu_id TEXT NOT NULL DEFAULT '',
+                avatar_url TEXT NOT NULL DEFAULT '',
+                tags TEXT NOT NULL DEFAULT '',
                 role TEXT NOT NULL CHECK(role IN ('system_admin', 'admin', 'user')),
                 must_change_pwd INTEGER NOT NULL DEFAULT 0,
+                session_version INTEGER NOT NULL DEFAULT 1,
+                temporary_password_expires_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -214,6 +230,21 @@ def init_db() -> None:
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 PRIMARY KEY (resource_id, user_id)
             );
+
+            CREATE TABLE IF NOT EXISTS resource_share_tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                resource_id INTEGER NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+                token_hash TEXT NOT NULL UNIQUE,
+                created_by INTEGER NOT NULL REFERENCES users(id),
+                expires_at TEXT NOT NULL,
+                revoked_at TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_resource_share_tokens_resource
+                ON resource_share_tokens(resource_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_resource_share_tokens_active
+                ON resource_share_tokens(token_hash, expires_at, revoked_at);
 
             CREATE TABLE IF NOT EXISTS resource_versions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -448,16 +479,42 @@ def init_db() -> None:
 
             """
         )
-        db.execute(f"PRAGMA user_version = {DB_SCHEMA_VERSION}")
-        db.commit()
+        # Serialize additive migrations across Gunicorn workers. Without the
+        # write lock, two workers starting together could both observe a
+        # missing column and one would fail with "duplicate column".
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            _migrate_schema(db, schema_version)
+            db.execute(f"PRAGMA user_version = {DB_SCHEMA_VERSION}")
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
         _recover_interrupted_tasks(db)
-        seed_default_users(db)
+        prepare_initial_admin(db, legacy_default_password_candidates())
+        remove_legacy_default_password_config()
         # Idempotency receipts are only needed long enough for a lost client
         # response to be checked; retaining them forever would itself become
         # a small metadata leak.
         cutoff = (datetime.utcnow() - timedelta(days=7)).isoformat(timespec="seconds") + "Z"
         db.execute("DELETE FROM resource_import_commits WHERE created_at < ?", (cutoff,))
         db.commit()
+
+
+def _migrate_schema(db: sqlite3.Connection, schema_version: int) -> None:
+    """Apply additive, idempotent migrations without requiring data deletion."""
+    columns = {
+        row["name"]
+        for row in db.execute("PRAGMA table_info(users)").fetchall()
+    }
+    if "avatar_url" not in columns:
+        db.execute("ALTER TABLE users ADD COLUMN avatar_url TEXT NOT NULL DEFAULT ''")
+    if "tags" not in columns:
+        db.execute("ALTER TABLE users ADD COLUMN tags TEXT NOT NULL DEFAULT ''")
+    if "session_version" not in columns:
+        db.execute("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1")
+    if "temporary_password_expires_at" not in columns:
+        db.execute("ALTER TABLE users ADD COLUMN temporary_password_expires_at TEXT")
 
 
 def _recover_interrupted_tasks(db: sqlite3.Connection) -> None:
@@ -490,26 +547,3 @@ def _recover_interrupted_tasks(db: sqlite3.Connection) -> None:
             " WHERE status IN ('uploading', 'pending', 'processing')"
         )
     db.commit()
-
-
-def seed_default_users(db: sqlite3.Connection) -> None:
-    ts = now_iso()
-    db.execute(
-        """
-        INSERT OR IGNORE INTO users (
-            name, username, password_hash, feishu_id, role, must_change_pwd, created_at, updated_at
-        )
-        SELECT ?, ?, ?, ?, ?, ?, ?, ?
-        WHERE NOT EXISTS (SELECT 1 FROM users)
-        """,
-        (
-            "Hawkon",
-            "Hawkon",
-            hash_password(settings.default_password),
-            "",
-            "system_admin",
-            int(len(settings.default_password) < 8),
-            ts,
-            ts,
-        ),
-    )

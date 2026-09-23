@@ -57,8 +57,8 @@ interface FormState {
   tagList: string[];
   secrecy_level: "public" | "confidential" | "secret";
   status: "active" | "disabled";
-  visibility_scope: ScopeValue;
-  management_scope: ScopeValue;
+  visibility_scope: ScopeValue | "";
+  management_scope: ScopeValue | "";
   visible_user_ids: number[];
   manage_user_ids: number[];
   pptFile: File | null;
@@ -75,8 +75,8 @@ function defaultForm(resource: Resource | null): FormState {
       tagList: [],
       secrecy_level: "public",
       status: "active",
-      visibility_scope: "public",
-      management_scope: "private",
+      visibility_scope: "",
+      management_scope: "",
       visible_user_ids: [],
       manage_user_ids: [],
       pptFile: null,
@@ -263,8 +263,16 @@ export function ResourceEditDialog({
       toast.error("可见范围为部分时请至少选择一位用户");
       return;
     }
+    if (isCreate && !form.visibility_scope) {
+      toast.error("请选择可见范围");
+      return;
+    }
     if (form.management_scope === "partial" && form.manage_user_ids.length === 0) {
       toast.error("管理范围为部分时请至少选择一位用户");
+      return;
+    }
+    if (isCreate && !form.management_scope) {
+      toast.error("请选择管理范围");
       return;
     }
     mutation.mutate();
@@ -397,7 +405,7 @@ export function ResourceEditDialog({
           {/* 可见 / 管理 范围：两列 Select 并排；任一选 partial 时，用户选择器独占一行 */}
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="grid gap-1.5">
-              <Label>可见范围</Label>
+              <Label>可见范围 {isCreate && <span className="text-destructive">*</span>}</Label>
               <Select
                 value={form.visibility_scope}
                 onValueChange={(v) =>
@@ -405,7 +413,7 @@ export function ResourceEditDialog({
                 }
               >
                 <SelectTrigger>
-                  <SelectValue />
+                  <SelectValue placeholder="请选择可见范围" />
                 </SelectTrigger>
                 <SelectContent>
                   {VISIBILITY_SCOPE_OPTIONS.map((opt) => (
@@ -417,7 +425,7 @@ export function ResourceEditDialog({
               </Select>
             </div>
             <div className="grid gap-1.5">
-              <Label>管理范围</Label>
+              <Label>管理范围 {isCreate && <span className="text-destructive">*</span>}</Label>
               <Select
                 value={form.management_scope}
                 onValueChange={(v) =>
@@ -425,7 +433,7 @@ export function ResourceEditDialog({
                 }
               >
                 <SelectTrigger>
-                  <SelectValue />
+                  <SelectValue placeholder="请选择管理范围" />
                 </SelectTrigger>
                 <SelectContent>
                   {MANAGEMENT_SCOPE_OPTIONS.map((opt) => (

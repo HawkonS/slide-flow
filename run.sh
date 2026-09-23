@@ -338,9 +338,9 @@ else
   fi
 fi
 
-# 同一次启动的所有 ASGI worker 共享该标识。应用据此只执行一次中断任务恢复，
-# 避免某个 Gunicorn worker 重启时误伤其他 worker 正在处理的任务。
-export SLIDEFLOW_BOOT_ID="${SLIDEFLOW_BOOT_ID:-$($PYTHON_BIN -c 'import uuid; print(uuid.uuid4().hex)')}"
+# 同一次启动的所有 ASGI worker 共享该标识。每次重新执行 run.sh 都必须生成
+# 新值；否则升级脚本从旧后端进程继承环境变量时，前端会误以为服务没有重启。
+export SLIDEFLOW_BOOT_ID="$($PYTHON_BIN -c 'import uuid; print(uuid.uuid4().hex)')"
 
 # ===========================================================
 # Step 4 - Python 依赖安装
@@ -557,10 +557,10 @@ trap cleanup INT TERM EXIT
 start_uvicorn_backend() {
   local log_mode="${1:-truncate}"
   if [ "$log_mode" = "append" ]; then
-    "$PYTHON_BIN" -m uvicorn app.main:app --host 0.0.0.0 --port "$PORT" --workers "$WORKERS" \
+    "$PYTHON_BIN" -m uvicorn app.main:app --host 0.0.0.0 --port "$PORT" --workers "$WORKERS" --no-access-log \
       >>"$BACKEND_LOG" 2>&1 &
   else
-    "$PYTHON_BIN" -m uvicorn app.main:app --host 0.0.0.0 --port "$PORT" --workers "$WORKERS" \
+    "$PYTHON_BIN" -m uvicorn app.main:app --host 0.0.0.0 --port "$PORT" --workers "$WORKERS" --no-access-log \
       >"$BACKEND_LOG" 2>&1 &
   fi
   BACKEND_PID=$!
@@ -574,7 +574,6 @@ start_gunicorn_backend() {
     --worker-class uvicorn_worker.UvicornWorker \
     --timeout 0 \
     --graceful-timeout 30 \
-    --access-logfile - \
     --error-logfile - \
     --capture-output \
     >"$BACKEND_LOG" 2>&1 &
@@ -654,6 +653,10 @@ if [ "$REUSE_BACKEND" != "true" ] && ! wait_for_backend; then
   exit 1
 fi
 log_info "后端服务启动成功 ($ACTIVE_BACKEND_SERVER, PID: $BACKEND_PID)"
+if [ -f ".secrets/initial-admin-setup.json" ]; then
+  log_warn "系统管理员尚未完成安全初始化"
+  log_warn "请在服务器本机读取 .secrets/initial-admin-setup.json，并访问 /setup 完成设置"
+fi
 
 # 启动前端
 if [ "$DEV_MODE" = "true" ]; then

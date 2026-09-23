@@ -11,6 +11,28 @@ from app.config import settings
 
 
 PASSWORD_ITERATIONS = 220_000
+MIN_PASSWORD_LENGTH = 10
+_COMMON_PASSWORDS = {
+    "123456",
+    "12345678",
+    "123456789",
+    "password",
+    "password123",
+    "qwerty123",
+    "admin123",
+    "slideflow",
+}
+
+
+def password_policy_error(password: str, *, username: str = "") -> str | None:
+    if len(password.strip()) < MIN_PASSWORD_LENGTH:
+        return f"密码长度不能少于 {MIN_PASSWORD_LENGTH} 位"
+    normalized = password.strip().casefold()
+    if normalized in _COMMON_PASSWORDS:
+        return "密码过于常见，请使用更难猜测的密码"
+    if username and normalized == username.strip().casefold():
+        return "密码不能与用户名相同"
+    return None
 
 
 def hash_password(password: str, salt: bytes | None = None) -> str:
@@ -55,11 +77,17 @@ def _unb64(value: str) -> bytes:
     return base64.urlsafe_b64decode((value + padding).encode("ascii"))
 
 
-def create_session_token(user_id: int, secret_key: str, ttl_seconds: int | None = None) -> str:
+def create_session_token(
+    user_id: int,
+    secret_key: str,
+    ttl_seconds: int | None = None,
+    *,
+    session_version: int = 1,
+) -> str:
     if ttl_seconds is None:
         ttl_seconds = settings.session_ttl_hours * 3600
     expires = int(time.time()) + ttl_seconds
-    payload = f"{user_id}:{expires}".encode("utf-8")
+    payload = f"{user_id}:{session_version}:{expires}".encode("utf-8")
     payload_b64 = _b64(payload)
     signature = hmac.new(secret_key.encode("utf-8"), payload_b64.encode("ascii"), hashlib.sha256).digest()
     return f"{payload_b64}.{_b64(signature)}"
@@ -91,7 +119,7 @@ def verify_present_token(token: str, secret_key: str) -> dict | None:
         return None
 
 
-def read_session_token(token: str | None, secret_key: str) -> int | None:
+def read_session_claims(token: str | None, secret_key: str) -> tuple[int, int] | None:
     if not token or "." not in token:
         return None
     payload_b64, signature_b64 = token.split(".", 1)
@@ -101,9 +129,24 @@ def read_session_token(token: str | None, secret_key: str) -> int | None:
         if not hmac.compare_digest(actual, expected):
             return None
         payload = _unb64(payload_b64).decode("utf-8")
-        user_id_raw, expires_raw = payload.split(":", 1)
+        parts = payload.split(":")
+        if len(parts) == 2:
+            # Pre-session-version tokens remain valid for unchanged accounts.
+            # Password reset/legacy-password remediation increments the stored
+            # version, so those older sessions are still revoked immediately.
+            user_id_raw, expires_raw = parts
+            session_version_raw = "1"
+        elif len(parts) == 3:
+            user_id_raw, session_version_raw, expires_raw = parts
+        else:
+            return None
         if int(expires_raw) < int(time.time()):
             return None
-        return int(user_id_raw)
+        return int(user_id_raw), int(session_version_raw)
     except Exception:
         return None
+
+
+def read_session_token(token: str | None, secret_key: str) -> int | None:
+    claims = read_session_claims(token, secret_key)
+    return claims[0] if claims else None

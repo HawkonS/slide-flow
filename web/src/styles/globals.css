@@ -14,7 +14,7 @@
 
 @layer base {
   :root {
-    /* 深浅底 + blue-500 主色 */
+    /* SlideFlow design tokens: neutral surfaces + ink primary. */
     --background: 0 0% 100%;
     --foreground: 222 47% 11%;
 
@@ -24,19 +24,19 @@
     --popover: 0 0% 100%;
     --popover-foreground: 222 47% 11%;
 
-    /* blue-500 #3b82f6 */
-    --primary: 221 83% 53%;
+    /* Ink primary keeps actions clear without making every selected state blue. */
+    --primary: 222 47% 25%;
     --primary-foreground: 210 40% 98%;
-    --primary-weak: 214 100% 95%;
+    --primary-weak: 220 20% 95%;
 
-    --secondary: 210 40% 96%;
+    --secondary: 220 14% 95%;
     --secondary-foreground: 222 47% 11%;
 
-    --muted: 210 40% 96%;
+    --muted: 220 14% 96%;
     --muted-foreground: 215 16% 47%;
 
-    --accent: 214 95% 93%;
-    --accent-foreground: 221 83% 40%;
+    --accent: 220 16% 94%;
+    --accent-foreground: 222 47% 18%;
 
     /* red-600 */
     --destructive: 0 72% 51%;
@@ -53,9 +53,15 @@
     /* slate-200 */
     --border: 214 32% 91%;
     --input: 214 32% 91%;
-    --ring: 221 83% 53%;
+    --ring: 222 47% 40%;
 
-    --radius: 0.75rem;
+    --radius: 0.625rem;
+
+    --surface-subtle: 220 18% 98%;
+    --surface-raised: 0 0% 100%;
+    --selection: 220 20% 95%;
+    --sidebar-active: 220 20% 95%;
+    --focus-ring: 222 47% 40%;
   }
 
   .dark {
@@ -65,15 +71,15 @@
     --card-foreground: 210 40% 96%;
     --popover: 222 47% 10%;
     --popover-foreground: 210 40% 96%;
-    --primary: 217 91% 60%;
+    --primary: 210 20% 92%;
     --primary-foreground: 222 47% 11%;
-    --primary-weak: 222 47% 18%;
+    --primary-weak: 217 20% 19%;
     --secondary: 217 33% 17%;
     --secondary-foreground: 210 40% 96%;
     --muted: 217 33% 17%;
     --muted-foreground: 215 20% 65%;
-    --accent: 222 47% 18%;
-    --accent-foreground: 217 91% 75%;
+    --accent: 217 20% 18%;
+    --accent-foreground: 210 20% 92%;
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
     --success: 160 70% 45%;
@@ -82,7 +88,12 @@
     --warning-foreground: 0 0% 100%;
     --border: 217 33% 22%;
     --input: 217 33% 22%;
-    --ring: 217 91% 60%;
+    --ring: 210 20% 80%;
+    --surface-subtle: 217 20% 12%;
+    --surface-raised: 222 25% 12%;
+    --selection: 217 20% 19%;
+    --sidebar-active: 217 20% 19%;
+    --focus-ring: 210 20% 80%;
   }
 }
 
@@ -114,6 +125,37 @@
   button {
     user-select: none;
     -webkit-user-select: none;
+  }
+
+  :focus-visible {
+    outline: 2px solid hsl(var(--focus-ring));
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  .page-shell {
+    @apply flex h-full min-h-0 flex-col gap-5;
+  }
+
+  .page-header {
+    @apply flex flex-wrap items-start justify-between gap-4;
+  }
+
+  .page-title {
+    @apply text-xl font-semibold tracking-tight;
+  }
+
+  .page-count {
+    @apply inline-flex h-6 items-center rounded-md bg-muted px-2 text-[11px] font-medium text-muted-foreground;
+  }
+
+  .page-toolbar {
+    @apply flex flex-wrap items-center gap-2;
+  }
+
+  .surface {
+    @apply rounded-lg border bg-card;
   }
 }
 

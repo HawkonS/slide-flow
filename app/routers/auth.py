@@ -8,11 +8,13 @@ from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 
+from app.core.bootstrap import complete_initial_setup, initial_setup_status
 from app.core.permissions import can_view_show, require_user
-from app.core.security import create_session_token, hash_password, verify_password
+from app.core.security import create_session_token, hash_password, password_policy_error, verify_password
 from app.db import now_iso
 from app.routers.dependencies import (
     ChangePasswordPayload,
+    InitialSetupPayload,
     LoginPayload,
     OfflineVerifyPayload,
     UserPreferencesPayload,
@@ -24,6 +26,57 @@ from app.config import settings
 
 
 router = APIRouter()
+
+
+@router.get("/auth/setup")
+def setup_status(
+    response: Response,
+    db: sqlite3.Connection = Depends(db_dep),
+) -> dict[str, object]:
+    """Return whether one-time local administrator setup is pending."""
+    response.headers["Cache-Control"] = "no-store"
+    return initial_setup_status(db)
+
+
+@router.post("/auth/setup")
+def setup_initial_admin(
+    payload: InitialSetupPayload,
+    response: Response,
+    db: sqlite3.Connection = Depends(db_dep),
+) -> dict[str, Any]:
+    name = payload.name.strip()
+    username = payload.username.strip()
+    if not name or not username:
+        raise HTTPException(400, "姓名和用户名不能为空")
+    policy_error = password_policy_error(payload.password, username=username)
+    if policy_error:
+        raise HTTPException(400, policy_error)
+    try:
+        user = complete_initial_setup(
+            db,
+            token=payload.token.strip(),
+            name=name,
+            username=username,
+            password=payload.password,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    session_token = create_session_token(
+        int(user["id"]),
+        settings.secret_key,
+        ttl_seconds=settings.session_ttl_hours * 3600,
+        session_version=int(user["session_version"]),
+    )
+    response.set_cookie(
+        SESSION_COOKIE,
+        session_token,
+        httponly=True,
+        samesite="lax",
+        max_age=settings.session_ttl_hours * 3600,
+        secure=settings.web_https,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return {"user": _serialize_user(user)}
 
 
 # ==================== 登录频率限制 ====================
@@ -140,7 +193,13 @@ def login(
     # 即使用户名不存在也执行一次 PBKDF2，降低用户名枚举的时间差异。
     password_hash = user["password_hash"] if user is not None else _DUMMY_PASSWORD_HASH
     password_ok = verify_password(payload.password, password_hash)
-    if user is None or not password_ok:
+    temporary_password_expired = bool(
+        user is not None
+        and user["must_change_pwd"]
+        and user["temporary_password_expires_at"]
+        and user["temporary_password_expires_at"] < now_iso()
+    )
+    if user is None or not password_ok or temporary_password_expired:
         _record_login_failure(db, ip, username_key)
         raise HTTPException(401, "用户名或密码错误")
     
@@ -148,7 +207,8 @@ def login(
     token = create_session_token(
         int(user["id"]),
         settings.secret_key,
-        ttl_seconds=settings.session_ttl_hours * 3600
+        ttl_seconds=settings.session_ttl_hours * 3600,
+        session_version=int(user["session_version"]),
     )
     response.set_cookie(
         SESSION_COOKIE,
@@ -196,7 +256,13 @@ def verify_offline_login(
         password_hash = user["password_hash"] if user is not None else _DUMMY_PASSWORD_HASH
         password_ok = verify_password(payload.password, password_hash)
         show = db.execute("SELECT * FROM shows WHERE id = ?", (payload.show_id,)).fetchone()
-        if user is None or not password_ok or show is None or not can_view_show(db, show, user):
+        if (
+            user is None
+            or user["must_change_pwd"]
+            or not password_ok
+            or show is None
+            or not can_view_show(db, show, user)
+        ):
             _record_login_failure(db, ip, username_key)
             return {"success": False}
         _clear_login_failures(db, username_key)
@@ -260,20 +326,42 @@ def update_user_preferences(
 @router.put("/auth/change-password")
 def change_password(
     payload: ChangePasswordPayload,
+    response: Response,
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
     """修改当前用户密码"""
     if not verify_password(payload.old_password, user["password_hash"]):
         raise HTTPException(400, "原密码不正确")
-    if len(payload.new_password) < 6:
-        raise HTTPException(400, "新密码长度不能少于 6 位")
+    policy_error = password_policy_error(payload.new_password, username=user["username"])
+    if policy_error:
+        raise HTTPException(400, policy_error)
     user_id = int(user["id"])
     ts = now_iso()
     db.execute(
-        "UPDATE users SET password_hash = ?, must_change_pwd = 0, updated_at = ? WHERE id = ?",
+        """
+        UPDATE users
+        SET password_hash = ?, must_change_pwd = 0, temporary_password_expires_at = NULL,
+            session_version = session_version + 1, updated_at = ?
+        WHERE id = ?
+        """,
         (hash_password(payload.new_password), ts, user_id),
     )
+    db.execute("DELETE FROM runtime_state WHERE key = 'initial_admin_setup' AND json_extract(value, '$.user_id') = ?", (user_id,))
     db.commit()
     updated = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    token = create_session_token(
+        user_id,
+        settings.secret_key,
+        ttl_seconds=settings.session_ttl_hours * 3600,
+        session_version=int(updated["session_version"]),
+    )
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        httponly=True,
+        samesite="lax",
+        max_age=settings.session_ttl_hours * 3600,
+        secure=settings.web_https,
+    )
     return {"user": _serialize_user(updated)}

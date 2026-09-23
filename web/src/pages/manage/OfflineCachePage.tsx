@@ -146,7 +146,7 @@ function FilterChip({
         <button
           type="button"
           className={cn(
-            "group inline-flex h-8 items-center gap-1.5 rounded-full border bg-background px-3 text-sm transition",
+            "group inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-3 text-sm transition",
             "hover:border-primary/40 hover:bg-primary/5",
             dirty && "border-primary/40 bg-primary/5 text-primary",
           )}
@@ -218,7 +218,7 @@ function TagFilterChip({
         <button
           type="button"
           className={cn(
-            "inline-flex h-8 items-center gap-1.5 rounded-full border bg-background px-3 text-sm transition",
+            "inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-3 text-sm transition",
             "hover:border-primary/40 hover:bg-primary/5",
             dirty && "border-primary/40 bg-primary/5 text-primary",
           )}
@@ -820,13 +820,13 @@ export default function OfflineCachePage() {
   const updatesAvailableCount = Object.values(showUpdates).filter((s) => s.hasUpdate).length;
 
   return (
-    <div className="flex h-full flex-col gap-4">
+    <div className="page-shell">
       {/* Page header */}
       <header className="flex items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <div className="flex items-center gap-1.5">
-            <h1 className="text-xl font-semibold tracking-tight">{navTitle}</h1>
-            <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
+            <h1 className="page-title">{navTitle}</h1>
+            <span className="page-count">
               {filtered.length === shows.length
                 ? `共 ${shows.length} 条`
                 : `筛选后 ${filtered.length} / ${shows.length} 条`}
@@ -853,7 +853,7 @@ export default function OfflineCachePage() {
             onChange={(e) => setFilters((f) => ({ ...f, query: e.target.value }))}
             placeholder="搜索名称、关键词"
             className={cn(
-              "h-8 w-full sm:w-56 rounded-full border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition",
+              "h-8 w-full rounded-md border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition sm:w-56",
               "placeholder:text-muted-foreground",
               "focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
               filters.query.trim() !== "" && "border-primary/40 bg-primary/5",
@@ -898,7 +898,7 @@ export default function OfflineCachePage() {
             variant="ghost"
             size="sm"
             onClick={resetFilters}
-            className="h-8 gap-1 rounded-full text-xs text-muted-foreground hover:text-primary"
+            className="h-8 gap-1 text-xs text-muted-foreground hover:text-foreground"
           >
             <RotateCcw className="h-3.5 w-3.5" />
             重置筛选
@@ -930,7 +930,7 @@ export default function OfflineCachePage() {
               size="sm"
               onClick={checkAllUpdates}
               disabled={updateStatus === "checking"}
-              className="h-8 gap-1.5 rounded-full px-3 text-sm"
+              className="h-8 gap-1.5 px-3 text-sm"
             >
               <RefreshCw className={cn("h-3.5 w-3.5", updateStatus === "checking" && "animate-spin")} />
               检查全部更新
@@ -940,7 +940,7 @@ export default function OfflineCachePage() {
             variant="outline"
             size="sm"
             onClick={handlePickDirectory}
-            className="h-8 gap-1.5 rounded-full px-3 text-sm"
+            className="h-8 gap-1.5 px-3 text-sm"
           >
             <FolderOpen className="h-3.5 w-3.5" />
             更换文件夹

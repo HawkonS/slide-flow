@@ -42,6 +42,10 @@ import { USER_ROLE_LABEL, USER_ROLE_OPTIONS } from "@/lib/constants";
 import { AdminUser, UserRole } from "@/lib/types";
 import { useUrlPage } from "@/lib/use-url-page";
 import { cn } from "@/lib/utils";
+import { TagInput } from "@/components/resource/TagInput";
+import { parseTags, serializeTags } from "@/lib/types";
+import { PageHeader } from "@/components/common/PageHeader";
+import { useAuth } from "@/lib/auth";
 
 interface UsersResponse {
   users: AdminUser[];
@@ -49,6 +53,7 @@ interface UsersResponse {
 
 export function AdminUsersPage() {
   const qc = useQueryClient();
+  const { user: currentUser } = useAuth();
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["admin", "users"],
     queryFn: async () => api<UsersResponse>("/api/admin/users"),
@@ -57,6 +62,9 @@ export function AdminUsersPage() {
   const [editing, setEditing] = React.useState<AdminUser | null>(null);
   const [createOpen, setCreateOpen] = React.useState(false);
   const [transferUser, setTransferUser] = React.useState<AdminUser | null>(null);
+  const [resetUser, setResetUser] = React.useState<AdminUser | null>(null);
+  const [resetPassword, setResetPassword] = React.useState("");
+  const [resettingPassword, setResettingPassword] = React.useState(false);
   const [query, setQuery] = React.useState("");
 
   const delMut = useMutation({
@@ -75,7 +83,7 @@ export function AdminUsersPage() {
     const q = query.trim().toLowerCase();
     if (!q) return users;
     return users.filter((u) =>
-      `${u.name || ""} ${u.username} ${u.feishu_id || ""}`.toLowerCase().includes(q),
+      `${u.name || ""} ${u.username} ${u.feishu_id || ""} ${u.tags || ""}`.toLowerCase().includes(q),
     );
   }, [users, query]);
 
@@ -88,6 +96,24 @@ export function AdminUsersPage() {
       else next.add(id);
       return next;
     });
+  };
+
+  const requestPasswordReset = async (user: AdminUser) => {
+    if (!window.confirm(`为 ${user.username} 生成新的临时密码？该用户现有登录会话会立即失效。`)) return;
+    setResettingPassword(true);
+    try {
+      const result = await api<{ user: AdminUser; plain_password: string }>(
+        `/api/admin/users/${user.id}/reset-password`,
+        { method: "POST" },
+      );
+      setResetUser(result.user);
+      setResetPassword(result.plain_password);
+      qc.invalidateQueries({ queryKey: ["admin", "users"] });
+    } catch (error) {
+      toast.error((error as Error).message || "重置密码失败");
+    } finally {
+      setResettingPassword(false);
+    }
   };
 
 
@@ -139,18 +165,11 @@ export function AdminUsersPage() {
   const someSelected = pageItemIds.some((id) => selected.has(id)) && !allSelected;
 
   return (
-    <div className="flex h-full flex-col gap-4">
-      {/* 页头 */}
-      <header className="flex items-end justify-between gap-4">
-        <div className="flex items-center gap-1.5">
-          <h1 className="text-xl font-semibold tracking-tight">用户管理</h1>
-          <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
-            {filtered.length === users.length
-              ? `共 ${users.length} 条`
-              : `筛选后 ${filtered.length} / ${users.length} 条`}
-          </span>
-        </div>
-      </header>
+    <div className="page-shell">
+      <PageHeader
+        title="用户管理"
+        count={filtered.length === users.length ? `共 ${users.length} 条` : `筛选后 ${filtered.length} / ${users.length} 条`}
+      />
 
       {/* 筛选行 */}
       <div className="flex flex-wrap items-center gap-2">
@@ -159,12 +178,12 @@ export function AdminUsersPage() {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索姓名、用户名、飞书 ID"
+            placeholder="搜索姓名、用户名、标签、飞书 ID"
             className={cn(
-              "h-8 w-full sm:w-56 rounded-full border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition",
+              "h-8 w-full rounded-md border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition sm:w-56",
               "placeholder:text-muted-foreground",
-              "focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
-              query.trim() !== "" && "border-primary/40 bg-primary/5",
+              "focus:border-foreground/40 focus:ring-2 focus:ring-ring/20",
+              query.trim() !== "" && "border-foreground/25 bg-primary-weak",
             )}
           />
         </div>
@@ -189,7 +208,7 @@ export function AdminUsersPage() {
           </Button>
           <Button
             size="sm"
-            className="h-8 gap-1.5 rounded-full px-3 text-sm"
+            className="h-8 gap-1.5 px-3 text-sm"
             onClick={() => setCreateOpen(true)}
           >
             <UserPlus className="h-3.5 w-3.5" />
@@ -255,6 +274,7 @@ export function AdminUsersPage() {
                   <TableHead>姓名</TableHead>
                   <TableHead>用户名</TableHead>
                   <TableHead className="w-32">角色</TableHead>
+                  <TableHead>用户标签</TableHead>
                   <TableHead>飞书 ID</TableHead>
                   <TableHead>创建时间</TableHead>
                   <TableHead className="w-32 text-right">操作</TableHead>
@@ -269,7 +289,12 @@ export function AdminUsersPage() {
                         onCheckedChange={() => toggleOne(u.id)}
                       />
                     </TableCell>
-                    <TableCell>{u.name || "-"}</TableCell>
+                    <TableCell>
+                      <span className="inline-flex items-center gap-2">
+                        {u.avatar_url ? <img src={u.avatar_url} alt="" className="h-7 w-7 rounded-full object-cover" referrerPolicy="no-referrer" /> : <span className="flex h-7 w-7 items-center justify-center rounded-full bg-muted text-xs text-muted-foreground">{(u.name || u.username).slice(0, 1).toUpperCase()}</span>}
+                        <span>{u.name || "-"}</span>
+                      </span>
+                    </TableCell>
                     <TableCell>
                       <span className="inline-flex items-center gap-1.5">
                         {u.username}
@@ -294,14 +319,27 @@ export function AdminUsersPage() {
                         {USER_ROLE_LABEL[u.role] || u.role}
                       </Badge>
                     </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {u.feishu_id || "-"}
+                    <TableCell className="max-w-52 text-sm text-muted-foreground">
+                      <div className="flex flex-wrap gap-1">
+                        {parseTags(u.tags).map((tag) => <Badge key={tag} variant="outline" className="text-[10px]">{tag}</Badge>)}
+                        {!u.tags && <span>-</span>}
+                      </div>
                     </TableCell>
+                    <TableCell className="text-sm text-muted-foreground">{u.feishu_id || "-"}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{u.created_at}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1">
                         <Button variant="ghost" size="sm" onClick={() => setEditing(u)}>
                           <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          title="生成新的临时密码"
+                          disabled={resettingPassword || currentUser?.id === u.id}
+                          onClick={() => requestPasswordReset(u)}
+                        >
+                          <KeyRound className="h-3.5 w-3.5" />
                         </Button>
                         <Button
                           variant="ghost"
@@ -371,6 +409,32 @@ export function AdminUsersPage() {
         user={null}
         onSuccess={() => qc.invalidateQueries({ queryKey: ["admin", "users"] })}
       />
+      <Dialog open={!!resetPassword} onOpenChange={(open) => { if (!open) { setResetPassword(""); setResetUser(null); } }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>临时密码已重置</DialogTitle>
+            <DialogDescription>
+              {resetUser?.username} 的旧会话已失效。此密码 24 小时内有效且只展示一次。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center gap-2">
+            <code className="min-w-0 flex-1 select-all rounded-md border bg-muted/30 px-3 py-2.5 font-mono text-sm font-semibold">
+              {resetPassword}
+            </code>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => navigator.clipboard.writeText(resetPassword).then(() => toast.success("已复制到剪贴板"))}
+            >
+              <Copy className="mr-1.5 h-3.5 w-3.5" />
+              复制
+            </Button>
+          </div>
+          <DialogFooter>
+            <Button onClick={() => { setResetPassword(""); setResetUser(null); }}>完成</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <UserFormDialog
         open={editing != null}
         onOpenChange={(o) => {
@@ -510,8 +574,9 @@ function UserFormDialog({
   const [name, setName] = React.useState("");
   const [username, setUsername] = React.useState("");
   const [password, setPassword] = React.useState("");
-  const [useRandomPwd, setUseRandomPwd] = React.useState(false);
   const [feishu, setFeishu] = React.useState("");
+  const [avatarUrl, setAvatarUrl] = React.useState("");
+  const [tags, setTags] = React.useState<string[]>([]);
   const [role, setRole] = React.useState<UserRole>("user");
   const [loading, setLoading] = React.useState(false);
   const [generatedPwd, setGeneratedPwd] = React.useState("");
@@ -521,8 +586,9 @@ function UserFormDialog({
       setName(user?.name || "");
       setUsername(user?.username || "");
       setPassword("");
-      setUseRandomPwd(false);
       setFeishu(user?.feishu_id || "");
+      setAvatarUrl(user?.avatar_url || "");
+      setTags(parseTags(user?.tags));
       setRole((user?.role as UserRole) || "user");
       setLoading(false);
       setGeneratedPwd("");
@@ -543,24 +609,24 @@ function UserFormDialog({
           json: {
             name: name.trim(),
             username: username.trim(),
-            password: useRandomPwd ? null : password || null,
+            password: editing ? null : password || null,
             feishu_id: feishu.trim(),
+            avatar_url: avatarUrl.trim(),
+            tags: serializeTags(tags),
             role,
-            need_change_pwd: !editing && useRandomPwd,
+            need_change_pwd: true,
           },
         },
       );
 
-      if (!editing && useRandomPwd && res.plain_password) {
-        // 展示随机密码弹窗
+      if (!editing && res.plain_password) {
+        // 未手工指定密码时，后端生成只展示一次的临时密码。
         setGeneratedPwd(res.plain_password);
-      } else if (!editing && !password && !useRandomPwd) {
-        toast.success("用户已创建，密码为系统默认密码");
       } else {
         toast.success("用户已保存");
       }
       onSuccess();
-      if (!(useRandomPwd && res.plain_password)) {
+      if (!res.plain_password) {
         onOpenChange(false);
       }
     } catch (err) {
@@ -606,7 +672,7 @@ function UserFormDialog({
             <div className="rounded-lg border border-emerald-300/60 bg-emerald-50 p-5 dark:border-emerald-800/50 dark:bg-emerald-950/30">
               <div className="mb-3 flex items-center gap-2 text-sm font-medium text-emerald-800 dark:text-emerald-300">
                 <KeyRound className="h-4 w-4" />
-                随机密码已生成
+                临时密码已生成
               </div>
               <p className="mb-3 text-xs leading-relaxed text-emerald-700 dark:text-emerald-400">
                 请妥善保存以下密码并告知用户，用户首次登录时将被强制要求修改。
@@ -669,8 +735,8 @@ function UserFormDialog({
                 </div>
               </section>
 
-              {/* 安全设置 */}
-              <section className="rounded-lg border bg-muted/20 p-4">
+              {/* 新建账号时设置首次登录临时密码；已有账号使用独立重置操作。 */}
+              {!editing && <section className="rounded-lg border bg-muted/20 p-4">
                 <div className="mb-3 flex items-center gap-2 text-sm font-medium">
                   <KeyRound className="h-4 w-4 text-muted-foreground" />
                   密码设置
@@ -680,7 +746,7 @@ function UserFormDialog({
                     <Label htmlFor="user-password">
                       密码
                       <span className="ml-1 text-xs text-muted-foreground">
-                        {editing ? "（留空不修改）" : "（留空使用系统默认密码）"}
+                        （留空自动生成临时密码）
                       </span>
                     </Label>
                     <Input
@@ -688,25 +754,14 @@ function UserFormDialog({
                       type="password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
-                      disabled={!editing && useRandomPwd}
-                      placeholder={!editing && useRandomPwd ? "将自动生成随机密码" : "输入密码"}
+                      placeholder="可手工设置临时密码"
                     />
                   </div>
-                  {!editing && (
-                    <div className="flex items-center gap-2.5 rounded-md border border-dashed px-3 py-2.5">
-                      <Checkbox
-                        id="useRandomPwd"
-                        checked={useRandomPwd}
-                        onCheckedChange={(checked) => setUseRandomPwd(!!checked)}
-                      />
-                      <Label htmlFor="useRandomPwd" className="cursor-pointer text-sm leading-tight">
-                        自动生成随机密码
-                        <span className="block text-xs text-muted-foreground">首次登录时强制要求修改密码</span>
-                      </Label>
-                    </div>
-                  )}
+                  <p className="text-xs leading-5 text-muted-foreground">
+                    新建或重置后的密码都只是临时凭证，用户首次登录时必须设置自己的密码。系统不再提供全局默认密码。
+                  </p>
                 </div>
-              </section>
+              </section>}
 
               {/* 角色与飞书 */}
               <section className="rounded-lg border bg-muted/20 p-4">
@@ -741,6 +796,17 @@ function UserFormDialog({
                       onChange={(e) => setFeishu(e.target.value)}
                       placeholder="关联飞书账号"
                     />
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="user-avatar">头像地址 <span className="ml-1 text-xs text-muted-foreground">（飞书登录自动同步）</span></Label>
+                    <div className="flex items-center gap-2">
+                      {avatarUrl ? <img src={avatarUrl} alt="头像预览" className="h-9 w-9 rounded-full object-cover" referrerPolicy="no-referrer" /> : <span className="h-9 w-9 rounded-full bg-muted" />}
+                      <Input id="user-avatar" value={avatarUrl} onChange={(e) => setAvatarUrl(e.target.value)} placeholder="https://..." />
+                    </div>
+                  </div>
+                  <div className="grid gap-1.5 sm:col-span-2">
+                    <Label>用户标签</Label>
+                    <TagInput value={tags} onChange={setTags} placeholder="选择或输入标签" />
                   </div>
                 </div>
               </section>

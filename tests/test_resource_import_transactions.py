@@ -194,6 +194,16 @@ class ResourceImportTransactionTests(unittest.TestCase):
         self.assertTrue(Path(session["temp_dir"]).is_dir())
         self.assertEqual(self.count("resources"), 0)
 
+    def test_commit_requires_explicit_visibility_and_management_scopes(self):
+        for missing in ("visibility_scope", "management_scope"):
+            session = self.session(sid=("b" if missing == "visibility_scope" else "c") * 32)
+            payload = dict(self.payload)
+            payload.pop(missing)
+            with self.assertRaisesRegex(HTTPException, "请选择") as caught:
+                asyncio.run(self.commit(session["session_id"], payload=payload))
+            self.assertEqual(caught.exception.status_code, 400)
+        self.assertEqual(self.count("resources"), 0)
+
     def test_duplicate_commit_replays_receipt_without_creating_resources(self):
         session = self.session()
         first = asyncio.run(self.commit(session["session_id"]))

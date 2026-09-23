@@ -134,6 +134,22 @@
   {
     "kind": "http",
     "methods": [
+      "GET"
+    ],
+    "name": "setup_status",
+    "path": "/api/auth/setup"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "setup_initial_admin",
+    "path": "/api/auth/setup"
+  },
+  {
+    "kind": "http",
+    "methods": [
       "POST"
     ],
     "name": "login",
@@ -286,6 +302,14 @@
   {
     "kind": "http",
     "methods": [
+      "POST"
+    ],
+    "name": "reset_user_password",
+    "path": "/api/admin/users/{user_id}/reset-password"
+  },
+  {
+    "kind": "http",
+    "methods": [
       "DELETE"
     ],
     "name": "delete_user",
@@ -416,28 +440,6 @@
     "methods": [
       "GET"
     ],
-    "name": "feishu_sso_config",
-    "path": "/api/auth/feishu/config"
-  },
-  {
-    "kind": "http",
-    "methods": [
-      "POST"
-    ],
-    "name": "feishu_sso_callback",
-    "path": "/api/auth/feishu/callback"
-  },
-  {
-    "kind": "mount",
-    "methods": [],
-    "name": "static",
-    "path": "/static"
-  },
-  {
-    "kind": "http",
-    "methods": [
-      "GET"
-    ],
     "name": "resource_import_result",
     "path": "/api/resource-import/{session_id}/result"
   },
@@ -492,74 +494,42 @@
   {
     "kind": "http",
     "methods": [
+      "POST"
+    ],
+    "name": "create_share_link",
+    "path": "/api/resources/{resource_id}/share-links"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "list_share_links",
+    "path": "/api/resources/{resource_id}/share-links"
+  },
+  {
+    "kind": "http",
+    "methods": [
       "DELETE"
     ],
-    "name": "delete_template",
-    "path": "/api/admin/templates/{template_id}"
-  },
-  {
-    "kind": "http",
-    "methods": [
-      "POST"
-    ],
-    "name": "bulk_delete_templates",
-    "path": "/api/admin/templates/bulk-delete"
-  },
-  {
-    "kind": "http",
-    "methods": [
-      "PUT"
-    ],
-    "name": "reorder_templates",
-    "path": "/api/admin/templates/order"
+    "name": "revoke_share_link",
+    "path": "/api/resources/{resource_id}/share-links/{link_id}"
   },
   {
     "kind": "http",
     "methods": [
       "GET"
     ],
-    "name": "list_templates",
-    "path": "/api/templates"
-  },
-  {
-    "kind": "http",
-    "methods": [
-      "POST"
-    ],
-    "name": "create_template",
-    "path": "/api/templates"
-  },
-  {
-    "kind": "http",
-    "methods": [
-      "PUT"
-    ],
-    "name": "update_template",
-    "path": "/api/templates/{template_id}"
+    "name": "shared_resource_preview",
+    "path": "/api/resource-shares/{token}/preview"
   },
   {
     "kind": "http",
     "methods": [
       "GET"
     ],
-    "name": "template_preview",
-    "path": "/api/templates/{template_id}/preview"
-  },
-  {
-    "kind": "http",
-    "methods": [
-      "GET"
-    ],
-    "name": "template_preview_thumb",
-    "path": "/api/templates/{template_id}/preview-thumb"
-  },
-  {
-    "kind": "http",
-    "methods": [
-      "GET"
-    ],
-    "name": "download_template",
-    "path": "/api/templates/{template_id}/download"
+    "name": "get_shared_resource",
+    "path": "/api/resource-shares/{token}"
   },
   {
     "kind": "http",
@@ -704,6 +674,78 @@
     ],
     "name": "download_resource",
     "path": "/api/resources/{resource_id}/download"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "DELETE"
+    ],
+    "name": "delete_template",
+    "path": "/api/admin/templates/{template_id}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "bulk_delete_templates",
+    "path": "/api/admin/templates/bulk-delete"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ],
+    "name": "reorder_templates",
+    "path": "/api/admin/templates/order"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "list_templates",
+    "path": "/api/templates"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "create_template",
+    "path": "/api/templates"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ],
+    "name": "update_template",
+    "path": "/api/templates/{template_id}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "template_preview",
+    "path": "/api/templates/{template_id}/preview"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "template_preview_thumb",
+    "path": "/api/templates/{template_id}/preview-thumb"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "download_template",
+    "path": "/api/templates/{template_id}/download"
   },
   {
     "kind": "http",
@@ -990,6 +1032,60 @@
     ],
     "name": "delete_task",
     "path": "/api/admin/tasks/{task_id}"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "claim",
+    "path": "/api/renderer/font-tasks/claim"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "download",
+    "path": "/api/renderer/font-tasks/{task_id}/file"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "result",
+    "path": "/api/renderer/font-tasks/{task_id}/result"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "status",
+    "path": "/api/renderer/font-sync/status"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "GET"
+    ],
+    "name": "feishu_sso_config",
+    "path": "/api/auth/feishu/config"
+  },
+  {
+    "kind": "http",
+    "methods": [
+      "POST"
+    ],
+    "name": "feishu_sso_callback",
+    "path": "/api/auth/feishu/callback"
+  },
+  {
+    "kind": "mount",
+    "methods": [],
+    "name": "static",
+    "path": "/static"
   },
   {
     "kind": "http",

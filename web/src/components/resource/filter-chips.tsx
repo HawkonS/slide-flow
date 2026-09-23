@@ -26,7 +26,7 @@ export interface ChipOption {
 
 /** 紧凑模式样式（用于资源选择器等空间受限场景） */
 const CHIP_TRIGGER_BASE =
-  "group inline-flex items-center rounded-full border bg-background transition";
+  "group inline-flex items-center rounded-md border bg-background transition";
 const CHIP_TRIGGER_NORMAL = "h-8 gap-1.5 px-3 text-sm";
 const CHIP_TRIGGER_COMPACT = "h-7 gap-1 px-2.5 text-xs";
 const CHIP_CHEVRON_NORMAL = "h-3.5 w-3.5";
@@ -63,11 +63,11 @@ export function FilterChip({
           className={cn(
             CHIP_TRIGGER_BASE,
             compact ? CHIP_TRIGGER_COMPACT : CHIP_TRIGGER_NORMAL,
-            "hover:border-primary/40 hover:bg-primary/5",
-            dirty && "border-primary/40 bg-primary/5 text-primary",
+            "hover:border-foreground/30 hover:bg-accent",
+            dirty && "border-foreground/25 bg-primary-weak text-foreground",
           )}
         >
-          <span className={cn("text-muted-foreground", dirty && "text-primary/80")}>
+          <span className={cn("text-muted-foreground", dirty && "text-foreground")}>
             {label}
           </span>
           <span className="font-medium">{current?.label ?? ""}</span>
@@ -91,7 +91,7 @@ export function FilterChip({
                 onClick={() => onChange(opt.value)}
                 className={cn(
                   "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm transition hover:bg-accent",
-                  active && "text-primary",
+                  active && "font-medium text-foreground",
                 )}
               >
                 <span className="truncate">{opt.label}</span>
@@ -145,11 +145,11 @@ export function TagFilterChip({
           className={cn(
             CHIP_TRIGGER_BASE,
             compact ? CHIP_TRIGGER_COMPACT : CHIP_TRIGGER_NORMAL,
-            "hover:border-primary/40 hover:bg-primary/5",
-            dirty && "border-primary/40 bg-primary/5 text-primary",
+            "hover:border-foreground/30 hover:bg-accent",
+            dirty && "border-foreground/25 bg-primary-weak text-foreground",
           )}
         >
-          <span className={cn("text-muted-foreground", dirty && "text-primary/80")}>{label}</span>
+          <span className={cn("text-muted-foreground", dirty && "text-foreground")}>{label}</span>
           <span className="font-medium">{summary}</span>
           <ChevronDown
             className={cn(
@@ -177,8 +177,8 @@ export function TagFilterChip({
                   className={cn(
                     "h-7 rounded-md border text-xs transition",
                     active
-                      ? "border-primary bg-primary/10 text-primary"
-                      : "bg-background hover:border-primary/40 hover:bg-primary/5",
+                      ? "border-foreground/25 bg-primary-weak text-foreground"
+                      : "bg-background hover:border-foreground/30 hover:bg-accent",
                   )}
                 >
                   {it.label}
@@ -348,11 +348,11 @@ export function RemarkFilterChip({
           className={cn(
             CHIP_TRIGGER_BASE,
             compact ? CHIP_TRIGGER_COMPACT : CHIP_TRIGGER_NORMAL,
-            "hover:border-primary/40 hover:bg-primary/5",
-            dirty && "border-primary/40 bg-primary/5 text-primary",
+            "hover:border-foreground/30 hover:bg-accent",
+            dirty && "border-foreground/25 bg-primary-weak text-foreground",
           )}
         >
-          <span className={cn("text-muted-foreground", dirty && "text-primary/80")}>备注</span>
+          <span className={cn("text-muted-foreground", dirty && "text-foreground")}>备注</span>
           <span className="font-medium">{summary}</span>
           <ChevronDown
             className={cn(
@@ -416,8 +416,8 @@ function RemarkGroup({
               className={cn(
                 "h-7 rounded-md border text-xs transition",
                 active
-                  ? "border-primary bg-primary/10 text-primary"
-                  : "bg-background hover:border-primary/40 hover:bg-primary/5",
+                  ? "border-foreground/25 bg-primary-weak text-foreground"
+                  : "bg-background hover:border-foreground/30 hover:bg-accent",
               )}
             >
               {it.label}
@@ -477,11 +477,11 @@ export function SortFilterChip({
           className={cn(
             CHIP_TRIGGER_BASE,
             compact ? CHIP_TRIGGER_COMPACT : CHIP_TRIGGER_NORMAL,
-            "hover:border-primary/40 hover:bg-primary/5",
-            dirty && "border-primary/40 bg-primary/5 text-primary",
+            "hover:border-foreground/30 hover:bg-accent",
+            dirty && "border-foreground/25 bg-primary-weak text-foreground",
           )}
         >
-          <span className={cn("text-muted-foreground", dirty && "text-primary/80")}>排序</span>
+          <span className={cn("text-muted-foreground", dirty && "text-foreground")}>排序</span>
           <span className="font-medium">{summary}</span>
           <ChevronDown
             className={cn(
@@ -511,8 +511,8 @@ export function SortFilterChip({
                   className={cn(
                     "h-7 rounded-md border text-xs transition",
                     active
-                      ? "border-primary bg-primary/10 text-primary"
-                      : "bg-background hover:border-primary/40 hover:bg-primary/5",
+                  ? "border-foreground/25 bg-primary-weak text-foreground"
+                  : "bg-background hover:border-foreground/30 hover:bg-accent",
                   )}
                 >
                   {it.label}
@@ -531,7 +531,7 @@ export function SortFilterChip({
                 onClick={() => onChange(joinSortKey(it.v, direction))}
                 className={cn(
                   "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm transition hover:bg-accent",
-                  active && "text-primary",
+                  active && "font-medium text-foreground",
                 )}
               >
                 <span className="truncate">{it.label}</span>
@@ -590,11 +590,11 @@ export function FilterGroupChip({
           className={cn(
             CHIP_TRIGGER_BASE,
             compact ? CHIP_TRIGGER_COMPACT : CHIP_TRIGGER_NORMAL,
-            "hover:border-primary/40 hover:bg-primary/5",
-            dirty && "border-primary/40 bg-primary/5 text-primary",
+            "hover:border-foreground/30 hover:bg-accent",
+            dirty && "border-foreground/25 bg-primary-weak text-foreground",
           )}
         >
-          <span className={cn("text-muted-foreground", dirty && "text-primary/80")}>
+          <span className={cn("text-muted-foreground", dirty && "text-foreground")}>
             属性
           </span>
           <span className="font-medium">{summary}</span>
@@ -633,7 +633,7 @@ export function FilterGroupChip({
             <button
               type="button"
               onClick={onReset}
-              className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-accent hover:text-primary"
+              className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-accent hover:text-foreground"
             >
               <RotateCcw className="h-3 w-3" />
               重置
@@ -670,8 +670,8 @@ function FilterGroupSection({
               className={cn(
                 "h-7 rounded-md border px-2.5 text-xs transition",
                 active
-                  ? "border-primary/40 bg-primary/10 font-medium text-primary"
-                  : "border-transparent bg-muted/50 hover:border-primary/30 hover:bg-primary/5",
+                  ? "border-foreground/25 bg-primary-weak font-medium text-foreground"
+                  : "border-transparent bg-muted/50 hover:border-foreground/20 hover:bg-accent",
               )}
             >
               {opt.label}
@@ -707,11 +707,11 @@ export function SubjectFilterChip({
           className={cn(
             CHIP_TRIGGER_BASE,
             compact ? CHIP_TRIGGER_COMPACT : CHIP_TRIGGER_NORMAL,
-            "hover:border-primary/40 hover:bg-primary/5",
-            dirty && "border-primary/40 bg-primary/5 text-primary",
+            "hover:border-foreground/30 hover:bg-accent",
+            dirty && "border-foreground/25 bg-primary-weak text-foreground",
           )}
         >
-          <span className={cn("text-muted-foreground", dirty && "text-primary/80")}>
+          <span className={cn("text-muted-foreground", dirty && "text-foreground")}>
             主体
           </span>
           <span className="font-medium">{current?.label ?? "全部"}</span>
@@ -735,7 +735,7 @@ export function SubjectFilterChip({
                 onClick={() => onChange(opt.value)}
                 className={cn(
                   "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm transition hover:bg-accent",
-                  active && "text-primary",
+                  active && "text-foreground font-medium",
                 )}
               >
                 <span className="truncate">{opt.label}</span>

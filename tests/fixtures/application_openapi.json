@@ -188,7 +188,7 @@
             "type": "string"
           },
           "management_scope": {
-            "default": "private",
+            "default": "",
             "title": "Management Scope",
             "type": "string"
           },
@@ -222,7 +222,7 @@
             "type": "string"
           },
           "visibility_scope": {
-            "default": "public",
+            "default": "",
             "title": "Visibility Scope",
             "type": "string"
           },
@@ -462,7 +462,7 @@
         "properties": {
           "new_password": {
             "maxLength": 200,
-            "minLength": 8,
+            "minLength": 10,
             "title": "New Password",
             "type": "string"
           },
@@ -560,6 +560,32 @@
         "title": "FontDownloadPayload",
         "type": "object"
       },
+      "FontTaskResult": {
+        "properties": {
+          "error_code": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "status": {
+            "pattern": "^(completed|failed)$",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "FontTaskResult",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -571,6 +597,43 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "InitialSetupPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "password": {
+            "maxLength": 200,
+            "minLength": 10,
+            "title": "Password",
+            "type": "string"
+          },
+          "token": {
+            "maxLength": 200,
+            "minLength": 32,
+            "title": "Token",
+            "type": "string"
+          },
+          "username": {
+            "maxLength": 50,
+            "minLength": 2,
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "name",
+          "username",
+          "password"
+        ],
+        "title": "InitialSetupPayload",
         "type": "object"
       },
       "LoginPayload": {
@@ -666,7 +729,7 @@
             "type": "string"
           },
           "show_id": {
-            "minimum": 1,
+            "minimum": 1.0,
             "title": "Show Id",
             "type": "integer"
           },
@@ -708,6 +771,21 @@
           "content_html"
         ],
         "title": "PersonalRemarkPayload",
+        "type": "object"
+      },
+      "ShareLinkPayload": {
+        "additionalProperties": false,
+        "description": "分享链接有效期；原始令牌只在创建响应中返回一次。",
+        "properties": {
+          "expires_in_days": {
+            "default": 7,
+            "maximum": 30.0,
+            "minimum": 1.0,
+            "title": "Expires In Days",
+            "type": "integer"
+          }
+        },
+        "title": "ShareLinkPayload",
         "type": "object"
       },
       "ShowCreatePayload": {
@@ -1172,6 +1250,12 @@
       "UserPayload": {
         "additionalProperties": false,
         "properties": {
+          "avatar_url": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Avatar Url",
+            "type": "string"
+          },
           "feishu_id": {
             "default": "",
             "maxLength": 100,
@@ -1204,6 +1288,12 @@
           "role": {
             "default": "user",
             "title": "Role",
+            "type": "string"
+          },
+          "tags": {
+            "default": "",
+            "maxLength": 1000,
+            "title": "Tags",
             "type": "string"
           },
           "username": {
@@ -2437,6 +2527,51 @@
         ]
       }
     },
+    "/api/admin/users/{user_id}/reset-password": {
+      "post": {
+        "description": "Generate a one-time temporary password and invalidate old sessions.",
+        "operationId": "reset_user_password_api_admin_users__user_id__reset_password_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "title": "User Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Reset User Password Api Admin Users  User Id  Reset Password Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reset User Password",
+        "tags": [
+          "users"
+        ]
+      }
+    },
     "/api/admin/users/{user_id}/transfer-and-delete": {
       "post": {
         "description": "将用户关联数据转移给目标用户后删除该用户",
@@ -2669,6 +2804,71 @@
           }
         },
         "summary": "Logout",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/setup": {
+      "get": {
+        "description": "Return whether one-time local administrator setup is pending.",
+        "operationId": "setup_status_api_auth_setup_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Setup Status Api Auth Setup Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Setup Status",
+        "tags": [
+          "auth"
+        ]
+      },
+      "post": {
+        "operationId": "setup_initial_admin_api_auth_setup_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InitialSetupPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Setup Initial Admin Api Auth Setup Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Setup Initial Admin",
         "tags": [
           "auth"
         ]
@@ -3334,6 +3534,198 @@
         ]
       }
     },
+    "/api/renderer/font-sync/status": {
+      "get": {
+        "operationId": "status_api_renderer_font_sync_status_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Authorization",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Status",
+        "tags": [
+          "renderer-font-tasks"
+        ]
+      }
+    },
+    "/api/renderer/font-tasks/claim": {
+      "get": {
+        "operationId": "claim_api_renderer_font_tasks_claim_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Authorization",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Claim",
+        "tags": [
+          "renderer-font-tasks"
+        ]
+      }
+    },
+    "/api/renderer/font-tasks/{task_id}/file": {
+      "get": {
+        "operationId": "download_api_renderer_font_tasks__task_id__file_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Authorization",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download",
+        "tags": [
+          "renderer-font-tasks"
+        ]
+      }
+    },
+    "/api/renderer/font-tasks/{task_id}/result": {
+      "post": {
+        "operationId": "result_api_renderer_font_tasks__task_id__result_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Authorization",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FontTaskResult"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Result",
+        "tags": [
+          "renderer-font-tasks"
+        ]
+      }
+    },
     "/api/resource-import/prepare": {
       "post": {
         "description": "上传到临时会话并完成页数/字体预检，不创建资源记录。",
@@ -3663,6 +4055,84 @@
           }
         },
         "summary": "Resource Import Result"
+      }
+    },
+    "/api/resource-shares/{token}": {
+      "get": {
+        "operationId": "get_shared_resource_api_resource_shares__token__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Shared Resource Api Resource Shares  Token  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Shared Resource"
+      }
+    },
+    "/api/resource-shares/{token}/preview": {
+      "get": {
+        "operationId": "shared_resource_preview_api_resource_shares__token__preview_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Shared Resource Preview"
       }
     },
     "/api/resources": {
@@ -4852,6 +5322,148 @@
           }
         },
         "summary": "Resource Preview Thumb"
+      }
+    },
+    "/api/resources/{resource_id}/share-links": {
+      "get": {
+        "operationId": "list_share_links_api_resources__resource_id__share_links_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "resource_id",
+            "required": true,
+            "schema": {
+              "title": "Resource Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Share Links Api Resources  Resource Id  Share Links Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Share Links"
+      },
+      "post": {
+        "operationId": "create_share_link_api_resources__resource_id__share_links_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "resource_id",
+            "required": true,
+            "schema": {
+              "title": "Resource Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShareLinkPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Share Link Api Resources  Resource Id  Share Links Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Share Link"
+      }
+    },
+    "/api/resources/{resource_id}/share-links/{link_id}": {
+      "delete": {
+        "operationId": "revoke_share_link_api_resources__resource_id__share_links__link_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "resource_id",
+            "required": true,
+            "schema": {
+              "title": "Resource Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "link_id",
+            "required": true,
+            "schema": {
+              "title": "Link Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Revoke Share Link Api Resources  Resource Id  Share Links  Link Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Share Link"
       }
     },
     "/api/resources/{resource_id}/versions": {

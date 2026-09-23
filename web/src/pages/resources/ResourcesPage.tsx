@@ -1,7 +1,7 @@
 import * as React from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronDown, LayoutGrid, LayoutList, ListChecks, Loader2, Pencil, Plus, Trash2, Upload, X } from "lucide-react";
+import { Check, ChevronDown, ListChecks, Loader2, Pencil, Plus, Trash2, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,6 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { BatchEditDialog } from "@/components/manage/BatchEditDialog";
 import { ResourceCard } from "@/components/resource/ResourceCard";
 import { ResourceListView } from "@/components/resource/ResourceListView";
-import { ResourceDetailDialog } from "@/components/resource/ResourceDetailDialog";
 import { ResourceDownloadDialog } from "@/components/resource/ResourceDownloadDialog";
 import { ResourceEditDialog } from "@/components/resource/ResourceEditDialog";
 import { ResourcePreviewDialog } from "@/components/resource/ResourcePreviewDialog";
@@ -26,6 +25,8 @@ import { useEncodedUrlState } from "@/lib/use-encoded-url-state";
 import { useResourceFilters, markResourceFiltersUrlRestored } from "@/stores/resource-filters";
 import { DEFAULT_SORT_KEY, type SortKey } from "@/lib/constants";
 import { usePaginatedQuery } from "@/lib/use-paginated-query";
+import { PageHeader } from "@/components/common/PageHeader";
+import { ViewModeSwitch } from "@/components/common/ViewModeSwitch";
 
 /* ---- URL 持久化状态类型与默认值 ---- */
 interface ResourceUrlState {
@@ -180,8 +181,6 @@ export function ResourcesPage() {
     }
   }, [page, totalPages, setPage]);
 
-  // 详情按需加载
-  const [detailResourceId, setDetailResourceId] = React.useState<number | null>(null);
   const [editResource, setEditResource] = React.useState<Resource | null>(null);
   const [newVersionResource, setNewVersionResource] = React.useState<Resource | null>(null);
   const [editOpen, setEditOpen] = React.useState(false);
@@ -191,17 +190,6 @@ export function ResourcesPage() {
   >(null);
   const [previewResource, setPreviewResource] = React.useState<Resource | null>(null);
 
-  // 按需加载完整资源数据（用于详情/编辑/新版本弹窗）
-  const { data: fullResourceData } = useQuery({
-    queryKey: ["resources", detailResourceId],
-    queryFn: async () => {
-      const res = await api<{ resource: Resource }>(`/api/resources/${detailResourceId}`);
-      return res.resource;
-    },
-    enabled: detailResourceId != null,
-  });
-  const detailResource = detailResourceId != null ? fullResourceData ?? null : null;
-
   const fetchFullResource = React.useCallback(async (r: Resource): Promise<Resource> => {
     // 如果已有完整数据（含 versions），直接返回
     if (r.versions) return r;
@@ -210,21 +198,19 @@ export function ResourcesPage() {
   }, []);
 
   const handleOpenDetail = (r: Resource) => {
-    setDetailResourceId(r.id);
+    navigate(`/resources/${r.id}`);
   };
 
   const handleEdit = async (r: Resource) => {
     const full = await fetchFullResource(r);
     setEditResource(full);
     setEditOpen(true);
-    setDetailResourceId(null);
   };
 
   const handleNewVersion = async (r: Resource) => {
     const full = await fetchFullResource(r);
     setNewVersionResource(full);
     setNewVersionOpen(true);
-    setDetailResourceId(null);
   };
 
   const handleDownload = (r: Resource, version: ResourceVersion) => {
@@ -359,20 +345,12 @@ export function ResourcesPage() {
   const pageStart = (page - 1) * pageSize;
 
   return (
-    <div className="flex h-full flex-col gap-4">
-      {/* 页头 */}
-      <header className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-1.5">
-          <h1 className="text-xl font-semibold tracking-tight">单页素材</h1>
-          <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
-            {total > 0 ? `共 ${total} 条` : "共 0 条"}
-          </span>
-        </div>
-        <div className="flex shrink-0 items-center rounded-md border p-0.5" aria-label="素材视图">
-          <button type="button" aria-label="卡片视图" aria-pressed={viewMode === "card"} onClick={() => setViewMode("card")} className={`rounded p-1.5 ${viewMode === "card" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent"}`}><LayoutGrid className="h-4 w-4" /></button>
-          <button type="button" aria-label="列表视图" aria-pressed={viewMode === "list"} onClick={() => setViewMode("list")} className={`rounded p-1.5 ${viewMode === "list" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent"}`}><LayoutList className="h-4 w-4" /></button>
-        </div>
-      </header>
+    <div className="page-shell">
+      <PageHeader
+        title="单页素材"
+        count={total > 0 ? `共 ${total} 条` : "共 0 条"}
+        actions={<ViewModeSwitch value={viewMode} onChange={setViewMode} />}
+      />
 
       <ResourceFilters
         subjects={subjects}
@@ -383,7 +361,7 @@ export function ResourcesPage() {
               <Button
                 size="sm"
                 onClick={() => navigate("/resources/import")}
-                className="h-8 gap-1.5 rounded-full px-3 text-sm"
+                className="h-8 gap-1.5 px-3 text-sm"
               >
                 <Upload className="h-3.5 w-3.5" />
                 导入素材
@@ -432,7 +410,7 @@ export function ResourcesPage() {
             加载失败：{error?.message || "未知错误"}
           </div>
         ) : resources.length === 0 ? (
-          <div className="rounded-md border border-dashed py-16 text-center text-sm text-muted-foreground">
+          <div className="surface border-dashed py-16 text-center text-sm text-muted-foreground">
             没有匹配的资源
           </div>
         ) : (
@@ -494,18 +472,6 @@ export function ResourcesPage() {
           </div>
         </div>
       )}
-
-      <ResourceDetailDialog
-        open={detailResourceId != null}
-        onOpenChange={(open) => {
-          if (!open) setDetailResourceId(null);
-        }}
-        resource={detailResource}
-        onEdit={handleEdit}
-        onNewVersion={handleNewVersion}
-        onDownload={handleDownload}
-        onFullscreen={handlePreview}
-      />
 
       <ResourceEditDialog
         open={editOpen}

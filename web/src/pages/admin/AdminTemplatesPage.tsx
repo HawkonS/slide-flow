@@ -184,12 +184,12 @@ export function AdminTemplatesPage() {
   const someSelected = pageItemIds.some((id) => selected.has(id)) && !allSelected;
 
   return (
-    <div className="flex h-full flex-col gap-4">
+    <div className="page-shell">
       {/* 页头 */}
       <header className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-1.5">
-          <h1 className="text-xl font-semibold tracking-tight">模板管理</h1>
-          <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
+          <h1 className="page-title">模板管理</h1>
+          <span className="page-count">
             {filtered.length === templates.length
               ? `共 ${templates.length} 条`
               : `筛选后 ${filtered.length} / ${templates.length} 条`}
@@ -206,7 +206,7 @@ export function AdminTemplatesPage() {
             onChange={(e) => setQuery(e.target.value)}
             placeholder="搜索模板、主体、系列"
             className={cn(
-              "h-8 w-full sm:w-56 rounded-full border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition",
+              "h-8 w-full rounded-md border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition sm:w-56",
               "placeholder:text-muted-foreground",
               "focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
               query.trim() !== "" && "border-primary/40 bg-primary/5",
@@ -236,7 +236,7 @@ export function AdminTemplatesPage() {
         <Button
           variant="outline"
           size="sm"
-          className="h-8 gap-1.5 rounded-full px-3 text-sm"
+          className="h-8 gap-1.5 px-3 text-sm"
           onClick={() => {
             if (templates.length === 0) {
               toast.error("暂无模板可排序");
@@ -250,7 +250,7 @@ export function AdminTemplatesPage() {
         </Button>
         <Button
           size="sm"
-          className="h-8 gap-1.5 rounded-full px-3 text-sm"
+          className="h-8 gap-1.5 px-3 text-sm"
           onClick={() => setCreateOpen(true)}
         >
           <Plus className="h-3.5 w-3.5" />

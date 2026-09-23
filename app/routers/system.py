@@ -23,6 +23,27 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+def _service_boot_id() -> str:
+    """Return an identifier shared by all workers of one service start.
+
+    ``run.sh`` supplies the preferred value. The parent-process fallback keeps
+    the status useful for installations that start Uvicorn/Gunicorn directly,
+    where the environment variable is not present.
+    """
+    configured = os.environ.get("SLIDEFLOW_BOOT_ID")
+    if configured:
+        return configured
+    try:
+        process = psutil.Process(os.getpid())
+        owner = process.parent() or process
+        return f"{owner.pid}:{owner.create_time():.6f}"
+    except Exception:
+        return f"pid:{os.getpid()}"
+
+
+SERVICE_BOOT_ID = _service_boot_id()
+
+
 @router.get("/admin/system/status")
 def api_admin_system_status(
     _: Any = Depends(require_system_admin),
@@ -88,6 +109,10 @@ def api_admin_system_status(
         "uptime_seconds": uptime_seconds,
         "backend_pid": backend_pid,
         "backend_port": backend_port,
+        # run.sh generates one id for the whole service process group. Unlike
+        # the worker PID, this remains stable across Gunicorn/Uvicorn workers
+        # and changes on every actual service restart.
+        "boot_id": SERVICE_BOOT_ID,
         "frontend_pid": frontend_pid,
         "frontend_port": frontend_port,
         "frontend_mode": frontend_mode,

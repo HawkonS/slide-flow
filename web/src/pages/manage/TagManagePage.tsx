@@ -131,12 +131,12 @@ export default function TagManagePage() {
   };
 
   return (
-    <div className="flex h-full flex-col gap-4">
+    <div className="page-shell">
       {/* 页头 */}
       <header className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-1.5">
-          <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
-          <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
+          <h1 className="page-title">{title}</h1>
+          <span className="page-count">
             {filtered.length === tags.length
               ? `共 ${tags.length} 个`
               : `筛选后 ${filtered.length} / ${tags.length} 个`}
@@ -153,7 +153,7 @@ export default function TagManagePage() {
             onChange={(e) => setQuery(e.target.value)}
             placeholder="搜索标签名、分类"
             className={cn(
-              "h-8 w-full rounded-full border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition sm:w-56",
+              "h-8 w-full rounded-md border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition sm:w-56",
               "placeholder:text-muted-foreground",
               "focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
               query.trim() !== "" && "border-primary/40 bg-primary/5",
@@ -163,7 +163,7 @@ export default function TagManagePage() {
         <div className="ml-auto flex items-center gap-2">
           <label
             className={cn(
-              "flex h-8 items-center gap-2 rounded-full border bg-background px-3 text-xs text-muted-foreground transition",
+              "flex h-8 items-center gap-2 rounded-md border bg-background px-3 text-xs text-muted-foreground transition",
               userCustomTags && "border-primary/40 bg-primary/5 text-foreground",
               configMut.isPending && "opacity-60",
             )}
@@ -177,7 +177,7 @@ export default function TagManagePage() {
           </label>
           <Button
             size="sm"
-            className="h-8 gap-1.5 rounded-full px-3 text-sm"
+            className="h-8 gap-1.5 px-3 text-sm"
             onClick={() => setCreateOpen(true)}
           >
             <Plus className="h-3.5 w-3.5" />

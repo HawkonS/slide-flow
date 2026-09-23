@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import stat
 import tempfile
 from dataclasses import dataclass, field
@@ -53,7 +54,6 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
         "label": "安全配置",
         "items": [
             {"key": "security.secret_key", "label": "会话签名密钥", "default": "slide-flow-local-dev-secret", "type": "str", "hot_reload": False, "secret": True, "desc": "会话/演示令牌签名密钥，也可通过环境变量 SLIDE_FLOW_SECRET 覆盖"},
-            {"key": "security.default_password", "label": "默认密码", "default": "123456", "type": "str", "hot_reload": True, "secret": True, "desc": "新建用户及首次初始化使用的默认密码；建议部署后立即修改，也可通过 SLIDE_FLOW_DEFAULT_PASSWORD 环境变量提供"},
             {"key": "security.session_ttl_hours", "label": "会话有效期（小时）", "default": "12", "type": "int", "hot_reload": True, "desc": "登录会话令牌的有效时长"},
             {"key": "security.show_token_ttl_seconds", "label": "演示令牌有效期（秒）", "default": "7200", "type": "int", "hot_reload": True, "desc": "演示分享令牌的有效时长"},
         ],
@@ -77,11 +77,12 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
         "label": "对象存储",
         "items": [
             {"key": "storage.backend", "label": "资源存储后端", "default": "oss", "type": "str", "hot_reload": False, "desc": "PPT/PNG 持久化后端；使用 OSS 时上传默认先落 OSS 临时目录，再下载到本地临时目录处理，最终结果回传 OSS"},
-            {"key": "oss.endpoint", "label": "OSS 外网 Endpoint", "default": "", "type": "str", "hot_reload": False, "desc": "例如 https://oss-cn-hangzhou.aliyuncs.com"},
-            {"key": "oss.internal_endpoint", "label": "OSS 内网 Endpoint", "default": "", "type": "str", "hot_reload": False, "desc": "阿里云服务器建议填写同地域内网 Endpoint，留空则使用外网 Endpoint"},
-            {"key": "oss.public_endpoint", "label": "OSS 展示 Endpoint", "default": "", "type": "str", "hot_reload": False, "desc": "浏览器访问图片的 Endpoint 或自定义域名；留空使用 oss.endpoint"},
+            {"key": "oss.endpoint", "label": "OSS 外网 Endpoint", "default": "", "type": "str", "hot_reload": False, "desc": "服务端内网访问失败时的回退地址，也是默认外网地址，例如 https://oss-cn-hangzhou.aliyuncs.com"},
+            {"key": "oss.internal_endpoint", "label": "OSS 内网 Endpoint", "default": "", "type": "str", "hot_reload": False, "desc": "服务端读写首选的同地域内网 Endpoint；网络类故障自动回退到 oss.endpoint，留空则直接使用外网"},
+            {"key": "oss.public_endpoint", "label": "OSS 展示 Endpoint", "default": "", "type": "str", "hot_reload": False, "desc": "仅用于浏览器访问图片和下载签名 URL 的 Endpoint 或自定义域名；留空使用 oss.endpoint，不能填写内网地址"},
             {"key": "oss.bucket", "label": "OSS Bucket", "default": "", "type": "str", "hot_reload": False, "desc": "存放 PPT 和 PNG 的 Bucket 名称"},
-            {"key": "oss.prefix", "label": "OSS Bucket 内目录", "default": "slide-flow", "type": "str", "hot_reload": False, "desc": "Bucket 内的对象目录/前缀，支持多级目录（例如 prod/slide-flow）；留空则直接写入 Bucket 根目录"},
+            {"key": "oss.prefix", "label": "OSS Bucket 内目录", "default": "slide-flow_test", "type": "str", "hot_reload": False, "desc": "Bucket 内的对象目录/前缀，支持多级目录（例如 prod/slide-flow）；留空则直接写入 Bucket 根目录"},
+            {"key": "oss.connect_timeout_seconds", "label": "OSS 连接超时（秒）", "default": "3", "type": "int", "hot_reload": False, "desc": "连接内网或外网 Endpoint 的超时；内网不可达时到期后自动尝试外网，建议 2–5 秒"},
             {"key": "oss.access_key_id", "label": "OSS AccessKey ID", "default": "", "type": "str", "hot_reload": False, "secret": True, "desc": "推荐使用环境变量 ALIBABA_CLOUD_ACCESS_KEY_ID，或在 ECS 上使用 ALIBABA_CLOUD_RAM_ROLE_NAME"},
             {"key": "oss.access_key_secret", "label": "OSS AccessKey Secret", "default": "", "type": "str", "hot_reload": False, "secret": True, "desc": "推荐使用环境变量 ALIBABA_CLOUD_ACCESS_KEY_SECRET；不要提交到 Git"},
             {"key": "oss.url_expire_seconds", "label": "签名 URL 有效期（秒）", "default": "900", "type": "int", "hot_reload": False, "desc": "前台图片和下载链接的有效期"},
@@ -182,6 +183,7 @@ DEFAULT_PROPERTIES: dict[str, str] = {
     for group in (*CONFIG_SCHEMA, *OPERATION_CONFIG_SCHEMA)
     for item in group["items"]
 }
+LEGACY_CONFIG_KEYS = {"security.default_password"}
 
 
 def _render_properties(values: dict[str, str]) -> str:
@@ -202,12 +204,18 @@ def _render_properties(values: dict[str, str]) -> str:
 
 
 def _render_default_properties() -> str:
-    return _render_properties(DEFAULT_PROPERTIES)
+    values = dict(DEFAULT_PROPERTIES)
+    # Never materialize the documented development secret in a new
+    # installation. Existing files remain untouched so upgrades do not rotate
+    # sessions unexpectedly; production deployments can still override it via
+    # SLIDE_FLOW_SECRET or a secret manager.
+    values["security.secret_key"] = secrets.token_urlsafe(48)
+    return _render_properties(values)
 
 
 def _validate_properties(values: dict[str, str]) -> None:
     expected = set(DEFAULT_PROPERTIES)
-    actual = set(values)
+    actual = set(values) - LEGACY_CONFIG_KEYS
     missing = sorted(expected - actual)
     unknown = sorted(actual - expected)
     errors: list[str] = []
@@ -276,7 +284,6 @@ _PROP_TO_ATTR: dict[str, str] = {
     "server.thread_pool_size": "thread_pool_size",
     "server.response_cache": "response_cache_enabled",
     "security.secret_key": "secret_key",
-    "security.default_password": "default_password",
     "security.session_ttl_hours": "session_ttl_hours",
     "security.show_token_ttl_seconds": "show_token_ttl_seconds",
     "data.dir": "data_dir",
@@ -293,6 +300,7 @@ _PROP_TO_ATTR: dict[str, str] = {
     "oss.public_endpoint": "oss_public_endpoint",
     "oss.bucket": "oss_bucket",
     "oss.prefix": "oss_prefix",
+    "oss.connect_timeout_seconds": "oss_connect_timeout_seconds",
     "oss.access_key_id": "oss_access_key_id",
     "oss.access_key_secret": "oss_access_key_secret",
     "oss.url_expire_seconds": "oss_url_expire_seconds",
@@ -369,7 +377,6 @@ class Settings:
 
     # 安全配置
     secret_key: str = DEFAULT_PROPERTIES["security.secret_key"]
-    default_password: str = DEFAULT_PROPERTIES["security.default_password"]
     session_ttl_hours: int = int(DEFAULT_PROPERTIES["security.session_ttl_hours"])
     show_token_ttl_seconds: int = int(DEFAULT_PROPERTIES["security.show_token_ttl_seconds"])
 
@@ -390,6 +397,7 @@ class Settings:
     oss_public_endpoint: str = DEFAULT_PROPERTIES["oss.public_endpoint"]
     oss_bucket: str = DEFAULT_PROPERTIES["oss.bucket"]
     oss_prefix: str = DEFAULT_PROPERTIES["oss.prefix"]
+    oss_connect_timeout_seconds: int = int(DEFAULT_PROPERTIES["oss.connect_timeout_seconds"])
     oss_access_key_id: str = field(default=DEFAULT_PROPERTIES["oss.access_key_id"], repr=False)
     oss_access_key_secret: str = field(default=DEFAULT_PROPERTIES["oss.access_key_secret"], repr=False)
     oss_url_expire_seconds: int = int(DEFAULT_PROPERTIES["oss.url_expire_seconds"])
@@ -500,7 +508,6 @@ def read_config_secret(key: str) -> str:
     _validate_properties(props)
     env_overrides = {
         "security.secret_key": "SLIDE_FLOW_SECRET",
-        "security.default_password": "SLIDE_FLOW_DEFAULT_PASSWORD",
         "feishu.app_secret": "FEISHU_APP_SECRET",
         "render.token": "SLIDE_FLOW_RENDER_TOKEN",
         "oss.access_key_id": "ALIBABA_CLOUD_ACCESS_KEY_ID",
@@ -529,6 +536,29 @@ def write_properties(updates: dict[str, str]) -> None:
         raise ValueError(f"不支持的配置项: {', '.join(unknown)}")
     values.update(updates)
     _write_text_atomic(path, _render_properties(values))
+
+
+def legacy_default_password_candidates() -> list[str]:
+    """Return upgrade-only shared-password candidates, never used for new accounts."""
+    props = read_properties(PROPERTIES_FILE)
+    candidates = [
+        os.getenv("SLIDE_FLOW_DEFAULT_PASSWORD", ""),
+        props.get("security.default_password", ""),
+        "123456",
+    ]
+    return list(dict.fromkeys(value for value in candidates if value))
+
+
+def remove_legacy_default_password_config() -> None:
+    """Remove the retired shared password from local config and its backup."""
+    for path in (PROPERTIES_FILE, PROPERTIES_FILE.with_suffix(PROPERTIES_FILE.suffix + ".bak")):
+        if not path.exists():
+            continue
+        lines = [
+            line for line in path.read_text(encoding="utf-8").splitlines()
+            if not line.strip().startswith("security.default_password=")
+        ]
+        _write_text_atomic(path, "\n".join(lines).rstrip() + "\n")
 
 
 def reload_settings() -> set[str]:
@@ -566,7 +596,6 @@ def load_settings() -> Settings:
 
     # 安全配置
     secret_key = os.getenv("SLIDE_FLOW_SECRET", get_value("security.secret_key"))
-    default_password = os.getenv("SLIDE_FLOW_DEFAULT_PASSWORD", get_value("security.default_password"))
     session_ttl_hours = int(get_value("security.session_ttl_hours"))
     show_token_ttl_seconds = int(get_value("security.show_token_ttl_seconds"))
 
@@ -621,6 +650,7 @@ def load_settings() -> Settings:
     oss_public_endpoint = get_value("oss.public_endpoint")
     oss_bucket = get_value("oss.bucket")
     oss_prefix = get_value("oss.prefix")
+    oss_connect_timeout_seconds = int(get_value("oss.connect_timeout_seconds"))
     oss_access_key_id = os.getenv("ALIBABA_CLOUD_ACCESS_KEY_ID", get_value("oss.access_key_id"))
     oss_access_key_secret = os.getenv("ALIBABA_CLOUD_ACCESS_KEY_SECRET", get_value("oss.access_key_secret"))
     oss_url_expire_seconds = int(get_value("oss.url_expire_seconds"))
@@ -654,7 +684,6 @@ def load_settings() -> Settings:
         thread_pool_size=thread_pool_size,
         response_cache_enabled=response_cache_enabled,
         secret_key=secret_key,
-        default_password=default_password,
         session_ttl_hours=session_ttl_hours,
         show_token_ttl_seconds=show_token_ttl_seconds,
         data_dir=data_dir,
@@ -671,6 +700,7 @@ def load_settings() -> Settings:
         oss_public_endpoint=oss_public_endpoint,
         oss_bucket=oss_bucket,
         oss_prefix=oss_prefix,
+        oss_connect_timeout_seconds=oss_connect_timeout_seconds,
         oss_access_key_id=oss_access_key_id,
         oss_access_key_secret=oss_access_key_secret,
         oss_url_expire_seconds=oss_url_expire_seconds,

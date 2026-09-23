@@ -21,8 +21,8 @@ from app.services.common import (
     DEFAULT_RESOURCE_SUBJECT,
     _natural_sort_key,
     _reject_removed_form_fields,
+    _validate_required_scope,
     _validate_resource_subject,
-    _validate_scope,
     _validate_secrecy,
 )
 from app.services.files import (
@@ -166,9 +166,9 @@ async def create_split_import_task(
     subject: str = Form(DEFAULT_RESOURCE_SUBJECT),
     tags: str = Form(""),
     secrecy_level: str = Form("public"),
-    visibility_scope: str = Form("public"),
+    visibility_scope: str = Form(""),
     visible_user_ids: str = Form(""),
-    management_scope: str = Form("private"),
+    management_scope: str = Form(""),
     manage_user_ids: str = Form(""),
     remark_html: str = Form(""),
     ppt_file: UploadFile = File(...),
@@ -204,8 +204,8 @@ async def create_split_import_task(
             _=None,
         )
     _validate_ppt_upload(ppt_file)
-    visibility_scope = _validate_scope(visibility_scope)
-    management_scope = _validate_scope(management_scope)
+    visibility_scope = _validate_required_scope(visibility_scope, "可见范围")
+    management_scope = _validate_required_scope(management_scope, "管理范围")
     secrecy_level = _validate_secrecy(secrecy_level)
     subject = _validate_resource_subject(subject)
 
@@ -305,9 +305,9 @@ async def create_resource_import_task(
     tags: str = Form(""),
     secrecy_level: str = Form("public"),
     status: str = Form("active"),
-    visibility_scope: str = Form("public"),
+    visibility_scope: str = Form(""),
     visible_user_ids: str = Form(""),
-    management_scope: str = Form("private"),
+    management_scope: str = Form(""),
     manage_user_ids: str = Form(""),
     remark_html: str = Form(""),
     ppt_file: UploadFile = File(...),
@@ -321,8 +321,8 @@ async def create_resource_import_task(
     )
     if Path(ppt_file.filename or "").suffix.lower() not in {".pptx", ".potx", ".ppsx"}:
         raise HTTPException(400, "请上传 PPTX/POTX/PPSX 文件；旧版 PPT 请先另存为 PPTX")
-    visibility_scope = _validate_scope(visibility_scope)
-    management_scope = _validate_scope(management_scope)
+    visibility_scope = _validate_required_scope(visibility_scope, "可见范围")
+    management_scope = _validate_required_scope(management_scope, "管理范围")
     secrecy_level = _validate_secrecy(secrecy_level)
     status = status if status in {"active", "disabled"} else "active"
     subject = _validate_resource_subject(subject)

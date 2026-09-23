@@ -30,7 +30,7 @@ export function ResourceListView({
   onOpen, onPreview, onDownload, onEdit, onNewVersion,
 }: ResourceListViewProps) {
   return (
-    <div className="overflow-hidden rounded-md border bg-card">
+    <div className="surface overflow-hidden">
       <Table className="min-w-[980px]">
         <TableHeader>
           <TableRow>
@@ -57,7 +57,7 @@ export function ResourceListView({
             const tags = parseTags(resource.tags);
             const selected = selectedIds.has(resource.id);
             return (
-              <TableRow key={resource.id} data-state={selected ? "selected" : undefined}>
+              <TableRow key={resource.id} data-state={selected ? "selected" : undefined} className={selected ? "bg-[hsl(var(--selection))]" : undefined}>
                 <TableCell>
                   <Checkbox
                     checked={selected}
@@ -86,7 +86,7 @@ export function ResourceListView({
                 </TableCell>
                 <TableCell>
                   <div className="flex items-center gap-1 overflow-hidden">
-                    {tags.slice(0, 2).map((tag) => <span key={tag} className="max-w-20 truncate rounded bg-secondary px-1.5 py-0.5 text-[11px]" title={tag}>{tag}</span>)}
+                    {tags.slice(0, 2).map((tag) => <span key={tag} className="max-w-20 truncate rounded-md bg-secondary px-1.5 py-0.5 text-[11px]" title={tag}>{tag}</span>)}
                     {tags.length > 2 && <span className="text-xs text-muted-foreground">+{tags.length - 2}</span>}
                     {tags.length === 0 && <span className="text-muted-foreground">-</span>}
                   </div>
@@ -100,7 +100,7 @@ export function ResourceListView({
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem onSelect={() => onOpen(resource)}><Eye className="mr-2 h-4 w-4" />查看详情</DropdownMenuItem>
                       <DropdownMenuItem onSelect={() => onPreview(resource)}><Maximize className="mr-2 h-4 w-4" />放大查看</DropdownMenuItem>
-                      <DropdownMenuItem onSelect={() => onDownload(resource)}><Download className="mr-2 h-4 w-4" />下载</DropdownMenuItem>
+                      {resource.can_manage && <DropdownMenuItem onSelect={() => onDownload(resource)}><Download className="mr-2 h-4 w-4" />下载</DropdownMenuItem>}
                       {resource.can_manage && <>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem onSelect={() => onEdit(resource)}><Pencil className="mr-2 h-4 w-4" />编辑信息</DropdownMenuItem>

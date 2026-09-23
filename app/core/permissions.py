@@ -5,7 +5,7 @@ import sqlite3
 from fastapi import Depends, HTTPException, Request
 
 from app.db import get_read_db, release_db
-from app.core.security import read_session_token
+from app.core.security import read_session_claims
 from app.config import settings
 
 
@@ -31,13 +31,16 @@ def _current_user_from_request(request: Request, db: sqlite3.Connection) -> dict
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
         return None
-    user_id = read_session_token(token, settings.secret_key)
-    if user_id is None:
+    claims = read_session_claims(token, settings.secret_key)
+    if claims is None:
         return None
+    user_id, session_version = claims
 
     # 每次鉴权都查库，确保多 worker 下角色变更立即生效。
     row = db.execute("SELECT * FROM users WHERE id = ?", (int(user_id),)).fetchone()
     if row is None:
+        return None
+    if int(row["session_version"]) != session_version:
         return None
 
     return dict(row)
@@ -59,6 +62,12 @@ def require_user(
     user = _current_user_from_request(request, db)
     if user is None:
         raise HTTPException(401, "请先登录")
+    if user.get("must_change_pwd") and request.url.path not in {
+        "/api/me",
+        "/api/auth/change-password",
+        "/api/auth/logout",
+    }:
+        raise HTTPException(403, "请先修改临时密码后再继续使用")
     return user
 
 

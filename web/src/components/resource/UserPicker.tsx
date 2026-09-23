@@ -96,6 +96,13 @@ export function UserPicker({ value, onChange, showBulk = true, className, exclud
                     checked && "bg-primary/5 text-primary",
                   )}
                 >
+                  {u.avatar_url ? (
+                    <img src={u.avatar_url} alt="" className="h-5 w-5 shrink-0 rounded-full object-cover" referrerPolicy="no-referrer" />
+                  ) : (
+                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-medium text-muted-foreground">
+                      {label.slice(0, 1).toUpperCase()}
+                    </span>
+                  )}
                   <span
                     aria-hidden
                     className={cn(

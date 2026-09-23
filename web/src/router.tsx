@@ -8,9 +8,12 @@ import { RequireAdmin, RequireAuth, RequireSystemAdmin } from "@/lib/auth";
 
 // 路由级代码分割：各页面按需加载，登录页与主应用不再打入同一 bundle
 const LoginPage = lazy(() => import("@/pages/auth/LoginPage").then((m) => ({ default: m.LoginPage })));
+const SetupPage = lazy(() => import("@/pages/auth/SetupPage").then((m) => ({ default: m.SetupPage })));
 const HomePage = lazy(() => import("@/pages/home/HomePage").then((m) => ({ default: m.HomePage })));
 const ResourcesPage = lazy(() => import("@/pages/resources/ResourcesPage").then((m) => ({ default: m.ResourcesPage })));
 const ResourceImportPage = lazy(() => import("@/pages/resources/ResourceImportPage").then((m) => ({ default: m.ResourceImportPage })));
+const ResourceDetailPage = lazy(() => import("@/pages/resources/ResourceDetailPage").then((m) => ({ default: m.ResourceDetailPage })));
+const ResourceSharePage = lazy(() => import("@/pages/resources/ResourceDetailPage").then((m) => ({ default: m.ResourceSharePage })));
 const TemplatesPage = lazy(() => import("@/pages/templates/TemplatesPage").then((m) => ({ default: m.TemplatesPage })));
 const FontsPage = lazy(() => import("@/pages/fonts/FontsPage").then((m) => ({ default: m.FontsPage })));
 const ShowsPage = lazy(() => import("@/pages/shows/ShowsPage").then((m) => ({ default: m.ShowsPage })));
@@ -36,7 +39,9 @@ function PageLoader() {
 }
 
 export const router = createBrowserRouter([
+  { path: "/setup", element: <SetupPage /> },
   { path: "/login", element: <LoginPage /> },
+  { path: "/share/resources/:token", element: <ResourceSharePage /> },
   {
     path: "/shows/:id/fullscreen",
     element: (
@@ -65,6 +70,7 @@ export const router = createBrowserRouter([
       { path: "/home", element: <HomePage /> },
       { path: "/resources", element: <ResourcesPage /> },
       { path: "/resources/import", element: <ResourceImportPage /> },
+      { path: "/resources/:resourceId", element: <ResourceDetailPage /> },
       { path: "/templates", element: <TemplatesPage /> },
       { path: "/fonts", element: <FontsPage /> },
       { path: "/shows", element: <StandardShowsPage /> },

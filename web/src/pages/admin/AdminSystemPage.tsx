@@ -13,6 +13,13 @@ import { AdminConfigPage } from "./AdminConfigPage";
 
 type UpgradePhase = "upgrading" | "restarting" | "done" | "failed";
 
+type UpgradeState = {
+  phase: UpgradePhase;
+  startTime: number;
+  baselineBootId?: string | null;
+  baselineStartTime?: string | null;
+};
+
 /**
  * 升级中全屏遮罩：显示升级进度状态，轮询服务可用性，恢复后自动刷新；
  * 超时或服务端返回认证失败时进入 failed 状态，提供关闭入口，避免无限等待。
@@ -45,7 +52,7 @@ function UpgradeOverlay({
         )}
         <div>
           <h2 className="text-xl font-semibold">
-            {phase === "failed" ? "升级状态异常" : "系统升级中"}
+            {phase === "failed" ? "升级状态异常" : phase === "done" ? "升级完成" : "系统升级中"}
           </h2>
           <p className="mt-2 text-sm text-muted-foreground">{phaseText[phase]}</p>
         </div>
@@ -70,24 +77,35 @@ function UpgradeOverlay({
 
 const UPGRADE_STATE_KEY = "slideflow_upgrade_state";
 
-// 轮询节奏：upgrading 阶段等待较长（git 拉取 + 停服务），restarting 阶段较短
+// 升级阶段先留出 git 拉取和停服务的时间；已进入重启阶段或重新打开页面时立即探测
 const UPGRADE_INITIAL_DELAY = 10_000;
-const RESTART_INITIAL_DELAY = 4_000;
 const POLL_INTERVAL = 3_000;
 // 总超时：超过后不再无限等待，进入 failed 状态由用户处理
 const UPGRADE_TIMEOUT = 180_000;
 
-function saveUpgradeState(state: { phase: UpgradePhase; startTime: number }) {
+function saveUpgradeState(state: UpgradeState) {
   try {
     sessionStorage.setItem(UPGRADE_STATE_KEY, JSON.stringify(state));
   } catch { /* ignore */ }
 }
 
-function loadUpgradeState(): { phase: UpgradePhase; startTime: number } | null {
+function loadUpgradeState(): UpgradeState | null {
   try {
     const raw = sessionStorage.getItem(UPGRADE_STATE_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as { phase: UpgradePhase; startTime: number };
+    const parsed = JSON.parse(raw) as UpgradeState;
+    // Do not revive the pre-baseline format. It could only tell that the
+    // endpoint was reachable, which is exactly how a completed upgrade was
+    // left showing an endless timer after navigating back to this page.
+    if (
+      !parsed ||
+      typeof parsed.startTime !== "number" ||
+      !["upgrading", "restarting", "done", "failed"].includes(parsed.phase) ||
+      (!parsed.baselineBootId && !parsed.baselineStartTime)
+    ) {
+      sessionStorage.removeItem(UPGRADE_STATE_KEY);
+      return null;
+    }
     // 超过 5 分钟自动过期，避免残留
     if (Date.now() - parsed.startTime > 5 * 60 * 1000) {
       sessionStorage.removeItem(UPGRADE_STATE_KEY);
@@ -121,6 +139,7 @@ interface SystemStatus {
   uptime_seconds: number;
   backend_pid: number;
   backend_port: number;
+  boot_id: string | null;
   frontend_pid: number | null;
   frontend_port: number;
   /** "static" = 生产模式前端由后端静态托管；"dev" = Vite dev server 运行中 */
@@ -151,20 +170,26 @@ function formatUptime(seconds: number): string {
 
 function RuntimeTab() {
   // 升级状态：控制全屏遮罩和轮询逻辑（从 sessionStorage 恢复，避免页面刷新丢失）
-  const [upgradeState, setUpgradeState] = React.useState<null | {
-    phase: UpgradePhase;
-    startTime: number;
-  }>(() => loadUpgradeState());
+  const [upgradeState, setUpgradeState] = React.useState<UpgradeState | null>(() => loadUpgradeState());
   const [elapsed, setElapsed] = React.useState(0);
 
-  // 同步升级状态到 sessionStorage，确保页面刷新后能恢复
+  // 同步升级状态到 sessionStorage，确保页面刷新后能恢复。终态不持久化，
+  // 防止用户手动刷新或切换页面后再次看到已经完成的倒计时。
   React.useEffect(() => {
-    if (upgradeState) {
+    if (upgradeState && upgradeState.phase !== "done" && upgradeState.phase !== "failed") {
       saveUpgradeState(upgradeState);
+    } else {
+      clearUpgradeState();
     }
   }, [upgradeState?.phase, upgradeState?.startTime]);
-  const pollTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const elapsedTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  const reloadTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const probeRef = React.useRef<(() => void) | null>(null);
+
+  React.useEffect(() => () => {
+    if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current);
+  }, []);
 
   // 计时器：每秒更新已耗时（基于 startTime 累计，阶段切换不重置）
   React.useEffect(() => {
@@ -179,64 +204,114 @@ function RuntimeTab() {
   }, [upgradeState]);
 
   const failUpgrade = React.useCallback((reason: string) => {
-    if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+    if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
     clearUpgradeState();
     setUpgradeState((s) => (s ? { ...s, phase: "failed" } : s));
     toast.error(reason);
   }, []);
 
-  // 轮询逻辑：升级/重启后探测服务是否恢复；超时或认证失效时终止等待
+  const completeUpgrade = React.useCallback(() => {
+    if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+    clearUpgradeState();
+    setUpgradeState((s) => (s ? { ...s, phase: "done" } : s));
+    // 状态先短暂显示完成，再获取新的 index.html 和 hashed chunks。
+    if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current);
+    reloadTimerRef.current = setTimeout(() => window.location.reload(), 500);
+  }, []);
+
+  // 轮询逻辑：只有确认服务启动批次发生变化后才判定升级完成。
   React.useEffect(() => {
     if (!upgradeState) return;
     if (upgradeState.phase === "done" || upgradeState.phase === "failed") return;
 
     const startTime = upgradeState.startTime;
-    // 升级从 "upgrading" 开始需要等10秒；重启/刷新恢复直接从 "restarting" 开始则等4秒
-    const initialDelay = upgradeState.phase === "upgrading" ? UPGRADE_INITIAL_DELAY : RESTART_INITIAL_DELAY;
+    const initialDelay = upgradeState.phase === "upgrading" ? UPGRADE_INITIAL_DELAY : 0;
+    let cancelled = false;
+    let inFlight = false;
 
-    const startDelay = setTimeout(() => {
-      if (upgradeState.phase === "upgrading") {
-        setUpgradeState((s) => s ? { ...s, phase: "restarting" } : s);
+    const hasRestarted = (status: SystemStatus) => {
+      if (upgradeState.baselineBootId && status.boot_id) {
+        return upgradeState.baselineBootId !== status.boot_id;
       }
+      // A mixed-version deployment may have supplied no boot_id before the
+      // upgrade. Seeing the field after the service returns proves that the
+      // new backend is serving the request, so do not fall back to a worker
+      // PID/start time that may differ across Gunicorn workers.
+      if (!upgradeState.baselineBootId && status.boot_id) {
+        return true;
+      }
+      // Backward-compatible fallback for installations that were started
+      // without run.sh/SLIDEFLOW_BOOT_ID.
+      return Boolean(
+        upgradeState.baselineStartTime &&
+        status.start_time &&
+        upgradeState.baselineStartTime !== status.start_time,
+      );
+    };
 
-      // 每 3 秒轮询一次服务健康检查（使用原生 fetch，不经过 api() 以避免错误传播）
-      pollTimerRef.current = setInterval(async () => {
-        // 总超时保护：升级/重启流程异常时不再无限等待
+    const probe = async () => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      try {
         if (Date.now() - startTime > UPGRADE_TIMEOUT) {
           failUpgrade("等待服务恢复超时，升级可能未成功，请检查升级日志");
           return;
         }
-        try {
-          const res = await fetch("/api/admin/system/status", {
-            credentials: "include",
-            cache: "no-store",
-          });
-          if (res.ok) {
-            // 服务恢复
-            if (pollTimerRef.current) clearInterval(pollTimerRef.current);
-            setUpgradeState((s) => s ? { ...s, phase: "done" } : s);
-            clearUpgradeState(); // 清除持久化状态
-            // 等待 1.5 秒让用户看到"完成"状态后刷新
-            setTimeout(() => window.location.reload(), 1500);
-            return;
-          }
-          if (res.status === 401 || res.status === 403) {
-            // 服务端已可达但会话失效，继续轮询没有意义
-            failUpgrade("服务已恢复但登录状态失效，请重新登录");
-            return;
-          }
-          // 其他非 ok 响应（如 502）：静默忽略，继续轮询
-        } catch {
-          // 网络错误（服务完全不可达）：继续轮询
+        const res = await fetch("/api/admin/system/status", {
+          credentials: "include",
+          cache: "no-store",
+        });
+        if (cancelled) return;
+        if (res.status === 401 || res.status === 403) {
+          failUpgrade("服务已恢复但登录状态失效，请重新登录");
+          return;
         }
-      }, POLL_INTERVAL);
-    }, initialDelay);
+        if (res.ok) {
+          const status = (await res.json()) as SystemStatus;
+          // A healthy response from the old process is not completion. This
+          // is the key guard against clearing the upgrade state too early.
+          if (hasRestarted(status)) {
+            completeUpgrade();
+            return;
+          }
+        }
+      } catch {
+        // The service is expected to be unreachable while it restarts.
+      } finally {
+        inFlight = false;
+      }
+      if (!cancelled) {
+        pollTimerRef.current = setTimeout(probe, POLL_INTERVAL);
+      }
+    };
+
+    probeRef.current = () => { void probe(); };
+    const kickoff = () => {
+      if (cancelled) return;
+      if (upgradeState.phase === "upgrading") {
+        setUpgradeState((s) => (s ? { ...s, phase: "restarting" } : s));
+        return;
+      }
+      void probe();
+    };
+    pollTimerRef.current = setTimeout(kickoff, initialDelay);
+    const onVisible = () => {
+      if (!document.hidden) {
+        if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+        probeRef.current?.();
+      }
+    };
+    window.addEventListener("focus", onVisible);
+    document.addEventListener("visibilitychange", onVisible);
 
     return () => {
-      clearTimeout(startDelay);
-      if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+      cancelled = true;
+      window.removeEventListener("focus", onVisible);
+      document.removeEventListener("visibilitychange", onVisible);
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+      probeRef.current = null;
     };
-  }, [upgradeState?.phase]); // 依赖改为只看 phase 变化
+  }, [upgradeState, completeUpgrade, failUpgrade]);
 
   const { data, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ["system", "status"],
@@ -255,7 +330,15 @@ function RuntimeTab() {
     mutationFn: async () => api("/api/admin/system/restart", { method: "POST" }),
     onSuccess: () => {
       // 显示升级遮罩，进入重启轮询流程
-      setUpgradeState({ phase: "restarting", startTime: Date.now() });
+      const nextState: UpgradeState = {
+        phase: "restarting",
+        startTime: Date.now(),
+        baselineBootId: data?.boot_id,
+        baselineStartTime: data?.start_time,
+      };
+      // 先写入再更新 React，用户切到其他管理页或刷新时也能恢复监控。
+      saveUpgradeState(nextState);
+      setUpgradeState(nextState);
     },
     onError: (err: Error) => toast.error(err.message || "重启失败"),
   });
@@ -264,7 +347,15 @@ function RuntimeTab() {
     mutationFn: async () => api("/api/admin/system/upgrade", { method: "POST" }),
     onSuccess: () => {
       // 显示升级遮罩，开始轮询
-      setUpgradeState({ phase: "upgrading", startTime: Date.now() });
+      const nextState: UpgradeState = {
+        phase: "upgrading",
+        startTime: Date.now(),
+        baselineBootId: data?.boot_id,
+        baselineStartTime: data?.start_time,
+      };
+      // 先写入再更新 React，用户切到其他管理页或刷新时也能恢复监控。
+      saveUpgradeState(nextState);
+      setUpgradeState(nextState);
     },
     onError: (err: Error) => toast.error(err.message || "升级失败"),
   });
@@ -609,9 +700,9 @@ export function AdminSystemPage({ section = "runtime" }: { section?: SystemSecti
   const title = section === "logs" ? "日志管理" : "运行管理";
 
   return (
-    <div className="flex h-full flex-col gap-4">
+    <div className="page-shell">
       <header className="flex items-center gap-4">
-        <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
+        <h1 className="page-title">{title}</h1>
       </header>
       {section === "logs" ? <LogTab /> : <RuntimeTab />}
     </div>

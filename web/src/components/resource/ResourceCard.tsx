@@ -143,7 +143,7 @@ export function ResourceCard({
       tabIndex={0}
       onClick={() => onOpen?.(resource)}
       onKeyDown={handleKeyDown}
-      className="group relative flex cursor-pointer flex-col overflow-hidden rounded-lg border bg-card text-card-foreground shadow-sm transition hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="group relative flex cursor-pointer flex-col overflow-hidden rounded-lg border bg-card text-card-foreground shadow-sm transition hover:border-foreground/20 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <div className="relative aspect-[16/9] w-full overflow-hidden bg-muted">
         {preview ? (
@@ -180,7 +180,7 @@ export function ResourceCard({
                   <Maximize className="mr-2 h-4 w-4" /> 放大查看
                 </DropdownMenuItem>
               )}
-              {onDownload && (
+              {resource.can_manage && onDownload && (
                 <DropdownMenuItem onSelect={() => onDownload(resource)}>
                   <Download className="mr-2 h-4 w-4" /> 下载
                 </DropdownMenuItem>
@@ -259,8 +259,13 @@ export function ResourceCard({
         )}
       </div>
 
-      <div className="px-3 py-2.5">
-        <h3 className="line-clamp-1 text-[13px] font-medium">{resource.name}</h3>
+      <div className="border-t bg-[hsl(var(--surface-subtle))] px-3 py-2.5">
+        <h3 className="line-clamp-1 text-[13px] font-medium text-foreground">{resource.name}</h3>
+        <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+          <span>v{resource.current_version}</span>
+          <span aria-hidden="true">·</span>
+          <span>{resource.subject || "未设置主体"}</span>
+        </div>
       </div>
     </article>
   );

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Any
+from typing import Any, Optional
 
 from pydantic import Field
 
@@ -26,10 +26,13 @@ class OfflineVerifyPayload(ApiPayload):
 class UserPayload(ApiPayload):
     name: str = Field(..., min_length=1, max_length=100)
     username: str = Field(..., min_length=2, max_length=50)
-    # 空字符串表示编辑用户时不修改密码；非空密码由路由统一校验至少 8 位。
-    password: str | None = Field(default=None, max_length=200)
+    # 空字符串表示编辑用户时不修改密码；非空密码由路由统一执行密码策略校验。
+    password: Optional[str] = Field(default=None, max_length=200)
     feishu_id: str = Field(default="", max_length=100)
+    avatar_url: str = Field(default="", max_length=2000)
+    tags: str = Field(default="", max_length=1000)
     role: str = ROLE_USER
+    # 兼容旧客户端；新建本地密码账号始终要求首次登录修改密码。
     need_change_pwd: bool = False
 
 
@@ -55,7 +58,14 @@ class UserPreferencesPayload(ApiPayload):
 
 class ChangePasswordPayload(ApiPayload):
     old_password: str = Field(..., min_length=1, max_length=200)
-    new_password: str = Field(..., min_length=8, max_length=200)
+    new_password: str = Field(..., min_length=10, max_length=200)
+
+
+class InitialSetupPayload(ApiPayload):
+    token: str = Field(..., min_length=32, max_length=200)
+    name: str = Field(..., min_length=1, max_length=100)
+    username: str = Field(..., min_length=2, max_length=50)
+    password: str = Field(..., min_length=10, max_length=200)
 
 
 def db_dep():
@@ -81,7 +91,14 @@ def _serialize_user(row: sqlite3.Row | None) -> dict[str, Any] | None:
         "username": row["username"],
         "role": row["role"],
         "feishu_id": row["feishu_id"],
+        "avatar_url": row["avatar_url"] if "avatar_url" in row.keys() else "",
+        "tags": row["tags"] if "tags" in row.keys() else "",
         "must_change_pwd": bool(row["must_change_pwd"]),
+        "temporary_password_expires_at": (
+            row["temporary_password_expires_at"]
+            if "temporary_password_expires_at" in row.keys()
+            else None
+        ),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }

@@ -16,13 +16,18 @@ export interface CurrentUser {
   name: string | null;
   role: UserRole;
   feishu_id?: string | null;
+  avatar_url?: string | null;
+  tags?: string;
   must_change_pwd?: boolean;
+  temporary_password_expires_at?: string | null;
 }
 
 export interface UserOption {
   id: number;
   username: string;
   name: string | null;
+  avatar_url?: string | null;
+  tags?: string;
 }
 
 export type VisibilityScope = "public" | "partial" | "private";
@@ -115,8 +120,11 @@ export interface AdminUser {
   username: string;
   name: string | null;
   feishu_id: string | null;
+  avatar_url?: string | null;
+  tags?: string;
   role: UserRole;
   must_change_pwd?: boolean;
+  temporary_password_expires_at?: string | null;
   created_at: string;
   updated_at: string;
 }

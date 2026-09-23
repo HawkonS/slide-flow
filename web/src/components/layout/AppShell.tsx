@@ -81,9 +81,9 @@ function NavItemLink({ item }: { item: NavItem }) {
       to={item.to}
       className={({ isActive }) =>
         cn(
-          "flex items-center gap-3 rounded-md px-3 py-2.5 text-sm text-foreground/80 transition-colors hover:bg-accent",
+          "relative flex items-center gap-3 rounded-md px-3 py-2.5 text-sm text-foreground/75 transition-colors hover:bg-accent hover:text-foreground",
           isActive &&
-            "bg-[hsl(var(--primary-weak))] font-medium text-primary hover:bg-[hsl(var(--primary-weak))]",
+            "bg-[hsl(var(--sidebar-active))] font-medium text-foreground before:absolute before:inset-y-1.5 before:left-0 before:w-0.5 before:rounded-full before:bg-foreground/60 hover:bg-[hsl(var(--sidebar-active))]",
         )
       }
     >
@@ -171,13 +171,13 @@ export function AppShell() {
   // 用户登录后初始化全局 WebSocket 连接，用于接收异步任务推送
   // 同源 WebSocket 通过 httpOnly Cookie 鉴权；用户 ID 只用于隔离事件游标。
   useEffect(() => {
-    if (!user) return;
+    if (!user || user.must_change_pwd) return;
     const userKey = String(user.id);
     useDownloadManager.getState().connect(userKey);
     return () => {
       useDownloadManager.getState().disconnect();
     };
-  }, [user?.id]);
+  }, [user?.id, user?.must_change_pwd]);
 
   const userDisplayName = user?.name || user?.username || "";
   const userRoleText =
@@ -194,7 +194,7 @@ export function AppShell() {
     <div className="flex h-screen flex-col bg-background">
       {/* 顶部栏 */}
       <header
-        className="flex h-14 shrink-0 items-center border-b bg-card px-4 md:px-6"
+        className="flex h-14 shrink-0 items-center border-b bg-card px-4 shadow-[0_1px_0_rgba(15,23,42,0.02)] md:px-6"
         style={{ userSelect: 'none', WebkitUserSelect: 'none' }}
       >
         {/* 移动端：汉堡按钮 */}
@@ -241,7 +241,8 @@ export function AppShell() {
         {/* 右侧用户信息 */}
         <div className="ml-auto flex items-center gap-3 text-sm md:gap-5">
           {user && (
-            <span className="text-foreground/80">
+            <span className="inline-flex items-center gap-2 text-foreground/80">
+              {user.avatar_url ? <img src={user.avatar_url} alt="" className="h-7 w-7 rounded-full object-cover" referrerPolicy="no-referrer" /> : <span className="flex h-7 w-7 items-center justify-center rounded-full bg-muted text-xs text-muted-foreground">{userDisplayName.slice(0, 1).toUpperCase()}</span>}
               {userDisplayName}
               <span className="mx-1 text-muted-foreground">·</span>
               {userRoleText}
@@ -251,7 +252,7 @@ export function AppShell() {
             <button
               type="button"
               onClick={() => logout()}
-              className="inline-flex items-center gap-1 text-foreground/70 hover:text-primary"
+              className="inline-flex items-center gap-1 text-foreground/70 hover:text-foreground"
             >
               <LogOut className="h-4 w-4 md:hidden" />
               <span className="hidden md:inline">退出</span>

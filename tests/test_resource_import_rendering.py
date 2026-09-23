@@ -77,7 +77,7 @@ class RenderTests(unittest.TestCase):
 
     def test_progressive_readable_but_atomic_ready_and_exact_singles(self):
         events = []
-        with patch.object(previews, "RemoteRenderer", self.fake_remote()), patch.object(previews, "split_pptx_to_single_pages", self.split), patch.object(previews, "snapshot_fonts", return_value=[]):
+        with patch.object(previews, "RemoteRenderer", self.fake_remote()), patch.object(previews, "split_pptx_to_single_pages", self.split), patch.object(previews, "wait_for_font_sync"):
             result = previews._render_and_publish_ppt_previews(self.session, events.append)
         self.assertEqual(len(result), 2)
         self.assertEqual(self.session["preview_status"], "ready")
@@ -88,7 +88,7 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(caught.exception.status_code, 409)
 
     def test_partial_failure_removes_generation_and_preserves_source(self):
-        with patch.object(previews, "RemoteRenderer", self.fake_remote(fail=True)), patch.object(previews, "split_pptx_to_single_pages", self.split), patch.object(previews, "snapshot_fonts", return_value=[]):
+        with patch.object(previews, "RemoteRenderer", self.fake_remote(fail=True)), patch.object(previews, "split_pptx_to_single_pages", self.split), patch.object(previews, "wait_for_font_sync"):
             with self.assertRaisesRegex(RuntimeError, "network failure"):
                 previews._render_and_publish_ppt_previews(self.session)
         self.assertEqual(self.session["preview_status"], "error")

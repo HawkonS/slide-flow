@@ -172,12 +172,12 @@ export function AdminConfigPage() {
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="page-shell">
       {/* 页头 */}
       <header className="flex items-center justify-between gap-4">
-        <h1 className="text-xl font-semibold tracking-tight">配置管理</h1>
+        <h1 className="page-title">配置管理</h1>
         {dirtyKeys.length > 0 && (
-          <span className="inline-flex h-6 items-center rounded-full bg-primary/10 px-2.5 text-xs text-primary">
+          <span className="page-count bg-primary-weak text-foreground">
             已修改 {dirtyKeys.length} 项
           </span>
         )}
@@ -200,7 +200,10 @@ export function AdminConfigPage() {
                   const item = data.config[key];
                   const value = draft[key] ?? "";
                   const valid = isValidValue(value, item.type);
-                  const changed = value !== item.value;
+                  const baseline = item.secret && secretOriginals[key] !== undefined
+                    ? secretOriginals[key]
+                    : item.value;
+                  const changed = value !== baseline;
                   return (
                     <div
                       key={key}
@@ -251,7 +254,7 @@ export function AdminConfigPage() {
                           ) : (
                             <div className="relative max-w-md">
                               <Input
-                                type={item.secret ? "password" : "text"}
+                                type={item.secret && !revealed[key] ? "password" : "text"}
                                 value={item.secret && !revealed[key] ? "********" : value}
                                 readOnly={item.secret && !revealed[key]}
                                 onChange={(e) =>

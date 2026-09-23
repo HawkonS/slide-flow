@@ -317,7 +317,7 @@ export function ResourcePicker({
             onChange={(e) => setSearch(e.target.value)}
             placeholder="搜索名称或主体"
             className={cn(
-              "h-7 w-48 rounded-full pl-7 text-xs",
+              "h-7 w-48 rounded-md pl-7 text-xs",
               search.trim() !== "" && "border-primary/40 bg-primary/5",
             )}
           />
@@ -380,7 +380,7 @@ export function ResourcePicker({
             variant="ghost"
             size="sm"
             onClick={resetFilters}
-            className="h-7 gap-1 rounded-full px-2 text-xs text-muted-foreground hover:text-primary"
+            className="h-7 gap-1 rounded-md px-2 text-xs text-muted-foreground hover:text-foreground"
           >
             <RotateCcw className="h-3 w-3" />
             重置

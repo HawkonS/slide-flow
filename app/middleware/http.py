@@ -5,9 +5,17 @@ from __future__ import annotations
 from app.config import settings
 from app.core.oss import public_asset_origin
 import logging
+import re
 import time
 
 logger = logging.getLogger(__name__)
+
+_SHARE_PATH_RE = re.compile(r"(/(?:api/resource-shares|share/resources)/)[^/?#]+")
+
+
+def _redact_sensitive_path(path: str) -> str:
+    """Keep opaque share tokens out of application request logs."""
+    return _SHARE_PATH_RE.sub(r"\1<redacted>", path)
 
 
 class SlowRequestLogger:
@@ -34,7 +42,7 @@ class SlowRequestLogger:
                 logger.warning(
                     "Slow request: %s %s took %.1fs status=%s",
                     scope.get("method"),
-                    scope.get("path"),
+                    _redact_sensitive_path(scope.get("path", "")),
                     duration,
                     status_holder["code"],
                 )
@@ -51,6 +59,7 @@ class ResponseCacheMiddleware:
         "/api/admin",
         "/api/user",
         "/api/downloads",
+        "/api/resource-shares",
     )
 
     def __init__(self, app):
@@ -97,7 +106,10 @@ class SecurityHeadersMiddleware:
     def __init__(self, app):
         self.app = app
         oss_origin = public_asset_origin() if settings.storage_backend.lower() == "oss" else None
-        img_sources = "'self' data: blob:" + (f" {oss_origin}" if oss_origin else "")
+        # User avatars may come from Feishu's signed CDN URLs. Restrict the
+        # stored value to http(s) in the user API and keep this exception to
+        # images only; scripts, frames and connections remain same-origin.
+        img_sources = "'self' data: blob:" + (f" {oss_origin}" if oss_origin else "") + " https:"
         connect_sources = "'self' ws: wss:" + (f" {oss_origin}" if oss_origin else "")
         self._content_security_policy = (
             "default-src 'self'; script-src 'self'; object-src 'none'; "
@@ -106,11 +118,13 @@ class SecurityHeadersMiddleware:
             f"connect-src {connect_sources}; font-src 'self' data:"
         ).encode("ascii")
         self._no_store_prefixes = (
+            "/api/auth",
             "/api/admin",
             "/api/me",
             "/api/user",
             "/api/tasks",
             "/api/downloads",
+            "/api/resource-shares",
         )
 
     async def __call__(self, scope, receive, send):
@@ -132,8 +146,7 @@ class SecurityHeadersMiddleware:
                     )
                 )
                 if (
-                    scope.get("method") == "GET"
-                    and any(scope.get("path", "").startswith(p) for p in self._no_store_prefixes)
+                    any(scope.get("path", "").startswith(p) for p in self._no_store_prefixes)
                     and not any(k.lower() == b"cache-control" for k, _ in raw_headers)
                 ):
                     raw_headers.append((b"cache-control", b"private, no-store"))

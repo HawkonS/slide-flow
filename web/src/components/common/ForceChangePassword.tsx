@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import { useQueryClient } from "@tanstack/react-query";
 
 import {
   Dialog,
@@ -19,6 +20,7 @@ import type { CurrentUser } from "@/lib/types";
 
 export function ForceChangePassword() {
   const { user, setUser } = useAuth();
+  const queryClient = useQueryClient();
   const [oldPwd, setOldPwd] = React.useState("");
   const [newPwd, setNewPwd] = React.useState("");
   const [confirmPwd, setConfirmPwd] = React.useState("");
@@ -35,8 +37,8 @@ export function ForceChangePassword() {
       toast.error("请输入新密码");
       return;
     }
-    if (newPwd.length < 6) {
-      toast.error("新密码长度不能少于 6 位");
+    if (newPwd.trim().length < 10) {
+      toast.error("新密码长度不能少于 10 位");
       return;
     }
     if (newPwd !== confirmPwd) {
@@ -54,8 +56,8 @@ export function ForceChangePassword() {
         json: { old_password: oldPwd, new_password: newPwd },
       });
       toast.success("密码修改成功");
-      // 更新用户状态，关闭弹窗
       setUser({ ...res.user });
+      await queryClient.invalidateQueries();
     } catch (err) {
       toast.error((err as Error).message || "修改密码失败");
     } finally {
@@ -74,7 +76,7 @@ export function ForceChangePassword() {
         <DialogHeader>
           <DialogTitle>修改密码</DialogTitle>
           <DialogDescription>
-            管理员已要求您在首次登录时修改密码，请设置新密码后继续使用。
+            当前使用的是临时密码。请设置至少 10 位的新密码后继续使用。
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">

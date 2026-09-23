@@ -86,10 +86,10 @@ export function ResourceFilters({ subjects, tags, actions }: ResourceFiltersProp
           onChange={(e) => s.setQuery(e.target.value)}
           placeholder="搜索标题、关键词"
           className={cn(
-            "h-8 w-full sm:w-56 rounded-full border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition",
+            "h-8 w-full rounded-md border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition sm:w-56",
             "placeholder:text-muted-foreground",
-            "focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
-            s.query.trim() !== "" && "border-primary/40 bg-primary/5",
+            "focus:border-foreground/40 focus:ring-2 focus:ring-ring/20",
+            s.query.trim() !== "" && "border-foreground/25 bg-primary-weak",
           )}
         />
       </div>
@@ -139,7 +139,7 @@ export function ResourceFilters({ subjects, tags, actions }: ResourceFiltersProp
           variant="ghost"
           size="sm"
           onClick={() => s.reset()}
-          className="h-8 gap-1 rounded-full text-xs text-muted-foreground hover:text-primary"
+          className="h-8 gap-1 text-xs text-muted-foreground hover:text-foreground"
         >
           <RotateCcw className="h-3.5 w-3.5" />
           重置

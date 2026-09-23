@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import oss2
 from PIL import Image
 from fastapi import UploadFile
 
@@ -24,6 +25,34 @@ class _SignedBucket:
     def sign_url(self, method, key, expires, **kwargs):
         self.calls.append((method, key, expires, kwargs))
         return "https://cdn.example.test/signed"
+
+
+class _EndpointBucket:
+    def __init__(self, *, error=None):
+        self.error = error
+        self.calls = []
+
+    def put_object(self, key, source, **kwargs):
+        content = source.read() if hasattr(source, "read") else source
+        self.calls.append(("put_object", key, content))
+        if self.error:
+            raise self.error
+
+    def put_object_from_file(self, key, source, **kwargs):
+        self.calls.append(("put_object_from_file", key, source))
+        if self.error:
+            raise self.error
+
+    def get_object_to_file(self, key, destination):
+        self.calls.append(("get_object_to_file", key, destination))
+        Path(destination).write_bytes(b"downloaded")
+        if self.error:
+            raise self.error
+
+    def delete_object(self, key):
+        self.calls.append(("delete_object", key))
+        if self.error:
+            raise self.error
 
 
 class OSSStorageTests(unittest.TestCase):
@@ -44,6 +73,41 @@ class OSSStorageTests(unittest.TestCase):
             self.assertEqual(oss_key(ref), "resources/png/example.png")
             with self.assertRaises(ValueError):
                 oss_key("oss://another/resources/png/example.png")
+
+    def test_configuration_rejects_internal_endpoint_for_browser_urls(self):
+        storage = OSSStorage()
+        internal = "https://oss-cn-beijing-internal.aliyuncs.com"
+        with (
+            patch.object(settings, "storage_backend", "oss"),
+            patch.object(settings, "oss_endpoint", "https://oss-cn-beijing.aliyuncs.com"),
+            patch.object(settings, "oss_internal_endpoint", internal),
+            patch.object(settings, "oss_public_endpoint", internal),
+            patch.object(settings, "oss_bucket", "slides"),
+        ):
+            self.assertIn("public_endpoint", storage.configuration_error())
+
+    def test_configuration_rejects_missing_external_fallback_when_internal_is_set(self):
+        storage = OSSStorage()
+        internal = "https://oss-cn-beijing-internal.aliyuncs.com"
+        with (
+            patch.object(settings, "storage_backend", "oss"),
+            patch.object(settings, "oss_endpoint", internal),
+            patch.object(settings, "oss_internal_endpoint", internal),
+            patch.object(settings, "oss_public_endpoint", ""),
+            patch.object(settings, "oss_bucket", "slides"),
+        ):
+            self.assertIn("外网回退地址", storage.configuration_error())
+
+    def test_configuration_rejects_bucket_hosted_internal_endpoint_for_browser_urls(self):
+        storage = OSSStorage()
+        with (
+            patch.object(settings, "storage_backend", "oss"),
+            patch.object(settings, "oss_endpoint", "https://oss-cn-beijing.aliyuncs.com"),
+            patch.object(settings, "oss_internal_endpoint", "https://oss-cn-beijing-internal.aliyuncs.com"),
+            patch.object(settings, "oss_public_endpoint", "https://slides.oss-cn-beijing-internal.aliyuncs.com"),
+            patch.object(settings, "oss_bucket", "slides"),
+        ):
+            self.assertIn("public_endpoint", storage.configuration_error())
 
     def test_signed_thumbnail_url_contains_oss_process(self):
         bucket = _SignedBucket()
@@ -170,6 +234,58 @@ class OSSStorageTests(unittest.TestCase):
             self.assertEqual(target.read_bytes(), b"ppt-bytes")
             self.assertEqual(len(fake.uploaded), 1)
             self.assertEqual(fake.deleted, ["oss://slides/slide-flow/_incoming/temporary.pptx"])
+
+    def test_network_upload_failure_retries_external_endpoint_and_rewinds_stream(self):
+        internal = _EndpointBucket(error=oss2.exceptions.RequestError(ConnectionError("offline")))
+        external = _EndpointBucket()
+        storage = OSSStorage()
+        storage._bucket = internal
+        storage._fallback_bucket = external
+        source = io.BytesIO(b"upload-bytes")
+        with (
+            patch.object(storage, "_require_bucket", return_value=internal),
+            patch.object(settings, "oss_endpoint", "https://oss-cn-beijing.aliyuncs.com"),
+            patch.object(settings, "oss_internal_endpoint", "https://oss-cn-beijing-internal.aliyuncs.com"),
+            patch.object(settings, "oss_bucket", "slides"),
+        ):
+            self.assertEqual(
+                storage.upload_fileobj(source, "resources/ppt/example.pptx"),
+                "oss://slides/resources/ppt/example.pptx",
+            )
+        self.assertEqual(external.calls[0][2], b"upload-bytes")
+
+    def test_permission_error_does_not_retry_external_endpoint(self):
+        internal = _EndpointBucket(error=oss2.exceptions.AccessDenied(403, {}, "", {}))
+        external = _EndpointBucket()
+        storage = OSSStorage()
+        storage._fallback_bucket = external
+        with (
+            patch.object(storage, "_require_bucket", return_value=internal),
+            patch.object(settings, "oss_endpoint", "https://oss-cn-beijing.aliyuncs.com"),
+            patch.object(settings, "oss_internal_endpoint", "https://oss-cn-beijing-internal.aliyuncs.com"),
+            patch.object(settings, "oss_bucket", "slides"),
+            self.assertRaises(oss2.exceptions.AccessDenied),
+        ):
+            storage.upload_bytes(b"data", "resources/ppt/example.pptx")
+        self.assertEqual(external.calls, [])
+
+    def test_network_download_failure_cleans_partial_file_before_external_retry(self):
+        internal = _EndpointBucket(error=oss2.exceptions.RequestError(ConnectionError("offline")))
+        external = _EndpointBucket()
+        storage = OSSStorage()
+        storage._fallback_bucket = external
+        with tempfile.TemporaryDirectory() as temp_name:
+            destination = Path(temp_name) / "asset.pptx"
+            destination.write_bytes(b"stale")
+            with (
+                patch.object(storage, "_require_bucket", return_value=internal),
+                patch.object(settings, "oss_endpoint", "https://oss-cn-beijing.aliyuncs.com"),
+                patch.object(settings, "oss_internal_endpoint", "https://oss-cn-beijing-internal.aliyuncs.com"),
+                patch.object(settings, "oss_bucket", "slides"),
+            ):
+                storage.download_file("oss://slides/resources/ppt/example.pptx", destination)
+            self.assertEqual(destination.read_bytes(), b"downloaded")
+            self.assertEqual(external.calls[0][0], "get_object_to_file")
 
     def test_save_upload_keeps_local_mode_without_oss_round_trip(self):
         with tempfile.TemporaryDirectory() as temp_name:

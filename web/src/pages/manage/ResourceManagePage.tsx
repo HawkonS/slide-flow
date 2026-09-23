@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useNavigate } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Check,
@@ -55,6 +56,7 @@ import { useManageResourceFilters, markManageResourceFiltersUrlRestored } from "
 import { BatchEditDialog } from "@/components/manage/BatchEditDialog";
 import { usePaginatedQuery } from "@/lib/use-paginated-query";
 import { useEncodedUrlState } from "@/lib/use-encoded-url-state";
+import { PageHeader } from "@/components/common/PageHeader";
 
 /* ---------- types ---------- */
 
@@ -88,6 +90,7 @@ export default function ResourceManagePage() {
   const { user } = useAuth();
   const filters = useManageResourceFilters();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   /* ---- Pagination ---- */
   const contentRef = React.useRef<HTMLDivElement>(null);
@@ -225,9 +228,6 @@ export default function ResourceManagePage() {
     filterDirtyCount > 0 ||
     filters.subject !== "all" ||
     filters.tags.length > 0;
-
-  /* ---- Preview ---- */
-  const [previewUrl, setPreviewUrl] = React.useState<string | null>(null);
 
   /* ---- Ownership options ---- */
   const OWNERSHIP_OPTIONS: readonly Option[] = React.useMemo(
@@ -368,16 +368,8 @@ export default function ResourceManagePage() {
   const pageStart = (page - 1) * pageSize;
 
   return (
-    <div className="flex h-full flex-col gap-4">
-      {/* 页头 */}
-      <header className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-1.5">
-          <h1 className="text-xl font-semibold tracking-tight">单页素材管理</h1>
-          <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-[11px] text-muted-foreground">
-            {total > 0 ? `共 ${total} 条` : "共 0 条"}
-          </span>
-        </div>
-      </header>
+    <div className="page-shell">
+      <PageHeader title="单页素材管理" count={total > 0 ? `共 ${total} 条` : "共 0 条"} />
 
       {/* 筛选栏 */}
       <div className="flex flex-wrap items-center gap-2">
@@ -389,10 +381,10 @@ export default function ResourceManagePage() {
             onChange={(e) => filters.setQuery(e.target.value)}
             placeholder="搜索名称、主体、所有者、ID"
             className={cn(
-              "h-8 w-full sm:w-56 rounded-full border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition",
+              "h-8 w-full rounded-md border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition sm:w-56",
               "placeholder:text-muted-foreground",
-              "focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
-              filters.query.trim() !== "" && "border-primary/40 bg-primary/5",
+              "focus:border-foreground/40 focus:ring-2 focus:ring-ring/20",
+              filters.query.trim() !== "" && "border-foreground/25 bg-primary-weak",
             )}
           />
         </div>
@@ -425,7 +417,7 @@ export default function ResourceManagePage() {
             variant="ghost"
             size="sm"
             onClick={() => filters.reset()}
-            className="h-8 gap-1 rounded-full text-xs text-muted-foreground hover:text-primary"
+              className="h-8 gap-1 text-xs text-muted-foreground hover:text-foreground"
           >
             <RotateCcw className="h-3.5 w-3.5" />
             重置
@@ -442,7 +434,7 @@ export default function ResourceManagePage() {
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-6 px-1.5 text-xs text-muted-foreground hover:text-primary"
+                className="h-6 px-1.5 text-xs text-muted-foreground hover:text-foreground"
                 onClick={clearSelection}
               >
                 清空
@@ -484,7 +476,7 @@ export default function ResourceManagePage() {
             加载失败：{error?.message || "未知错误"}
           </div>
         ) : resources.length === 0 ? (
-          <div className="rounded-md border border-dashed py-16 text-center text-sm text-muted-foreground">
+          <div className="surface border-dashed py-16 text-center text-sm text-muted-foreground">
             没有匹配的资源
           </div>
         ) : (
@@ -555,7 +547,7 @@ export default function ResourceManagePage() {
                     <TableRow
                       key={r.id}
                       data-state={isSelected ? "selected" : undefined}
-                      className={cn(isSelected && "bg-primary/5")}
+                      className={cn(isSelected && "bg-[hsl(var(--selection))]")}
                     >
                       <TableCell>
                         <Checkbox
@@ -570,13 +562,9 @@ export default function ResourceManagePage() {
                         <div
                           className={cn(
                             "flex h-9 w-16 items-center justify-center overflow-hidden rounded border bg-muted",
-                            preview && "cursor-pointer",
+                            "cursor-pointer",
                           )}
-                          onClick={() => {
-                            if (preview) {
-                              setPreviewUrl(r.current?.original_preview_url || preview);
-                            }
-                          }}
+                          onClick={() => navigate(`/resources/${r.id}`)}
                         >
                           {preview ? (
                             <img
@@ -592,7 +580,7 @@ export default function ResourceManagePage() {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <div className="max-w-[200px] truncate font-medium">{r.name}</div>
+                        <button type="button" className="max-w-[200px] truncate text-left font-medium hover:text-foreground hover:underline" onClick={() => navigate(`/resources/${r.id}`)} title={r.name}>{r.name}</button>
                       </TableCell>
                       <TableCell className="max-w-[120px] truncate text-sm text-muted-foreground">
                         {r.subject || DEFAULT_RESOURCE_SUBJECT}
@@ -726,19 +714,6 @@ export default function ResourceManagePage() {
         </DialogContent>
       </Dialog>
 
-      {/* 缩略图预览 */}
-      <Dialog open={!!previewUrl} onOpenChange={(open) => { if (!open) setPreviewUrl(null); }}>
-        <DialogContent className="max-w-4xl p-0 overflow-hidden bg-black/90 border-none">
-          {previewUrl && (
-            <img
-              src={previewUrl}
-              alt="预览"
-              className="h-auto max-h-[85vh] w-full object-contain"
-              onClick={(e) => e.stopPropagation()}
-            />
-          )}
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

@@ -11,7 +11,7 @@ from app.services.common import (
     DEFAULT_RESOURCE_SUBJECT,
     _validate_resource_status,
     _validate_resource_subject,
-    _validate_scope,
+    _validate_required_scope,
     _validate_secrecy,
 )
 from app.services.files import _delete_resource_files, persist_asset
@@ -62,8 +62,8 @@ def _commit_resource_import_sync(
     tags = str(payload.get("tags", ""))
     secrecy_level = _validate_secrecy(str(payload.get("secrecy_level", "public")))
     status = _validate_resource_status(str(payload.get("status", "active")))
-    visibility_scope = _validate_scope(str(payload.get("visibility_scope", "public")))
-    management_scope = _validate_scope(str(payload.get("management_scope", "private")))
+    visibility_scope = _validate_required_scope(payload.get("visibility_scope"), "可见范围")
+    management_scope = _validate_required_scope(payload.get("management_scope"), "管理范围")
     visible_user_ids = payload.get("visible_user_ids") or []
     manage_user_ids = payload.get("manage_user_ids") or []
     if visibility_scope == "partial" and not visible_user_ids:

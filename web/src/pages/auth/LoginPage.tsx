@@ -43,6 +43,14 @@ export function LoginPage() {
 
   // 加载站点配置（站点名称、浏览器标题）
   useEffect(() => {
+    api<{ required: boolean }>("/api/auth/setup")
+      .then((status) => {
+        if (status.required) navigate("/setup", { replace: true });
+      })
+      .catch(() => { /* login still reports its own backend errors */ });
+  }, [navigate]);
+
+  useEffect(() => {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 5000);
     fetch("/api/config", { signal: controller.signal })

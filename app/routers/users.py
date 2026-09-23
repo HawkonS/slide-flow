@@ -4,22 +4,23 @@
 """
 import sqlite3
 import secrets
+import re
+from datetime import datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from app.core.permissions import (
     ADMIN_ROLES,
     ROLE_OPERATIONS_ADMIN,
     ROLE_SYSTEM_ADMIN,
     ROLE_USER,
-    require_admin,
     require_system_admin,
+    require_user,
     is_system_admin,
 )
-from app.core.security import hash_password
+from app.core.security import hash_password, password_policy_error
 from app.core.cache import invalidate_user
-from app.config import settings
 from app.db import now_iso
 from app.routers.dependencies import (
     UserPayload,
@@ -33,6 +34,30 @@ from app.routers.dependencies import (
 
 
 router = APIRouter()
+TEMPORARY_PASSWORD_TTL_HOURS = 24
+
+
+def _temporary_password_expiry() -> str:
+    return (datetime.utcnow() + timedelta(hours=TEMPORARY_PASSWORD_TTL_HOURS)).isoformat(timespec="seconds") + "Z"
+
+
+def _normalise_user_tags(value: str) -> str:
+    """Store user labels as a compact, deterministic comma-separated value."""
+    tags: list[str] = []
+    seen: set[str] = set()
+    for item in re.split(r"[，,\s]+", value or ""):
+        tag = item.strip()
+        if tag and tag not in seen:
+            tags.append(tag[:64])
+            seen.add(tag)
+    return ",".join(tags)[:1000]
+
+
+def _validate_avatar_url(value: str) -> str:
+    value = (value or "").strip()
+    if value and not re.match(r"^https?://", value, re.IGNORECASE):
+        raise HTTPException(400, "头像地址必须使用 http:// 或 https://")
+    return value
 
 
 @router.get("/admin/users")
@@ -47,17 +72,20 @@ def list_users(
 
 @router.get("/users/options")
 def user_options(
-    _: Any = Depends(require_admin),
+    _: Any = Depends(require_user),
     db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     """获取用户选项列表（用于下拉选择）"""
-    rows = db.execute("SELECT id, name, username, role FROM users ORDER BY role, name").fetchall()
+    # Scope pickers only need display identity; do not expose role, Feishu ID,
+    # or administrative user labels to every authenticated user.
+    rows = db.execute("SELECT id, name, username, avatar_url FROM users ORDER BY name, id").fetchall()
     return {"users": [_row_to_dict(row) for row in rows]}
 
 
 @router.post("/admin/users")
 def create_user(
     payload: UserPayload,
+    response: Response,
     admin: sqlite3.Row = Depends(require_system_admin),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
@@ -67,30 +95,45 @@ def create_user(
     if payload.role == ROLE_SYSTEM_ADMIN and not is_system_admin(admin):
         raise HTTPException(403, "只有系统管理员能创建系统管理员")
 
-    if payload.password and len(payload.password) < 8:
-        raise HTTPException(400, "密码长度不能少于 8 位")
+    if payload.password:
+        policy_error = password_policy_error(payload.password, username=payload.username)
+        if policy_error:
+            raise HTTPException(400, policy_error)
+    avatar_url = _validate_avatar_url(payload.avatar_url)
+    tags = _normalise_user_tags(payload.tags)
 
-    # 确定密码和是否需要强制修改
-    must_change_pwd = 0
+    # 不再使用全局共享默认密码。未指定时生成只展示一次的临时密码；
+    # 管理员手工设置的密码同样视为临时密码，用户首次登录必须自行修改。
+    must_change_pwd = 1
     plain_password: str | None = None
-    if payload.need_change_pwd:
-        # 生成随机密码，首次登录强制修改
+    if not payload.password:
         password = secrets.token_urlsafe(16)
         plain_password = password
-        must_change_pwd = 1
-    elif payload.password:
-        password = payload.password
     else:
-        password = settings.default_password
+        password = payload.password
     
     ts = now_iso()
     try:
         db.execute(
             """
-            INSERT INTO users (name, username, password_hash, feishu_id, role, must_change_pwd, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO users (
+                name, username, password_hash, feishu_id, avatar_url, tags, role,
+                must_change_pwd, temporary_password_expires_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (payload.name, payload.username, hash_password(password), payload.feishu_id, payload.role, must_change_pwd, ts, ts),
+            (
+                payload.name,
+                payload.username,
+                hash_password(password),
+                payload.feishu_id,
+                avatar_url,
+                tags,
+                payload.role,
+                must_change_pwd,
+                _temporary_password_expiry(),
+                ts,
+                ts,
+            ),
         )
         db.commit()
     except sqlite3.IntegrityError:
@@ -100,6 +143,7 @@ def create_user(
     resp: dict[str, Any] = {"user": _serialize_user(user)}
     if plain_password:
         resp["plain_password"] = plain_password
+        response.headers["Cache-Control"] = "private, no-store"
     return resp
 
 
@@ -113,8 +157,12 @@ def update_user(
     """更新用户信息（系统管理员）"""
     if payload.role not in {ROLE_SYSTEM_ADMIN, ROLE_OPERATIONS_ADMIN, ROLE_USER}:
         raise HTTPException(400, "角色不正确")
-    if payload.password and len(payload.password) < 8:
-        raise HTTPException(400, "密码长度不能少于 8 位")
+    if payload.password:
+        policy_error = password_policy_error(payload.password, username=payload.username)
+        if policy_error:
+            raise HTTPException(400, policy_error)
+    avatar_url = _validate_avatar_url(payload.avatar_url)
+    tags = _normalise_user_tags(payload.tags)
     
     existing = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     if existing is None:
@@ -137,12 +185,13 @@ def update_user(
     ):
         raise HTTPException(400, "不能取消自己的系统管理员角色")
     
-    fields: list[Any] = [payload.name, payload.username, payload.feishu_id, payload.role, now_iso()]
-    sql = "UPDATE users SET name = ?, username = ?, feishu_id = ?, role = ?, updated_at = ?"
+    fields: list[Any] = [payload.name, payload.username, payload.feishu_id, avatar_url, tags, payload.role, now_iso()]
+    sql = "UPDATE users SET name = ?, username = ?, feishu_id = ?, avatar_url = ?, tags = ?, role = ?, updated_at = ?"
     
     if payload.password:
-        sql += ", password_hash = ?"
+        sql += ", password_hash = ?, must_change_pwd = 1, temporary_password_expires_at = ?, session_version = session_version + 1"
         fields.append(hash_password(payload.password))
+        fields.append(_temporary_password_expiry())
     
     sql += " WHERE id = ?"
     fields.append(user_id)
@@ -156,6 +205,36 @@ def update_user(
     user = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     invalidate_user(user_id)
     return {"user": _serialize_user(user)}
+
+
+@router.post("/admin/users/{user_id}/reset-password")
+def reset_user_password(
+    user_id: int,
+    response: Response,
+    admin: sqlite3.Row = Depends(require_system_admin),
+    db: sqlite3.Connection = Depends(db_dep),
+) -> dict[str, Any]:
+    """Generate a one-time temporary password and invalidate old sessions."""
+    if int(user_id) == int(admin["id"]):
+        raise HTTPException(400, "不能在用户管理中重置当前账号，请使用修改密码功能")
+    user = db.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+    if user is None:
+        raise HTTPException(404, "用户不存在")
+    plain_password = secrets.token_urlsafe(16)
+    db.execute(
+        """
+        UPDATE users
+        SET password_hash = ?, must_change_pwd = 1, temporary_password_expires_at = ?,
+            session_version = session_version + 1, updated_at = ?
+        WHERE id = ?
+        """,
+        (hash_password(plain_password), _temporary_password_expiry(), now_iso(), user_id),
+    )
+    db.commit()
+    invalidate_user(user_id)
+    updated = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    response.headers["Cache-Control"] = "private, no-store"
+    return {"user": _serialize_user(updated), "plain_password": plain_password}
 
 
 @router.delete("/admin/users/{user_id}")
@@ -246,6 +325,10 @@ def transfer_and_delete_user(
         ("resources", "owner_id"),
         ("resources", "updated_by"),
         ("resource_versions", "created_by"),
+        # Share-link audit ownership must move with the resource owner;
+        # otherwise the FK would block transfer-and-delete and active links
+        # would be left without an accountable creator.
+        ("resource_share_tokens", "created_by"),
         ("templates", "owner_id"),
         ("fonts", "uploaded_by"),
         ("shows", "owner_id"),
