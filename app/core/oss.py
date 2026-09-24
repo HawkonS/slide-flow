@@ -14,6 +14,8 @@ import logging
 import mimetypes
 import os
 import tempfile
+import threading
+import time
 import uuid
 from urllib.parse import urlparse
 
@@ -34,6 +36,17 @@ class StorageConfigurationError(RuntimeError):
     callers can turn it into a clear 503 response instead of exposing a bare
     500, while background jobs can still record the task as failed.
     """
+
+
+class StorageUnavailableError(RuntimeError):
+    """Raised when the configured OSS service cannot be reached temporarily.
+
+    The original SDK exception is kept as ``__cause__`` for logs, while the
+    exception itself contains only a safe, user-facing message.
+    """
+
+
+STORAGE_UNAVAILABLE_MESSAGE = "对象存储暂时不可用，请稍后重试；如持续失败，请联系管理员检查 OSS 网络"
 
 
 def is_oss_ref(value: str | None) -> bool:
@@ -95,6 +108,9 @@ class OSSStorage:
         self._bucket = None
         self._fallback_bucket = None
         self._public_bucket = None
+        self._health_lock = threading.Lock()
+        self._health_cache: dict[str, object] | None = None
+        self._health_checked_monotonic = 0.0
 
     @property
     def enabled(self) -> bool:
@@ -138,6 +154,48 @@ class OSSStorage:
         error = self.configuration_error()
         if error:
             raise StorageConfigurationError(error)
+
+    def health_status(self) -> dict[str, object]:
+        """Return a short-lived authenticated connectivity snapshot."""
+        # Storage backend changes can be applied in-process by tests or config
+        # reloads. Never serve an OSS result while local storage is selected.
+        if not self.enabled:
+            return self._probe_health()
+        now = time.monotonic()
+        with self._health_lock:
+            if self._health_cache is not None and now - self._health_checked_monotonic < 10:
+                return dict(self._health_cache)
+            result = self._probe_health()
+            self._health_cache = result
+            self._health_checked_monotonic = now
+            return dict(result)
+
+    def _probe_health(self) -> dict[str, object]:
+        if not self.enabled:
+            if settings.storage_backend.strip().lower() == "local":
+                return {"status": "disabled", "message": "当前使用本地存储", "checked_at": time.time()}
+            return {
+                "status": "misconfigured",
+                "message": self.configuration_error() or "storage.backend 配置无效",
+                "checked_at": time.time(),
+            }
+        try:
+            self.ensure_configured()
+            # ``get_bucket_info`` is a metadata-only request and does not read
+            # user content. It validates credentials, endpoint and bucket ACL.
+            self._with_endpoint_fallback("health check", lambda bucket: bucket.get_bucket_info())
+            return {"status": "connected", "message": "OSS 连接正常", "checked_at": time.time()}
+        except StorageConfigurationError as exc:
+            return {"status": "misconfigured", "message": str(exc), "checked_at": time.time()}
+        except Exception:
+            logger.warning("OSS health check failed", exc_info=False)
+            return {"status": "disconnected", "message": STORAGE_UNAVAILABLE_MESSAGE, "checked_at": time.time()}
+
+    def reset_health_cache(self) -> None:
+        """Discard the cached snapshot after configuration changes or in tests."""
+        with self._health_lock:
+            self._health_cache = None
+            self._health_checked_monotonic = 0.0
 
     def _require_bucket(self):
         if not self.enabled:
@@ -202,13 +260,18 @@ class OSSStorage:
                 raise
             fallback = self._fallback_bucket_or_none()
             if fallback is None:
-                raise
+                raise StorageUnavailableError(STORAGE_UNAVAILABLE_MESSAGE) from exc
             logger.warning(
                 "OSS internal endpoint failed; retrying %s through external endpoint",
                 operation,
                 exc_info=False,
             )
-            return action(fallback)
+            try:
+                return action(fallback)
+            except Exception as fallback_exc:
+                if self._is_retryable_endpoint_error(fallback_exc):
+                    raise StorageUnavailableError(STORAGE_UNAVAILABLE_MESSAGE) from fallback_exc
+                raise
 
     @staticmethod
     def _auth():

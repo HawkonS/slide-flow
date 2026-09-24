@@ -15,7 +15,8 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.core.oss import StorageConfigurationError
+from app.core.errors import OSS_CONFIGURATION_MESSAGE, OSS_UNAVAILABLE_MESSAGE
+from app.core.oss import StorageConfigurationError, StorageUnavailableError
 from app.lifecycle import lifespan
 from app.middleware.http import ResponseCacheMiddleware, SecurityHeadersMiddleware, SlowRequestLogger
 from app.middleware.resource_import import ResourceImportRequestGuard
@@ -36,8 +37,18 @@ def create_app() -> FastAPI:
         # generic 500 page (which hides the actual deployment problem).
         return JSONResponse(
             status_code=503,
-            content={"detail": str(exc)},
+            content={"detail": OSS_CONFIGURATION_MESSAGE},
             headers={"Cache-Control": "no-store", "Retry-After": "0"},
+        )
+
+    @app.exception_handler(StorageUnavailableError)
+    async def storage_unavailable_error_handler(
+        _request: Request, _exc: StorageUnavailableError,
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": OSS_UNAVAILABLE_MESSAGE},
+            headers={"Cache-Control": "no-store", "Retry-After": "3"},
         )
 
     allowed_origins = [origin.strip() for origin in settings.allowed_host.split(",") if origin.strip()]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.core.ppt import split_pptx_to_single_pages
+from app.core.errors import storage_public_message
 from app.db import get_db
 from app.db import now_iso
 from app.services.common import (
@@ -252,11 +253,12 @@ def _execute_split_task(
             _delete_resource_files(pending_refs, [])
             if _task_is_cancelled(db, task_id, cancel_event):
                 return
+            safe_message = storage_public_message(e) or "批量导入任务处理失败，请重试或联系管理员"
             db.execute(
                 "UPDATE tasks SET status = 'failed', error_message = ?,"
                 " updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
                 " WHERE id = ? AND status <> 'cancelled'",
-                ("批量导入任务处理失败，请重试或联系管理员", task_id),
+                (safe_message, task_id),
             )
             db.commit()
         except Exception as inner_e:

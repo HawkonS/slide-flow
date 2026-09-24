@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from app.core.fonts import missing_fonts
+from app.core.errors import storage_public_message
+from app.core.oss import StorageConfigurationError, StorageUnavailableError
 from app.core.permissions import require_user
 from app.core.ppt import detect_ppt_fonts
 from app.core.ppt import slide_count
@@ -223,9 +225,14 @@ async def prepare_resource_import(
     except HTTPException:
         shutil.rmtree(temp_dir, ignore_errors=True)
         raise
+    except (StorageConfigurationError, StorageUnavailableError) as exc:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        logger.exception("Resource import prepare storage failure session_id=%s", session_id)
+        raise HTTPException(503, storage_public_message(exc) or "对象存储暂时不可用，请稍后重试") from exc
     except Exception as exc:
         shutil.rmtree(temp_dir, ignore_errors=True)
-        raise HTTPException(400, str(exc) or "PPT 预检失败") from exc
+        logger.exception("Resource import prepare failed session_id=%s", session_id)
+        raise HTTPException(400, "PPT 预检失败，请检查文件后重试") from exc
 
 
 @router.get("/api/resource-import/{session_id}/preview/{index}")
@@ -354,10 +361,15 @@ async def replace_resource_import_fonts(
     except HTTPException:
         target.unlink(missing_ok=True)
         raise
+    except (StorageConfigurationError, StorageUnavailableError) as exc:
+        target.unlink(missing_ok=True)
+        message = storage_public_message(exc) or "对象存储暂时不可用，请稍后重试"
+        logger.exception("Resource import font replacement storage failure session_id=%s", session_id)
+        raise HTTPException(503, message) from exc
     except Exception as exc:
         target.unlink(missing_ok=True)
         logger.exception("Resource import font replacement failed session_id=%s", session_id)
-        raise HTTPException(400, f"字体替换失败：{exc}") from exc
+        raise HTTPException(400, "字体替换失败，请检查 PPT 和替换字体后重试") from exc
 
 
 @router.post("/api/resource-import/{session_id}/commit")

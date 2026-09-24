@@ -9,6 +9,8 @@ from app.core.ppt import slide_count
 from app.core.sanitize import sanitize_html
 from app.core.storage import save_upload
 from app.core.oss import storage as oss_storage
+from app.core.errors import storage_public_message
+from app.core.oss import StorageConfigurationError, StorageUnavailableError
 from app.db import get_db
 from app.routers.dependencies import (
     db_dep,
@@ -393,6 +395,18 @@ async def create_resource_import_task(
         _task_cancel_flags[task_id] = threading.Event()
         schedule_resource_import_task(task_id, session_id, _split_semaphore, _heavy_executor)
         return {"task_id": task_id, "session_id": session_id, "status": "pending"}
+    except (StorageConfigurationError, StorageUnavailableError) as exc:
+        db.rollback()
+        message = storage_public_message(exc) or "对象存储暂时不可用，请稍后重试"
+        if task_id is not None:
+            db.execute(
+                "UPDATE tasks SET status = 'failed', error_message = ?, message = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime') WHERE id = ?",
+                (message, message, task_id),
+            )
+            db.commit()
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        logger.exception("Resource import upload storage failure")
+        raise HTTPException(503, message) from exc
     except Exception as exc:
         db.rollback()
         if task_id is not None:

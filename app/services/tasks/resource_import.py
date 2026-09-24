@@ -8,6 +8,7 @@ continue after the browser tab is closed.
 from __future__ import annotations
 
 from app.core.fonts import missing_fonts
+from app.core.errors import import_public_message
 from app.core.ppt import detect_ppt_fonts, slide_count
 from app.db import get_db, known_font_aliases
 from app.services.resource_import.render_tasks import ensure_render_task
@@ -128,12 +129,25 @@ def _execute_resource_import_task(task_id: int, session_id: str) -> None:
     except Exception as exc:
         logger.exception("Resource import task %s failed", task_id)
         row = db.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        safe_message = import_public_message(exc, rendering=True)
         if row is not None and row["status"] != "cancelled":
-            _task_update(db, task_id, status="failed", message="", error_message="上传任务处理失败，请重试或联系管理员")
+            try:
+                failed_params = json.loads(row["params"] or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                failed_params = {}
+            failed_params.update({
+                "workflow_state": "awaiting_render",
+                "preview_status": "error",
+                "preview_error": safe_message,
+            })
+            _task_update(
+                db, task_id, status="failed", message="", error_message=safe_message,
+                params=failed_params,
+            )
         if session is not None:
             try:
                 session["preview_status"] = "error"
-                session["preview_error"] = str(exc) or "上传任务处理失败"
+                session["preview_error"] = safe_message
                 session["expires_at"] = time.time() + 7 * 24 * 3600
                 _write_resource_import_session(session)
             except Exception:

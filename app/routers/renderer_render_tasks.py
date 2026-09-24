@@ -10,6 +10,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.db import get_db
+from app.core.errors import storage_public_message
+from app.core.oss import StorageConfigurationError, StorageUnavailableError
 from app.routers.renderer_font_tasks import _renderer_auth
 from app.services.resource_import.render_tasks import (
     claim_payload,
@@ -18,6 +20,7 @@ from app.services.resource_import.render_tasks import (
     fail_render_task,
     refresh_render_task_urls,
     render_queue_status,
+    touch_renderer_worker,
     renew_render_task,
 )
 
@@ -54,6 +57,8 @@ def _lease_error(exc: Exception) -> HTTPException:
         return HTTPException(409, "render task lease is no longer valid")
     if isinstance(exc, ValueError):
         return HTTPException(400, "render task result is invalid")
+    if isinstance(exc, (StorageConfigurationError, StorageUnavailableError)):
+        return HTTPException(503, storage_public_message(exc) or "对象存储暂时不可用，请稍后重试")
     return HTTPException(500, "render task update failed")
 
 
@@ -66,10 +71,19 @@ async def claim(
     if not WORKER_ID.fullmatch(worker_id):
         raise HTTPException(400, "worker_id is invalid")
     deadline = time.monotonic() + wait_seconds
+    db = get_db()
+    try:
+        touch_renderer_worker(db, worker_id, state="polling")
+        db.commit()
+    finally:
+        db.close()
     while True:
         db = get_db()
         try:
             claimed = claim_render_task(db, worker_id)
+            if claimed is not None:
+                touch_renderer_worker(db, worker_id, state="running", task_id=str(claimed[0]["task_id"]))
+                db.commit()
         finally:
             db.close()
         if claimed is not None:
@@ -95,6 +109,10 @@ def renew(task_id: str, payload: LeaseRequest, _: None = Depends(_renderer_auth)
     try:
         try:
             lease_until = renew_render_task(db, task_id, payload.lease_token)
+            row = db.execute("SELECT worker_id FROM renderer_ppt_tasks WHERE task_id=?", (task_id,)).fetchone()
+            if row and row["worker_id"]:
+                touch_renderer_worker(db, str(row["worker_id"]), state="running", task_id=task_id)
+                db.commit()
         except Exception as exc:
             raise _lease_error(exc) from exc
         return {"ok": True, "lease_until": lease_until}

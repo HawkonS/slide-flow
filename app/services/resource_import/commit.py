@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.config import settings
+from app.core.errors import storage_public_message
 from app.core.ppt import split_pptx_to_single_pages
 from app.core.sanitize import sanitize_html
 from app.core.storage import copy_into
@@ -151,14 +152,17 @@ def _commit_resource_import_sync(
                 (len(resource_ids), len(resource_ids), json.dumps(result, ensure_ascii=False), json.dumps(task_params, ensure_ascii=False), task_id),
             )
         db.commit()
-    except Exception:
+    except Exception as exc:
         logger.exception("Resource import commit failed session_id=%s", session_id)
         db.rollback()
         _delete_resource_files(uploaded_refs, [])
         for directory in created_dirs:
             shutil.rmtree(directory, ignore_errors=True)
         _cleanup_resource_import_session(session_id, session)
-        raise HTTPException(400, "导入提交失败，临时文件已清理，请重试")
+        storage_message = storage_public_message(exc)
+        if storage_message:
+            raise HTTPException(503, storage_message) from exc
+        raise HTTPException(400, "导入提交失败，临时文件已清理，请重试") from exc
     # Never turn a successful COMMIT into file rollback if cleanup fails.
     try:
         _cleanup_resource_import_session(session_id, session)

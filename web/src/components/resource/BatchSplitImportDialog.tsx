@@ -70,6 +70,7 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, ownerId, taskId:
   const taskOwnedRef = React.useRef(Boolean(initialTaskId));
   const operationRef = React.useRef<Operation>(null);
   const renderAbortRef = React.useRef<AbortController | null>(null);
+  const renderErrorRef = React.useRef(false);
   const uploadingRef = React.useRef(false);
   const contentRef = React.useRef<HTMLDivElement>(null);
   const busy = operation !== null;
@@ -131,10 +132,11 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, ownerId, taskId:
         if (p.visibility_scope === "public" || p.visibility_scope === "partial" || p.visibility_scope === "private") setVisibilityScope(p.visibility_scope); if (p.management_scope === "public" || p.management_scope === "partial" || p.management_scope === "private") setManagementScope(p.management_scope);
         if (typeof p.visible_user_ids === "string") setVisibleUserIds(p.visible_user_ids.split(",").map(Number).filter((value) => Number.isInteger(value) && value > 0)); if (typeof p.manage_user_ids === "string") setManageUserIds(p.manage_user_ids.split(",").map(Number).filter((value) => Number.isInteger(value) && value > 0)); if (typeof p.remark_html === "string") setRemarkHtml(p.remark_html);
         if (typeof p.slide_count === "number") setSlideCount(p.slide_count); if (Array.isArray(p.fonts)) setFonts(p.fonts.filter((value): value is string => typeof value === "string")); if (Array.isArray(p.missing_fonts)) setMissingFonts(p.missing_fonts.filter((value): value is string => typeof value === "string"));
-        if (typeof p.workflow_state === "string") setWorkflowState(p.workflow_state);
+        if (typeof p.workflow_state === "string" && !(renderErrorRef.current && p.workflow_state === "rendering")) setWorkflowState(p.workflow_state);
         if (p.preview_status === "ready" || p.preview_status === "blocked" || p.preview_status === "error" || p.preview_status === "pending") setPreviewStatus(p.preview_status);
+        if (typeof p.preview_error === "string" && p.preview_error.trim()) setPreviewError(p.preview_error); else if (p.preview_error === null || p.preview_status === "ready") setPreviewError(null);
         if (task.status === "failed") { setTaskError(task.error_message || task.message || "上传任务处理失败"); setWorkflowState("failed"); } if (task.status === "completed" && task.result_data?.created) setCreatedCount(task.result_data.created);
-        if (p.workflow_state === "awaiting_confirmation" && step !== "confirm") setStep("render"); else if (p.workflow_state === "rendering" && step === "upload") setStep("fonts");
+        if (p.workflow_state === "awaiting_confirmation" && step !== "confirm") setStep("render"); else if ((p.workflow_state === "rendering" || p.workflow_state === "awaiting_render") && step !== "render" && step !== "confirm") setStep("render");
         if (!["completed", "failed", "cancelled"].includes(task.status)) timer = setTimeout(poll, 2000);
       } catch (error) { if (!cancelled && error instanceof ApiError && error.status === 404) setTaskError("任务不存在或已被删除"); if (!cancelled) timer = setTimeout(poll, 4000); }
     };
@@ -174,13 +176,13 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, ownerId, taskId:
 
   const generatePreviews = async () => {
     if (!sessionId || busy || missingFonts.length || selectedReplacementCount || workflowState === "rendering") return;
-    const controller = new AbortController(); renderAbortRef.current = controller; setOperationSafe("render"); setPreviewStatus("pending"); setPreviewError(null); setPreviewUrls({}); setPreviewLoads({}); setRenderMessage("正在提交图片渲染任务，繁忙时会自动排队…");
+    const controller = new AbortController(); renderAbortRef.current = controller; renderErrorRef.current = false; setOperationSafe("render"); setPreviewStatus("pending"); setPreviewError(null); setPreviewUrls({}); setPreviewLoads({}); setRenderMessage("正在提交图片渲染任务，繁忙时会自动排队…");
     const received = new Set<number>();
     try {
       const result = await apiNdjson<unknown, { preview_status?: PreviewStatus; preview_count?: number }>(`/api/resource-import/${sessionId}/previews`, (raw) => { const event = parsePreviewRenderEvent(raw, sessionId, slideCount, window.location.origin); if (event.type === "page") { received.add(event.index); setPreviewUrls((old) => ({ ...old, [event.index]: event.preview_url })); setRenderMessage(`已生成 ${received.size} / ${slideCount} 页`); } else if ((event.type === "progress" || event.type === "started") && event.message) setRenderMessage(event.message); else if (event.type === "error") throw new Error(event.message); }, { method: "POST", signal: controller.signal });
       if (result?.preview_status !== "ready" || (result.preview_count !== undefined && result.preview_count !== slideCount)) throw new Error("渲染结果不完整，请重试");
       setPreviewStatus("ready"); setRenderMessage(`全部 ${slideCount} 页已生成，请核对图片效果`); toast.success("图片渲染完成");
-    } catch (error) { if (!controller.signal.aborted) { setPreviewStatus("error"); setPreviewError((error as Error).message || "图片渲染失败"); } }
+    } catch (error) { if (!controller.signal.aborted) { renderErrorRef.current = true; setPreviewStatus("error"); setWorkflowState("awaiting_render"); setRenderMessage("图片渲染已停止，可检查配置或服务后重试"); setPreviewError((error as Error).message || "图片渲染失败，请检查 Windows 转换节点、网络或 OSS 配置后重试"); } }
     finally { renderAbortRef.current = null; setOperationSafe(null); }
   };
 

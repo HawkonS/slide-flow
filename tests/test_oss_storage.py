@@ -54,8 +54,93 @@ class _EndpointBucket:
         if self.error:
             raise self.error
 
+    def get_bucket_info(self):
+        self.calls.append(("get_bucket_info",))
+        if self.error:
+            raise self.error
+        return object()
+
 
 class OSSStorageTests(unittest.TestCase):
+    def test_health_status_reports_local_storage_without_network(self):
+        storage = OSSStorage()
+        with (
+            patch.object(settings, "storage_backend", "local"),
+            patch.object(storage, "_require_bucket") as require_bucket,
+        ):
+            result = storage.health_status()
+
+        self.assertEqual(result["status"], "disabled")
+        self.assertEqual(result["message"], "当前使用本地存储")
+        require_bucket.assert_not_called()
+
+    def test_health_status_does_not_reuse_oss_result_after_switching_to_local(self):
+        storage = OSSStorage()
+        storage._health_cache = {"status": "connected", "message": "OSS 连接正常", "checked_at": 1.0}
+        storage._health_checked_monotonic = 0.0
+        with patch.object(settings, "storage_backend", "local"):
+            result = storage.health_status()
+
+        self.assertEqual(result["status"], "disabled")
+
+    def test_health_status_does_not_reuse_local_result_after_switching_to_oss(self):
+        storage = OSSStorage()
+        with patch.object(settings, "storage_backend", "local"):
+            self.assertEqual(storage.health_status()["status"], "disabled")
+
+        bucket = _EndpointBucket()
+        with (
+            patch.object(settings, "storage_backend", "oss"),
+            patch.object(storage, "ensure_configured"),
+            patch.object(storage, "_require_bucket", return_value=bucket),
+        ):
+            result = storage.health_status()
+
+        self.assertEqual(result["status"], "connected")
+
+    def test_health_status_reports_configuration_errors(self):
+        storage = OSSStorage()
+        with (
+            patch.object(settings, "storage_backend", "oss"),
+            patch.object(settings, "oss_endpoint", ""),
+            patch.object(settings, "oss_bucket", ""),
+        ):
+            result = storage.health_status()
+
+        self.assertEqual(result["status"], "misconfigured")
+        self.assertIn("oss.endpoint", result["message"])
+
+    def test_health_status_uses_endpoint_fallback_and_short_cache(self):
+        primary = _EndpointBucket(error=oss2.exceptions.RequestError(ConnectionError("offline")))
+        fallback = _EndpointBucket()
+        storage = OSSStorage()
+        with (
+            patch.object(settings, "storage_backend", "oss"),
+            patch.object(storage, "ensure_configured"),
+            patch.object(storage, "_require_bucket", return_value=primary),
+            patch.object(storage, "_fallback_bucket_or_none", return_value=fallback),
+        ):
+            first = storage.health_status()
+            second = storage.health_status()
+
+        self.assertEqual(first["status"], "connected")
+        self.assertEqual(second, first)
+        self.assertEqual(primary.calls, [("get_bucket_info",)])
+        self.assertEqual(fallback.calls, [("get_bucket_info",)])
+
+    def test_health_status_hides_connection_exception_details(self):
+        bucket = _EndpointBucket(error=RuntimeError("secret endpoint details"))
+        storage = OSSStorage()
+        with (
+            patch.object(settings, "storage_backend", "oss"),
+            patch.object(storage, "ensure_configured"),
+            patch.object(storage, "_require_bucket", return_value=bucket),
+        ):
+            result = storage.health_status()
+
+        self.assertEqual(result["status"], "disconnected")
+        self.assertNotIn("secret endpoint details", result["message"])
+
     def test_unconfigured_oss_fails_with_actionable_configuration_error(self):
         storage = OSSStorage()
         with (

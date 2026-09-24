@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import secrets
 import shutil
 import sqlite3
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
+from app.core.errors import render_public_message
 from app.core.fonts import normalize_font_name
 from app.core.oss import oss_ref, storage as oss_storage
 from app.core.ppt import split_pptx_to_single_pages
@@ -41,11 +43,112 @@ MAX_TOTAL_OUTPUT_BYTES = 512 * 1024 * 1024
 RESULT_URL_SECONDS = 900
 RENDER_SESSION_TTL = 7 * 24 * 3600
 TERMINAL_OBJECT_CLEANUP_GRACE_SECONDS = RESULT_URL_SECONDS + 300
+RENDERER_WORKER_HEARTBEAT_PREFIX = "renderer_worker:"
+RENDERER_WORKER_HEARTBEAT_TTL_SECONDS = 90
 RETRYABLE_ERROR_CODES = {
     "network_error", "render_timeout", "renderer_unavailable", "worker_restarted",
     "disk_pressure", "temporary_oss_error", "internal_error", "queue_full",
     "renderer_draining", "worker_unavailable",
 }
+
+
+def touch_renderer_worker(
+    db: sqlite3.Connection,
+    worker_id: str,
+    *,
+    state: str,
+    task_id: str | None = None,
+) -> None:
+    """Persist the latest pull-worker contact for the admin runtime view.
+
+    The pull protocol already gives us a bounded heartbeat: an idle worker
+    opens a long-poll claim request at least every 25 seconds, while a busy
+    worker renews its task lease every 30 seconds. Keeping the heartbeat in
+    ``runtime_state`` avoids another table migration and lets all API workers
+    observe the same Windows worker state.
+    """
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", worker_id):
+        return
+    payload = {
+        "worker_id": worker_id,
+        "state": state if state in {"polling", "idle", "running"} else "polling",
+        "task_id": task_id,
+        "last_seen": time.time(),
+        "last_seen_at": now_iso(),
+    }
+    db.execute(
+        "INSERT INTO runtime_state (key, value, updated_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+        (
+            RENDERER_WORKER_HEARTBEAT_PREFIX + worker_id,
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            payload["last_seen_at"],
+        ),
+    )
+
+
+def renderer_worker_status(db: sqlite3.Connection) -> dict[str, Any]:
+    """Return a compact, bounded snapshot for the admin runtime page."""
+    now = time.time()
+    workers: list[dict[str, Any]] = []
+    for row in db.execute(
+        "SELECT value FROM runtime_state WHERE key LIKE ? ORDER BY updated_at DESC",
+        (RENDERER_WORKER_HEARTBEAT_PREFIX + "%",),
+    ).fetchall():
+        try:
+            item = json.loads(row["value"] or "{}")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(item, dict) or not isinstance(item.get("worker_id"), str):
+            continue
+        try:
+            last_seen = float(item.get("last_seen"))
+        except (TypeError, ValueError):
+            continue
+        age = max(0, int(now - last_seen))
+        workers.append({
+            "worker_id": item["worker_id"],
+            "state": item.get("state") if item.get("state") in {"polling", "idle", "running"} else "polling",
+            "task_id": item.get("task_id") if isinstance(item.get("task_id"), str) else None,
+            "last_seen_at": item.get("last_seen_at"),
+            "age_seconds": age,
+            "connected": age <= RENDERER_WORKER_HEARTBEAT_TTL_SECONDS,
+        })
+
+    live_workers = [item for item in workers if item["connected"]]
+    active_workers = [item for item in live_workers if item["state"] == "running"]
+    active_tasks = int(db.execute(
+        "SELECT COUNT(*) FROM renderer_ppt_tasks WHERE status='running' AND lease_until>?",
+        (now,),
+    ).fetchone()[0])
+
+    if active_workers:
+        process_status = "running"
+    elif live_workers:
+        process_status = "idle"
+    elif active_tasks:
+        process_status = "disconnected"
+    else:
+        process_status = "stopped"
+
+    connection_status = "connected" if live_workers else "disconnected"
+    latest = live_workers[0] if live_workers else (workers[0] if workers else None)
+    return {
+        "process": {
+            "status": process_status,
+            "worker_count": len(live_workers),
+            "active_task_count": active_tasks,
+            "worker_id": active_workers[0]["worker_id"] if active_workers else (latest or {}).get("worker_id"),
+            "task_id": active_workers[0].get("task_id") if active_workers else None,
+        },
+        "connection": {
+            "status": connection_status,
+            "worker_count": len(live_workers),
+            "worker_id": (latest or {}).get("worker_id"),
+            "last_seen_at": (latest or {}).get("last_seen_at"),
+            "age_seconds": (latest or {}).get("age_seconds"),
+        },
+    }
 
 
 def _token_hash(token: str) -> str:
@@ -369,7 +472,7 @@ def render_task_state(session: dict[str, Any]) -> dict[str, Any]:
     if row["status"] == "cancelled":
         return {"status": "error", "message": "该图片渲染任务已取消，请重新生成"}
     if row["status"] == "failed":
-        return {"status": "error", "message": "Windows 图片渲染失败，请重试"}
+        return {"status": "error", "message": render_public_message(row["error_code"])}
     if row["status"] == "completed" and session.get("preview_status") != "ready":
         if _recover_completed_session(row, session):
             return {"status": "completed", "preview_count": len(session.get("preview_paths", []))}
@@ -453,7 +556,10 @@ def claim_render_task(db: sqlite3.Connection, worker_id: str) -> tuple[sqlite3.R
             failed = db.execute(
                 "SELECT * FROM renderer_ppt_tasks WHERE task_id=?", (item["task_id"],)
             ).fetchone()
-            _update_parent_task(db, failed, success=False)
+            _update_parent_task(
+                db, failed, success=False,
+                error_message=render_public_message("lease_exhausted"),
+            )
         row = db.execute(
             "SELECT * FROM renderer_ppt_tasks WHERE "
             "status='queued' OR (status='running' AND lease_until<? AND attempts<?) "
@@ -489,7 +595,10 @@ def claim_render_task(db: sqlite3.Connection, worker_id: str) -> tuple[sqlite3.R
         for item in expired:
             session = _load_resource_import_session_file(str(item["session_id"]))
             if session and session.get("render_attempt") == item["render_attempt"]:
-                session.update(preview_status="error", preview_error="Windows 转换节点多次超时，请重试")
+                session.update(
+                    preview_status="error",
+                    preview_error=render_public_message("lease_exhausted"),
+                )
                 _write_resource_import_session(session)
             _cleanup_manifest_objects(_manifest(item, "source_manifest"))
         if row is None or token is None:
@@ -588,14 +697,20 @@ def renew_render_task(db: sqlite3.Connection, task_id: str, lease_token: str) ->
         raise
 
 
-def _update_parent_task(db: sqlite3.Connection, row: sqlite3.Row, *, success: bool) -> None:
+def _update_parent_task(
+    db: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    success: bool,
+    error_message: str | None = None,
+) -> None:
     parent = row["parent_task_id"]
     if parent is None:
         return
     task = db.execute("SELECT params FROM tasks WHERE id=?", (parent,)).fetchone()
     params = json.loads(task["params"] or "{}") if task else {}
     if success:
-        params.update({"workflow_state": "awaiting_confirmation", "preview_status": "ready"})
+        params.update({"workflow_state": "awaiting_confirmation", "preview_status": "ready", "preview_error": None})
         message, progress = "图片已渲染，等待确认导入", len(_manifest(row, "source_manifest").get("pages", []))
         db.execute(
             "UPDATE tasks SET status='pending', progress=?, total=?, message=?, error_message=NULL, params=?,"
@@ -603,11 +718,12 @@ def _update_parent_task(db: sqlite3.Connection, row: sqlite3.Row, *, success: bo
             (progress, progress, message, json.dumps(params, ensure_ascii=False), parent),
         )
     else:
-        params.update({"workflow_state": "awaiting_render", "preview_status": "error"})
+        message = error_message or render_public_message("render_failed")
+        params.update({"workflow_state": "awaiting_render", "preview_status": "error", "preview_error": message})
         db.execute(
-            "UPDATE tasks SET status='pending', message='Windows 图片渲染失败，可重试', error_message=NULL, params=?,"
+            "UPDATE tasks SET status='pending', message=?, error_message=?, params=?,"
             " updated_at=strftime('%Y-%m-%dT%H:%M:%S','now','localtime') WHERE id=? AND status<>'cancelled'",
-            (json.dumps(params, ensure_ascii=False), parent),
+            (message, message, json.dumps(params, ensure_ascii=False), parent),
         )
 
 
@@ -730,7 +846,10 @@ def fail_render_task(db: sqlite3.Connection, task_id: str, lease_token: str, err
         )
         current = db.execute("SELECT * FROM renderer_ppt_tasks WHERE task_id=?", (task_id,)).fetchone()
         if status == "failed":
-            _update_parent_task(db, current, success=False)
+            _update_parent_task(
+                db, current, success=False,
+                error_message=render_public_message(code),
+            )
         db.commit()
     except Exception:
         db.rollback()
@@ -738,7 +857,7 @@ def fail_render_task(db: sqlite3.Connection, task_id: str, lease_token: str, err
     if status == "failed":
         session = _load_resource_import_session_file(str(row["session_id"]))
         if session and session.get("render_attempt") == row["render_attempt"]:
-            session.update(preview_status="error", preview_error="Windows 图片渲染失败，请重试")
+            session.update(preview_status="error", preview_error=render_public_message(code))
             try:
                 _write_resource_import_session(session)
             except Exception:

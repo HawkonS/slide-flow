@@ -15,6 +15,7 @@ import {
   RotateCw,
   Search,
   Server,
+  Wifi,
   XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -207,7 +208,40 @@ interface SystemStatus {
   service_status: "running" | "stopped" | "activating" | "deactivating" | "failed" | "reloading" | "maintenance" | "unknown";
   service_enabled: "enabled" | "enabled-runtime" | "linked" | "linked-runtime" | "static" | "indirect" | "generated" | "transient" | "disabled" | "masked" | "masked-runtime" | "unknown";
   mode: "systemd" | "direct";
+  windows_renderer: {
+    process: {
+      status: "running" | "idle" | "disconnected" | "stopped";
+      worker_count: number;
+      active_task_count: number;
+      worker_id: string | null;
+      task_id: string | null;
+    };
+    connection: {
+      status: "connected" | "disconnected";
+      worker_count: number;
+      worker_id: string | null;
+      last_seen_at: string | null;
+      age_seconds: number | null;
+    };
+  };
+  oss: {
+    status: "connected" | "disconnected" | "misconfigured" | "disabled";
+    message: string;
+    checked_at: number;
+  };
 }
+
+const rendererProcessLabels: Record<SystemStatus["windows_renderer"]["process"]["status"], string> = {
+  running: "运行中", idle: "空闲", disconnected: "进程失联", stopped: "未运行",
+};
+
+const rendererConnectionLabels: Record<SystemStatus["windows_renderer"]["connection"]["status"], string> = {
+  connected: "已连接", disconnected: "未连接",
+};
+
+const ossStatusLabels: Record<SystemStatus["oss"]["status"], string> = {
+  connected: "已连接", disconnected: "连接失败", misconfigured: "配置错误", disabled: "未启用",
+};
 
 function formatUptime(seconds: number): string {
   const days = Math.floor(seconds / 86400);
@@ -609,6 +643,29 @@ function RuntimeTab() {
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">OSS 连接状态</CardTitle>
+            <HardDrive className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">
+              <Badge
+                variant={data.oss.status === "connected" ? "default" : data.oss.status === "disconnected" || data.oss.status === "misconfigured" ? "destructive" : "secondary"}
+                className="text-sm"
+              >
+                {ossStatusLabels[data.oss.status]}
+              </Badge>
+            </div>
+            <p className="mt-1 truncate text-xs text-muted-foreground" title={data.oss.message}>
+              {data.oss.message}
+            </p>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              最近检查: {new Date(data.oss.checked_at * 1000).toLocaleTimeString("zh-CN")}
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">运行时长</CardTitle>
             <Clock className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
@@ -656,6 +713,52 @@ function RuntimeTab() {
                 : data.frontend_mode === "dev"
                   ? `开发模式下未检测到 Vite 监听进程（端口 ${data.frontend_port}）`
                   : "前端由后端静态托管（经后端端口访问）"}
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Windows 子进程运行</CardTitle>
+            <Server className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">
+              <Badge
+                variant={data.windows_renderer.process.status === "running" ? "default" : data.windows_renderer.process.status === "disconnected" ? "destructive" : "secondary"}
+                className="text-sm"
+              >
+                {rendererProcessLabels[data.windows_renderer.process.status]}
+              </Badge>
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {data.windows_renderer.process.status === "running" && data.windows_renderer.process.task_id
+                ? `Worker: ${data.windows_renderer.process.worker_id ?? "未知"} · 任务: ${data.windows_renderer.process.task_id.slice(0, 8)}`
+                : data.windows_renderer.process.active_task_count > 0
+                  ? `有效租约任务 ${data.windows_renderer.process.active_task_count} 个，Worker 暂无心跳`
+                  : `在线 Worker: ${data.windows_renderer.process.worker_count} 个`}
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Windows 子进程连接</CardTitle>
+            <Wifi className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">
+              <Badge
+                variant={data.windows_renderer.connection.status === "connected" ? "default" : "secondary"}
+                className="text-sm"
+              >
+                {rendererConnectionLabels[data.windows_renderer.connection.status]}
+              </Badge>
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {data.windows_renderer.connection.worker_id
+                ? `Worker: ${data.windows_renderer.connection.worker_id} · ${data.windows_renderer.connection.age_seconds ?? 0} 秒前心跳`
+                : "尚未收到 Windows Worker 心跳"}
             </p>
           </CardContent>
         </Card>

@@ -19,6 +19,12 @@ from urllib.parse import urlsplit
 import httpx
 
 from app.config import settings
+from app.core.errors import (
+    OSS_UNAVAILABLE_MESSAGE,
+    RENDERER_UNAVAILABLE_MESSAGE,
+    RENDERER_GENERIC_MESSAGE,
+    RENDERER_TIMEOUT_MESSAGE,
+)
 from app.services.resource_import.remote_fonts import sha256_file
 from app.services.resource_import.validation import _validate_import_image
 
@@ -146,6 +152,11 @@ def _safe_error(response):
     except (RuntimeError, ValueError, AttributeError):
         code = "remote_error"
     messages = {
+        "network_error": RENDERER_UNAVAILABLE_MESSAGE,
+        "renderer_unavailable": RENDERER_UNAVAILABLE_MESSAGE,
+        "worker_unavailable": RENDERER_UNAVAILABLE_MESSAGE,
+        "temporary_oss_error": OSS_UNAVAILABLE_MESSAGE,
+        "render_timeout": RENDERER_TIMEOUT_MESSAGE,
         "font_conflict": "Windows 与标准字体库存在同名字体版本冲突，请统一字体文件后重试",
         "fonts_missing": "Windows 缺少所需字体，且字体同步未成功",
         "font_install_failed": "Windows 临时字体注册失败",
@@ -155,7 +166,7 @@ def _safe_error(response):
         "worker_restarted": "Windows 渲染服务已重启，请重新渲染",
         "wps_sign_in_required": "Windows WPS 尚未登录，请在渲染服务器登录后重试",
         "wps_license_required": "Windows WPS 账号没有此转换权限",
-        "render_timeout": "Windows WPS 转图超时，可重试或减少每批页数",
+        "render_timeout": RENDERER_TIMEOUT_MESSAGE,
         "wps_quota_exceeded": "WPS 转换配额或频率受限，请检查 Windows 账号，不会自动重复扣费重试",
         "unsafe_pptx": "PPT 含外部链接、宏、ActiveX 或嵌入 Office/OLE 对象，请在 Office/WPS 中移除活动内容后重试",
         "invalid_pptx": "拆分后的 PPTX 结构不完整或不安全，请检查源文件",
@@ -164,7 +175,7 @@ def _safe_error(response):
     }
     # Even a syntactically valid unknown code is untrusted and could echo a
     # credential or host path. Only disclose the known public message catalog.
-    return messages.get(code if isinstance(code, str) else "", f"Windows 转图失败（HTTP {response.status_code}）")
+    return messages.get(code if isinstance(code, str) else "", RENDERER_GENERIC_MESSAGE)
 
 
 class RemoteRenderer:

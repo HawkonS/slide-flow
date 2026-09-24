@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.config import settings
+from app.core.errors import PUBLIC_ERROR_MESSAGES
 from app.core.sanitize import sanitize_html
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,7 @@ _TASK_PARAMS_PUBLIC_KEYS = (
     "fonts",
     "missing_fonts",
     "preview_status",
+    "preview_error",
 )
 
 
@@ -104,7 +106,7 @@ def _serialize_task(row: sqlite3.Row, db: sqlite3.Connection | None = None) -> d
     safe_error = None
     if raw_error:
         # 旧任务记录可能保存了异常字符串（包含绝对路径/命令行参数）；接口只返回通用提示。
-        safe_error = raw_error if raw_error in {"服务重启，任务中断", "未能拆分 PPTX"} else "任务处理失败，请重试或联系管理员"
+        safe_error = raw_error if raw_error in ({"服务重启，任务中断", "未能拆分 PPTX"} | PUBLIC_ERROR_MESSAGES) else "任务处理失败，请重试或联系管理员"
     return {
         "id": row["id"],
         "task_type": row["task_type"],

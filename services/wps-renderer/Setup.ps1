@@ -54,7 +54,7 @@ $installRoot = Optional-String $settings "install_root" "C:\ProgramData\SlideFlo
 $python = Optional-String $settings "python" "python"
 $wpsCli = Required-String $settings "wpscli"
 $mainUrl = Required-String $settings "main_url"
-$host = Optional-String $settings "renderer_host" "127.0.0.1"
+$rendererHost = Optional-String $settings "renderer_host" "127.0.0.1"
 $port = Optional-Int $settings "renderer_port" 8765
 $workerId = Optional-String $settings "worker_id"
 $version = Optional-String $settings "version"
@@ -70,7 +70,7 @@ $installArgs = @{
     InstallRoot = $installRoot
     Python = $python
     WpsCli = $wpsCli
-    ListenHost = $host
+    ListenHost = $rendererHost
     Port = $port
 }
 if ($version) { $installArgs.Version = $version }
@@ -92,6 +92,6 @@ if ($LASTEXITCODE -ne 0) { throw "Render pull registration failed." }
 Write-Host ""
 Write-Host "SlideFlow Windows Renderer is installed and running."
 Write-Host "Main URL: $mainUrl"
-Write-Host "Renderer: $host`:$port"
+Write-Host "Renderer: $rendererHost`:$port"
 Write-Host "Token file: $tokenFile"
 Write-Host "Next: copy the token file contents to the main server's render.token_file, then run Update.ps1 for future upgrades."

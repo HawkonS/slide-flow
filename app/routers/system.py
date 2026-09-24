@@ -21,6 +21,8 @@ from pydantic import BaseModel, Field
 
 from app.config import PROPERTIES_FILE, settings
 from app.core.permissions import require_system_admin
+from app.core.oss import storage as oss_storage
+from app.db import get_db
 from app.services.system_upgrade import (
     OperationOwnershipLost,
     UpgradeAlreadyRunning,
@@ -431,6 +433,14 @@ def api_admin_system_status(
     # 检查 systemd 服务状态
     service_name = settings.service_name
     systemd_installed, service_status, service_enabled = _systemd_service_state(service_name)
+    # Import lazily because the render-task service imports shared router
+    # dependencies during application assembly.
+    from app.services.resource_import.render_tasks import renderer_worker_status
+    db = get_db()
+    try:
+        windows_renderer = renderer_worker_status(db)
+    finally:
+        db.close()
     
     return {
         "uptime_seconds": uptime_seconds,
@@ -450,6 +460,8 @@ def api_admin_system_status(
         "service_status": service_status,
         "service_enabled": service_enabled,
         "mode": "systemd" if systemd_installed else "direct",
+        "windows_renderer": windows_renderer,
+        "oss": oss_storage.health_status(),
     }
 
 
