@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Check, Loader2 } from "lucide-react";
+import { Check, Loader2, Search } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { UserOption } from "@/lib/types";
@@ -20,12 +20,36 @@ interface UserOptionsResponse {
   users: UserOption[];
 }
 
-/** Partial 范围用户多选组件：从 /api/users/options 拉取全部用户并以可点选行呈现。
+/** Partial 范围用户多选组件：按搜索词读取有上限的用户选项并以可点选行呈现。
  *  为避免 button-in-button 嵌套导致的 React 报错，可视 checkbox 仅用纯 CSS 标记。 */
 export function UserPicker({ value, onChange, showBulk = true, className, excludeIds }: UserPickerProps) {
+  const [searchInput, setSearchInput] = React.useState("");
+  const [search, setSearch] = React.useState("");
+  React.useEffect(() => {
+    const timer = window.setTimeout(() => setSearch(searchInput.trim()), 250);
+    return () => window.clearTimeout(timer);
+  }, [searchInput]);
+
   const { data, isLoading, isError, error } = useQuery({
-    queryKey: ["users", "options"],
-    queryFn: async () => api<UserOptionsResponse>("/api/users/options"),
+    queryKey: ["users", "options", search, value],
+    queryFn: async () => {
+      const selectedChunks: number[][] = [];
+      for (let index = 0; index < value.length; index += 100) {
+        selectedChunks.push(value.slice(index, index + 100));
+      }
+      const responses = await Promise.all([
+        api<UserOptionsResponse>("/api/users/options", {
+          params: { search: search || undefined, limit: 100 },
+        }),
+        ...selectedChunks.map((ids) => api<UserOptionsResponse>("/api/users/options", {
+          params: { ids: ids.join(","), limit: 0 },
+        })),
+      ]);
+      const searchUsers = responses[0]?.users ?? [];
+      const byId = new Map<number, UserOption>();
+      responses.forEach((response) => response.users.forEach((user) => byId.set(user.id, user)));
+      return { users: Array.from(byId.values()), searchUsers };
+    },
     staleTime: 60_000,
   });
 
@@ -37,6 +61,10 @@ export function UserPicker({ value, onChange, showBulk = true, className, exclud
   }, [data, excludeIds]);
 
   const valueSet = React.useMemo(() => new Set(value), [value]);
+  const currentResultIds = React.useMemo(() => {
+    const excluded = new Set(excludeIds ?? []);
+    return (data?.searchUsers ?? []).map((user) => user.id).filter((id) => !excluded.has(id));
+  }, [data?.searchUsers, excludeIds]);
 
   const toggle = (id: number) => {
     if (valueSet.has(id)) {
@@ -46,24 +74,41 @@ export function UserPicker({ value, onChange, showBulk = true, className, exclud
     }
   };
 
-  const allIds = users.map((u) => u.id);
-  const allSelected = allIds.length > 0 && allIds.every((id) => valueSet.has(id));
+  const allCurrentSelected = currentResultIds.length > 0 && currentResultIds.every((id) => valueSet.has(id));
+
+  const toggleCurrentResults = () => {
+    const currentIds = new Set(currentResultIds);
+    if (allCurrentSelected) {
+      onChange(value.filter((id) => !currentIds.has(id)));
+      return;
+    }
+    onChange(Array.from(new Set([...value, ...currentResultIds])));
+  };
 
   return (
     <div className={cn("rounded-md border bg-background", className)}>
+      <div className="relative border-b">
+        <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+        <input
+          value={searchInput}
+          onChange={(event) => setSearchInput(event.target.value)}
+          placeholder="搜索用户"
+          className="h-9 w-full bg-transparent pl-9 pr-3 text-sm outline-none placeholder:text-muted-foreground"
+        />
+      </div>
       {showBulk && (
         <div className="flex items-center justify-between border-b px-3 py-1.5 text-xs text-muted-foreground">
           <span>
-            已选 <span className="font-medium text-foreground">{value.length}</span> / {users.length}
+            已选 <span className="font-medium text-foreground">{value.length}</span>，当前结果 {currentResultIds.length} 人
           </span>
           <div className="flex items-center gap-3">
             <button
               type="button"
               className="hover:text-primary disabled:opacity-40"
-              onClick={() => onChange(allSelected ? [] : allIds)}
-              disabled={users.length === 0}
+              onClick={toggleCurrentResults}
+              disabled={currentResultIds.length === 0}
             >
-              {allSelected ? "清空" : "全选"}
+              {allCurrentSelected ? "取消当前结果" : "选择当前结果"}
             </button>
           </div>
         </div>

@@ -129,6 +129,14 @@ export interface AdminUser {
   updated_at: string;
 }
 
+export interface AdminUsersResponse {
+  users: AdminUser[];
+  available_tags: string[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
 /** 把 tags 字符串切成数组（逗号/空格分隔） */
 export function parseTags(value: string | null | undefined): string[] {
   return (value || "")

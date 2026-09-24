@@ -1,12 +1,32 @@
 import * as React from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Loader2, Power, RotateCw, Download, Server, Clock, HardDrive, ArrowUpCircle, CheckCircle2, XCircle } from "lucide-react";
+import {
+  ArrowDownToLine,
+  ArrowUpCircle,
+  CheckCircle2,
+  Clock,
+  Download,
+  HardDrive,
+  Loader2,
+  Pause,
+  Play,
+  Power,
+  RefreshCw,
+  RotateCw,
+  Search,
+  Server,
+  XCircle,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { api } from "@/lib/api";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { ApiError, api, downloadFile } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import { AdminConfigPage } from "./AdminConfigPage";
 
 // ==================== 升级遮罩 ====================
@@ -16,9 +36,28 @@ type UpgradePhase = "upgrading" | "restarting" | "done" | "failed";
 type UpgradeState = {
   phase: UpgradePhase;
   startTime: number;
+  operation?: "upgrade" | "restart";
+  jobId?: string;
+  errorMessage?: string;
+  statusMessage?: string;
   baselineBootId?: string | null;
   baselineStartTime?: string | null;
 };
+
+type UpgradeTaskState = "idle" | "queued" | "running" | "restarting" | "succeeded" | "failed";
+
+interface UpgradeTaskStatus {
+  job_id?: string;
+  operation?: "upgrade" | "restart" | "shutdown";
+  state: UpgradeTaskState;
+  message: string;
+}
+
+interface UpgradeStartResponse {
+  job_id: string;
+  state: "queued";
+  message: string;
+}
 
 /**
  * 升级中全屏遮罩：显示升级进度状态，轮询服务可用性，恢复后自动刷新；
@@ -27,16 +66,23 @@ type UpgradeState = {
 function UpgradeOverlay({
   phase,
   elapsed,
+  errorMessage,
+  statusMessage,
+  operation,
   onClose,
 }: {
   phase: UpgradePhase;
   elapsed: number;
+  errorMessage?: string;
+  statusMessage?: string;
+  operation?: "upgrade" | "restart";
   onClose: () => void;
 }) {
+  const isRestart = operation === "restart";
   const phaseText: Record<UpgradePhase, string> = {
-    upgrading: "正在拉取最新代码并升级...",
+    upgrading: isRestart ? "正在准备重启服务..." : "正在拉取最新代码并升级...",
     restarting: "服务重启中，请稍候...",
-    done: "升级完成，正在刷新页面...",
+    done: `${isRestart ? "重启" : "升级"}完成，正在刷新页面...`,
     failed: "未能在预期时间内检测到服务恢复",
   };
 
@@ -52,21 +98,26 @@ function UpgradeOverlay({
         )}
         <div>
           <h2 className="text-xl font-semibold">
-            {phase === "failed" ? "升级状态异常" : phase === "done" ? "升级完成" : "系统升级中"}
+            {phase === "failed"
+              ? `${isRestart ? "重启" : "升级"}状态异常`
+              : phase === "done"
+                ? `${isRestart ? "重启" : "升级"}完成`
+                : isRestart ? "系统重启中" : "系统升级中"}
           </h2>
           <p className="mt-2 text-sm text-muted-foreground">{phaseText[phase]}</p>
         </div>
         {phase === "failed" ? (
           <>
             <p className="max-w-sm text-xs text-muted-foreground">
-              升级可能失败或服务尚未恢复，请到「日志管理」查看 upgrade.log / startup.log 确认，必要时手动重启服务。
+              {errorMessage || `${isRestart ? "重启" : "升级"}可能失败或服务尚未恢复，请查看运行日志，必要时手动恢复服务。`}
             </p>
             <Button variant="outline" onClick={onClose}>关闭并返回</Button>
           </>
         ) : (
-          <p className="text-xs text-muted-foreground">
-            已耗时 {elapsed} 秒 · 升级期间请勿关闭页面
-          </p>
+          <div className="space-y-1 text-xs text-muted-foreground">
+            <p>已耗时 {elapsed} 秒 · 操作期间请勿关闭页面</p>
+            {statusMessage && <p className="max-w-sm text-amber-600">{statusMessage}</p>}
+          </div>
         )}
       </div>
     </div>
@@ -78,10 +129,11 @@ function UpgradeOverlay({
 const UPGRADE_STATE_KEY = "slideflow_upgrade_state";
 
 // 升级阶段先留出 git 拉取和停服务的时间；已进入重启阶段或重新打开页面时立即探测
-const UPGRADE_INITIAL_DELAY = 10_000;
+const UPGRADE_INITIAL_DELAY = 1_000;
 const POLL_INTERVAL = 3_000;
-// 总超时：超过后不再无限等待，进入 failed 状态由用户处理
-const UPGRADE_TIMEOUT = 180_000;
+// 依赖安装和前端构建在慢网络环境下可能超过 3 分钟；服务端会即时报告脚本失败，
+// 浏览器仅保留一个宽松的最终兜底，避免正常的长升级被误判为失败。
+const UPGRADE_TIMEOUT = 15 * 60_000;
 
 function saveUpgradeState(state: UpgradeState) {
   try {
@@ -101,13 +153,13 @@ function loadUpgradeState(): UpgradeState | null {
       !parsed ||
       typeof parsed.startTime !== "number" ||
       !["upgrading", "restarting", "done", "failed"].includes(parsed.phase) ||
-      (!parsed.baselineBootId && !parsed.baselineStartTime)
+      (!parsed.jobId && !parsed.baselineBootId && !parsed.baselineStartTime)
     ) {
       sessionStorage.removeItem(UPGRADE_STATE_KEY);
       return null;
     }
-    // 超过 5 分钟自动过期，避免残留
-    if (Date.now() - parsed.startTime > 5 * 60 * 1000) {
+    // 超过 30 分钟自动过期，避免异常关闭浏览器后永久残留
+    if (Date.now() - parsed.startTime > 30 * 60 * 1000) {
       sessionStorage.removeItem(UPGRADE_STATE_KEY);
       return null;
     }
@@ -116,9 +168,13 @@ function loadUpgradeState(): UpgradeState | null {
       sessionStorage.removeItem(UPGRADE_STATE_KEY);
       return null;
     }
-    // 页面被刷新说明服务可能部分恢复，直接进入 restarting 轮询
-    if (parsed.phase === "upgrading") {
+    // 旧版重启流程没有服务端任务状态，只能在刷新后直接探测新进程；
+    // 新版升级任务以服务端持久化状态为准，不能提前显示“重启中”。
+    if (parsed.phase === "upgrading" && !parsed.jobId) {
       parsed.phase = "restarting";
+    }
+    if (!parsed.operation) {
+      parsed.operation = parsed.jobId ? "upgrade" : "restart";
     }
     return parsed;
   } catch {
@@ -148,8 +204,8 @@ interface SystemStatus {
   config_file: string;
   log_dir: string;
   service_name: string;
-  service_status: "running" | "stopped" | "unknown";
-  service_enabled: "enabled" | "disabled" | "unknown";
+  service_status: "running" | "stopped" | "activating" | "deactivating" | "failed" | "reloading" | "maintenance" | "unknown";
+  service_enabled: "enabled" | "enabled-runtime" | "linked" | "linked-runtime" | "static" | "indirect" | "generated" | "transient" | "disabled" | "masked" | "masked-runtime" | "unknown";
   mode: "systemd" | "direct";
 }
 
@@ -186,6 +242,7 @@ function RuntimeTab() {
   const elapsedTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
   const reloadTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const probeRef = React.useRef<(() => void) | null>(null);
+  const probeFailuresRef = React.useRef(0);
 
   React.useEffect(() => () => {
     if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current);
@@ -206,7 +263,7 @@ function RuntimeTab() {
   const failUpgrade = React.useCallback((reason: string) => {
     if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
     clearUpgradeState();
-    setUpgradeState((s) => (s ? { ...s, phase: "failed" } : s));
+    setUpgradeState((s) => (s ? { ...s, phase: "failed", errorMessage: reason } : s));
     toast.error(reason);
   }, []);
 
@@ -225,7 +282,8 @@ function RuntimeTab() {
     if (upgradeState.phase === "done" || upgradeState.phase === "failed") return;
 
     const startTime = upgradeState.startTime;
-    const initialDelay = upgradeState.phase === "upgrading" ? UPGRADE_INITIAL_DELAY : 0;
+    const operationLabel = upgradeState.operation === "restart" ? "重启" : "升级";
+    const initialDelay = upgradeState.jobId && upgradeState.phase === "upgrading" ? UPGRADE_INITIAL_DELAY : 0;
     let cancelled = false;
     let inFlight = false;
 
@@ -254,31 +312,94 @@ function RuntimeTab() {
       inFlight = true;
       try {
         if (Date.now() - startTime > UPGRADE_TIMEOUT) {
-          failUpgrade("等待服务恢复超时，升级可能未成功，请检查升级日志");
+          failUpgrade(`等待服务恢复超时，${operationLabel}可能未成功，请检查运行日志`);
           return;
         }
-        const res = await fetch("/api/admin/system/status", {
-          credentials: "include",
-          cache: "no-store",
-        });
+        const path = upgradeState.jobId
+          ? "/api/admin/system/operation/status"
+          : "/api/admin/system/status";
+        const controller = new AbortController();
+        const requestTimeout = window.setTimeout(() => controller.abort(), 10_000);
+        let res: Response;
+        try {
+          res = await fetch(path, {
+            credentials: "include",
+            cache: "no-store",
+            signal: controller.signal,
+          });
+        } finally {
+          window.clearTimeout(requestTimeout);
+        }
         if (cancelled) return;
         if (res.status === 401 || res.status === 403) {
           failUpgrade("服务已恢复但登录状态失效，请重新登录");
           return;
         }
         if (res.ok) {
-          const status = (await res.json()) as SystemStatus;
-          // A healthy response from the old process is not completion. This
-          // is the key guard against clearing the upgrade state too early.
-          if (hasRestarted(status)) {
-            completeUpgrade();
-            return;
+          if (upgradeState.jobId) {
+            const status = (await res.json()) as UpgradeTaskStatus;
+            // Ignore a stale response from a previous completed task. Active
+            // upgrades are locked server-side, so the matching job remains
+            // authoritative until it reaches a terminal state.
+            if (status.state === "idle") {
+              probeFailuresRef.current += 1;
+              if (probeFailuresRef.current >= 3) {
+                failUpgrade(`${operationLabel}任务状态丢失，请检查运行日志`);
+                return;
+              }
+            } else {
+              probeFailuresRef.current = 0;
+              if (upgradeState.statusMessage) {
+                setUpgradeState((current) => current ? { ...current, statusMessage: undefined } : current);
+              }
+            }
+            if (status.job_id && status.job_id !== upgradeState.jobId) {
+              failUpgrade(`${operationLabel}任务状态不匹配，请检查是否有其他管理员重新发起了运行操作`);
+              return;
+            }
+            if (status.operation && upgradeState.operation && status.operation !== upgradeState.operation) {
+              failUpgrade("运行操作类型不匹配，请检查是否有其他管理员发起了操作");
+              return;
+            }
+            if (status.state === "failed") {
+              failUpgrade(status.message || `${operationLabel}失败，请检查运行日志`);
+              return;
+            }
+            if (status.state === "succeeded") {
+              completeUpgrade();
+              return;
+            }
+            if (status.state === "restarting" && upgradeState.phase !== "restarting") {
+              setUpgradeState((current) => current ? { ...current, phase: "restarting" } : current);
+              return;
+            }
+          } else {
+            const status = (await res.json()) as SystemStatus;
+            probeFailuresRef.current = 0;
+            if (upgradeState.statusMessage) {
+              setUpgradeState((current) => current ? { ...current, statusMessage: undefined } : current);
+            }
+            // A healthy response from the old process is not completion. This
+            // is the key guard against clearing the restart state too early.
+            if (hasRestarted(status)) {
+              completeUpgrade();
+              return;
+            }
           }
+        } else {
+          probeFailuresRef.current += 1;
         }
       } catch {
         // The service is expected to be unreachable while it restarts.
+        probeFailuresRef.current += 1;
       } finally {
         inFlight = false;
+      }
+      if (probeFailuresRef.current === 3) {
+        setUpgradeState((current) => current ? {
+          ...current,
+          statusMessage: "服务暂时不可达，仍在等待恢复；若持续失败请查看运行日志。",
+        } : current);
       }
       if (!cancelled) {
         pollTimerRef.current = setTimeout(probe, POLL_INTERVAL);
@@ -288,7 +409,7 @@ function RuntimeTab() {
     probeRef.current = () => { void probe(); };
     const kickoff = () => {
       if (cancelled) return;
-      if (upgradeState.phase === "upgrading") {
+      if (!upgradeState.jobId && upgradeState.phase === "upgrading") {
         setUpgradeState((s) => (s ? { ...s, phase: "restarting" } : s));
         return;
       }
@@ -327,34 +448,40 @@ function RuntimeTab() {
   });
 
   const restartMut = useMutation({
-    mutationFn: async () => api("/api/admin/system/restart", { method: "POST" }),
-    onSuccess: () => {
+    mutationFn: async () => api<UpgradeStartResponse>("/api/admin/system/restart", { method: "POST" }),
+    onSuccess: (result) => {
       // 显示升级遮罩，进入重启轮询流程
       const nextState: UpgradeState = {
         phase: "restarting",
         startTime: Date.now(),
+        operation: "restart",
+        jobId: result.job_id,
         baselineBootId: data?.boot_id,
         baselineStartTime: data?.start_time,
       };
       // 先写入再更新 React，用户切到其他管理页或刷新时也能恢复监控。
       saveUpgradeState(nextState);
+      probeFailuresRef.current = 0;
       setUpgradeState(nextState);
     },
     onError: (err: Error) => toast.error(err.message || "重启失败"),
   });
 
   const upgradeMut = useMutation({
-    mutationFn: async () => api("/api/admin/system/upgrade", { method: "POST" }),
-    onSuccess: () => {
+    mutationFn: async () => api<UpgradeStartResponse>("/api/admin/system/upgrade", { method: "POST" }),
+    onSuccess: (result) => {
       // 显示升级遮罩，开始轮询
       const nextState: UpgradeState = {
         phase: "upgrading",
         startTime: Date.now(),
+        operation: "upgrade",
+        jobId: result.job_id,
         baselineBootId: data?.boot_id,
         baselineStartTime: data?.start_time,
       };
       // 先写入再更新 React，用户切到其他管理页或刷新时也能恢复监控。
       saveUpgradeState(nextState);
+      probeFailuresRef.current = 0;
       setUpgradeState(nextState);
     },
     onError: (err: Error) => toast.error(err.message || "升级失败"),
@@ -384,11 +511,41 @@ function RuntimeTab() {
     }
   };
 
+  const operationPending = shutdownMut.isPending || restartMut.isPending || upgradeMut.isPending;
+
+  const serviceStatusLabel: Record<SystemStatus["service_status"], string> = {
+    running: "运行中",
+    stopped: "已停止",
+    activating: "启动中",
+    deactivating: "停止中",
+    failed: "故障",
+    reloading: "重载中",
+    maintenance: "维护中",
+    unknown: "未知",
+  };
+  const serviceEnabledLabel: Record<SystemStatus["service_enabled"], string> = {
+    enabled: "已开启",
+    "enabled-runtime": "本次启动已开启",
+    linked: "已链接",
+    "linked-runtime": "本次启动已链接",
+    static: "静态单元",
+    indirect: "间接启用",
+    generated: "动态生成",
+    transient: "临时单元",
+    disabled: "已关闭",
+    masked: "已屏蔽",
+    "masked-runtime": "本次启动已屏蔽",
+    unknown: "未知",
+  };
+
   if (upgradeState) {
     return (
       <UpgradeOverlay
         phase={upgradeState.phase}
         elapsed={elapsed}
+        errorMessage={upgradeState.errorMessage}
+        statusMessage={upgradeState.statusMessage}
+        operation={upgradeState.operation}
         onClose={() => {
           clearUpgradeState();
           setUpgradeState(null);
@@ -439,11 +596,9 @@ function RuntimeTab() {
               {data.mode === "systemd" ? (
                 <>
                   服务: {data.service_name} | 
-                  {data.service_status === "running" ? (
-                    <span className="text-green-600">运行中</span>
-                  ) : (
-                    <span className="text-red-600">已停止</span>
-                  )}
+                  <span className={data.service_status === "running" ? "text-green-600" : data.service_status === "failed" ? "text-red-600" : "text-amber-600"}>
+                    {serviceStatusLabel[data.service_status]}
+                  </span>
                 </>
               ) : (
                 "未使用 systemd"
@@ -498,7 +653,9 @@ function RuntimeTab() {
             <p className="text-xs text-muted-foreground">
               {data.frontend_pid
                 ? `PID: ${data.frontend_pid} | 端口: ${data.frontend_port}`
-                : "前端由后端静态托管（经后端端口访问）"}
+                : data.frontend_mode === "dev"
+                  ? `开发模式下未检测到 Vite 监听进程（端口 ${data.frontend_port}）`
+                  : "前端由后端静态托管（经后端端口访问）"}
             </p>
           </CardContent>
         </Card>
@@ -526,11 +683,14 @@ function RuntimeTab() {
           <CardContent>
             <div className="text-2xl font-bold">
               {data.mode === "systemd" ? (
-                data.service_enabled === "enabled" ? (
-                  <Badge variant="default" className="text-sm">已开启</Badge>
-                ) : (
-                  <Badge variant="secondary" className="text-sm">已关闭</Badge>
-                )
+                <Badge
+                  variant={data.service_enabled === "enabled" || data.service_enabled === "enabled-runtime"
+                    ? "default"
+                    : data.service_enabled.startsWith("masked") ? "destructive" : "secondary"}
+                  className="text-sm"
+                >
+                  {serviceEnabledLabel[data.service_enabled]}
+                </Badge>
               ) : (
                 <Badge variant="outline" className="text-sm">N/A</Badge>
               )}
@@ -559,7 +719,7 @@ function RuntimeTab() {
             <Button
               variant="default"
               onClick={handleUpgrade}
-              disabled={upgradeMut.isPending}
+              disabled={operationPending}
               className="bg-blue-600 hover:bg-blue-700"
             >
               {upgradeMut.isPending ? (
@@ -572,7 +732,7 @@ function RuntimeTab() {
             <Button
               variant="outline"
               onClick={handleRestart}
-              disabled={restartMut.isPending}
+              disabled={operationPending}
             >
               {restartMut.isPending ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -584,7 +744,7 @@ function RuntimeTab() {
             <Button
               variant="destructive"
               onClick={handleShutdown}
-              disabled={shutdownMut.isPending}
+              disabled={operationPending}
             >
               {shutdownMut.isPending ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -604,9 +764,42 @@ function RuntimeTab() {
 
 interface LogFileInfo {
   filename: string;
-  path: string;
   size_bytes: number;
   modified: string;
+  version: string;
+}
+
+interface LogTailResponse {
+  filename: string;
+  lines: string[];
+  line_count: number;
+  requested_lines: number;
+  truncated: boolean;
+  size_bytes: number;
+  modified: string;
+  version: string;
+}
+
+type LogLevelFilter = "all" | "error" | "warn" | "info" | "debug";
+
+const LOG_REFRESH_INTERVAL = 3_000;
+const LOG_LINE_LIMITS = [200, 500, 1000, 2000, 5000] as const;
+
+function getLogLevel(line: string): Exclude<LogLevelFilter, "all"> | null {
+  if (/\b(ERROR|FATAL|CRITICAL)\b/i.test(line)) return "error";
+  if (/\bWARN(?:ING)?\b/i.test(line)) return "warn";
+  if (/\bINFO\b/i.test(line)) return "info";
+  if (/\b(DEBUG|TRACE)\b/i.test(line)) return "debug";
+  return null;
+}
+
+function getLogLineClass(line: string): string {
+  const level = getLogLevel(line);
+  if (level === "error") return "text-red-300";
+  if (level === "warn") return "text-amber-300";
+  if (level === "info") return "text-sky-200";
+  if (level === "debug") return "text-slate-400";
+  return "text-slate-200";
 }
 
 function formatFileSize(bytes: number): string {
@@ -616,17 +809,121 @@ function formatFileSize(bytes: number): string {
 }
 
 function LogTab() {
-  const { data, isLoading } = useQuery({
+  const [selectedFilename, setSelectedFilename] = React.useState<string | null>(null);
+  const [autoRefresh, setAutoRefresh] = React.useState(true);
+  const [followTail, setFollowTail] = React.useState(true);
+  const [lineLimit, setLineLimit] = React.useState(500);
+  const [search, setSearch] = React.useState("");
+  const [levelFilter, setLevelFilter] = React.useState<LogLevelFilter>("all");
+  const [downloadingFilename, setDownloadingFilename] = React.useState<string | null>(null);
+  const viewerRef = React.useRef<HTMLDivElement>(null);
+  const requestedFileVersionRef = React.useRef<{ filename: string; version: string } | null>(null);
+  const deferredSearch = React.useDeferredValue(search.trim().toLocaleLowerCase());
+
+  const logsQuery = useQuery({
     queryKey: ["system", "logs"],
-    queryFn: async () => api<LogFileInfo[]>("/api/admin/system/logs"),
+    queryFn: async ({ signal }) => api<LogFileInfo[]>("/api/admin/system/logs", { signal }),
+    refetchInterval: autoRefresh ? LOG_REFRESH_INTERVAL : false,
   });
 
-  const handleDownload = (filename: string) => {
-    const url = `/api/admin/system/logs/${encodeURIComponent(filename)}?download=true`;
-    window.open(url, '_blank');
+  React.useEffect(() => {
+    const files = logsQuery.data ?? [];
+    if (!files.length) {
+      setSelectedFilename(null);
+      return;
+    }
+    if (!selectedFilename || !files.some((file) => file.filename === selectedFilename)) {
+      setSelectedFilename(files[0].filename);
+      setFollowTail(true);
+    }
+  }, [logsQuery.data, selectedFilename]);
+
+  const files = logsQuery.data ?? [];
+  const selectedFile = files.find((file) => file.filename === selectedFilename);
+
+  const tailQuery = useQuery({
+    queryKey: ["system", "logs", selectedFilename, "tail", lineLimit],
+    queryFn: async ({ signal }) => api<LogTailResponse>(
+      `/api/admin/system/logs/${encodeURIComponent(selectedFilename!)}/tail`,
+      { params: { lines: lineLimit }, signal },
+    ),
+    enabled: Boolean(selectedFilename),
+    refetchInterval: (query) => autoRefresh && query.state.status === "error"
+      ? LOG_REFRESH_INTERVAL
+      : false,
+  });
+
+  React.useEffect(() => {
+    if (!selectedFilename || !selectedFile?.version) return;
+    const previous = requestedFileVersionRef.current;
+    requestedFileVersionRef.current = {
+      filename: selectedFilename,
+      version: selectedFile.version,
+    };
+    if (!previous || previous.filename !== selectedFilename) return;
+    if (previous.version !== selectedFile.version) {
+      void tailQuery.refetch();
+    }
+  }, [selectedFilename, selectedFile?.version, tailQuery.refetch]);
+
+  const visibleLines = React.useMemo(() => {
+    return (tailQuery.data?.lines ?? [])
+      .map((line, index) => ({ line, lineNumber: index + 1 }))
+      .filter(({ line }) => {
+        if (levelFilter !== "all" && getLogLevel(line) !== levelFilter) return false;
+        return !deferredSearch || line.toLocaleLowerCase().includes(deferredSearch);
+      });
+  }, [tailQuery.data?.lines, deferredSearch, levelFilter]);
+
+  React.useEffect(() => {
+    if (!followTail || !viewerRef.current) return;
+    viewerRef.current.scrollTop = viewerRef.current.scrollHeight;
+  }, [followTail, selectedFilename, lineLimit, deferredSearch, levelFilter, tailQuery.data?.modified, visibleLines.length]);
+
+  const handleSelectFile = (filename: string) => {
+    setSelectedFilename(filename);
+    setFollowTail(true);
   };
 
-  if (isLoading || !data) {
+  const handleDownload = async (filename: string) => {
+    setDownloadingFilename(filename);
+    try {
+      await downloadFile(
+        `/api/admin/system/logs/${encodeURIComponent(filename)}?download=true`,
+        filename,
+      );
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        toast.error("日志文件不存在，可能已被轮转或清理");
+      } else if (error instanceof ApiError && error.status === 403) {
+        toast.error("没有下载该日志的权限");
+      } else {
+        toast.error(error instanceof Error ? error.message : "日志下载失败");
+      }
+    } finally {
+      setDownloadingFilename(null);
+    }
+  };
+
+  const handleRefresh = () => {
+    void Promise.all([logsQuery.refetch(), selectedFilename ? tailQuery.refetch() : Promise.resolve()]);
+  };
+
+  const handleToggleAutoRefresh = () => {
+    const next = !autoRefresh;
+    setAutoRefresh(next);
+    if (next) handleRefresh();
+  };
+
+  const handleJumpToLatest = () => {
+    setFollowTail(true);
+    requestAnimationFrame(() => {
+      if (!viewerRef.current) return;
+      viewerRef.current.scrollTop = viewerRef.current.scrollHeight;
+    });
+  };
+
+  if (logsQuery.isLoading && !logsQuery.data) {
     return (
       <div className="flex h-64 items-center justify-center text-sm text-muted-foreground">
         <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 加载日志列表…
@@ -634,56 +931,222 @@ function LogTab() {
     );
   }
 
+  if (logsQuery.isError && !logsQuery.data) {
+    return (
+      <div className="flex h-64 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+        <XCircle className="h-8 w-8 text-destructive" />
+        <p>日志列表加载失败：{logsQuery.error.message}</p>
+        <Button variant="outline" size="sm" onClick={() => logsQuery.refetch()}>
+          <RefreshCw className="mr-2 h-4 w-4" />重试
+        </Button>
+      </div>
+    );
+  }
+
+  const isRefreshing = logsQuery.isFetching || tailQuery.isFetching;
+  const refreshError = logsQuery.isError
+    ? `日志列表刷新失败：${logsQuery.error.message}`
+    : tailQuery.isError
+      ? `日志内容刷新失败：${tailQuery.error.message}`
+      : null;
+
   return (
     <div className="flex flex-col gap-4">
-      <Card>
-        <CardHeader>
-          <CardTitle>日志文件列表</CardTitle>
-          <CardDescription>
-            下载并查看系统运行日志
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="rounded-md border">
-            <div className="grid grid-cols-12 gap-4 px-4 py-3 text-sm font-medium border-b bg-muted/50">
-              <div className="col-span-6">文件名</div>
-              <div className="col-span-2">大小</div>
-              <div className="col-span-3">修改时间</div>
-              <div className="col-span-1">操作</div>
-            </div>
-            {data.map((log) => (
-              <div
-                key={log.filename}
-                className="grid grid-cols-12 gap-4 px-4 py-3 text-sm border-b last:border-b-0 hover:bg-muted/30"
-              >
-                <div className="col-span-6 font-medium truncate" title={log.filename}>
-                  {log.filename}
-                </div>
-                <div className="col-span-2 text-muted-foreground">
-                  {formatFileSize(log.size_bytes)}
-                </div>
-                <div className="col-span-3 text-muted-foreground">
-                  {new Date(log.modified).toLocaleString('zh-CN')}
-                </div>
-                <div className="col-span-1">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => handleDownload(log.filename)}
-                  >
-                    <Download className="h-4 w-4" />
-                  </Button>
-                </div>
-              </div>
-            ))}
-            {data.length === 0 && (
-              <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-                暂无日志文件
-              </div>
-            )}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card px-4 py-3">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+          <div className="flex items-center gap-2">
+            <Switch
+              id="log-follow-tail"
+              checked={followTail}
+              onCheckedChange={setFollowTail}
+            />
+            <label htmlFor="log-follow-tail" className="cursor-pointer font-medium">
+              跟随最新
+            </label>
           </div>
-        </CardContent>
-      </Card>
+          <span className={cn("flex items-center gap-1.5 text-xs", refreshError ? "text-destructive" : "text-muted-foreground")} aria-live="polite">
+            <span className={cn("h-2 w-2 rounded-full", refreshError ? "bg-red-500" : autoRefresh ? "bg-emerald-500" : "bg-slate-400")} />
+            {refreshError ?? (autoRefresh ? "每 3 秒自动刷新" : "自动刷新已暂停")}
+            {isRefreshing && <Loader2 className="h-3 w-3 animate-spin" />}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={handleToggleAutoRefresh}>
+            {autoRefresh ? <Pause className="mr-1.5 h-4 w-4" /> : <Play className="mr-1.5 h-4 w-4" />}
+            {autoRefresh ? "暂停" : "继续"}
+          </Button>
+          <Button variant="outline" size="sm" onClick={handleRefresh} disabled={isRefreshing}>
+            <RefreshCw className={cn("mr-1.5 h-4 w-4", isRefreshing && "animate-spin")} />
+            刷新
+          </Button>
+        </div>
+      </div>
+
+      <div className="grid min-h-[620px] gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
+        <Card className="overflow-hidden">
+          <CardHeader className="border-b pb-4">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <CardTitle className="text-base">日志文件</CardTitle>
+                <CardDescription className="mt-1">按修改时间排序</CardDescription>
+              </div>
+              <Badge variant="secondary">{files.length}</Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="max-h-[710px] overflow-y-auto p-2">
+            {files.map((log) => (
+              <button
+                type="button"
+                key={log.filename}
+                onClick={() => handleSelectFile(log.filename)}
+                aria-pressed={selectedFilename === log.filename}
+                className={cn(
+                  "mb-1 w-full rounded-md px-3 py-2.5 text-left transition-colors last:mb-0 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                  selectedFilename === log.filename && "bg-primary/10 text-primary hover:bg-primary/10",
+                )}
+              >
+                <span className="block truncate text-sm font-medium" title={log.filename}>{log.filename}</span>
+                <span className="mt-1 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                  <span>{formatFileSize(log.size_bytes)}</span>
+                  <span>{new Date(log.modified).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+                </span>
+              </button>
+            ))}
+            {files.length === 0 && (
+              <div className="px-3 py-12 text-center text-sm text-muted-foreground">暂无日志文件</div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="flex min-w-0 flex-col overflow-hidden">
+          <CardHeader className="border-b pb-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <CardTitle className="truncate text-base" title={selectedFilename ?? undefined}>
+                  {selectedFilename ?? "日志查看器"}
+                </CardTitle>
+                <CardDescription className="mt-1">
+                  {selectedFile
+                    ? `${formatFileSize(tailQuery.data?.size_bytes ?? selectedFile.size_bytes)} · 更新于 ${new Date(tailQuery.data?.modified ?? selectedFile.modified).toLocaleString("zh-CN")}`
+                    : "选择左侧日志文件后可直接查看"}
+                </CardDescription>
+              </div>
+              {selectedFilename && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handleDownload(selectedFilename)}
+                  disabled={downloadingFilename === selectedFilename}
+                >
+                  {downloadingFilename === selectedFilename ? (
+                    <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Download className="mr-1.5 h-4 w-4" />
+                  )}
+                  下载完整日志
+                </Button>
+              )}
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              <div className="relative min-w-[220px] flex-1">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  className="pl-8"
+                  placeholder="搜索当前加载的日志"
+                  aria-label="搜索日志"
+                />
+              </div>
+              <Select value={levelFilter} onValueChange={(value) => setLevelFilter(value as LogLevelFilter)}>
+                <SelectTrigger className="w-[130px]" aria-label="日志级别">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">全部级别</SelectItem>
+                  <SelectItem value="error">错误</SelectItem>
+                  <SelectItem value="warn">警告</SelectItem>
+                  <SelectItem value="info">信息</SelectItem>
+                  <SelectItem value="debug">调试</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={String(lineLimit)} onValueChange={(value) => setLineLimit(Number(value))}>
+                <SelectTrigger className="w-[140px]" aria-label="加载行数">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {LOG_LINE_LIMITS.map((limit) => (
+                    <SelectItem key={limit} value={String(limit)}>最新 {limit} 行</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </CardHeader>
+
+          <CardContent className="flex min-h-0 flex-1 flex-col p-0">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/30 px-4 py-2 text-xs text-muted-foreground">
+              <span>
+                显示 {visibleLines.length} / {tailQuery.data?.line_count ?? 0} 行
+                {tailQuery.data?.truncated ? " · 内容已安全截断" : ""}
+              </span>
+              <button
+                type="button"
+                onClick={handleJumpToLatest}
+                className="inline-flex items-center gap-1 rounded-sm text-foreground hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <ArrowDownToLine className="h-3.5 w-3.5" />跳到最新
+              </button>
+            </div>
+
+            <div
+              ref={viewerRef}
+              role="region"
+              aria-label={selectedFilename ? `${selectedFilename} 日志内容` : "日志内容"}
+              tabIndex={0}
+              onScroll={(event) => {
+                const target = event.currentTarget;
+                const distanceToBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
+                if (followTail && distanceToBottom > 80) setFollowTail(false);
+              }}
+              className="relative h-[560px] overflow-auto bg-slate-950 font-mono text-[12px] leading-5"
+            >
+              {tailQuery.isLoading && (
+                <div className="absolute inset-0 flex items-center justify-center text-slate-400">
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />加载日志内容…
+                </div>
+              )}
+              {tailQuery.isError && !tailQuery.data && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center text-slate-400">
+                  <XCircle className="h-7 w-7 text-red-400" />
+                  <p>日志内容加载失败：{tailQuery.error.message}</p>
+                  <Button variant="secondary" size="sm" onClick={() => tailQuery.refetch()}>重试</Button>
+                </div>
+              )}
+              {!tailQuery.isLoading && !tailQuery.isError && !selectedFilename && (
+                <div className="absolute inset-0 flex items-center justify-center text-slate-500">暂无可查看的日志文件</div>
+              )}
+              {!tailQuery.isLoading && !tailQuery.isError && selectedFilename && visibleLines.length === 0 && (
+                <div className="absolute inset-0 flex items-center justify-center text-slate-500">
+                  {tailQuery.data?.line_count ? "没有匹配当前筛选条件的日志" : "日志文件为空"}
+                </div>
+              )}
+              {visibleLines.length > 0 && (
+                <div className="min-w-max py-2">
+                  {visibleLines.map(({ line, lineNumber }) => (
+                    <div key={lineNumber} className="group flex min-h-5 hover:bg-white/5">
+                      <span className="sticky left-0 w-14 shrink-0 select-none border-r border-slate-800 bg-slate-950 pr-3 text-right text-slate-600 group-hover:bg-slate-900">
+                        {lineNumber}
+                      </span>
+                      <span className={cn("whitespace-pre px-3", getLogLineClass(line))}>{line || " "}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }

@@ -2,6 +2,9 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import basicSsl from "@vitejs/plugin-basic-ssl";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const configDir = path.dirname(fileURLToPath(import.meta.url));
 
 const backend = process.env.SLIDE_FLOW_BACKEND || "http://127.0.0.1:8088";
 // dev server 端口：优先读取 run.sh 从 slide_flow.properties 解析后注入的
@@ -26,7 +29,7 @@ export default defineConfig({
   plugins: [react(), ...(enableHttps ? [basicSsl()] : [])],
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./src"),
+      "@": path.resolve(configDir, "./src"),
     },
   },
   server: {
@@ -57,7 +60,7 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: path.resolve(__dirname, "../app/static/dist"),
+    outDir: path.resolve(configDir, "../app/static/dist"),
     emptyOutDir: true,
     assetsDir: "assets",
     sourcemap: false,
@@ -75,7 +78,7 @@ export default defineConfig({
           if (/[\\/]node_modules[\\/](zod|react-hook-form|@hookform)[\\/]/.test(id)) {
             return "vendor-form";
           }
-          if (/[\\/]node_modules[\\/](@radix-ui|@floating-ui)[\\/]/.test(id)) {
+          if (/[\\/]node_modules[\\/](@radix-ui|@floating-ui|cmdk|react-remove-scroll|react-remove-scroll-bar|react-style-singleton|use-callback-ref|use-sidecar)[\\/]/.test(id)) {
             return "vendor-ui";
           }
           if (/[\\/]node_modules[\\/]lucide-react[\\/]/.test(id)) {

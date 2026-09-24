@@ -23,6 +23,7 @@ type LoginForm = z.infer<typeof loginSchema>;
 interface FeishuConfig {
   enabled: boolean;
   app_id: string;
+  state: string;
 }
 
 export function LoginPage() {
@@ -122,7 +123,7 @@ export function LoginPage() {
     // 验证 state 参数防 CSRF
     const savedState = sessionStorage.getItem("feishu_sso_state");
     sessionStorage.removeItem("feishu_sso_state");
-    if (savedState && state !== savedState) {
+    if (!savedState || !state || state !== savedState) {
       toast.error("登录验证失败，请重试");
       window.history.replaceState({}, "", window.location.pathname);
       return;
@@ -134,7 +135,7 @@ export function LoginPage() {
     setFeishuLogging(true);
     api<{ user: CurrentUser }>("/api/auth/feishu/callback", {
       method: "POST",
-      json: { code },
+      json: { code, state },
     })
       .then((res) => {
         // 回调已返回完整用户信息，直接登录跳转，无需再请求 /api/me
@@ -175,7 +176,11 @@ export function LoginPage() {
     // 构造回调 URL：当前页面的 origin + pathname（即 /login）
     const redirectUri = `${window.location.origin}/login`;
     // 生成随机 state 防 CSRF
-    const state = crypto.randomUUID();
+    const state = feishuConfig.state;
+    if (!state) {
+      toast.error("飞书登录状态初始化失败，请刷新页面后重试");
+      return;
+    }
     sessionStorage.setItem("feishu_sso_state", state);
     const authUrl =
       `https://open.feishu.cn/open-apis/authen/v1/authorize` +

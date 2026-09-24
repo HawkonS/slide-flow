@@ -286,6 +286,54 @@
         }
       }
     },
+    "/api/admin/system/upgrade/status": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Api Admin System Upgrade Status",
+        "description": "Return the persistent state of the latest system upgrade.",
+        "operationId": "api_admin_system_upgrade_status_api_admin_system_upgrade_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Api Admin System Upgrade Status Api Admin System Upgrade Status Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/system/operation/status": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Api Admin System Operation Status",
+        "description": "Return persistent state for the latest disruptive runtime operation.",
+        "operationId": "api_admin_system_operation_status_api_admin_system_operation_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Api Admin System Operation Status Api Admin System Operation Status Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/system/logs": {
       "get": {
         "tags": [
@@ -301,11 +349,65 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "additionalProperties": true,
-                    "type": "object"
+                    "$ref": "#/components/schemas/LogFileInfo"
                   },
                   "type": "array",
                   "title": "Response Api Admin System Logs Api Admin System Logs Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/system/logs/{filename}/tail": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Api Admin System Log Tail",
+        "description": "读取日志文件尾部的有限行数（仅系统管理员）。",
+        "operationId": "api_admin_system_log_tail_api_admin_system_logs__filename__tail_get",
+        "parameters": [
+          {
+            "name": "filename",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Filename"
+            }
+          },
+          {
+            "name": "lines",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 5000,
+              "minimum": 50,
+              "default": 500,
+              "title": "Lines"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogTailResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -1023,17 +1125,74 @@
           "users"
         ],
         "summary": "List Users",
-        "description": "获取用户列表（系统管理员）",
+        "description": "获取管理员用户列表，支持服务端筛选和分页。",
         "operationId": "list_users_api_admin_users_get",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1,
+              "title": "Page"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Page Size"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 100,
+              "default": "",
+              "title": "Search"
+            }
+          },
+          {
+            "name": "tag",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 64,
+              "default": "",
+              "title": "Tag"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
                   "type": "object",
+                  "additionalProperties": true,
                   "title": "Response List Users Api Admin Users Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -1045,17 +1204,17 @@
           "users"
         ],
         "summary": "Create User",
-        "description": "创建新用户（系统管理员）",
+        "description": "创建新用户（运营管理员或系统管理员）",
         "operationId": "create_user_api_admin_users_post",
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/UserPayload"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -1063,8 +1222,8 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
                   "type": "object",
+                  "additionalProperties": true,
                   "title": "Response Create User Api Admin Users Post"
                 }
               }
@@ -1089,17 +1248,199 @@
           "users"
         ],
         "summary": "User Options",
-        "description": "获取用户选项列表（用于下拉选择）",
+        "description": "获取有上限的用户选项，用于异步搜索下拉框。",
         "operationId": "user_options_api_users_options_get",
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 100,
+              "default": "",
+              "title": "Search"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 0,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "ids",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 2000,
+              "default": "",
+              "title": "Ids"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
                   "type": "object",
+                  "additionalProperties": true,
                   "title": "Response User Options Api Users Options Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/{user_id}/avatar": {
+      "get": {
+        "tags": [
+          "users"
+        ],
+        "summary": "User Avatar",
+        "operationId": "user_avatar_api_users__user_id__avatar_get",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "User Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/users/{user_id}/avatar": {
+      "post": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Upload User Avatar",
+        "operationId": "upload_user_avatar_api_admin_users__user_id__avatar_post",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_user_avatar_api_admin_users__user_id__avatar_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Upload User Avatar Api Admin Users  User Id  Avatar Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Delete User Avatar",
+        "operationId": "delete_user_avatar_api_admin_users__user_id__avatar_delete",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "User Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Delete User Avatar Api Admin Users  User Id  Avatar Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -1113,7 +1454,7 @@
           "users"
         ],
         "summary": "Update User",
-        "description": "更新用户信息（系统管理员）",
+        "description": "更新用户信息（运营管理员或系统管理员）",
         "operationId": "update_user_api_admin_users__user_id__put",
         "parameters": [
           {
@@ -1166,7 +1507,7 @@
           "users"
         ],
         "summary": "Delete User",
-        "description": "删除用户（系统管理员）",
+        "description": "删除没有受保护关联数据的用户。",
         "operationId": "delete_user_api_admin_users__user_id__delete",
         "parameters": [
           {
@@ -1258,7 +1599,7 @@
           "users"
         ],
         "summary": "Bulk Delete Users",
-        "description": "批量删除用户（系统管理员）",
+        "description": "批量删除用户，限制单次操作规模。",
         "operationId": "bulk_delete_users_api_admin_users_bulk_delete_post",
         "requestBody": {
           "content": {
@@ -1782,7 +2123,7 @@
           "tags"
         ],
         "summary": "Admin Delete Tag",
-        "description": "删除预设标签（不影响 resources/shows 中已使用的 CSV 数据）",
+        "description": "删除预设定义；历史业务数据和用户标签文本保持不变。",
         "operationId": "admin_delete_tag_api_admin_tags__tag_id__delete",
         "parameters": [
           {
@@ -7056,6 +7397,20 @@
         ],
         "title": "Body_upload_font_api_fonts_upload_post"
       },
+      "Body_upload_user_avatar_api_admin_users__user_id__avatar_post": {
+        "properties": {
+          "avatar": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "Avatar"
+          }
+        },
+        "type": "object",
+        "required": [
+          "avatar"
+        ],
+        "title": "Body_upload_user_avatar_api_admin_users__user_id__avatar_post"
+      },
       "ChangePasswordPayload": {
         "properties": {
           "old_password": {
@@ -7160,13 +7515,22 @@
         "properties": {
           "code": {
             "type": "string",
+            "maxLength": 2048,
+            "minLength": 1,
             "title": "Code"
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 20,
+            "title": "State"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "code"
+          "code",
+          "state"
         ],
         "title": "FeishuCallbackPayload"
       },
@@ -7295,6 +7659,102 @@
           "lease_token"
         ],
         "title": "LeaseRequest"
+      },
+      "LogFileInfo": {
+        "properties": {
+          "filename": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Filename"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Size Bytes"
+          },
+          "modified": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Modified"
+          },
+          "version": {
+            "type": "string",
+            "maxLength": 24,
+            "minLength": 24,
+            "title": "Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "filename",
+          "size_bytes",
+          "modified",
+          "version"
+        ],
+        "title": "LogFileInfo"
+      },
+      "LogTailResponse": {
+        "properties": {
+          "filename": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Filename"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Size Bytes"
+          },
+          "modified": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Modified"
+          },
+          "version": {
+            "type": "string",
+            "maxLength": 24,
+            "minLength": 24,
+            "title": "Version"
+          },
+          "lines": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 5000,
+            "title": "Lines"
+          },
+          "line_count": {
+            "type": "integer",
+            "maximum": 5000.0,
+            "minimum": 0.0,
+            "title": "Line Count"
+          },
+          "requested_lines": {
+            "type": "integer",
+            "maximum": 5000.0,
+            "minimum": 50.0,
+            "title": "Requested Lines"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated"
+          }
+        },
+        "type": "object",
+        "required": [
+          "filename",
+          "size_bytes",
+          "modified",
+          "version",
+          "lines",
+          "line_count",
+          "requested_lines",
+          "truncated"
+        ],
+        "title": "LogTailResponse"
       },
       "LoginPayload": {
         "properties": {
@@ -7776,6 +8236,8 @@
         "properties": {
           "name": {
             "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
             "title": "Name"
           }
         },
@@ -7807,6 +8269,8 @@
               "type": "string"
             },
             "type": "array",
+            "maxItems": 1000,
+            "minItems": 1,
             "title": "Tags"
           }
         },
@@ -7947,6 +8411,8 @@
               "type": "integer"
             },
             "type": "array",
+            "maxItems": 1000,
+            "minItems": 1,
             "title": "User Ids"
           }
         },
@@ -8038,6 +8504,7 @@
         "properties": {
           "target_user_id": {
             "type": "integer",
+            "minimum": 1.0,
             "title": "Target User Id"
           }
         },

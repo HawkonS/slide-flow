@@ -5,9 +5,13 @@
 from __future__ import annotations
 
 import sqlite3
+import re
+import unicodedata
+from collections import Counter
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import Field
 from app.config import reload_settings, settings, write_properties
 from app.core.permissions import require_admin, require_user
 from app.db import now_iso
@@ -20,11 +24,11 @@ router = APIRouter()
 # ==================== Pydantic 模型 ====================
 
 class TagsCreatePayload(ApiPayload):
-    tags: list[str]
+    tags: list[str] = Field(..., min_length=1, max_length=1000)
 
 
 class TagUpdatePayload(ApiPayload):
-    name: str
+    name: str = Field(..., min_length=1, max_length=64)
 
 
 class TagsConfigPayload(ApiPayload):
@@ -43,6 +47,31 @@ def split_tag_name(name: str) -> tuple[str, str]:
     return '未分类', name.strip()
 
 
+def _validate_tag_name(raw_name: str) -> str:
+    name = raw_name.strip()
+    if not name:
+        raise HTTPException(400, "标签名称不能为空")
+    if len(name) > 64:
+        raise HTTPException(400, "标签名称不能超过 64 个字符")
+    if any(unicodedata.category(char).startswith("C") for char in name):
+        raise HTTPException(400, "标签名称不能包含控制字符")
+    if re.search(r"[，,\s]", name):
+        raise HTTPException(400, "标签名称不能包含逗号、空格或换行")
+    return name
+
+
+def _replace_csv_tag(value: str, old_name: str, new_name: str) -> str:
+    tags = [item.strip() for item in re.split(r"[，,\s]+", value or "") if item.strip()]
+    replaced: list[str] = []
+    seen: set[str] = set()
+    for tag in tags:
+        current = new_name if tag == old_name else tag
+        if current and current not in seen:
+            replaced.append(current)
+            seen.add(current)
+    return ",".join(replaced)
+
+
 def _serialize_tag(row: sqlite3.Row) -> dict[str, Any]:
     """序列化标签数据"""
     return {
@@ -55,18 +84,17 @@ def _serialize_tag(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-def _count_tag_usage(db: sqlite3.Connection, tag_name: str) -> int:
-    """统计标签在 resources 和 shows 表 CSV 字段中的使用次数"""
-    pattern = f"%,{tag_name},%"
-    count_resources = db.execute(
-        "SELECT COUNT(*) FROM resources WHERE (',' || COALESCE(tags, '') || ',') LIKE :pattern",
-        {"pattern": pattern},
-    ).fetchone()[0]
-    count_shows = db.execute(
-        "SELECT COUNT(*) FROM shows WHERE (',' || COALESCE(tags, '') || ',') LIKE :pattern",
-        {"pattern": pattern},
-    ).fetchone()[0]
-    return int(count_resources) + int(count_shows)
+def _tag_usage_counts(db: sqlite3.Connection) -> Counter[str]:
+    """Scan each tag-bearing table once instead of issuing N queries per tag."""
+    counts: Counter[str] = Counter()
+    for table in ("resources", "shows"):
+        for row in db.execute(f"SELECT tags FROM {table} WHERE tags <> ''").fetchall():
+            counts.update(set(_replace_csv_tag(row["tags"], "", "").split(",")) - {""})
+    for row in db.execute(
+        "SELECT tag_name, COUNT(*) AS usage_count FROM user_tags GROUP BY tag_name"
+    ).fetchall():
+        counts[row["tag_name"]] += int(row["usage_count"])
+    return counts
 
 
 # ==================== 路由 ====================
@@ -117,10 +145,11 @@ def admin_list_tags(
         "SELECT id, name, category, label, sort_order, created_at FROM tags ORDER BY sort_order, id"
     ).fetchall()
 
+    usage_counts = _tag_usage_counts(db)
     tags: list[dict[str, Any]] = []
     for row in rows:
         item = _serialize_tag(row)
-        item["usage_count"] = _count_tag_usage(db, row["name"])
+        item["usage_count"] = usage_counts[row["name"]]
         tags.append(item)
 
     return {
@@ -150,9 +179,10 @@ def admin_create_tags(
     for raw_name in payload.tags:
         if not isinstance(raw_name, str):
             continue
-        name = raw_name.strip()
-        if not name:
-            continue
+        try:
+            name = _validate_tag_name(raw_name)
+        except HTTPException as exc:
+            raise HTTPException(400, f"标签「{raw_name}」不合法：{exc.detail}") from None
         if name in seen_in_payload:
             continue
         seen_in_payload.add(name)
@@ -209,9 +239,7 @@ def admin_update_tag(
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
     """修改标签 name，自动重新拆分 category/label（管理员）"""
-    new_name = payload.name.strip()
-    if not new_name:
-        raise HTTPException(400, "标签名称不能为空")
+    new_name = _validate_tag_name(payload.name)
 
     row = db.execute(
         "SELECT id, name, category, label, sort_order, created_at FROM tags WHERE id = ?",
@@ -229,12 +257,27 @@ def admin_update_tag(
         raise HTTPException(409, "标签名称已存在")
 
     category, label = split_tag_name(new_name)
+    old_name = row["name"]
     try:
         db.execute(
             "UPDATE tags SET name = ?, category = ?, label = ? WHERE id = ?",
             (new_name, category, label, tag_id),
         )
+        if old_name != new_name:
+            db.execute(
+                "UPDATE OR IGNORE user_tags SET tag_name = ? WHERE tag_name = ?",
+                (new_name, old_name),
+            )
+            db.execute("DELETE FROM user_tags WHERE tag_name = ?", (old_name,))
+            for table in ("users", "resources", "shows"):
+                rows = db.execute(f"SELECT id, tags FROM {table} WHERE tags <> ''").fetchall()
+                for item in rows:
+                    db.execute(
+                        f"UPDATE {table} SET tags = ? WHERE id = ?",
+                        (_replace_csv_tag(item["tags"], old_name, new_name), int(item["id"])),
+                    )
     except sqlite3.IntegrityError:
+        db.rollback()
         raise HTTPException(409, "标签名称已存在")
     db.commit()
 
@@ -251,8 +294,8 @@ def admin_delete_tag(
     _: Any = Depends(require_admin),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
-    """删除预设标签（不影响 resources/shows 中已使用的 CSV 数据）"""
-    row = db.execute("SELECT id FROM tags WHERE id = ?", (tag_id,)).fetchone()
+    """删除预设定义；历史业务数据和用户标签文本保持不变。"""
+    row = db.execute("SELECT id, name FROM tags WHERE id = ?", (tag_id,)).fetchone()
     if row is None:
         raise HTTPException(404, "标签不存在")
     db.execute("DELETE FROM tags WHERE id = ?", (tag_id,))

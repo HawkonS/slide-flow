@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -15,7 +16,7 @@ from app.config import (
 from app.core.bootstrap import prepare_initial_admin
 from app.core.fonts import normalize_font_name
 
-DB_SCHEMA_VERSION = 8
+DB_SCHEMA_VERSION = 13
 
 
 def now_iso() -> str:
@@ -184,6 +185,7 @@ def init_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 username TEXT NOT NULL UNIQUE,
+                username_key TEXT NOT NULL,
                 password_hash TEXT NOT NULL,
                 feishu_id TEXT NOT NULL DEFAULT '',
                 avatar_url TEXT NOT NULL DEFAULT '',
@@ -195,6 +197,29 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS user_tags (
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                tag_name TEXT NOT NULL,
+                PRIMARY KEY (user_id, tag_name)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_user_tags_name_user
+                ON user_tags(tag_name, user_id);
+
+            CREATE TABLE IF NOT EXISTS admin_audit_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor_user_id INTEGER,
+                subject_user_id INTEGER,
+                action TEXT NOT NULL,
+                details TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_admin_audit_events_created
+                ON admin_audit_events(created_at DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_admin_audit_events_target
+                ON admin_audit_events(subject_user_id, created_at DESC);
 
             CREATE TABLE IF NOT EXISTS resource_import_commits (
                 session_id TEXT PRIMARY KEY,
@@ -321,6 +346,7 @@ def init_db() -> None:
                 font_id INTEGER NOT NULL REFERENCES fonts(id) ON DELETE CASCADE,
                 sha256 TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued', 'running', 'completed', 'failed')),
+                lease_token_hash TEXT,
                 lease_until REAL,
                 attempts INTEGER NOT NULL DEFAULT 0,
                 error_code TEXT,
@@ -330,6 +356,21 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_renderer_font_tasks_claim
                 ON renderer_font_tasks(status, lease_until, created_at);
+
+            CREATE TABLE IF NOT EXISTS renderer_font_delete_tasks (
+                task_id TEXT PRIMARY KEY,
+                sha256 TEXT NOT NULL UNIQUE,
+                file_name TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued', 'running', 'completed', 'failed')),
+                lease_token_hash TEXT,
+                lease_until REAL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                error_code TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_renderer_font_delete_tasks_claim
+                ON renderer_font_delete_tasks(status, lease_until, created_at);
 
             CREATE TABLE IF NOT EXISTS renderer_ppt_tasks (
                 task_id TEXT PRIMARY KEY,
@@ -539,12 +580,135 @@ def _migrate_schema(db: sqlite3.Connection, schema_version: int) -> None:
         db.execute("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1")
     if "temporary_password_expires_at" not in columns:
         db.execute("ALTER TABLE users ADD COLUMN temporary_password_expires_at TEXT")
+    username_key_missing = "username_key" not in columns
+    if username_key_missing:
+        db.execute("ALTER TABLE users ADD COLUMN username_key TEXT NOT NULL DEFAULT ''")
     render_columns = {
         row["name"]
         for row in db.execute("PRAGMA table_info(renderer_ppt_tasks)").fetchall()
     }
     if "objects_cleaned_at" not in render_columns:
         db.execute("ALTER TABLE renderer_ppt_tasks ADD COLUMN objects_cleaned_at TEXT")
+    font_task_columns = {
+        row["name"]
+        for row in db.execute("PRAGMA table_info(renderer_font_tasks)").fetchall()
+    }
+    if "lease_token_hash" not in font_task_columns:
+        db.execute("ALTER TABLE renderer_font_tasks ADD COLUMN lease_token_hash TEXT")
+
+    # Version 13 adds a Unicode-aware login key. Move every row through a
+    # temporary username first so normalization remains safe under the legacy
+    # case-sensitive UNIQUE constraint.
+    needs_username_key_migration = (
+        schema_version < 13
+        or username_key_missing
+        or db.execute("SELECT 1 FROM users WHERE username_key = '' LIMIT 1").fetchone() is not None
+    )
+    if needs_username_key_migration:
+        from app.core.user_profiles import normalise_username, username_lookup_key
+
+        usernames = db.execute("SELECT id, username FROM users ORDER BY id").fetchall()
+        used_usernames: set[str] = set()
+        final_usernames: dict[int, str] = {}
+        for row in usernames:
+            user_id = int(row["id"])
+            raw_base = (row["username"] or "").strip() or f"user-{user_id}"
+            try:
+                base = normalise_username(raw_base)
+            except ValueError:
+                base = f"user-{user_id}"
+            base = base[:50]
+            candidate = base
+            collision_index = 0
+            while username_lookup_key(candidate) in used_usernames:
+                collision_index += 1
+                suffix = (
+                    f"-{user_id}"
+                    if collision_index == 1
+                    else f"-{user_id}-{collision_index}"
+                )
+                candidate = f"{base[:max(1, 50 - len(suffix))]}{suffix}"
+            used_usernames.add(username_lookup_key(candidate))
+            final_usernames[user_id] = candidate
+
+        # Move all rows through guaranteed-unique temporary values first. A
+        # direct trim can otherwise collide with another row under the old
+        # case-sensitive UNIQUE constraint before that other row is renamed.
+        reserved = {str(row["username"]) for row in usernames} | set(final_usernames.values())
+        temporary_usernames: dict[int, str] = {}
+        for row in usernames:
+            user_id = int(row["id"])
+            suffix = 0
+            while True:
+                temporary = f"__sf_user_{user_id}_{suffix}__"[:50]
+                if temporary not in reserved:
+                    break
+                suffix += 1
+            reserved.add(temporary)
+            temporary_usernames[user_id] = temporary
+            db.execute("UPDATE users SET username = ? WHERE id = ?", (temporary, user_id))
+        for user_id, username in final_usernames.items():
+            db.execute(
+                "UPDATE users SET username = ?, username_key = ? WHERE id = ?",
+                (username, username_lookup_key(username), user_id),
+            )
+
+    # Version 11 normalizes user labels into an indexed relation. Keep the
+    # legacy users.tags column as a response/editing cache while all new writes
+    # update both representations in one transaction.
+    if schema_version < 11:
+        feishu_ids = db.execute(
+            "SELECT id, feishu_id FROM users WHERE feishu_id <> '' ORDER BY id"
+        ).fetchall()
+        used_feishu_ids: set[str] = set()
+        final_feishu_ids: dict[int, str] = {}
+        for row in feishu_ids:
+            feishu_id = (row["feishu_id"] or "").strip()
+            if feishu_id and feishu_id not in used_feishu_ids:
+                used_feishu_ids.add(feishu_id)
+                final_feishu_ids[int(row["id"])] = feishu_id
+        db.execute("UPDATE users SET feishu_id = '' WHERE feishu_id <> ''")
+        for user_id, feishu_id in final_feishu_ids.items():
+            db.execute("UPDATE users SET feishu_id = ? WHERE id = ?", (feishu_id, user_id))
+
+        rows = db.execute("SELECT id, tags FROM users ORDER BY id").fetchall()
+        for row in rows:
+            seen: set[str] = set()
+            normalised_tags: list[str] = []
+            for raw_tag in re.split(r"[，,\s]+", row["tags"] or ""):
+                tag = raw_tag.strip()[:64]
+                if not tag or tag in seen:
+                    continue
+                if len(",".join([*normalised_tags, tag])) > 1000:
+                    break
+                seen.add(tag)
+                normalised_tags.append(tag)
+                db.execute(
+                    "INSERT OR IGNORE INTO user_tags (user_id, tag_name) VALUES (?, ?)",
+                    (int(row["id"]), tag),
+                )
+            normalised_value = ",".join(normalised_tags)
+            if normalised_value != (row["tags"] or ""):
+                db.execute(
+                    "UPDATE users SET tags = ? WHERE id = ?",
+                    (normalised_value, int(row["id"])),
+                )
+    db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_nocase "
+        "ON users(username COLLATE NOCASE)"
+    )
+    db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_key "
+        "ON users(username_key)"
+    )
+    db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_feishu_id_nonempty "
+        "ON users(feishu_id) WHERE feishu_id <> ''"
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_users_name_nocase "
+        "ON users(name COLLATE NOCASE, id)"
+    )
 
 
 def _recover_interrupted_tasks(db: sqlite3.Connection) -> None:

@@ -18,6 +18,9 @@ $loopback = @("127.0.0.1", "localhost", "::1") -contains $uri.Host.ToLowerInvari
 if ($uri.Scheme -ne "https" -and -not ($uri.Scheme -eq "http" -and $loopback)) { throw "Url must use HTTPS unless connected through a loopback tunnel." }
 if ($RendererUrl -notmatch '^http://(127\.0\.0\.1|localhost|\[::1\]):[0-9]+$') { throw "RendererUrl must use the local loopback renderer." }
 $layout = Get-RendererLayout $InstallRoot "config.json"
+$currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+$existing = Get-RendererManagedTask $TaskName 'SlideFlow WPS render pull protocol v1'
+if ($existing -and $existing.Principal.UserId -and [string]$existing.Principal.UserId -ne $currentIdentity) { throw "Refusing to take over a render pull task owned by another Windows account." }
 if (-not $Python) { $Python = Join-Path $layout.CodeRoot ".venv\Scripts\python.exe" }
 $Python = Resolve-RendererExecutable $Python "Python"
 if ($TokenFile) { $Token = (Get-Content -LiteralPath (Resolve-RendererPath $TokenFile) -Raw).Trim() }
@@ -41,10 +44,11 @@ Set-RendererToken $pullToken $Token ([Security.Principal.WindowsIdentity]::GetCu
 } | ConvertTo-Json | Set-Content -LiteralPath $pullConfig -Encoding UTF8
 Protect-RendererPath $pullConfig ([Security.Principal.WindowsIdentity]::GetCurrent().Name)
 $action = New-ScheduledTaskAction -Execute $Python -Argument ("-m wps_renderer.render_pull --config `"{0}`"" -f $pullConfig) -WorkingDirectory $layout.CodeRoot
-$principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType S4U -RunLevel Limited
+$principal = New-ScheduledTaskPrincipal -UserId $currentIdentity -LogonType S4U -RunLevel Limited
 $trigger = New-ScheduledTaskTrigger -AtStartup
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName $TaskName -Action $action -Principal $principal -Trigger $trigger -Settings $settings -Description 'SlideFlow WPS render pull protocol v1' -Force | Out-Null
 Enable-ScheduledTask -TaskName $TaskName | Out-Null
+Wait-RendererHealthy $layout 30 | Out-Null
 Start-ScheduledTask -TaskName $TaskName
 Write-Host "Render pull task '$TaskName' registered and started."

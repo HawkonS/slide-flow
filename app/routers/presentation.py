@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.config import settings
-from app.core.permissions import can_view_show
+from app.core.permissions import can_view_resource, can_view_show
 from app.core.permissions import require_user
 from app.core.sanitize import sanitize_html
 from app.core.security import create_present_token
@@ -17,9 +17,6 @@ from app.services.files import (
     _resource_file_abs,
     _safe_abs,
     materialization_scope,
-)
-from app.services.resources import (
-    _version_row,
 )
 from app.services.shows import (
     _show_row,
@@ -236,7 +233,12 @@ def create_present_session(
     row = _show_row(db, show_id)
     if not can_view_show(db, row, user):
         raise HTTPException(403, "无可见权限")
-    token = create_present_token(show_id, int(user["id"]), settings.secret_key)
+    token = create_present_token(
+        show_id,
+        int(user["id"]),
+        settings.secret_key,
+        session_version=int(user["session_version"]),
+    )
     return {"session_token": token, "expires_in": settings.show_token_ttl_seconds}
 
 
@@ -249,7 +251,20 @@ def slide_image(
     claims = verify_present_token(session_token, settings.secret_key)
     if claims is None:
         raise HTTPException(401, "会话token无效或已过期")
-    show_id = claims["show_id"]
+    user = db.execute(
+        "SELECT * FROM users WHERE id = ?",
+        (int(claims["user_id"]),),
+    ).fetchone()
+    if (
+        user is None
+        or int(user["session_version"]) != int(claims["session_version"])
+        or bool(user["must_change_pwd"])
+    ):
+        raise HTTPException(401, "会话token无效或已过期")
+    show_id = int(claims["show_id"])
+    show = db.execute("SELECT * FROM shows WHERE id = ?", (show_id,)).fetchone()
+    if show is None or not can_view_show(db, show, user):
+        raise HTTPException(403, "无可见权限")
     # 验证该 resource_id 属于 token 中的 show_id
     sr = db.execute(
         "SELECT resource_id, version_no FROM show_resources WHERE show_id = ? AND resource_id = ?",
@@ -257,8 +272,19 @@ def slide_image(
     ).fetchone()
     if sr is None:
         raise HTTPException(403, "该资源不属于此放映")
-    # 获取资源的预览图
-    version = _version_row(db, resource_id, None)
+    resource = db.execute(
+        "SELECT * FROM resources WHERE id = ?",
+        (resource_id,),
+    ).fetchone()
+    if resource is None or not can_view_resource(db, resource, user):
+        raise HTTPException(403, "无素材可见权限")
+    # 使用放映清单固定的版本，资源发布新版本后不能让旧放映悄然漂移。
+    version = db.execute(
+        "SELECT * FROM resource_versions WHERE resource_id = ? AND version_no = ?",
+        (resource_id, int(sr["version_no"])),
+    ).fetchone()
+    if version is None:
+        raise HTTPException(404, "放映中的资源版本不存在")
     if is_oss_ref(version["png_path"]):
         url = asset_preview_url(version["png_path"])
         if not url:

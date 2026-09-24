@@ -89,6 +89,8 @@ def persist_asset(source_path: Path, category: str) -> str:
         destination = settings.templates_dir
     elif category.startswith("resources/"):
         destination = settings.resources_dir
+    elif category.startswith("avatars/"):
+        destination = settings.assets_dir / "avatars"
     else:
         destination = settings.assets_dir
     return settings.store_path(copy_into(source_path, destination, "asset_"))

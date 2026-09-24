@@ -89,9 +89,9 @@ export const router = createBrowserRouter([
       {
         path: "/admin/users",
         element: (
-          <RequireSystemAdmin>
+          <RequireAdmin>
             <AdminUsersPage />
-          </RequireSystemAdmin>
+          </RequireAdmin>
         ),
       },
       {

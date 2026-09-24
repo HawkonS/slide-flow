@@ -93,10 +93,16 @@ def create_session_token(
     return f"{payload_b64}.{_b64(signature)}"
 
 
-def create_present_token(show_id: int, user_id: int, secret_key: str) -> str:
+def create_present_token(
+    show_id: int,
+    user_id: int,
+    secret_key: str,
+    *,
+    session_version: int = 1,
+) -> str:
     """创建放映会话 token，使用当前配置中的有效期。"""
     expires = int(time.time()) + int(settings.show_token_ttl_seconds)
-    payload = f"{show_id}:{user_id}:{expires}"
+    payload = f"{show_id}:{user_id}:{session_version}:{expires}"
     signature = hmac.new(secret_key.encode(), payload.encode(), hashlib.sha256).hexdigest()
     return f"{payload}:{signature}"
 
@@ -111,10 +117,23 @@ def verify_present_token(token: str, secret_key: str) -> dict | None:
         expected = hmac.new(secret_key.encode(), payload.encode(), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(signature, expected):
             return None
-        show_id_str, user_id_str, expires_str = payload.split(":")
+        fields = payload.split(":")
+        if len(fields) == 3:
+            # Tokens issued before session-version binding map to the initial
+            # version and are still subject to live user/permission checks.
+            show_id_str, user_id_str, expires_str = fields
+            session_version_str = "1"
+        elif len(fields) == 4:
+            show_id_str, user_id_str, session_version_str, expires_str = fields
+        else:
+            return None
         if int(expires_str) < int(time.time()):
             return None
-        return {"show_id": int(show_id_str), "user_id": int(user_id_str)}
+        return {
+            "show_id": int(show_id_str),
+            "user_id": int(user_id_str),
+            "session_version": int(session_version_str),
+        }
     except Exception:
         return None
 

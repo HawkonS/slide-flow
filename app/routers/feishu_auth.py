@@ -3,12 +3,16 @@
 处理飞书 OAuth2 回调和公开配置查询
 """
 import logging
+import hmac
 import re
 import secrets
 import sqlite3
+import hashlib
+import unicodedata
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from pydantic import Field
 from app.config import settings
 from app.core.feishu import (
     FeishuAPIError,
@@ -18,22 +22,73 @@ from app.core.feishu import (
     get_user_info,
 )
 from app.core.security import create_session_token, hash_password
+from app.core.user_profiles import (
+    is_managed_avatar_ref,
+    normalise_display_name,
+    normalise_feishu_id,
+    normalise_username,
+    username_lookup_key,
+    validate_avatar_url,
+)
 from app.db import now_iso
 from app.routers.dependencies import ApiPayload, SESSION_COOKIE, _serialize_user, db_dep
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+FEISHU_STATE_COOKIE = "slide_flow_feishu_state"
+FEISHU_STATE_TTL_SECONDS = 10 * 60
 
 
 class FeishuCallbackPayload(ApiPayload):
-    code: str
+    code: str = Field(..., min_length=1, max_length=2048)
+    state: str = Field(..., min_length=20, max_length=200)
+
+
+def _state_cookie_name(state: str) -> str:
+    digest = hashlib.sha256(state.encode("utf-8")).hexdigest()[:16]
+    return f"{FEISHU_STATE_COOKIE}_{digest}"
+
+
+def _state_failure(status_code: int, detail: str, cookie_name: str) -> HTTPException:
+    """Return an OAuth failure that also consumes the one-time state cookie."""
+    cookie_response = Response()
+    cookie_response.delete_cookie(
+        cookie_name,
+        path="/api/auth/feishu/callback",
+        httponly=True,
+        samesite="lax",
+        secure=settings.web_https,
+    )
+    return HTTPException(
+        status_code,
+        detail,
+        headers={"Set-Cookie": cookie_response.headers["set-cookie"]},
+    )
 
 
 def _sanitize_username(name: str) -> str:
     """将飞书用户名转为安全的系统用户名（仅保留中英文、数字、下划线）"""
     safe = re.sub(r"[^\w\u4e00-\u9fff]", "", name)
-    return safe or "feishu_user"
+    safe = safe[:50]
+    if len(safe) < 2:
+        safe = f"feishu_{safe}" if safe else "feishu_user"
+    return normalise_username(safe[:50])
+
+
+def _normalise_feishu_name(name: str, open_id: str) -> str:
+    """Keep provider data inside the same profile constraints as admin edits."""
+    try:
+        return normalise_display_name(name)
+    except ValueError:
+        fallback = "".join(
+            char for char in (name or "")
+            if not unicodedata.category(char).startswith("C")
+        ).strip()[:100]
+        try:
+            return normalise_display_name(fallback)
+        except ValueError:
+            return "飞书用户"
 
 
 def _resolve_feishu_username(feishu_user: FeishuUserInfo) -> str:
@@ -46,10 +101,9 @@ def _resolve_feishu_username(feishu_user: FeishuUserInfo) -> str:
         local_part = feishu_user.enterprise_email.split("@")[0].strip()
         if local_part:
             return _sanitize_username(local_part)
-        logger.warning("飞书企业邮箱格式异常（%s），降级使用姓名作为用户名: %s",
-                       feishu_user.enterprise_email, feishu_user.name)
+        logger.warning("飞书企业邮箱格式异常，已降级使用姓名生成用户名")
     else:
-        logger.warning("飞书未返回企业邮箱，降级使用姓名作为用户名: %s", feishu_user.name)
+        logger.warning("飞书未返回企业邮箱，已降级使用姓名生成用户名")
     return _sanitize_username(feishu_user.name)
 
 
@@ -59,31 +113,60 @@ def _unique_username(db: sqlite3.Connection, base: str) -> str:
     为避免极端场景下出现无限循环（如同名账号量异常增长、查询错误等），
     限制顺序探测的最大次数，超过后使用随机后缀兑底。
     """
+    base = _sanitize_username(base)
     candidate = base
     suffix = 1
     max_attempts = 1000
-    while db.execute("SELECT 1 FROM users WHERE username = ?", (candidate,)).fetchone():
-        candidate = f"{base}_{suffix}"
+    while db.execute(
+        "SELECT 1 FROM users WHERE username_key = ?",
+        (username_lookup_key(candidate),),
+    ).fetchone() and suffix <= max_attempts:
+        suffix_text = f"_{suffix}"
+        candidate = f"{base[:50 - len(suffix_text)]}{suffix_text}"
         suffix += 1
-        if suffix > max_attempts:
-            # 使用随机后缀趋近唯一，防止无限循环
-            candidate = f"{base}_{secrets.token_hex(4)}"
-            break
-    return candidate
+    if not db.execute(
+        "SELECT 1 FROM users WHERE username_key = ?",
+        (username_lookup_key(candidate),),
+    ).fetchone():
+        return candidate
+    for _ in range(32):
+        suffix_text = f"_{secrets.token_hex(8)}"
+        candidate = f"{base[:50 - len(suffix_text)]}{suffix_text}"
+        if not db.execute(
+            "SELECT 1 FROM users WHERE username_key = ?",
+            (username_lookup_key(candidate),),
+        ).fetchone():
+            return candidate
+    raise HTTPException(503, "暂时无法分配飞书用户名，请稍后重试")
 
 
 @router.get("/auth/feishu/config")
-def feishu_sso_config() -> dict[str, Any]:
+def feishu_sso_config(response: Response) -> dict[str, Any]:
     """返回飞书 SSO 公开配置（无需登录）"""
+    state = ""
+    if settings.feishu_sso_enabled:
+        state = secrets.token_urlsafe(32)
+        response.set_cookie(
+            _state_cookie_name(state),
+            state,
+            httponly=True,
+            samesite="lax",
+            secure=settings.web_https,
+            max_age=FEISHU_STATE_TTL_SECONDS,
+            path="/api/auth/feishu/callback",
+        )
+        response.headers["Cache-Control"] = "no-store"
     return {
         "enabled": settings.feishu_sso_enabled,
         "app_id": settings.feishu_app_id if settings.feishu_sso_enabled else "",
+        "state": state,
     }
 
 
 @router.post("/auth/feishu/callback")
 def feishu_sso_callback(
     payload: FeishuCallbackPayload,
+    request: Request,
     response: Response,
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
@@ -91,35 +174,51 @@ def feishu_sso_callback(
     if not settings.feishu_sso_enabled:
         raise HTTPException(403, "飞书 SSO 未启用")
 
+    state_cookie_name = _state_cookie_name(payload.state)
+    expected_state = request.cookies.get(state_cookie_name, "")
+    response.delete_cookie(state_cookie_name, path="/api/auth/feishu/callback")
+    if not expected_state or not hmac.compare_digest(expected_state, payload.state):
+        raise HTTPException(400, "飞书登录状态无效或已过期，请重新发起登录")
+
     app_id = settings.feishu_app_id
     app_secret = settings.feishu_app_secret
     if not app_id or not app_secret:
-        raise HTTPException(500, "飞书应用配置不完整，请联系管理员")
+        raise _state_failure(500, "飞书应用配置不完整，请联系管理员", state_cookie_name)
 
     # 1. 获取 tenant_access_token
     try:
         tenant_token = get_tenant_access_token(app_id, app_secret)
     except FeishuAPIError as e:
         logger.warning("获取 tenant_access_token 失败: %s", e)
-        raise HTTPException(502, f"飞书认证失败：{e.msg}")
+        raise _state_failure(502, f"飞书认证失败：{e.msg}", state_cookie_name)
 
     # 2. 用授权码换取 user_access_token
     try:
         user_token = get_user_access_token(tenant_token, payload.code)
     except FeishuAPIError as e:
         logger.warning("获取 user_access_token 失败: code=%s, msg=%s", e.code, e.msg)
-        raise HTTPException(401, f"飞书授权码无效或已过期：[{e.code}] {e.msg}")
+        raise _state_failure(
+            401,
+            f"飞书授权码无效或已过期：[{e.code}] {e.msg}",
+            state_cookie_name,
+        )
 
     # 3. 获取飞书用户信息
     try:
         feishu_user = get_user_info(user_token)
     except FeishuAPIError as e:
         logger.warning("获取飞书用户信息失败: %s", e)
-        raise HTTPException(502, f"获取飞书用户信息失败：{e.msg}")
+        raise _state_failure(502, f"获取飞书用户信息失败：{e.msg}", state_cookie_name)
 
     # 4. 在数据库中通过 feishu_id（open_id）查找用户
+    try:
+        feishu_id = normalise_feishu_id(feishu_user.open_id)
+    except ValueError:
+        raise _state_failure(502, "飞书返回的用户标识无效", state_cookie_name) from None
+    display_name = _normalise_feishu_name(feishu_user.name, feishu_id)
+
     user = db.execute(
-        "SELECT * FROM users WHERE feishu_id = ?", (feishu_user.open_id,)
+        "SELECT * FROM users WHERE feishu_id = ?", (feishu_id,)
     ).fetchone()
 
     if user is None:
@@ -127,43 +226,73 @@ def feishu_sso_callback(
         ts = now_iso()
         base_username = _resolve_feishu_username(feishu_user)
         username = _unique_username(db, base_username)
+        avatar_url = ""
+        if feishu_user.avatar_url:
+            try:
+                avatar_url = validate_avatar_url(feishu_user.avatar_url)
+            except ValueError:
+                logger.warning("飞书头像地址不在受信任域名列表，已忽略")
         # 使用随机密码（飞书 SSO 用户不通过密码登录）
         random_pwd = hash_password(secrets.token_urlsafe(16))
         try:
             db.execute(
                 """
-                INSERT INTO users (name, username, password_hash, feishu_id, avatar_url, role, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, 'user', ?, ?)
+                INSERT INTO users (
+                    name, username, username_key, password_hash, feishu_id,
+                    avatar_url, role, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'user', ?, ?)
                 """,
-                (feishu_user.name, username, random_pwd, feishu_user.open_id, feishu_user.avatar_url, ts, ts),
+                (
+                    display_name,
+                    username,
+                    username_lookup_key(username),
+                    random_pwd,
+                    feishu_id,
+                    avatar_url,
+                    ts,
+                    ts,
+                ),
             )
             db.commit()
             user = db.execute(
-                "SELECT * FROM users WHERE feishu_id = ?", (feishu_user.open_id,)
+                "SELECT * FROM users WHERE feishu_id = ?", (feishu_id,)
             ).fetchone()
         except sqlite3.IntegrityError:
             # 并发请求可能同时创建同一个 feishu_id/username 的用户，
             # 被 UNIQUE 约束拦截后重新查询已被其他请求创建的记录
             db.rollback()
             user = db.execute(
-                "SELECT * FROM users WHERE feishu_id = ?", (feishu_user.open_id,)
+                "SELECT * FROM users WHERE feishu_id = ?", (feishu_id,)
             ).fetchone()
             if user is None:
-                raise HTTPException(500, "飞书用户创建失败，请重试")
+                raise _state_failure(500, "飞书用户创建失败，请重试", state_cookie_name)
         # 避免在 INFO 日志中完整记录 open_id，仅保留尾部 8 位以供审计追踪
-        masked = feishu_user.open_id[-8:] if feishu_user.open_id else ""
-        logger.info("飞书 SSO 自动创建用户: %s (id=...%s)", feishu_user.name, masked)
+        masked = feishu_id[-8:] if feishu_id else ""
+        logger.info("飞书 SSO 自动创建用户: %s (id=...%s)", display_name, masked)
     else:
         # Keep the directory profile current without allowing an empty or
         # malformed provider response to erase a manually maintained avatar.
         updates: list[str] = []
         values: list[str] = []
-        if feishu_user.name and feishu_user.name != user["name"]:
+        if display_name != user["name"]:
             updates.append("name = ?")
-            values.append(feishu_user.name)
-        if feishu_user.avatar_url and feishu_user.avatar_url != user["avatar_url"]:
+            values.append(display_name)
+        avatar_url = ""
+        if feishu_user.avatar_url:
+            try:
+                avatar_url = validate_avatar_url(feishu_user.avatar_url)
+            except ValueError:
+                logger.warning("飞书头像地址不在受信任域名列表，已忽略")
+        if (
+            avatar_url
+            and not is_managed_avatar_ref(
+                user["avatar_url"] or "",
+                user_id=int(user["id"]),
+            )
+            and avatar_url != user["avatar_url"]
+        ):
             updates.append("avatar_url = ?")
-            values.append(feishu_user.avatar_url)
+            values.append(avatar_url)
         if updates:
             updates.append("updated_at = ?")
             values.append(now_iso())

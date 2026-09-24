@@ -16,6 +16,7 @@ from typing import Iterable
 
 from app.config import settings
 from app.core.security import hash_password, password_policy_error, verify_password
+from app.core.user_profiles import normalise_display_name, normalise_username, username_lookup_key
 
 
 INITIAL_SETUP_STATE_KEY = "initial_admin_setup"
@@ -143,10 +144,18 @@ def prepare_initial_admin(db: sqlite3.Connection, legacy_passwords: Iterable[str
             cursor = db.execute(
                 """
                 INSERT INTO users (
-                    name, username, password_hash, feishu_id, role, must_change_pwd, created_at, updated_at
-                ) VALUES (?, ?, ?, '', 'system_admin', 1, ?, ?)
+                    name, username, username_key, password_hash, feishu_id, role,
+                    must_change_pwd, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, '', 'system_admin', 1, ?, ?)
                 """,
-                ("Hawkon", setup_username, hash_password(secrets.token_urlsafe(32)), ts, ts),
+                (
+                    "Hawkon",
+                    setup_username,
+                    username_lookup_key(setup_username),
+                    hash_password(secrets.token_urlsafe(32)),
+                    ts,
+                    ts,
+                ),
             )
             _store_setup_state(db, int(cursor.lastrowid), generated_token)
             state = _state(db)
@@ -210,13 +219,12 @@ def complete_initial_setup(
     username: str,
     password: str,
 ) -> sqlite3.Row:
-    name = name.strip()
-    username = username.strip()
+    try:
+        name = normalise_display_name(name)
+        username = normalise_username(username)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from None
     token = token.strip()
-    if not name:
-        raise ValueError("姓名不能为空")
-    if not username:
-        raise ValueError("用户名不能为空")
     policy_error = password_policy_error(password, username=username)
     if policy_error:
         raise ValueError(policy_error)
@@ -227,18 +235,21 @@ def complete_initial_setup(
         if not state or not expected_hash or not hmac.compare_digest(_token_hash(token), expected_hash):
             raise ValueError("初始化令牌无效或已使用")
         user_id = int(state["user_id"])
-        existing = db.execute("SELECT id FROM users WHERE username = ? AND id <> ?", (username, user_id)).fetchone()
+        existing = db.execute(
+            "SELECT id FROM users WHERE username_key = ? AND id <> ?",
+            (username_lookup_key(username), user_id),
+        ).fetchone()
         if existing is not None:
             raise ValueError("用户名已存在")
         ts = _now_iso()
         db.execute(
             """
             UPDATE users
-            SET name = ?, username = ?, password_hash = ?, must_change_pwd = 0,
+            SET name = ?, username = ?, username_key = ?, password_hash = ?, must_change_pwd = 0,
                 session_version = session_version + 1, updated_at = ?
             WHERE id = ? AND role = 'system_admin'
             """,
-            (name, username, hash_password(password), ts, user_id),
+            (name, username, username_lookup_key(username), hash_password(password), ts, user_id),
         )
         if db.execute("SELECT changes()").fetchone()[0] != 1:
             raise ValueError("待初始化的系统管理员不存在")

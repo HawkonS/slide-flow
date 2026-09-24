@@ -6,13 +6,6 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# 依赖检查：本脚本需要 lsof 查找端口占用进程
-if ! command -v lsof &>/dev/null; then
-    echo "错误: 未找到 lsof 命令"
-    echo "请安装: apt install lsof (Linux) 或 brew install lsof (macOS)"
-    exit 1
-fi
-
 PROPS="slide_flow.properties"
 
 # 读取后端端口：与 run.sh 保持一致，解析 server.port
@@ -37,8 +30,10 @@ stop_by_port() {
     local empty_hint=${3:-}
     local pids
 
-    # 通过 lsof 查找占用该端口的所有进程
-    pids=$(lsof -ti "tcp:$port" 2>/dev/null || true)
+    if ! pids="$(find_pids_by_port "$port")"; then
+        echo "[$name] 无法识别端口 $port 的监听进程" >&2
+        return 1
+    fi
 
     if [ -z "$pids" ]; then
         if [ -n "$empty_hint" ]; then
@@ -60,7 +55,10 @@ stop_by_port() {
 
     # 第二步：最多等待 5 秒让进程自行退出
     for i in $(seq 1 5); do
-        if ! lsof -ti "tcp:$port" &>/dev/null; then
+        if ! pids="$(find_pids_by_port "$port")"; then
+            return 1
+        fi
+        if [ -z "$pids" ]; then
             echo "[$name] 已停止"
             return
         fi
@@ -69,16 +67,96 @@ stop_by_port() {
 
     # 第三步：超时后发送 SIGKILL 强制终止
     echo "[$name] 进程未在 5 秒内退出，正在强制终止..."
-    lsof -ti "tcp:$port" 2>/dev/null | xargs kill -9 2>/dev/null || true
+    pids="$(find_pids_by_port "$port")" || return 1
+    if [ -n "$pids" ]; then
+        printf '%s\n' "$pids" | xargs kill -9 2>/dev/null || true
+    fi
     # 给内核足够时间回收进程与端口，避免竞态误报
     sleep 2
 
-    if ! lsof -ti "tcp:$port" &>/dev/null; then
+    pids="$(find_pids_by_port "$port")" || return 1
+    if [ -z "$pids" ]; then
         echo "[$name] 已强制终止"
     else
         echo "[$name] 警告：端口 $port 仍被占用，请手动排查"
-        lsof -i "tcp:$port" 2>/dev/null || true
+        lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null || true
     fi
+}
+
+find_pids_by_port() {
+    local port="$1"
+    local python_cmd=""
+    if [ -x ".venv/bin/python" ]; then
+        python_cmd=".venv/bin/python"
+    elif command -v python3 >/dev/null 2>&1; then
+        python_cmd="$(command -v python3)"
+    fi
+    if [ -n "$python_cmd" ]; then
+        "$python_cmd" - "$port" "$PWD" <<'PY'
+import sys
+from pathlib import Path
+
+try:
+    import psutil
+except ImportError:
+    raise SystemExit(3)
+
+port = int(sys.argv[1])
+project_root = Path(sys.argv[2]).resolve()
+listeners = {
+    connection.pid
+    for connection in psutil.net_connections(kind="inet")
+    if connection.pid is not None
+    and connection.status == psutil.CONN_LISTEN
+    and connection.laddr
+    and connection.laddr.port == port
+}
+managed = []
+unmanaged = []
+for pid in sorted(listeners):
+    try:
+        cwd = Path(psutil.Process(pid).cwd()).resolve()
+        cwd.relative_to(project_root)
+    except (psutil.Error, OSError, ValueError):
+        unmanaged.append(pid)
+    else:
+        managed.append(pid)
+
+if unmanaged:
+    print(
+        f"端口 {port} 被非 SlideFlow 进程占用，拒绝终止 PID: "
+        + ", ".join(map(str, unmanaged)),
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+for pid in managed:
+    print(pid)
+PY
+        local python_status=$?
+        if [ "$python_status" -ne 3 ]; then
+            return "$python_status"
+        fi
+    fi
+
+    if command -v lsof &>/dev/null; then
+        local pid cwd_path unmanaged=""
+        local listener_pids
+        listener_pids="$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"
+        for pid in $listener_pids; do
+            cwd_path="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)"
+            case "$cwd_path/" in
+                "$PWD/"*) printf '%s\n' "$pid" ;;
+                *) unmanaged="${unmanaged}${unmanaged:+, }${pid}" ;;
+            esac
+        done
+        if [ -n "$unmanaged" ]; then
+            echo "端口 $port 被非 SlideFlow 进程占用，拒绝终止 PID: $unmanaged" >&2
+            return 2
+        fi
+        return
+    fi
+    echo "错误: 停止服务需要 lsof 或 Python 3 + psutil" >&2
+    return 1
 }
 
 echo "=== SlideFlow 服务停止 ==="

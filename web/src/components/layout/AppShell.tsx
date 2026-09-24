@@ -69,10 +69,10 @@ const NAV_SECTIONS: { title: string; items: NavItem[] }[] = [
   },
 ];
 
-// 运营管理员和系统管理员都可进行运营管理；用户管理、运行管理、配置管理、
+// 运营管理员和系统管理员都可进行运营管理与用户管理；运行管理、配置管理、
 // 日志管理属于系统管理，仅系统管理员可见。
-const ADMIN_ONLY_KEYS = new Set(["tags"]);
-const SYSTEM_ADMIN_ONLY_KEYS = new Set(["users", "runtime", "config", "logs"]);
+const ADMIN_ONLY_KEYS = new Set(["tags", "users"]);
+const SYSTEM_ADMIN_ONLY_KEYS = new Set(["runtime", "config", "logs"]);
 
 function NavItemLink({ item }: { item: NavItem }) {
   const Icon = item.icon;

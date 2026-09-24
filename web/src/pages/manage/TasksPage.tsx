@@ -27,6 +27,7 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { UserSearchSelect } from "@/components/resource/UserSearchSelect";
 import {
   Dialog,
   DialogContent,
@@ -99,17 +100,6 @@ interface TaskParams {
   fonts?: string[];
   missing_fonts?: string[];
   preview_status?: string;
-}
-
-interface UserOption {
-  id: number;
-  username: string;
-  name: string | null;
-  role?: string;
-}
-
-interface UserOptionsResponse {
-  users: UserOption[];
 }
 
 interface TaskResult {
@@ -875,14 +865,11 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
     setPage(1);
   }, [filter, ownerIdParam, pageSize]);
 
-  // 用户下拉选项（仅管理员拉取）
-  const { data: usersData } = useQuery({
-    queryKey: ["users", "options"],
-    queryFn: async () => api<UserOptionsResponse>("/api/users/options"),
-    enabled: isAdmin,
-    staleTime: 5 * 60 * 1000,
-  });
-  const userOptions = usersData?.users ?? [];
+  const selectedOwnerId = React.useMemo(() => {
+    if (ownerFilter === "all" || ownerFilter === "self") return null;
+    const id = Number(ownerFilter);
+    return Number.isFinite(id) && id > 0 ? id : null;
+  }, [ownerFilter]);
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["tasks", "upload", ownerIdParam ?? "all", filter, page, pageSize],
@@ -975,20 +962,18 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
       {/* 筛选区：用户下拉 + 状态 chips */}
       <div className="flex flex-wrap items-center gap-2">
         {isAdmin && (
-          <Select value={ownerFilter} onValueChange={(v) => setOwnerFilter(v)}>
-            <SelectTrigger className="h-8 w-[180px] rounded-md text-xs">
-              <SelectValue placeholder="选择用户" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">所有用户</SelectItem>
-              <SelectItem value="self">仅自己</SelectItem>
-              {userOptions.map((u) => (
-                <SelectItem key={u.id} value={String(u.id)}>
-                  {u.name || u.username || `#${u.id}`}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="flex items-center gap-1.5">
+            <FilterChip active={ownerFilter === "all"} onClick={() => setOwnerFilter("all")}>所有用户</FilterChip>
+            <FilterChip active={ownerFilter === "self"} onClick={() => setOwnerFilter("self")}>仅自己</FilterChip>
+            <div className="w-48">
+              <UserSearchSelect
+                value={selectedOwnerId}
+                onChange={(id) => setOwnerFilter(String(id))}
+                placeholder="搜索其他用户"
+                triggerClassName="h-8 text-xs"
+              />
+            </div>
+          </div>
         )}
         {STATUS_FILTERS.map((f) => (
           <FilterChip
@@ -1198,14 +1183,11 @@ function DownloadTasksTab({ canManage }: { canManage: boolean }) {
     setPage(1);
   }, [filter, ownerIdParam, search, pageSize]);
 
-  // 用户下拉选项（仅管理员拉取）
-  const { data: usersData } = useQuery({
-    queryKey: ["users", "options"],
-    queryFn: async () => api<UserOptionsResponse>("/api/users/options"),
-    enabled: isAdmin,
-    staleTime: 5 * 60 * 1000,
-  });
-  const userOptions = usersData?.users ?? [];
+  const selectedOwnerId = React.useMemo(() => {
+    if (ownerFilter === "all" || ownerFilter === "self") return null;
+    const id = Number(ownerFilter);
+    return Number.isFinite(id) && id > 0 ? id : null;
+  }, [ownerFilter]);
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["tasks", "download", ownerIdParam ?? "all", filter, search, page, pageSize],
@@ -1278,20 +1260,18 @@ function DownloadTasksTab({ canManage }: { canManage: boolean }) {
       {/* 筛选区：用户下拉 + 状态 chips + 追踪码搜索 */}
       <div className="flex flex-wrap items-center gap-2">
         {isAdmin && (
-          <Select value={ownerFilter} onValueChange={(v) => setOwnerFilter(v)}>
-            <SelectTrigger className="h-8 w-[180px] rounded-md text-xs">
-              <SelectValue placeholder="选择用户" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">所有用户</SelectItem>
-              <SelectItem value="self">仅自己</SelectItem>
-              {userOptions.map((u) => (
-                <SelectItem key={u.id} value={String(u.id)}>
-                  {u.name || u.username || `#${u.id}`}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="flex items-center gap-1.5">
+            <FilterChip active={ownerFilter === "all"} onClick={() => setOwnerFilter("all")}>所有用户</FilterChip>
+            <FilterChip active={ownerFilter === "self"} onClick={() => setOwnerFilter("self")}>仅自己</FilterChip>
+            <div className="w-48">
+              <UserSearchSelect
+                value={selectedOwnerId}
+                onChange={(id) => setOwnerFilter(String(id))}
+                placeholder="搜索其他用户"
+                triggerClassName="h-8 text-xs"
+              />
+            </div>
+          </div>
         )}
         {STATUS_FILTERS.map((f) => (
           <FilterChip

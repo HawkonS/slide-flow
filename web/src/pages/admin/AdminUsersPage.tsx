@@ -1,17 +1,11 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRightLeft, Check, ChevronDown, Copy, KeyRound, Loader2, Pencil, Search, Shield, Trash2, User, UserPlus, X } from "lucide-react";
+import { ArrowRightLeft, Camera, Copy, KeyRound, Loader2, Pencil, Search, Shield, Tag, Trash2, Upload, User, UserPlus, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import {
   Dialog,
   DialogContent,
@@ -39,25 +33,19 @@ import {
 } from "@/components/ui/table";
 import { api } from "@/lib/api";
 import { USER_ROLE_LABEL, USER_ROLE_OPTIONS } from "@/lib/constants";
-import { AdminUser, UserRole } from "@/lib/types";
+import { AdminUser, AdminUsersResponse, UserRole } from "@/lib/types";
 import { useUrlPage } from "@/lib/use-url-page";
 import { cn } from "@/lib/utils";
 import { TagInput } from "@/components/resource/TagInput";
 import { parseTags, serializeTags } from "@/lib/types";
 import { PageHeader } from "@/components/common/PageHeader";
 import { useAuth } from "@/lib/auth";
-
-interface UsersResponse {
-  users: AdminUser[];
-}
+import { UserSearchSelect } from "@/components/resource/UserSearchSelect";
 
 export function AdminUsersPage() {
   const qc = useQueryClient();
-  const { user: currentUser } = useAuth();
-  const { data, isLoading, isError, error } = useQuery({
-    queryKey: ["admin", "users"],
-    queryFn: async () => api<UsersResponse>("/api/admin/users"),
-  });
+  const { user: currentUser, setUser } = useAuth();
+  const [tagFilter, setTagFilter] = React.useState("all");
 
   const [editing, setEditing] = React.useState<AdminUser | null>(null);
   const [createOpen, setCreateOpen] = React.useState(false);
@@ -65,30 +53,33 @@ export function AdminUsersPage() {
   const [resetUser, setResetUser] = React.useState<AdminUser | null>(null);
   const [resetPassword, setResetPassword] = React.useState("");
   const [resettingPassword, setResettingPassword] = React.useState(false);
+  const [queryInput, setQueryInput] = React.useState("");
   const [query, setQuery] = React.useState("");
+  React.useEffect(() => {
+    const timer = window.setTimeout(() => setQuery(queryInput.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [queryInput]);
 
   const delMut = useMutation({
     mutationFn: async (id: number) => api(`/api/admin/users/${id}`, { method: "DELETE" }),
     onSuccess: () => {
       toast.success("用户已删除");
       qc.invalidateQueries({ queryKey: ["admin", "users"] });
+      qc.invalidateQueries({ queryKey: ["users", "options"] });
     },
     onError: (err: Error) => toast.error(err.message || "删除失败"),
   });
 
   const [selected, setSelected] = React.useState<Set<number>>(new Set());
 
-  const users = data?.users ?? [];
-  const filtered = React.useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return users;
-    return users.filter((u) =>
-      `${u.name || ""} ${u.username} ${u.feishu_id || ""} ${u.tags || ""}`.toLowerCase().includes(q),
-    );
-  }, [users, query]);
-
-  const filteredIds = React.useMemo(() => filtered.map((u) => u.id), [filtered]);
-
+  const canManageUser = React.useCallback(
+    (u: AdminUser) => currentUser?.role === "system_admin" || u.role !== "system_admin",
+    [currentUser?.role],
+  );
+  const canDeleteUser = React.useCallback(
+    (u: AdminUser) => canManageUser(u) && currentUser?.id !== u.id,
+    [canManageUser, currentUser?.id],
+  );
   const toggleOne = (id: number) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -127,13 +118,14 @@ export function AdminUsersPage() {
       toast.success(`已删除 ${data.deleted} 个用户`);
       setSelected(new Set());
       qc.invalidateQueries({ queryKey: ["admin", "users"] });
+      qc.invalidateQueries({ queryKey: ["users", "options"] });
     },
     onError: (err: Error) => toast.error(err.message || "批量删除失败"),
   });
 
   // 动态分页
   const contentRef = React.useRef<HTMLDivElement>(null);
-  const [pageSize, setPageSize] = React.useState(10);
+  const [pageSize, setPageSize] = React.useState(0);
   React.useEffect(() => {
     const el = contentRef.current;
     if (!el) return;
@@ -142,7 +134,7 @@ export function AdminUsersPage() {
       if (!H) return;
       const headerH = 45;
       const rowH = 49;
-      const rows = Math.max(5, Math.floor((H - headerH) / rowH));
+      const rows = Math.min(100, Math.max(5, Math.floor((H - headerH) / rowH)));
       setPageSize((prev) => (prev === rows ? prev : rows));
     };
     compute();
@@ -151,16 +143,49 @@ export function AdminUsersPage() {
     return () => ro.disconnect();
   }, []);
   const [page, setPage] = useUrlPage();
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const { data, isLoading, isError, error } = useQuery({
+    queryKey: ["admin", "users", page, pageSize, query, tagFilter],
+    queryFn: () => api<AdminUsersResponse>("/api/admin/users", {
+      params: {
+        page,
+        page_size: pageSize,
+        search: query || undefined,
+        tag: tagFilter !== "all" ? tagFilter : undefined,
+      },
+    }),
+    enabled: pageSize > 0,
+  });
+  const users = data?.users ?? [];
+  const availableTags = data?.available_tags ?? [];
+  const total = data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / Math.max(1, pageSize)));
+  const handleUserSaved = React.useCallback((savedUser: AdminUser) => {
+    qc.invalidateQueries({ queryKey: ["admin", "users"] });
+    qc.invalidateQueries({ queryKey: ["users", "options"] });
+    if (currentUser?.id === savedUser.id) {
+      setUser({ ...currentUser, ...savedUser });
+    }
+  }, [currentUser, qc, setUser]);
   React.useEffect(() => {
-    if (page > totalPages) setPage(1);
-  }, [page, totalPages]);
+    if (pageSize > 0 && data && page > totalPages) setPage(totalPages);
+  }, [data, page, pageSize, totalPages, setPage]);
   React.useEffect(() => {
     setPage(1);
-  }, [query]);
+    setSelected(new Set());
+  }, [query, tagFilter, setPage]);
+  React.useEffect(() => {
+    const visible = new Set(users.filter(canDeleteUser).map((user) => user.id));
+    setSelected((previous) => {
+      const next = new Set(Array.from(previous).filter((id) => visible.has(id)));
+      if (next.size === previous.size && Array.from(next).every((id) => previous.has(id))) return previous;
+      return next;
+    });
+  }, [users, canDeleteUser]);
   const pageStart = (page - 1) * pageSize;
-  const pageItems = filtered.slice(pageStart, pageStart + pageSize);
-  const pageItemIds = React.useMemo(() => pageItems.map((u) => u.id), [pageItems]);
+  const pageItemIds = React.useMemo(
+    () => users.filter(canDeleteUser).map((u) => u.id),
+    [users, canDeleteUser],
+  );
   const allSelected = pageItemIds.length > 0 && pageItemIds.every((id) => selected.has(id));
   const someSelected = pageItemIds.some((id) => selected.has(id)) && !allSelected;
 
@@ -168,7 +193,7 @@ export function AdminUsersPage() {
     <div className="page-shell">
       <PageHeader
         title="用户管理"
-        count={filtered.length === users.length ? `共 ${users.length} 条` : `筛选后 ${filtered.length} / ${users.length} 条`}
+        count={tagFilter !== "all" ? `标签「${tagFilter}」 · ${total} 条` : query ? `搜索到 ${total} 条` : `共 ${total} 条`}
       />
 
       {/* 筛选行 */}
@@ -176,17 +201,44 @@ export function AdminUsersPage() {
         <div className="relative min-w-0 flex-1 sm:flex-none">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            value={queryInput}
+            onChange={(e) => setQueryInput(e.target.value)}
             placeholder="搜索姓名、用户名、标签、飞书 ID"
             className={cn(
               "h-8 w-full rounded-md border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition sm:w-56",
               "placeholder:text-muted-foreground",
               "focus:border-foreground/40 focus:ring-2 focus:ring-ring/20",
-              query.trim() !== "" && "border-foreground/25 bg-primary-weak",
+              queryInput.trim() !== "" && "border-foreground/25 bg-primary-weak",
             )}
           />
         </div>
+        <Select value={tagFilter} onValueChange={setTagFilter}>
+          <SelectTrigger className="h-8 w-full text-xs sm:w-44">
+            <span className="inline-flex min-w-0 items-center gap-1.5">
+              <Tag className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <SelectValue placeholder="按标签筛选" />
+            </span>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">全部标签</SelectItem>
+            {availableTags.map((tag) => (
+              <SelectItem key={tag} value={tag}>
+                {tag}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {tagFilter !== "all" && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 px-2 text-xs text-muted-foreground"
+            onClick={() => setTagFilter("all")}
+          >
+            <X className="mr-1 h-3.5 w-3.5" />
+            清除筛选
+          </Button>
+        )}
         <div className="ml-auto flex items-center gap-2">
           {selected.size > 0 && (
             <span className="text-xs text-muted-foreground">
@@ -219,7 +271,7 @@ export function AdminUsersPage() {
 
       {/* 内容区 */}
       <div ref={contentRef} className="min-h-0 flex-1 overflow-auto">
-        {isLoading ? (
+        {pageSize === 0 || isLoading ? (
           <div className="flex items-center justify-center py-16 text-muted-foreground">
             <Loader2 className="mr-2 h-5 w-5 animate-spin" /> 加载中…
           </div>
@@ -227,7 +279,7 @@ export function AdminUsersPage() {
           <div className="rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
             加载失败：{(error as Error)?.message || "未知错误"}
           </div>
-        ) : filtered.length === 0 ? (
+        ) : users.length === 0 ? (
           <div className="rounded-md border border-dashed py-16 text-center text-sm text-muted-foreground">
             暂无用户
           </div>
@@ -248,27 +300,6 @@ export function AdminUsersPage() {
                           }
                         }}
                       />
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <button type="button" className="ml-0.5 rounded p-0.5 hover:bg-accent">
-                            <ChevronDown className="h-3 w-3 text-muted-foreground" />
-                          </button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="start" className="w-40">
-                          <DropdownMenuItem onClick={() => setSelected(new Set(pageItemIds))}>
-                            <Check className="mr-2 h-3.5 w-3.5" />
-                            全选本页
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => setSelected(new Set(filteredIds))}>
-                            <Check className="mr-2 h-3.5 w-3.5" />
-                            选择全部 ({filteredIds.length})
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => setSelected(new Set())}>
-                            <X className="mr-2 h-3.5 w-3.5" />
-                            取消选择
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
                     </div>
                   </TableHead>
                   <TableHead>姓名</TableHead>
@@ -281,17 +312,21 @@ export function AdminUsersPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {pageItems.map((u) => (
+                {users.map((u) => {
+                  const canManageTarget = canManageUser(u);
+                  const canDeleteTarget = canDeleteUser(u);
+                  return (
                   <TableRow key={u.id}>
                     <TableCell>
                       <Checkbox
                         checked={selected.has(u.id)}
                         onCheckedChange={() => toggleOne(u.id)}
+                        disabled={!canDeleteTarget}
                       />
                     </TableCell>
                     <TableCell>
                       <span className="inline-flex items-center gap-2">
-                        {u.avatar_url ? <img src={u.avatar_url} alt="" className="h-7 w-7 rounded-full object-cover" referrerPolicy="no-referrer" /> : <span className="flex h-7 w-7 items-center justify-center rounded-full bg-muted text-xs text-muted-foreground">{(u.name || u.username).slice(0, 1).toUpperCase()}</span>}
+                        <UserAvatar name={u.name} username={u.username} url={u.avatar_url} size="sm" />
                         <span>{u.name || "-"}</span>
                       </span>
                     </TableCell>
@@ -329,14 +364,14 @@ export function AdminUsersPage() {
                     <TableCell className="text-sm text-muted-foreground">{u.created_at}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1">
-                        <Button variant="ghost" size="sm" onClick={() => setEditing(u)}>
+                        <Button variant="ghost" size="sm" disabled={!canManageTarget} title={!canManageTarget ? "系统管理员账号仅可由系统管理员管理" : "编辑用户"} onClick={() => setEditing(u)}>
                           <Pencil className="h-3.5 w-3.5" />
                         </Button>
                         <Button
                           variant="ghost"
                           size="sm"
                           title="生成新的临时密码"
-                          disabled={resettingPassword || currentUser?.id === u.id}
+                          disabled={resettingPassword || currentUser?.id === u.id || !canManageTarget}
                           onClick={() => requestPasswordReset(u)}
                         >
                           <KeyRound className="h-3.5 w-3.5" />
@@ -346,6 +381,7 @@ export function AdminUsersPage() {
                           size="sm"
                           className="text-muted-foreground hover:text-primary"
                           title="转移数据并删除"
+                          disabled={!canDeleteTarget || delMut.isPending}
                           onClick={() => setTransferUser(u)}
                         >
                           <ArrowRightLeft className="h-3.5 w-3.5" />
@@ -354,6 +390,8 @@ export function AdminUsersPage() {
                           variant="ghost"
                           size="sm"
                           className="text-destructive hover:text-destructive"
+                          title="删除用户"
+                          disabled={!canDeleteTarget || delMut.isPending}
                           onClick={() => {
                             if (window.confirm(`确认删除用户 ${u.username}？`)) {
                               delMut.mutate(u.id);
@@ -365,7 +403,8 @@ export function AdminUsersPage() {
                       </div>
                     </TableCell>
                   </TableRow>
-                ))}
+                  );
+                })}
               </TableBody>
             </Table>
           </div>
@@ -373,11 +412,10 @@ export function AdminUsersPage() {
       </div>
 
       {/* 分页条 */}
-      {!isLoading && !isError && filtered.length > 0 && (
+      {pageSize > 0 && !isLoading && !isError && total > 0 && (
         <div className="flex shrink-0 items-center justify-between border-t pt-3 text-sm text-muted-foreground select-none">
           <span>
-            显示 {pageStart + 1}-{Math.min(pageStart + pageSize, filtered.length)}，共{" "}
-            {filtered.length} 条
+            显示 {pageStart + 1}-{Math.min(pageStart + users.length, total)}，共 {total} 条
           </span>
           <div className="flex items-center gap-2">
             <Button
@@ -407,7 +445,8 @@ export function AdminUsersPage() {
         open={createOpen}
         onOpenChange={setCreateOpen}
         user={null}
-        onSuccess={() => qc.invalidateQueries({ queryKey: ["admin", "users"] })}
+        canManageSystemAdmin={currentUser?.role === "system_admin"}
+        onSuccess={handleUserSaved}
       />
       <Dialog open={!!resetPassword} onOpenChange={(open) => { if (!open) { setResetPassword(""); setResetUser(null); } }}>
         <DialogContent className="max-w-md">
@@ -441,7 +480,8 @@ export function AdminUsersPage() {
           if (!o) setEditing(null);
         }}
         user={editing}
-        onSuccess={() => qc.invalidateQueries({ queryKey: ["admin", "users"] })}
+        canManageSystemAdmin={currentUser?.role === "system_admin"}
+        onSuccess={handleUserSaved}
       />
       <TransferDeleteDialog
         open={transferUser != null}
@@ -449,9 +489,9 @@ export function AdminUsersPage() {
           if (!o) setTransferUser(null);
         }}
         sourceUser={transferUser}
-        allUsers={users.filter((u) => u.id !== transferUser?.id)}
         onSuccess={() => {
           qc.invalidateQueries({ queryKey: ["admin", "users"] });
+          qc.invalidateQueries({ queryKey: ["users", "options"] });
         }}
       />
     </div>
@@ -462,21 +502,19 @@ function TransferDeleteDialog({
   open,
   onOpenChange,
   sourceUser,
-  allUsers,
   onSuccess,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
   sourceUser: AdminUser | null;
-  allUsers: AdminUser[];
   onSuccess: () => void;
 }) {
-  const [targetId, setTargetId] = React.useState("");
+  const [targetId, setTargetId] = React.useState<number | null>(null);
   const [loading, setLoading] = React.useState(false);
 
   React.useEffect(() => {
     if (open) {
-      setTargetId("");
+      setTargetId(null);
       setLoading(false);
     }
   }, [open]);
@@ -490,7 +528,7 @@ function TransferDeleteDialog({
     try {
       await api(`/api/admin/users/${sourceUser!.id}/transfer-and-delete`, {
         method: "POST",
-        json: { target_user_id: Number(targetId) },
+        json: { target_user_id: targetId },
       });
       toast.success(`已将 ${sourceUser!.username} 的数据转移并删除用户`);
       onSuccess();
@@ -530,18 +568,13 @@ function TransferDeleteDialog({
               <User className="h-4 w-4 text-muted-foreground" />
               接收数据的用户
             </div>
-            <Select value={targetId} onValueChange={setTargetId}>
-              <SelectTrigger>
-                <SelectValue placeholder="请选择…" />
-              </SelectTrigger>
-              <SelectContent>
-                {allUsers.map((u) => (
-                  <SelectItem key={u.id} value={String(u.id)}>
-                    {u.name || u.username}（{u.username}）
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <UserSearchSelect
+              value={targetId}
+              onChange={setTargetId}
+              excludeIds={sourceUser ? [sourceUser.id] : []}
+              placeholder="搜索并选择接收用户"
+              disabled={loading}
+            />
           </div>
         </div>
         <DialogFooter>
@@ -562,20 +595,25 @@ function UserFormDialog({
   open,
   onOpenChange,
   user,
+  canManageSystemAdmin,
   onSuccess,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
   user: AdminUser | null;
-  onSuccess: () => void;
+  canManageSystemAdmin: boolean;
+  onSuccess: (user: AdminUser) => void;
 }) {
   const editing = !!user;
-  const roleOptions = USER_ROLE_OPTIONS;
+  const roleOptions = USER_ROLE_OPTIONS.filter((option) => canManageSystemAdmin || option.value !== "system_admin");
   const [name, setName] = React.useState("");
   const [username, setUsername] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [feishu, setFeishu] = React.useState("");
   const [avatarUrl, setAvatarUrl] = React.useState("");
+  const [avatarFile, setAvatarFile] = React.useState<File | null>(null);
+  const [avatarPreview, setAvatarPreview] = React.useState("");
+  const [removeAvatar, setRemoveAvatar] = React.useState(false);
   const [tags, setTags] = React.useState<string[]>([]);
   const [role, setRole] = React.useState<UserRole>("user");
   const [loading, setLoading] = React.useState(false);
@@ -588,12 +626,43 @@ function UserFormDialog({
       setPassword("");
       setFeishu(user?.feishu_id || "");
       setAvatarUrl(user?.avatar_url || "");
+      setAvatarFile(null);
+      setAvatarPreview("");
+      setRemoveAvatar(false);
       setTags(parseTags(user?.tags));
       setRole((user?.role as UserRole) || "user");
       setLoading(false);
       setGeneratedPwd("");
     }
   }, [open, user]);
+
+  React.useEffect(() => {
+    if (!avatarFile) {
+      setAvatarPreview("");
+      return;
+    }
+    const objectUrl = URL.createObjectURL(avatarFile);
+    setAvatarPreview(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [avatarFile]);
+
+  const chooseAvatar = (file: File | null) => {
+    if (!file) return;
+    const suffix = file.name.toLowerCase().match(/\.[^.]+$/)?.[0] || "";
+    if (
+      !["image/png", "image/jpeg", "image/webp"].includes(file.type)
+      && ![".png", ".jpg", ".jpeg", ".webp"].includes(suffix)
+    ) {
+      toast.error("头像仅支持 PNG、JPG 或 WebP 图片");
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error("头像文件不能超过 2 MB");
+      return;
+    }
+    setAvatarFile(file);
+    setRemoveAvatar(false);
+  };
 
   const submit = async () => {
     if (!name.trim() || !username.trim()) {
@@ -611,7 +680,7 @@ function UserFormDialog({
             username: username.trim(),
             password: editing ? null : password || null,
             feishu_id: feishu.trim(),
-            avatar_url: avatarUrl.trim(),
+            avatar_url: editing ? avatarUrl.trim() : "",
             tags: serializeTags(tags),
             role,
             need_change_pwd: true,
@@ -619,13 +688,42 @@ function UserFormDialog({
         },
       );
 
+      let savedUser = res.user;
+      let avatarError: Error | null = null;
+      try {
+        if (avatarFile) {
+          const body = new FormData();
+          body.set("avatar", avatarFile);
+          const avatarResult = await api<{ user: AdminUser }>(
+            `/api/admin/users/${res.user.id}/avatar`,
+            { method: "POST", body },
+          );
+          savedUser = avatarResult.user;
+        } else if (editing && removeAvatar && avatarUrl) {
+          const avatarResult = await api<{ user: AdminUser }>(
+            `/api/admin/users/${res.user.id}/avatar`,
+            { method: "DELETE" },
+          );
+          savedUser = avatarResult.user;
+        }
+      } catch (error) {
+        avatarError = error as Error;
+      }
+
+      setAvatarUrl(savedUser.avatar_url || "");
+      setAvatarFile(null);
+      setRemoveAvatar(false);
+
       if (!editing && res.plain_password) {
         // 未手工指定密码时，后端生成只展示一次的临时密码。
         setGeneratedPwd(res.plain_password);
       } else {
-        toast.success("用户已保存");
+        toast.success(editing ? "用户资料已保存" : "用户已创建");
       }
-      onSuccess();
+      if (avatarError) {
+        toast.error(`用户资料已保存，但头像处理失败：${avatarError.message || "未知错误"}`);
+      }
+      onSuccess(savedUser);
       if (!res.plain_password) {
         onOpenChange(false);
       }
@@ -651,24 +749,24 @@ function UserFormDialog({
         onOpenChange(o);
       }}
     >
-      <DialogContent className="max-w-lg">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
-              {editing ? <Pencil className="h-4 w-4" /> : <UserPlus className="h-4 w-4" />}
-            </span>
-            {editing ? "编辑用户" : "新增用户"}
-          </DialogTitle>
-          <DialogDescription>
-            {editing
-              ? "修改用户的基本信息与角色权限"
-              : "创建一个新用户账号并分配角色"}
-          </DialogDescription>
+      <DialogContent className="max-h-[92vh] max-w-2xl gap-0 overflow-hidden p-0">
+        <DialogHeader className="border-b px-6 py-5 pr-12">
+          <div className="flex items-center gap-3">
+            <UserAvatar name={name} username={username} url={avatarPreview || (removeAvatar ? "" : avatarUrl)} size="lg" />
+            <div className="min-w-0">
+              <DialogTitle className="flex items-center gap-2">
+                {editing ? "编辑用户" : "新增用户"}
+              </DialogTitle>
+              <DialogDescription className="mt-1">
+                {editing ? `${user?.name || user?.username} · 修改账号资料与标签` : "创建账号并设置角色与用户标签"}
+              </DialogDescription>
+            </div>
+          </div>
         </DialogHeader>
 
         {generatedPwd ? (
           /* 随机密码展示视图 */
-          <div className="space-y-4">
+          <div className="space-y-4 px-6 py-5">
             <div className="rounded-lg border border-emerald-300/60 bg-emerald-50 p-5 dark:border-emerald-800/50 dark:bg-emerald-950/30">
               <div className="mb-3 flex items-center gap-2 text-sm font-medium text-emerald-800 dark:text-emerald-300">
                 <KeyRound className="h-4 w-4" />
@@ -706,112 +804,120 @@ function UserFormDialog({
         ) : (
           /* 表单视图 */
           <>
-            <div className="grid gap-4">
-              {/* 基本信息 */}
-              <section className="rounded-lg border bg-muted/20 p-4">
-                <div className="mb-3 flex items-center gap-2 text-sm font-medium">
-                  <User className="h-4 w-4 text-muted-foreground" />
-                  基本信息
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div className="grid gap-1.5">
-                    <Label htmlFor="user-name">姓名</Label>
-                    <Input
-                      id="user-name"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      placeholder="输入用户姓名"
-                    />
+            <div className="max-h-[calc(92vh-145px)] overflow-y-auto px-6 py-5">
+              <div className="grid gap-6">
+                <section className="space-y-3">
+                  <div className="flex items-center gap-2 border-b pb-2 text-sm font-semibold">
+                    <User className="h-4 w-4 text-muted-foreground" />
+                    账号信息
                   </div>
-                  <div className="grid gap-1.5">
-                    <Label htmlFor="user-username">用户名</Label>
-                    <Input
-                      id="user-username"
-                      value={username}
-                      onChange={(e) => setUsername(e.target.value)}
-                      placeholder="登录使用的用户名"
-                    />
-                  </div>
-                </div>
-              </section>
-
-              {/* 新建账号时设置首次登录临时密码；已有账号使用独立重置操作。 */}
-              {!editing && <section className="rounded-lg border bg-muted/20 p-4">
-                <div className="mb-3 flex items-center gap-2 text-sm font-medium">
-                  <KeyRound className="h-4 w-4 text-muted-foreground" />
-                  密码设置
-                </div>
-                <div className="grid gap-3">
-                  <div className="grid gap-1.5">
-                    <Label htmlFor="user-password">
-                      密码
-                      <span className="ml-1 text-xs text-muted-foreground">
-                        （留空自动生成临时密码）
-                      </span>
-                    </Label>
-                    <Input
-                      id="user-password"
-                      type="password"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      placeholder="可手工设置临时密码"
-                    />
-                  </div>
-                  <p className="text-xs leading-5 text-muted-foreground">
-                    新建或重置后的密码都只是临时凭证，用户首次登录时必须设置自己的密码。系统不再提供全局默认密码。
-                  </p>
-                </div>
-              </section>}
-
-              {/* 角色与飞书 */}
-              <section className="rounded-lg border bg-muted/20 p-4">
-                <div className="mb-3 flex items-center gap-2 text-sm font-medium">
-                  <Shield className="h-4 w-4 text-muted-foreground" />
-                  角色与集成
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div className="grid gap-1.5">
-                    <Label>角色</Label>
-                    <Select value={role} onValueChange={(v) => setRole(v as UserRole)}>
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {roleOptions.map((o) => (
-                          <SelectItem key={o.value} value={o.value}>
-                            {o.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="grid gap-1.5">
-                    <Label htmlFor="user-feishu">
-                      飞书 ID
-                      <span className="ml-1 text-xs text-muted-foreground">（可选）</span>
-                    </Label>
-                    <Input
-                      id="user-feishu"
-                      value={feishu}
-                      onChange={(e) => setFeishu(e.target.value)}
-                      placeholder="关联飞书账号"
-                    />
-                  </div>
-                  <div className="grid gap-1.5">
-                    <Label htmlFor="user-avatar">头像地址 <span className="ml-1 text-xs text-muted-foreground">（飞书登录自动同步）</span></Label>
-                    <div className="flex items-center gap-2">
-                      {avatarUrl ? <img src={avatarUrl} alt="头像预览" className="h-9 w-9 rounded-full object-cover" referrerPolicy="no-referrer" /> : <span className="h-9 w-9 rounded-full bg-muted" />}
-                      <Input id="user-avatar" value={avatarUrl} onChange={(e) => setAvatarUrl(e.target.value)} placeholder="https://..." />
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="user-name">姓名 <span className="text-destructive">*</span></Label>
+                      <Input id="user-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：张三" />
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="user-username">用户名 <span className="text-destructive">*</span></Label>
+                      <Input id="user-username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="用于登录" />
                     </div>
                   </div>
-                  <div className="grid gap-1.5 sm:col-span-2">
-                    <Label>用户标签</Label>
-                    <TagInput value={tags} onChange={setTags} placeholder="选择或输入标签" />
+                </section>
+
+                {!editing && <section className="space-y-3">
+                  <div className="flex items-center gap-2 border-b pb-2 text-sm font-semibold">
+                    <KeyRound className="h-4 w-4 text-muted-foreground" />
+                    初始密码
                   </div>
-                </div>
-              </section>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="user-password">临时密码 <span className="text-xs font-normal text-muted-foreground">（留空自动生成）</span></Label>
+                    <Input id="user-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="可手工指定临时密码" />
+                    <p className="text-xs leading-5 text-muted-foreground">临时密码 24 小时内有效，首次登录必须修改。</p>
+                  </div>
+                </section>}
+
+                <section className="space-y-3">
+                  <div className="flex items-center gap-2 border-b pb-2 text-sm font-semibold">
+                    <Shield className="h-4 w-4 text-muted-foreground" />
+                    角色与联系方式
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="user-role">角色</Label>
+                      <Select value={role} onValueChange={(v) => setRole(v as UserRole)}>
+                        <SelectTrigger id="user-role"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          {roleOptions.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="user-feishu">飞书 ID <span className="text-xs font-normal text-muted-foreground">（可选）</span></Label>
+                      <Input id="user-feishu" value={feishu} onChange={(e) => setFeishu(e.target.value)} placeholder="关联飞书账号" />
+                    </div>
+                  </div>
+                </section>
+
+                <section className="space-y-3">
+                  <div className="flex items-center gap-2 border-b pb-2 text-sm font-semibold">
+                    <Tag className="h-4 w-4 text-muted-foreground" />
+                    用户标签
+                  </div>
+                  <TagInput value={tags} onChange={setTags} placeholder="搜索或选择预设标签" />
+                  <p className="text-xs leading-5 text-muted-foreground">用户标签用于用户列表筛选；预设标签在“管理 → 标签管理”中创建。</p>
+                </section>
+
+                <section className="space-y-3">
+                  <div className="flex items-center gap-2 border-b pb-2 text-sm font-semibold">
+                    <Camera className="h-4 w-4 text-muted-foreground" />
+                    头像
+                  </div>
+                  <div className="flex flex-col gap-4 rounded-lg border bg-muted/20 p-4 sm:flex-row sm:items-center">
+                    <UserAvatar name={name} username={username} url={avatarPreview || (removeAvatar ? "" : avatarUrl)} size="lg" />
+                    <div className="min-w-0 flex-1 space-y-2">
+                      <div className="text-sm font-medium">上传头像图片</div>
+                      <p className="text-xs leading-5 text-muted-foreground">
+                        支持 PNG、JPG、WebP，文件不超过 2 MB；系统会自动缩放并转换为 PNG。
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        <Button type="button" variant="outline" size="sm" asChild disabled={loading}>
+                          <label htmlFor={`user-avatar-${user?.id || "new"}`} className="cursor-pointer">
+                            <Upload className="mr-1.5 h-3.5 w-3.5" />
+                            {avatarFile ? "重新选择" : "选择图片"}
+                          </label>
+                        </Button>
+                        {(avatarFile || (!removeAvatar && avatarUrl)) && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            disabled={loading}
+                            onClick={() => {
+                              setAvatarFile(null);
+                              setRemoveAvatar(Boolean(avatarUrl));
+                            }}
+                          >
+                            移除头像
+                          </Button>
+                        )}
+                      </div>
+                      <input
+                        id={`user-avatar-${user?.id || "new"}`}
+                        type="file"
+                        className="sr-only"
+                        accept="image/png,image/jpeg,image/webp"
+                        onChange={(event) => {
+                          chooseAvatar(event.target.files?.[0] ?? null);
+                          event.currentTarget.value = "";
+                        }}
+                      />
+                    </div>
+                  </div>
+                  {avatarFile && <p className="text-xs text-muted-foreground">已选择：{avatarFile.name}</p>}
+                  {removeAvatar && <p className="text-xs text-amber-600">保存后将移除当前头像。</p>}
+                </section>
+              </div>
             </div>
-            <DialogFooter>
+            <DialogFooter className="border-t bg-muted/15 px-6 py-4">
               <Button variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>
                 取消
               </Button>
@@ -824,5 +930,40 @@ function UserFormDialog({
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+function UserAvatar({
+  name,
+  username,
+  url,
+  size = "sm",
+}: {
+  name?: string | null;
+  username: string;
+  url?: string | null;
+  size?: "sm" | "lg";
+}) {
+  const [failed, setFailed] = React.useState(false);
+  React.useEffect(() => setFailed(false), [url]);
+  const label = (name || username || "用户").trim();
+  const dimensions = size === "lg" ? "h-16 w-16 text-xl" : "h-7 w-7 text-xs";
+
+  if (url && !failed) {
+    return (
+      <img
+        src={url}
+        alt={`${label}头像`}
+        className={cn("shrink-0 rounded-full object-cover ring-1 ring-border", dimensions)}
+        referrerPolicy="no-referrer"
+        onError={() => setFailed(true)}
+      />
+    );
+  }
+
+  return (
+    <span className={cn("flex shrink-0 items-center justify-center rounded-full bg-primary/10 font-semibold text-primary ring-1 ring-primary/10", dimensions)}>
+      {label.slice(0, 1).toUpperCase()}
+    </span>
   );
 }

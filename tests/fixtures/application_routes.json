@@ -116,8 +116,32 @@
     ]
   },
   {
+    "path": "/api/admin/system/upgrade/status",
+    "name": "api_admin_system_upgrade_status",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/admin/system/operation/status",
+    "name": "api_admin_system_operation_status",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
     "path": "/api/admin/system/logs",
     "name": "api_admin_system_logs",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/admin/system/logs/{filename}/tail",
+    "name": "api_admin_system_log_tail",
     "kind": "http",
     "methods": [
       "GET"
@@ -281,6 +305,30 @@
     "kind": "http",
     "methods": [
       "GET"
+    ]
+  },
+  {
+    "path": "/api/users/{user_id}/avatar",
+    "name": "user_avatar",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/admin/users/{user_id}/avatar",
+    "name": "upload_user_avatar",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/admin/users/{user_id}/avatar",
+    "name": "delete_user_avatar",
+    "kind": "http",
+    "methods": [
+      "DELETE"
     ]
   },
   {

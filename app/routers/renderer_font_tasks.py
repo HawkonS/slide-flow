@@ -5,16 +5,20 @@ import hmac
 import sqlite3
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.db import get_db
 from app.services.resource_import.font_tasks import (
+    FONT_LEASE_SECONDS,
+    claim_font_delete_task,
     claim_font_task,
     ensure_all_font_tasks,
     font_sync_status,
+    get_leased_font_task,
+    update_font_delete_task,
     update_font_task,
 )
 from app.routers.fonts import _uploaded_font_abs, _content_disposition
@@ -33,18 +37,53 @@ class FontTaskResult(BaseModel):
     error_code: str | None = Field(default=None, max_length=80)
 
 
+def _font_lease_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, KeyError):
+        return HTTPException(404, "font task not found")
+    if isinstance(exc, PermissionError):
+        return HTTPException(409, "font task lease is no longer valid")
+    return HTTPException(500, "font task update failed")
+
+
 @router.get("/font-tasks/claim")
-def claim(_: None = Depends(_renderer_auth)):
+def claim(request: Request, _: None = Depends(_renderer_auth)):
     db = get_db()
     try:
         ensure_all_font_tasks(db)
-        row = claim_font_task(db)
-        if row is None:
+        db.commit()
+        claimed = claim_font_task(db)
+        if claimed is None:
+            if request.query_params.get("delete_tasks") != "1":
+                return {"task": None}
+            deletion = claim_font_delete_task(db)
+            if deletion is None:
+                return {"task": None}
+            row, lease_token = deletion
+            return {"task": {
+                "action": "delete",
+                "task_id": row["task_id"],
+                "lease_token": lease_token,
+                "lease_seconds": FONT_LEASE_SECONDS,
+                "sha256": row["sha256"],
+                "file_name": row["file_name"],
+                "attempts": int(row["attempts"]),
+            }}
+        row, lease_token = claimed
+        path = _uploaded_font_abs(row["file_path"])
+        if path is None or not path.is_file():
+            try:
+                update_font_task(db, row["task_id"], lease_token, "failed", "font_file_missing")
+            except Exception:
+                pass
             return {"task": None}
         return {"task": {
+            "action": "install",
             "task_id": row["task_id"],
+            "lease_token": lease_token,
+            "lease_seconds": FONT_LEASE_SECONDS,
             "font_id": int(row["font_id"]),
             "sha256": row["sha256"],
+            "size": path.stat().st_size,
             "file_name": row["file_name"],
             "download_url": f"/api/renderer/font-tasks/{row['task_id']}/file",
             "attempts": int(row["attempts"]),
@@ -54,12 +93,20 @@ def claim(_: None = Depends(_renderer_auth)):
 
 
 @router.get("/font-tasks/{task_id}/file")
-def download(task_id: str, _: None = Depends(_renderer_auth)):
+def download(
+    task_id: str,
+    request: Request,
+    _: None = Depends(_renderer_auth),
+):
     db = get_db()
     try:
-        row = db.execute("SELECT t.*, f.file_name, f.file_path FROM renderer_font_tasks t JOIN fonts f ON f.id=t.font_id WHERE t.task_id=?", (task_id,)).fetchone()
-        if row is None:
-            raise HTTPException(404, "font task not found")
+        try:
+            lease_token = request.headers.get("x-render-lease", "")
+            row = get_leased_font_task(
+                db, task_id, lease_token, allow_legacy=not lease_token,
+            )
+        except Exception as exc:
+            raise _font_lease_error(exc) from exc
         path = _uploaded_font_abs(row["file_path"])
         if path is None or not path.is_file():
             raise HTTPException(404, "font file not found")
@@ -70,14 +117,29 @@ def download(task_id: str, _: None = Depends(_renderer_auth)):
 
 
 @router.post("/font-tasks/{task_id}/result")
-def result(task_id: str, payload: FontTaskResult, _: None = Depends(_renderer_auth)):
+def result(
+    task_id: str, payload: FontTaskResult, request: Request,
+    _: None = Depends(_renderer_auth),
+):
     db = get_db()
     try:
-        exists = db.execute("SELECT 1 FROM renderer_font_tasks WHERE task_id=?", (task_id,)).fetchone()
-        if exists is None:
-            raise HTTPException(404, "font task not found")
-        update_font_task(db, task_id, payload.status, payload.error_code)
-        return {"ok": True, "status": payload.status}
+        try:
+            is_deletion = db.execute(
+                "SELECT 1 FROM renderer_font_delete_tasks WHERE task_id=?", (task_id,),
+            ).fetchone() is not None
+            lease_token = request.headers.get("x-render-lease", "")
+            if is_deletion:
+                status = update_font_delete_task(
+                    db, task_id, lease_token, payload.status, payload.error_code,
+                )
+            else:
+                status = update_font_task(
+                    db, task_id, lease_token, payload.status, payload.error_code,
+                    allow_legacy=not lease_token,
+                )
+        except Exception as exc:
+            raise _font_lease_error(exc) from exc
+        return {"ok": True, "status": status}
     finally:
         db.close()
 

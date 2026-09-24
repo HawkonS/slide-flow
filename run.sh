@@ -126,6 +126,19 @@ if ! command -v npm &>/dev/null; then
   exit 1
 fi
 
+# React Router 7 的构建工具链要求 Node.js 20+；提前给出明确错误，避免
+# npm 安装阶段只产生 engine 警告后继续生成不可用的前端产物。
+NODE_MAJOR=$(node -p 'process.versions.node.split(".")[0]')
+if [ "$NODE_MAJOR" -lt 20 ]; then
+  log_error "Node.js 版本过低 ($(node --version 2>&1))，需要 Node.js 20 或更高版本"
+  if [ "$OS" = "Darwin" ]; then
+    log_error "请升级: brew install node@20"
+  else
+    log_error "请安装 Node.js 20 LTS 或更高版本"
+  fi
+  exit 1
+fi
+
 # 输出版本信息
 log_info "Python : $($PYTHON_CMD --version 2>&1)"
 log_info "Node.js: $(node --version 2>&1)"
@@ -341,6 +354,12 @@ fi
 # 同一次启动的所有 ASGI worker 共享该标识。每次重新执行 run.sh 都必须生成
 # 新值；否则升级脚本从旧后端进程继承环境变量时，前端会误以为服务没有重启。
 export SLIDEFLOW_BOOT_ID="$($PYTHON_BIN -c 'import uuid; print(uuid.uuid4().hex)')"
+export SLIDEFLOW_START_TIME="$($PYTHON_BIN -c 'import time; print(time.time())')"
+if [ "$DEV_MODE" = "true" ]; then
+  export SLIDEFLOW_RUNTIME_MODE="dev"
+else
+  export SLIDEFLOW_RUNTIME_MODE="static"
+fi
 
 # ===========================================================
 # Step 4 - Python 依赖安装

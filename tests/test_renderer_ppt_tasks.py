@@ -18,15 +18,21 @@ class RendererPptTaskTests(unittest.TestCase):
         self.db = sqlite3.connect(":memory:", check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript("""
-            CREATE TABLE fonts (id INTEGER PRIMARY KEY, file_path TEXT, file_name TEXT);
-            INSERT INTO fonts VALUES (1, '/tmp/font.ttf', 'font.ttf');
+            CREATE TABLE fonts (id INTEGER PRIMARY KEY, file_path TEXT, file_name TEXT, aliases TEXT);
+            INSERT INTO fonts VALUES (1, '/tmp/font.ttf', 'font.ttf', '["Test Sans"]');
             CREATE TABLE renderer_font_tasks (
                 task_id TEXT PRIMARY KEY, font_id INTEGER, sha256 TEXT,
                 status TEXT, lease_until REAL, attempts INTEGER, error_code TEXT,
                 created_at TEXT, updated_at TEXT
             );
             INSERT INTO renderer_font_tasks VALUES
-                ('font', 1, 'sha', 'completed', NULL, 1, NULL, 'now', 'now');
+                ('font', 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                 'completed', NULL, 1, NULL, 'now', 'now');
+            CREATE TABLE renderer_font_delete_tasks (
+                task_id TEXT PRIMARY KEY, sha256 TEXT, file_name TEXT, status TEXT,
+                lease_token_hash TEXT, lease_until REAL, attempts INTEGER,
+                error_code TEXT, created_at TEXT, updated_at TEXT
+            );
             CREATE TABLE tasks (
                 id INTEGER PRIMARY KEY, status TEXT, params TEXT, progress INTEGER,
                 total INTEGER, message TEXT, error_message TEXT, updated_at TEXT
@@ -52,6 +58,7 @@ class RendererPptTaskTests(unittest.TestCase):
     def insert_task(self, *, status="queued", attempts=0, lease_until=None):
         manifest = {
             "version": 1, "dpi": 288,
+            "required_fonts": ["Test Sans"], "font_hashes": ["a" * 64],
             "pages": [{"index": 0, "source_ref": "oss://bucket/source.pptx", "sha256": "a" * 64, "size": 10}],
             "outputs": [{"index": 0, "output_ref": "oss://bucket/output.png"}],
         }
@@ -120,6 +127,18 @@ class RendererPptTaskTests(unittest.TestCase):
         self.assertIn("output-1", first_output)
         self.assertIn("output-2", second_output)
 
+    def test_claim_payload_carries_font_activation_inventory(self):
+        self.insert_task()
+        row, token = render_tasks.claim_render_task(self.db, "worker-one")
+        payload = render_tasks.claim_payload(row, token)
+        self.assertEqual(payload["required_fonts"], ["Test Sans"])
+        self.assertEqual(payload["font_hashes"], ["a" * 64])
+
+    def test_render_font_inventory_resolves_aliases_to_synced_hashes(self):
+        required, hashes = render_tasks._render_font_inventory(self.db, ["Test Sans"])
+        self.assertEqual(required, ["Test Sans"])
+        self.assertEqual(hashes, ["a" * 64])
+
     def test_retryable_failure_requeues_then_hard_failure_stops(self):
         self.insert_task()
         row, token = render_tasks.claim_render_task(self.db, "worker-one")
@@ -138,6 +157,30 @@ class RendererPptTaskTests(unittest.TestCase):
         self.db.execute("UPDATE renderer_font_tasks SET status='queued'")
         self.db.commit()
         self.assertIsNone(render_tasks.claim_render_task(self.db, "worker-one"))
+
+    def test_queued_font_deletion_blocks_render_until_cleanup(self):
+        self.insert_task()
+        self.db.execute(
+            "INSERT INTO renderer_font_delete_tasks VALUES "
+            "('delete', 'old-sha', 'old.ttf', 'queued', NULL, NULL, 0, NULL, 'now', 'now')"
+        )
+        self.db.commit()
+        self.assertIsNone(render_tasks.claim_render_task(self.db, "worker-one"))
+
+    def test_running_or_failed_font_deletion_blocks_render_claim(self):
+        for status in ("running", "failed"):
+            with self.subTest(status=status):
+                self.db.execute("DELETE FROM renderer_ppt_tasks")
+                self.db.execute("DELETE FROM renderer_font_delete_tasks")
+                self.db.commit()
+                self.insert_task()
+                self.db.execute(
+                    "INSERT INTO renderer_font_delete_tasks VALUES "
+                    "('delete', 'old-sha', 'old.ttf', ?, NULL, NULL, 1, NULL, 'now', 'now')",
+                    (status,),
+                )
+                self.db.commit()
+                self.assertIsNone(render_tasks.claim_render_task(self.db, "worker-one"))
 
     def test_partial_publish_failure_removes_already_moved_pages(self):
         manifest = {

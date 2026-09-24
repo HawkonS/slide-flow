@@ -5,8 +5,6 @@
 from __future__ import annotations
 
 import logging
-import subprocess
-import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -15,24 +13,13 @@ logger = logging.getLogger(__name__)
 
 
 def _ensure_httpx():
-    """确保 httpx 已安装，缺失时自动安装"""
+    """Import the declared HTTP dependency without mutating the runtime."""
     try:
         import httpx
         return httpx
     except ImportError:
-        logger.info("httpx 未安装，正在自动安装...")
-        try:
-            subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", "httpx>=0.27"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            import httpx
-            logger.info("httpx 自动安装成功")
-            return httpx
-        except Exception as e:
-            logger.warning("httpx 自动安装失败: %s，飞书 SSO 功能不可用", e)
-            return None
+        logger.error("httpx 依赖未安装，飞书 SSO 功能不可用")
+        return None
 
 
 httpx = _ensure_httpx()

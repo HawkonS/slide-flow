@@ -6,7 +6,7 @@
 # ============================================================
 
 SERVICE_NAME="slide-flow"
-SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+SERVICE_FILE=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 RUN_SCRIPT="${PROJECT_ROOT}/run.sh"
@@ -92,18 +92,49 @@ check_config() {
     fi
 }
 
-load_sudo_password() {
+load_operation_config() {
     if [ -f "$CONFIG_FILE" ]; then
         SUDO_PASS=$(grep "^system.sudo_password=" "$CONFIG_FILE" | cut -d'=' -f2- | tr -d '\r')
+        local configured_service
+        configured_service=$(grep "^system.service_name=" "$CONFIG_FILE" | cut -d'=' -f2- | tr -d '\r')
+        if [ -n "$configured_service" ]; then
+            if ! [[ "$configured_service" =~ ^[A-Za-z0-9_.@][A-Za-z0-9_.@:-]*$ ]]; then
+                echo -e "${RED}错误: system.service_name 不是合法的 systemd 服务名。${NC}"
+                return 1
+            fi
+            SERVICE_NAME="$configured_service"
+        fi
+        case "$SERVICE_NAME" in
+            *.service) ;;
+            *) SERVICE_NAME="${SERVICE_NAME}.service" ;;
+        esac
+        local configured_startup
+        configured_startup=$(grep "^startup.script=" "$CONFIG_FILE" | cut -d'=' -f2- | tr -d '\r')
+        configured_startup="${configured_startup:-run.sh}"
+        case "$configured_startup" in
+            /*) RUN_SCRIPT="$configured_startup" ;;
+            *) RUN_SCRIPT="${PROJECT_ROOT}/${configured_startup}" ;;
+        esac
     fi
+    SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}"
+}
+
+systemd_quote() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//%/%%}"
+    printf '"%s"' "$value"
 }
 
 is_installed() {
-    if [ -f "$SERVICE_FILE" ]; then
-        return 0
-    else
-        return 1
-    fi
+    local load_state
+    load_state="$(systemctl show --property=LoadState --value "$SERVICE_NAME" 2>/dev/null || true)"
+    [ -n "$load_state" ] && [ "$load_state" != "not-found" ]
+}
+
+is_locally_managed() {
+    [ -f "$SERVICE_FILE" ]
 }
 
 install_service() {
@@ -130,6 +161,10 @@ install_service() {
         fi
     fi
 
+    local quoted_root quoted_run quoted_stop
+    quoted_root="$(systemd_quote "$PROJECT_ROOT")"
+    quoted_run="$(systemd_quote "$RUN_SCRIPT")"
+    quoted_stop="$(systemd_quote "$STOP_SCRIPT")"
     SERVICE_CONTENT="[Unit]
 Description=SlideFlow Service (Backend + Frontend)
 After=network.target
@@ -137,9 +172,9 @@ After=network.target
 [Service]
 Type=simple
 User=$CURRENT_USER
-WorkingDirectory=$PROJECT_ROOT
-ExecStart=/bin/bash $RUN_SCRIPT
-ExecStop=/bin/bash $STOP_SCRIPT
+WorkingDirectory=$quoted_root
+ExecStart=/bin/bash $quoted_run
+ExecStop=/bin/bash $quoted_stop
 Restart=always
 RestartSec=5
 KillMode=mixed
@@ -175,6 +210,11 @@ WantedBy=multi-user.target"
 
 uninstall_service() {
     echo -e "${BLUE}正在卸载 systemd 服务...${NC}"
+
+    if ! is_locally_managed; then
+        echo -e "${RED}拒绝卸载：${SERVICE_NAME} 不是由本脚本安装在 ${SERVICE_FILE} 的服务。${NC}"
+        return 1
+    fi
 
     if [ "$EUID" -ne 0 ]; then
         if [ -n "$SUDO_PASS" ]; then
@@ -216,9 +256,9 @@ show_status() {
 # ============ 主流程 ============
 
 check_systemd || exit 1
-check_run_script || exit 1
 check_config || exit 1
-load_sudo_password
+load_operation_config || exit 1
+check_run_script || exit 1
 
 # 支持命令行参数模式（供 API 调用）
 if [ -n "${1:-}" ]; then
@@ -271,15 +311,12 @@ if [ -n "${1:-}" ]; then
                 echo "服务已重启"
                 exit 0
             else
-                echo "服务未安装，使用 stop.sh + run.sh 重启..."
-                if [ -f "$STOP_SCRIPT" ] && [ -f "$RUN_SCRIPT" ]; then
-                    bash "$STOP_SCRIPT"
-                    sleep 2
-                    bash "$RUN_SCRIPT" &
-                    echo "服务已重启"
-                    exit 0
+                echo "服务未安装，使用直接运行脚本重启..."
+                if [ -f "${PROJECT_ROOT}/tools/restart.sh" ]; then
+                    SLIDEFLOW_OPERATION_START_DELAY=0 bash "${PROJECT_ROOT}/tools/restart.sh"
+                    exit $?
                 else
-                    echo "启动或停止脚本不存在" >&2
+                    echo "重启脚本不存在" >&2
                     exit 1
                 fi
             fi
@@ -297,11 +334,11 @@ if [ -n "${1:-}" ]; then
             exit $?
             ;;
         uninstall)
-            if is_installed; then
+            if is_locally_managed; then
                 uninstall_service
                 exit $?
             else
-                echo "服务未安装"
+                echo "服务不是由本脚本安装，拒绝卸载"
                 exit 1
             fi
             ;;
@@ -438,11 +475,15 @@ while true; do
             break
             ;;
         "卸载服务 (Uninstall)")
-            read -e -p "确认卸载服务 '$SERVICE_NAME'？(yes/no): " confirm
-            case "$confirm" in
-                y|Y|yes|YES) uninstall_service ;;
-                *) echo "已取消。" ;;
-            esac
+            if ! is_locally_managed; then
+                echo -e "${RED}该服务不属于本脚本管理，拒绝卸载。${NC}"
+            else
+                read -e -p "确认卸载服务 '$SERVICE_NAME'？(yes/no): " confirm
+                case "$confirm" in
+                    y|Y|yes|YES) uninstall_service ;;
+                    *) echo "已取消。" ;;
+                esac
+            fi
             break
             ;;
         "退出 (Exit)")

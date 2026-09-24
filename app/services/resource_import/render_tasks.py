@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
+from app.core.fonts import normalize_font_name
 from app.core.oss import oss_ref, storage as oss_storage
 from app.core.ppt import split_pptx_to_single_pages
 from app.db import get_db, now_iso
@@ -70,6 +71,49 @@ def _safe_error_code(value: str | None) -> str:
 
 def _task_key(task_id: str, kind: str, index: int, suffix: str) -> str:
     return oss_storage.key(f"_render_tasks/{task_id}/{kind}/{index:04d}", suffix)
+
+
+def _render_font_inventory(db: sqlite3.Connection, names: list[str]) -> tuple[list[str], list[str]]:
+    required = list(dict.fromkeys(
+        name.strip() for name in names
+        if isinstance(name, str) and name.strip() and not name.strip().startswith("+")
+    ))
+    if len(required) > 128 or any(len(name) > 256 for name in required):
+        raise RuntimeError("PPT 所需字体清单无效")
+    if not required:
+        return [], []
+    wanted = {normalize_font_name(name): name for name in required}
+    found: set[str] = set()
+    hashes: list[str] = []
+    rows = db.execute(
+        "SELECT f.aliases, t.sha256 FROM fonts f JOIN renderer_font_tasks t ON t.font_id=f.id "
+        "ORDER BY f.id"
+    ).fetchall()
+    for row in rows:
+        try:
+            aliases = json.loads(row["aliases"] or "[]")
+        except (TypeError, ValueError):
+            continue
+        normalized = {
+            normalize_font_name(alias)
+            for alias in aliases
+            if isinstance(alias, str) and alias.strip()
+        }
+        matches = wanted.keys() & normalized
+        if not matches:
+            continue
+        found.update(matches)
+        digest = str(row["sha256"] or "")
+        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+            raise RuntimeError("标准字体同步记录损坏，请管理员重新上传字体")
+        if digest not in hashes:
+            hashes.append(digest)
+    missing = wanted.keys() - found
+    if missing:
+        raise RuntimeError("标准字体清单与 PPT 不匹配：" + "、".join(wanted[key] for key in sorted(missing)))
+    if len(hashes) > 64:
+        raise RuntimeError("本次渲染所需标准字体文件过多")
+    return required, hashes
 
 
 def _cleanup_manifest_objects(manifest: dict[str, Any]) -> bool:
@@ -222,7 +266,15 @@ def create_render_task(session: dict[str, Any]) -> sqlite3.Row:
         db = get_db()
         cancelled_manifests: list[dict[str, Any]] = []
         try:
+            # Backfill synchronization receipts before freezing the font
+            # inventory into this immutable render attempt.
+            from app.services.resource_import.font_tasks import ensure_all_font_tasks
+            ensure_all_font_tasks(db)
+            db.commit()
             db.execute("BEGIN IMMEDIATE")
+            required_fonts, font_hashes = _render_font_inventory(db, session.get("fonts", []))
+            manifest["required_fonts"] = required_fonts
+            manifest["font_hashes"] = font_hashes
             cancelled = db.execute(
                 "SELECT * FROM renderer_ppt_tasks WHERE session_id=? "
                 "AND status NOT IN ('completed','failed','cancelled')",
@@ -370,13 +422,22 @@ def claim_render_task(db: sqlite3.Connection, worker_id: str) -> tuple[sqlite3.R
         font_counts = {
             str(item["status"]): int(item["count"])
             for item in db.execute(
-                "SELECT status, COUNT(*) AS count FROM renderer_font_tasks GROUP BY status"
+                "SELECT t.status, COUNT(*) AS count FROM renderer_font_tasks t "
+                "JOIN fonts f ON f.id=t.font_id GROUP BY t.status"
             ).fetchall()
         }
         font_total = int(db.execute("SELECT COUNT(*) FROM fonts").fetchone()[0])
         task_total = sum(font_counts.values())
+        deletion_counts = {
+            str(item["status"]): int(item["count"])
+            for item in db.execute(
+                "SELECT status, COUNT(*) AS count FROM renderer_font_delete_tasks GROUP BY status"
+            ).fetchall()
+        }
         if (font_counts.get("failed", 0) or task_total != font_total
-                or font_total != font_counts.get("completed", 0)):
+                or font_total != font_counts.get("completed", 0)
+                or deletion_counts.get("queued", 0) or deletion_counts.get("running", 0)
+                or deletion_counts.get("failed", 0)):
             db.commit()
             return None
         expired = db.execute(
@@ -446,10 +507,15 @@ def render_queue_status(db: sqlite3.Connection) -> dict[str, int | bool]:
     counts = {str(row["status"]): int(row["count"]) for row in rows}
     font_total = int(db.execute("SELECT COUNT(*) FROM fonts").fetchone()[0])
     completed_fonts = int(db.execute(
-        "SELECT COUNT(*) FROM renderer_font_tasks WHERE status='completed'"
+        "SELECT COUNT(*) FROM renderer_font_tasks t JOIN fonts f ON f.id=t.font_id "
+        "WHERE t.status='completed'"
     ).fetchone()[0])
     failed_fonts = int(db.execute(
-        "SELECT COUNT(*) FROM renderer_font_tasks WHERE status='failed'"
+        "SELECT COUNT(*) FROM renderer_font_tasks t JOIN fonts f ON f.id=t.font_id "
+        "WHERE t.status='failed'"
+    ).fetchone()[0])
+    pending_deletions = int(db.execute(
+        "SELECT COUNT(*) FROM renderer_font_delete_tasks WHERE status IN ('queued','running','failed')"
     ).fetchone()[0])
     return {
         "queued": counts.get("queued", 0),
@@ -457,7 +523,7 @@ def render_queue_status(db: sqlite3.Connection) -> dict[str, int | bool]:
         "completed": counts.get("completed", 0),
         "failed": counts.get("failed", 0),
         "cancelled": counts.get("cancelled", 0),
-        "fonts_ready": failed_fonts == 0 and completed_fonts == font_total,
+        "fonts_ready": failed_fonts == 0 and completed_fonts == font_total and pending_deletions == 0,
     }
 
 
@@ -470,6 +536,8 @@ def claim_payload(row: sqlite3.Row, lease_token: str) -> dict[str, Any]:
     return {
         "task_id": row["task_id"], "lease_token": lease_token, "lease_seconds": LEASE_SECONDS,
         "attempts": int(row["attempts"]), "dpi": int(manifest["dpi"]), "pages": pages,
+        "required_fonts": manifest.get("required_fonts", []),
+        "font_hashes": manifest.get("font_hashes", []),
     }
 
 

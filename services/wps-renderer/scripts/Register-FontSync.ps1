@@ -17,6 +17,9 @@ $loopback = @("127.0.0.1", "localhost", "::1") -contains $uri.Host.ToLowerInvari
 if ($uri.Scheme -ne "https" -and -not ($uri.Scheme -eq "http" -and $loopback)) { throw "Url must use HTTPS unless connected through a loopback tunnel." }
 if ($PollSeconds -lt 1 -or $PollSeconds -gt 300) { throw "PollSeconds must be between 1 and 300." }
 $layout = Get-RendererLayout $InstallRoot "config.json"
+$currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+$existing = Get-RendererManagedTask $TaskName 'SlideFlow WPS font pull protocol v1'
+if ($existing -and $existing.Principal.UserId -and [string]$existing.Principal.UserId -ne $currentIdentity) { throw "Refusing to take over a font sync task owned by another Windows account." }
 if (-not $Python) { $Python = Join-Path $layout.CodeRoot ".venv\Scripts\python.exe" }
 $Python = Resolve-RendererExecutable $Python "Python"
 if ($TokenFile) { $Token = (Get-Content -LiteralPath (Resolve-RendererPath $TokenFile) -Raw).Trim() }
@@ -30,7 +33,7 @@ Set-RendererToken $syncToken $Token ([Security.Principal.WindowsIdentity]::GetCu
     ConvertTo-Json | Set-Content -LiteralPath $syncConfig -Encoding UTF8
 Protect-RendererPath $syncConfig ([Security.Principal.WindowsIdentity]::GetCurrent().Name)
 $action = New-ScheduledTaskAction -Execute $Python -Argument ("-m wps_renderer.font_sync --config `"{0}`"" -f $syncConfig) -WorkingDirectory $layout.CodeRoot
-$principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType S4U -RunLevel Limited
+$principal = New-ScheduledTaskPrincipal -UserId $currentIdentity -LogonType S4U -RunLevel Limited
 $trigger = New-ScheduledTaskTrigger -AtStartup
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName $TaskName -Action $action -Principal $principal -Trigger $trigger -Settings $settings -Description 'SlideFlow WPS font pull protocol v1' -Force | Out-Null

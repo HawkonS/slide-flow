@@ -138,6 +138,41 @@ function Get-RendererTask([string]$TaskName) {
     return Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 }
 
+function Get-RendererManagedTask([string]$TaskName, [string]$Description) {
+    $task = Get-RendererTask $TaskName
+    if ($task -and $task.Description -ne $Description) {
+        throw "Refusing to operate on unrelated scheduled task '$TaskName'."
+    }
+    return $task
+}
+
+function Wait-RendererHealthy($Layout, [int]$Seconds = 30) {
+    if ($Seconds -lt 1 -or $Seconds -gt 600) { throw "Health wait must be between 1 and 600 seconds." }
+    $config = Read-RendererConfig $Layout
+    $hostName = if ($config.host) { [string]$config.host } else { "127.0.0.1" }
+    $port = if ($config.port) { [int]$config.port } else { 8765 }
+    $hasTls = ($config.PSObject.Properties.Name -contains 'tls_cert_file') -and
+        ($config.PSObject.Properties.Name -contains 'tls_key_file') -and
+        $config.tls_cert_file -and $config.tls_key_file
+    $scheme = if ($hasTls) { "https" } else { "http" }
+    $builder = New-Object System.UriBuilder -ArgumentList @($scheme, $hostName, $port)
+    $healthUri = $builder.Uri.AbsoluteUri.TrimEnd('/') + "/v1/health"
+    $tokenFile = if (($config.PSObject.Properties.Name -contains 'token_file') -and $config.token_file) { [string]$config.token_file } else { $Layout.Token }
+    if (-not [IO.Path]::IsPathRooted($tokenFile)) {
+        $tokenFile = Join-Path (Split-Path -Parent $Layout.Config) $tokenFile
+    }
+    $token = Read-RendererToken $tokenFile
+    $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+    do {
+        try {
+            $health = Invoke-RestMethod -UseBasicParsing -Uri $healthUri -Headers @{ Authorization = "Bearer $token" } -Method Get -TimeoutSec 5
+            if ($health.status -eq "ok") { return $health }
+        } catch { }
+        Start-Sleep -Milliseconds 500
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "Renderer did not become healthy within $Seconds seconds."
+}
+
 function Wait-RendererProcessExit([string]$ConfigPath, [int]$Seconds = 45) {
     $needle = [regex]::Escape([IO.Path]::GetFullPath($ConfigPath))
     for ($i = 0; $i -lt ($Seconds * 2); $i++) {

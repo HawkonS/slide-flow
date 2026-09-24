@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from typing import Any, Optional
 
 from pydantic import Field
 
+from app.core.user_profiles import is_managed_avatar_ref, validate_avatar_url
 from app.core.permissions import ROLE_USER, SESSION_COOKIE
 from app.schemas.base import ApiPayload
 
@@ -45,11 +47,11 @@ class FontDownloadPayload(ApiPayload):
 
 
 class UserDeletePayload(ApiPayload):
-    user_ids: list[int]
+    user_ids: list[int] = Field(..., min_length=1, max_length=1000)
 
 
 class UserTransferDeletePayload(ApiPayload):
-    target_user_id: int
+    target_user_id: int = Field(..., ge=1)
 
 
 class UserPreferencesPayload(ApiPayload):
@@ -93,7 +95,7 @@ def _serialize_user(row: sqlite3.Row | None) -> dict[str, Any] | None:
         "username": row["username"],
         "role": row["role"],
         "feishu_id": row["feishu_id"],
-        "avatar_url": row["avatar_url"] if "avatar_url" in row.keys() else "",
+        "avatar_url": _public_avatar_url(row),
         "tags": row["tags"] if "tags" in row.keys() else "",
         "must_change_pwd": bool(row["must_change_pwd"]),
         "temporary_password_expires_at": (
@@ -103,6 +105,32 @@ def _serialize_user(row: sqlite3.Row | None) -> dict[str, Any] | None:
         ),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
+    }
+
+
+def _public_avatar_url(row: sqlite3.Row) -> str:
+    if "avatar_url" not in row.keys():
+        return ""
+    value = (row["avatar_url"] or "").strip()
+    if not value:
+        return value
+    if is_managed_avatar_ref(value, user_id=int(row["id"])):
+        version = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+        return f"/api/users/{int(row['id'])}/avatar?v={version}"
+    # Apply the current trust policy to legacy external values as well. Old
+    # rows must not bypass the write-time URL validation indefinitely.
+    try:
+        return validate_avatar_url(value)
+    except ValueError:
+        return ""
+
+
+def _serialize_user_option(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "name": row["name"],
+        "username": row["username"],
+        "avatar_url": _public_avatar_url(row),
     }
 
 

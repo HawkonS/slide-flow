@@ -29,6 +29,7 @@ from app.core.security import (
     verify_password,
 )
 from app.core.permissions import SESSION_COOKIE, _auth_db_dep
+from app.core.user_profiles import username_lookup_key
 from app.db import now_iso
 from app.routers import auth, users
 from app.routers.dependencies import db_dep, db_read_dep
@@ -43,6 +44,7 @@ def _db() -> sqlite3.Connection:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             username TEXT NOT NULL UNIQUE,
+            username_key TEXT NOT NULL UNIQUE,
             password_hash TEXT NOT NULL,
             feishu_id TEXT NOT NULL DEFAULT '',
             avatar_url TEXT NOT NULL DEFAULT '',
@@ -53,6 +55,28 @@ def _db() -> sqlite3.Connection:
             temporary_password_expires_at TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
+        );
+        CREATE TABLE tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            category TEXT NOT NULL DEFAULT '未分类',
+            label TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_by INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE user_tags (
+            user_id INTEGER NOT NULL,
+            tag_name TEXT NOT NULL,
+            PRIMARY KEY (user_id, tag_name)
+        );
+        CREATE TABLE admin_audit_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            actor_user_id INTEGER,
+            subject_user_id INTEGER,
+            action TEXT NOT NULL,
+            details TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
         );
         CREATE TABLE auth_login_attempts (
             key TEXT PRIMARY KEY,
@@ -97,13 +121,14 @@ def _insert_user(
     cursor = db.execute(
         """
         INSERT INTO users (
-            name, username, password_hash, role, must_change_pwd,
+            name, username, username_key, password_hash, role, must_change_pwd,
             temporary_password_expires_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             username,
             username,
+            username_lookup_key(username),
             hash_password(password),
             role,
             must_change_pwd,
@@ -242,8 +267,8 @@ class PasswordBootstrapTests(unittest.TestCase):
         db.execute(
             """
             INSERT INTO users (
-                name, username, password_hash, role, created_at, updated_at
-            ) VALUES ('Owner', 'owner', ?, 'system_admin', 'now', 'now')
+                name, username, username_key, password_hash, role, created_at, updated_at
+            ) VALUES ('Owner', 'owner', 'owner', ?, 'system_admin', 'now', 'now')
             """,
             (hash_password("123456"),),
         )

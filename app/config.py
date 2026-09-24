@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import stat
 import tempfile
@@ -283,6 +284,7 @@ _PROP_TO_ATTR: dict[str, str] = {
     "server.db_pool_size": "db_pool_size",
     "server.thread_pool_size": "thread_pool_size",
     "server.response_cache": "response_cache_enabled",
+    "system.service_name": "service_name",
     "security.secret_key": "secret_key",
     "security.session_ttl_hours": "session_ttl_hours",
     "security.show_token_ttl_seconds": "show_token_ttl_seconds",
@@ -366,6 +368,7 @@ class Settings:
     web_port: int = int(DEFAULT_PROPERTIES["server.web_port"])
     workers: int = int(DEFAULT_PROPERTIES["server.workers"])
     startup_script: str = DEFAULT_PROPERTIES["startup.script"]
+    service_name: str = DEFAULT_PROPERTIES["system.service_name"]
     allowed_host: str = DEFAULT_PROPERTIES["server.allowed_host"]
     # 是否部署在 HTTPS 反向代理之后（影响 Secure Cookie 与 HSTS），缺省 false 避免纯 HTTP 部署丢失登录态
     web_https: bool = _parse_bool(DEFAULT_PROPERTIES["web.https"])
@@ -587,7 +590,14 @@ def load_settings() -> Settings:
     web_port = int(get_value("server.web_port"))
     workers = int(get_value("server.workers"))
     allowed_host = get_value("server.allowed_host")
-    startup_script = get_value("startup.script")
+    startup_script = get_value("startup.script").strip()
+    if not startup_script or any(char in startup_script for char in {"\x00", "\r", "\n"}):
+        raise ValueError("startup.script 必须是合法的单行脚本路径")
+    service_name = get_value("system.service_name").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.@][A-Za-z0-9_.@:-]*", service_name):
+        raise ValueError("system.service_name 必须是合法的 systemd 服务名")
+    if not service_name.endswith(".service"):
+        service_name = f"{service_name}.service"
 
     # 并发配置
     db_pool_size = int(get_value("server.db_pool_size"))
@@ -679,6 +689,7 @@ def load_settings() -> Settings:
         web_port=web_port,
         workers=workers,
         startup_script=startup_script,
+        service_name=service_name,
         allowed_host=allowed_host,
         db_pool_size=db_pool_size,
         thread_pool_size=thread_pool_size,

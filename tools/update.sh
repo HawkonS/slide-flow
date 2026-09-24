@@ -1,99 +1,32 @@
 #!/usr/bin/env bash
 # ============================================================
-# SlideFlow 一键更新脚本
-# 1) 强制拉取远程最新代码
-# 2) 自动重启服务（支持 systemd 服务或项目脚本运行模式）
-# 适用于 Mac / Linux
+# SlideFlow system upgrade
+# 1) fetch and fast-forward to the configured branch on origin
+# 2) hand off to the newly fetched script when the commit changes
+# 3) restart through systemd or the detached direct-run helper
 # ============================================================
-set -uo pipefail
+set -Eeuo pipefail
 
-# 颜色定义
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
-BLUE='\033[0;34m'
 NC='\033[0m'
+PREFIX='[SlideFlow]'
+log_info() { echo -e "${GREEN}${PREFIX}${NC} $*"; }
+log_warn() { echo -e "${YELLOW}${PREFIX}${NC} $*"; }
+log_error() { echo -e "${RED}${PREFIX}${NC} $*" >&2; }
 
-PREFIX="[SlideFlow]"
-log_info()  { echo -e "${GREEN}${PREFIX}${NC} $*"; }
-log_warn()  { echo -e "${YELLOW}${PREFIX}${NC} $*"; }
-log_error() { echo -e "${RED}${PREFIX}${NC} $*"; }
-
-# 更新前启动的 Bash 进程可能继续执行旧版脚本内容。更新完成后通过该标记
-# 重新载入新版脚本，并从重启阶段继续，避免启动入口改名时使用旧路径。
 RESUME_COMMIT="${SLIDEFLOW_UPDATE_RESUME_COMMIT:-}"
 unset SLIDEFLOW_UPDATE_RESUME_COMMIT
+UPGRADE_FINISHED=0
 
-# 路径定位：本脚本位于 <project_root>/tools/，项目根是上一级
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-cd "$PROJECT_ROOT" || exit 1
-
-echo "=========================================="
-echo "   正在更新 SlideFlow..."
-echo "=========================================="
-echo "项目目录: $PROJECT_ROOT"
-
-# ============================================================
-# Step 1 - 拉取远程代码
-# ============================================================
-if ! command -v git &>/dev/null; then
-  log_error "未检测到 git，请先安装 Git"
-  exit 1
-fi
-
-CURRENT_COMMIT="$(git rev-parse HEAD 2>/dev/null || true)"
-if [ -n "$RESUME_COMMIT" ] && [ "$CURRENT_COMMIT" = "$RESUME_COMMIT" ]; then
-  log_info "[1/3] 已载入更新后的脚本，继续完成更新..."
-else
-  log_info "[1/3] 正在拉取远程代码..."
-
-  # 自动识别远程默认分支：优先 main，其次 master，最后回退 origin/HEAD
-  REMOTE_BRANCH=""
-  git fetch --all --prune
-  if git show-ref --verify --quiet refs/remotes/origin/main; then
-    REMOTE_BRANCH="origin/main"
-  elif git show-ref --verify --quiet refs/remotes/origin/master; then
-    REMOTE_BRANCH="origin/master"
-  else
-    REMOTE_BRANCH="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/@@' || true)"
-  fi
-
-  if [ -z "$REMOTE_BRANCH" ]; then
-    log_error "无法识别远程分支，请检查 Git 仓库配置"
-    exit 1
-  fi
-
-  log_info "目标分支: $REMOTE_BRANCH"
-  if ! git reset --hard "$REMOTE_BRANCH"; then
-    log_error "代码更新失败，请检查网络或 Git 配置"
-    exit 1
-  fi
-  log_info "代码已更新到最新版本"
-
-  UPDATED_COMMIT="$(git rev-parse HEAD 2>/dev/null || true)"
-  if [ -n "$CURRENT_COMMIT" ] && [ -n "$UPDATED_COMMIT" ] && [ "$CURRENT_COMMIT" != "$UPDATED_COMMIT" ]; then
-    log_info "检测到代码版本变化，正在切换到更新后的脚本..."
-    exec env SLIDEFLOW_UPDATE_RESUME_COMMIT="$UPDATED_COMMIT" bash "$SCRIPT_DIR/update.sh" "$@"
-  fi
-fi
-
-# 写入版本信息文件（commit hash + 更新时间）
-VERSION_FILE="$PROJECT_ROOT/data/.version_info"
-COMMIT_HASH="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-UPDATE_TIME="$(date '+%Y-%m-%d %H:%M:%S')"
-mkdir -p "$PROJECT_ROOT/data"
-cat > "$VERSION_FILE" <<EOF
-{"commit": "$COMMIT_HASH", "updated_at": "$UPDATE_TIME"}
-EOF
-log_info "版本信息: $COMMIT_HASH ($UPDATE_TIME)"
-
-# ============================================================
-# Step 2 - 读取配置（用于重启方式选择和 sudo 密码）
-# ============================================================
-log_info "[2/3] 正在准备重启服务..."
-
 CONFIG_FILE="$PROJECT_ROOT/slide_flow.properties"
+# shellcheck source=tools/runtime_operation.sh
+source "$SCRIPT_DIR/runtime_operation.sh"
+UPGRADE_START_DELAY="${SLIDEFLOW_OPERATION_START_DELAY:-${SLIDEFLOW_UPGRADE_START_DELAY:-0}}"
+cd "$PROJECT_ROOT" || exit 1
 
 read_prop() {
   local key="$1"
@@ -102,94 +35,149 @@ read_prop() {
   fi
 }
 
-SUDO_PASS="$(read_prop 'system.sudo_password' || true)"
+write_upgrade_state() {
+  write_operation_state "$1" "$2"
+}
+
+release_upgrade_lock() {
+  release_operation_lock
+}
+
+fail_upgrade() {
+  local exit_code=$?
+  local line_no="${1:-unknown}"
+  if [ "$UPGRADE_FINISHED" -eq 0 ]; then
+    UPGRADE_FINISHED=1
+    trap - ERR
+    set +e
+    write_upgrade_state "failed" "升级失败（步骤行 ${line_no}，退出码 ${exit_code}），请检查 upgrade.log"
+    release_upgrade_lock
+    log_error "升级失败（步骤行 ${line_no}，退出码 ${exit_code}）"
+  fi
+  exit "$exit_code"
+}
+
+trap 'fail_upgrade $LINENO' ERR
+
+if ! [[ "$UPGRADE_START_DELAY" =~ ^[0-9]+$ ]]; then
+  UPGRADE_START_DELAY=0
+fi
+if [ "$UPGRADE_START_DELAY" -gt 0 ]; then
+  sleep "$UPGRADE_START_DELAY"
+fi
+
+echo "=========================================="
+echo "   正在更新 SlideFlow..."
+echo "=========================================="
+echo "项目目录: $PROJECT_ROOT"
+write_upgrade_state "running" "正在检查远程版本"
+
+if ! command -v git >/dev/null 2>&1; then
+  log_error "未检测到 git，请先安装 Git"
+  false
+fi
+git rev-parse --is-inside-work-tree >/dev/null
+
+CURRENT_COMMIT="$(git rev-parse HEAD)"
+if [ -n "$RESUME_COMMIT" ] && [ "$CURRENT_COMMIT" = "$RESUME_COMMIT" ]; then
+  log_info "[1/3] 已载入更新后的脚本，继续完成更新"
+else
+  log_info "[1/3] 正在拉取远程代码"
+  git fetch --prune origin
+
+  CURRENT_BRANCH="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  REMOTE_BRANCH=""
+  if [ -n "$CURRENT_BRANCH" ] && git show-ref --verify --quiet "refs/remotes/origin/${CURRENT_BRANCH}"; then
+    REMOTE_BRANCH="origin/${CURRENT_BRANCH}"
+  else
+    REMOTE_BRANCH="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/@@' || true)"
+  fi
+  if [ -z "$REMOTE_BRANCH" ]; then
+    log_error "无法识别远程跟踪分支，请检查 origin 配置"
+    false
+  fi
+
+  log_info "目标分支: $REMOTE_BRANCH"
+  if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+    log_error "检测到未提交的受版本控制文件，已停止升级以避免覆盖本地修改"
+    false
+  fi
+  if ! git merge-base --is-ancestor "$CURRENT_COMMIT" "$REMOTE_BRANCH"; then
+    log_error "本地分支包含远端没有的提交或已发生分叉，已停止自动升级"
+    false
+  fi
+  git merge --ff-only "$REMOTE_BRANCH"
+  UPDATED_COMMIT="$(git rev-parse HEAD)"
+  log_info "代码已更新到 ${UPDATED_COMMIT:0:12}"
+
+  if [ "$CURRENT_COMMIT" != "$UPDATED_COMMIT" ]; then
+    log_info "检测到脚本版本变化，切换到更新后的实现"
+    exec env \
+      SLIDEFLOW_UPDATE_RESUME_COMMIT="$UPDATED_COMMIT" \
+      SLIDEFLOW_OPERATION_JOB_ID="$OPERATION_JOB_ID" \
+      SLIDEFLOW_OPERATION_TYPE="$OPERATION_TYPE" \
+      SLIDEFLOW_OPERATION_STATE_FILE="$OPERATION_STATE_FILE" \
+      SLIDEFLOW_OPERATION_LOCK_FILE="$OPERATION_LOCK_FILE" \
+      SLIDEFLOW_OPERATION_SOURCE_BOOT_ID="$OPERATION_SOURCE_BOOT_ID" \
+      SLIDEFLOW_OPERATION_START_DELAY=0 \
+      SLIDEFLOW_UPGRADE_JOB_ID="$OPERATION_JOB_ID" \
+      SLIDEFLOW_UPGRADE_STATE_FILE="$OPERATION_STATE_FILE" \
+      SLIDEFLOW_UPGRADE_LOCK_FILE="$OPERATION_LOCK_FILE" \
+      SLIDEFLOW_UPGRADE_SOURCE_BOOT_ID="$OPERATION_SOURCE_BOOT_ID" \
+      SLIDEFLOW_UPGRADE_START_DELAY=0 \
+      bash "$SCRIPT_DIR/update.sh" "$@"
+  fi
+fi
+
+VERSION_FILE="$PROJECT_ROOT/data/.version_info"
+COMMIT_HASH="$(git rev-parse --short HEAD)"
+UPDATE_TIME="$(date '+%Y-%m-%d %H:%M:%S')"
+mkdir -p "$PROJECT_ROOT/data"
+printf '{"commit":"%s","updated_at":"%s"}\n' "$COMMIT_HASH" "$UPDATE_TIME" > "$VERSION_FILE"
+log_info "版本信息: $COMMIT_HASH ($UPDATE_TIME)"
+
+log_info "[2/3] 正在准备重启服务"
 SERVICE_NAME="$(read_prop 'system.service_name' || true)"
 SERVICE_NAME="${SERVICE_NAME:-slide-flow}"
+case "$SERVICE_NAME" in
+  *.service) ;;
+  *) SERVICE_NAME="${SERVICE_NAME}.service" ;;
+esac
+SUDO_PASS="$(read_prop 'system.sudo_password' || true)"
 
-# ============================================================
-# Step 3 - 重启服务
-# ============================================================
-log_info "[3/3] 正在尝试重启服务..."
+systemd_unit_exists() {
+  local load_state
+  command -v systemctl >/dev/null 2>&1 || return 1
+  load_state="$(systemctl show --property=LoadState --value "$SERVICE_NAME" 2>/dev/null || true)"
+  [ -n "$load_state" ] && [ "$load_state" != "not-found" ]
+}
 
-# 优先：systemd 服务
-SERVICE_OK=0
-if command -v systemctl &>/dev/null && systemctl list-unit-files 2>/dev/null | grep -qE "^${SERVICE_NAME}\.service"; then
+log_info "[3/3] 正在重启服务"
+write_upgrade_state "restarting" "代码更新完成，正在重启服务"
+
+if systemd_unit_exists; then
   log_info "检测到 systemd 服务: ${SERVICE_NAME}"
-
-  if [ -z "$SUDO_PASS" ]; then
-    # 未配置 sudo 密码：本脚本可能在无终端环境（API 触发的后台升级）运行，
-    # 不能交互式 read 等待输入（会永久阻塞），改用 sudo -n 免密尝试
-    log_warn "未配置 system.sudo_password，尝试免密 sudo（sudo -n）重启服务"
+  # systemd may terminate this shell with the old service cgroup.  The new
+  # backend reconciles the persisted restarting state using its new boot_id.
+  if [ "$(id -u)" -eq 0 ]; then
+    systemctl restart "$SERVICE_NAME"
+  elif [ -n "$SUDO_PASS" ]; then
+    printf '%s\n' "$SUDO_PASS" | sudo -S systemctl restart "$SERVICE_NAME"
+  else
     sudo -n systemctl restart "$SERVICE_NAME"
-    RESTART_RC=$?
-  else
-    echo "$SUDO_PASS" | sudo -S systemctl restart "$SERVICE_NAME"
-    RESTART_RC=$?
   fi
-
-  if [ "$RESTART_RC" -eq 0 ]; then
-    log_info "服务重启成功！"
-    echo "------------------------------------------"
-    systemctl status "$SERVICE_NAME" --no-pager || true
-    echo "------------------------------------------"
-    SERVICE_OK=1
-  else
-    log_error "systemd 服务重启失败，将回退到 run.sh/stop.sh 模式"
-  fi
+  exit 0
 fi
 
-# 回退：使用项目自带的 stop.sh + run.sh
-if [ "$SERVICE_OK" -ne 1 ]; then
-  START_SCRIPT="$PROJECT_ROOT/run.sh"
-  STOP_SCRIPT="$PROJECT_ROOT/stop.sh"
-
-  if [ ! -f "$START_SCRIPT" ]; then
-    log_error "未找到 $START_SCRIPT，请手动重启服务"
-    exit 1
-  fi
-
-  # 停止现有进程
-  if [ -f "$STOP_SCRIPT" ]; then
-    log_info "执行 stop.sh 停止旧进程..."
-    bash "$STOP_SCRIPT" || log_warn "stop.sh 返回非零，继续尝试启动"
-  else
-    log_warn "未找到 stop.sh，跳过停止步骤"
-  fi
-
-  # 启动日志路径（与 run.sh 中 log.dir 保持一致）
-  LOG_DIR="$(read_prop 'log.dir' || true)"
-  LOG_DIR="${LOG_DIR:-data/logs}"
-  case "$LOG_DIR" in
-    /*) ;;
-    *)  LOG_DIR="$PROJECT_ROOT/$LOG_DIR" ;;
-  esac
-  mkdir -p "$LOG_DIR"
-  STARTUP_LOG="$LOG_DIR/startup.log"
-
-  log_info "以后台方式启动 run.sh (日志: $STARTUP_LOG)"
-  # macOS 上 setsid 不可用且行为与 Linux 不一致，采用平台区分策略
-  RESTART_OS="$(uname -s)"
-  if [ "$RESTART_OS" = "Darwin" ]; then
-    nohup bash "$START_SCRIPT" >"$STARTUP_LOG" 2>&1 < /dev/null &
-  elif command -v setsid &>/dev/null; then
-    setsid bash "$START_SCRIPT" >"$STARTUP_LOG" 2>&1 < /dev/null &
-  else
-    nohup bash "$START_SCRIPT" >"$STARTUP_LOG" 2>&1 < /dev/null &
-  fi
-  NEW_PID=$!
-  disown "$NEW_PID" 2>/dev/null || true
-
-  # 简单等待并检查进程是否仍存活
-  sleep 2
-  if kill -0 "$NEW_PID" 2>/dev/null; then
-    log_info "run.sh 已在后台启动 (PID: $NEW_PID)"
-    log_info "如需查看启动过程，请执行: tail -f $STARTUP_LOG"
-  else
-    log_error "run.sh 启动后立即退出，请检查日志: $STARTUP_LOG"
-    exit 1
-  fi
+RESTART_SCRIPT="$PROJECT_ROOT/tools/restart.sh"
+if [ ! -f "$RESTART_SCRIPT" ]; then
+  log_error "未找到 $RESTART_SCRIPT"
+  false
 fi
 
-echo "=========================================="
-echo "   更新流程结束"
-echo "=========================================="
+SLIDEFLOW_OPERATION_START_DELAY=0 bash "$RESTART_SCRIPT"
+# Keep the state as restarting.  The first healthy backend with a new boot_id
+# will atomically mark the upgrade successful and release the lock.
+UPGRADE_FINISHED=1
+trap - ERR
+log_info "重启任务已提交，等待新服务确认升级完成"

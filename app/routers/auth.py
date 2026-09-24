@@ -13,6 +13,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Res
 from app.core.bootstrap import complete_initial_setup, initial_setup_status, read_initial_setup_token
 from app.core.permissions import can_view_show, require_user
 from app.core.security import create_session_token, hash_password, password_policy_error, verify_password
+from app.core.user_profiles import username_lookup_key
 from app.db import now_iso
 from app.routers.dependencies import (
     ChangePasswordPayload,
@@ -163,7 +164,10 @@ def _get_client_ip(request: Request) -> str:
 
 
 def _normalise_username(username: str) -> str:
-    return username.strip().casefold()
+    try:
+        return username_lookup_key(username)
+    except ValueError:
+        return username.strip().casefold()
 
 
 def _check_login_rate_limit(
@@ -255,7 +259,10 @@ def login(
             headers={"Retry-After": str(max(1, retry_after))},
         )
 
-    user = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+    user = db.execute(
+        "SELECT * FROM users WHERE username_key = ?",
+        (username_key,),
+    ).fetchone()
     # 即使用户名不存在也执行一次 PBKDF2，降低用户名枚举的时间差异。
     password_hash = user["password_hash"] if user is not None else _DUMMY_PASSWORD_HASH
     password_ok = verify_password(payload.password, password_hash)
@@ -318,7 +325,10 @@ def verify_offline_login(
         allowed, retry_after = _check_login_rate_limit(db, ip, username_key)
         if not allowed:
             raise HTTPException(429, "验证失败次数过多，请稍后重试", headers={"Retry-After": str(max(1, retry_after))})
-        user = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        user = db.execute(
+            "SELECT * FROM users WHERE username_key = ?",
+            (username_key,),
+        ).fetchone()
         password_hash = user["password_hash"] if user is not None else _DUMMY_PASSWORD_HASH
         password_ok = verify_password(payload.password, password_hash)
         show = db.execute("SELECT * FROM shows WHERE id = ?", (payload.show_id,)).fetchone()
@@ -345,6 +355,14 @@ def verify_offline_login(
     user = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     if not user:
         raise HTTPException(401, "用户不存在")
+    if (
+        int(user["session_version"]) != int(data["session_version"])
+        or bool(user["must_change_pwd"])
+    ):
+        raise HTTPException(401, "无效的离线 token")
+    show = db.execute("SELECT * FROM shows WHERE id = ?", (int(data["show_id"]),)).fetchone()
+    if show is None or not can_view_show(db, show, user):
+        raise HTTPException(403, "无可见权限")
     
     return {"user": _serialize_user(user)}
 
@@ -397,6 +415,12 @@ def change_password(
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
     """修改当前用户密码"""
+    if (
+        user["must_change_pwd"]
+        and user["temporary_password_expires_at"]
+        and user["temporary_password_expires_at"] < now_iso()
+    ):
+        raise HTTPException(403, "临时密码已过期，请联系管理员重新生成")
     if not verify_password(payload.old_password, user["password_hash"]):
         raise HTTPException(400, "原密码不正确")
     policy_error = password_policy_error(payload.new_password, username=user["username"])

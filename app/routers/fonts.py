@@ -22,7 +22,7 @@ from app.core.fonts import validate_font_file
 from app.core.permissions import require_user, require_admin
 from app.core.storage import safe_filename, save_upload
 from app.db import now_iso
-from app.services.resource_import.font_tasks import create_font_task
+from app.services.resource_import.font_tasks import create_font_task, queue_font_deletions
 from app.config import settings
 from app.routers.dependencies import (
     FontDeletePayload,
@@ -219,6 +219,7 @@ def delete_font(
     
     path = _uploaded_font_abs(row["file_path"])
     installed_path = _installation_path(db, font_id)
+    queue_font_deletions(db, [font_id])
     db.execute("DELETE FROM fonts WHERE id = ?", (font_id,))
     _set_installation_path(db, font_id, None)
     db.commit()
@@ -251,6 +252,7 @@ def bulk_delete_fonts(
     
     paths = [_uploaded_font_abs(row["file_path"]) for row in rows]
     installed_paths = [_installation_path(db, int(row["id"])) for row in rows]
+    queue_font_deletions(db, font_ids)
     db.execute(f"DELETE FROM fonts WHERE id IN ({placeholders})", font_ids)
     for font_id in font_ids:
         _set_installation_path(db, font_id, None)

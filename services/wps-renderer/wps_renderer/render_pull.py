@@ -44,8 +44,12 @@ def _failure_code(exc: Exception) -> str:
     """Map local failures to the server's bounded retry vocabulary."""
     if isinstance(exc, RuntimeError) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", str(exc)):
         return str(exc)
-    if isinstance(exc, urllib.error.HTTPError) and exc.code in {404, 409}:
-        return "lease_lost"
+    if isinstance(exc, urllib.error.HTTPError):
+        if exc.code in {404, 409}:
+            return "lease_lost"
+        if exc.code in {408, 425, 429} or exc.code >= 500:
+            return "network_error"
+        return "render_failed"
     if isinstance(exc, (urllib.error.URLError, TimeoutError, socket.timeout, ConnectionError)):
         return "network_error"
     if isinstance(exc, OSError):
@@ -106,7 +110,10 @@ class RenderPull:
             content = response.read(MAX_METADATA_BYTES + 1)
             if len(content) > MAX_METADATA_BYTES:
                 raise ValueError("metadata response is too large")
-            return json.loads(content or b"{}")
+            payload = json.loads(content or b"{}")
+            if not isinstance(payload, dict):
+                raise ValueError("metadata response must be a JSON object")
+            return payload
 
     def _main(self, method, path, body=None, timeout=30):
         return self._request(self.base_url, method, path, body, timeout)
@@ -138,19 +145,25 @@ class RenderPull:
             raise ValueError("source PPTX checksum mismatch")
 
     @staticmethod
-    def _bundle(page: dict, source: Path, dpi: int, target: Path):
+    def _bundle(
+        page: dict, source: Path, dpi: int, target: Path,
+        required_fonts: list[str], font_hashes: list[str],
+    ):
         manifest = {
             "version": 1, "dpi": dpi,
             "pages": [{"index": page["index"], "file": f"pages/{page['index']}.pptx", "sha256": page["sha256"]}],
-            "fonts": [], "required_fonts": [],
+            "fonts": [], "required_fonts": required_fonts, "font_hashes": font_hashes,
         }
         with zipfile.ZipFile(target, "x", compression=zipfile.ZIP_STORED) as archive:
             archive.write(source, f"pages/{page['index']}.pptx")
             archive.writestr("manifest.json", json.dumps(manifest, separators=(",", ":")))
 
-    def _submit_local(self, page: dict, source: Path, dpi: int, stop: threading.Event) -> Path:
+    def _submit_local(
+        self, page: dict, source: Path, dpi: int, stop: threading.Event,
+        required_fonts: list[str], font_hashes: list[str],
+    ) -> Path:
         bundle = source.with_suffix(".zip")
-        self._bundle(page, source, dpi, bundle)
+        self._bundle(page, source, dpi, bundle, required_fonts, font_hashes)
         key = uuid.uuid4().hex
         bundle_sha = _sha256_file(bundle)
         headers = {
@@ -164,7 +177,11 @@ class RenderPull:
         job_id = None
         try:
             parsed = urllib.parse.urlsplit(self.renderer_url)
-            connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=180)
+            connection_type = (
+                http.client.HTTPSConnection if parsed.scheme == "https"
+                else http.client.HTTPConnection
+            )
+            connection = connection_type(parsed.hostname, parsed.port, timeout=180)
             try:
                 connection.putrequest("POST", "/v1/jobs")
                 for name, value in headers.items():
@@ -289,8 +306,16 @@ class RenderPull:
             raise ValueError("invalid claimed task")
         pages, dpi = task.get("pages"), task.get("dpi")
         lease_seconds = task.get("lease_seconds")
+        required_fonts = task.get("required_fonts", [])
+        font_hashes = task.get("font_hashes", [])
         if (not isinstance(pages, list) or not 1 <= len(pages) <= 500 or type(dpi) is not int
-                or not 72 <= dpi <= 300 or type(lease_seconds) is not int or not 60 <= lease_seconds <= 3600):
+                or not 72 <= dpi <= 300 or type(lease_seconds) is not int or not 60 <= lease_seconds <= 3600
+                or not isinstance(required_fonts, list) or len(required_fonts) > 128
+                or any(not isinstance(name, str) or not name.strip() or len(name) > 256 for name in required_fonts)
+                or len(set(required_fonts)) != len(required_fonts)
+                or not isinstance(font_hashes, list) or len(font_hashes) > 64
+                or any(not isinstance(digest, str) or not SHA256.fullmatch(digest) for digest in font_hashes)
+                or len(set(font_hashes)) != len(font_hashes)):
             raise ValueError("invalid claimed task manifest")
         stopped, lost = threading.Event(), threading.Event()
         renewer = threading.Thread(
@@ -318,7 +343,9 @@ class RenderPull:
                 self._download(signed["download_url"], source, page["size"], page["sha256"])
                 if lost.is_set():
                     raise LeaseLost("render lease was lost")
-                image = self._submit_local(page, source, dpi, lost)
+                image = self._submit_local(
+                    page, source, dpi, lost, required_fonts, font_hashes,
+                )
                 signed = self._main(
                     "POST", f"/api/renderer/render-tasks/{task_id}/urls",
                     {"lease_token": lease_token, "page_index": index},

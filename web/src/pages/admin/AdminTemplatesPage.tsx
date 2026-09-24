@@ -19,6 +19,7 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { UserPicker } from "@/components/resource/UserPicker";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -60,17 +61,13 @@ import {
   VISIBILITY_SCOPE_OPTIONS,
 } from "@/lib/constants";
 import { downloadWithProgress } from "@/lib/fonts";
-import { TemplateItem, UserOption, VisibilityScope } from "@/lib/types";
+import { TemplateItem, VisibilityScope } from "@/lib/types";
 import { useUrlPage } from "@/lib/use-url-page";
 import { cn } from "@/lib/utils";
 
 interface TemplateListResponse {
   items: TemplateItem[];
   total: number;
-}
-
-interface UserOptionsResponse {
-  users: UserOption[];
 }
 
 export function AdminTemplatesPage() {
@@ -484,13 +481,6 @@ function TemplateFormDialog({
   const qc = useQueryClient();
   const editing = !!template;
 
-  const { data: usersData } = useQuery({
-    queryKey: ["users", "options"],
-    queryFn: async () => api<UserOptionsResponse>("/api/users/options"),
-    enabled: open,
-  });
-  const users = usersData?.users ?? [];
-
   const [series, setSeries] = React.useState("");
   const [subject, setSubject] = React.useState("");
   const [platform, setPlatform] = React.useState("wps");
@@ -562,14 +552,6 @@ function TemplateFormDialog({
     } finally {
       setLoading(false);
     }
-  };
-
-  const toggleUser = (
-    list: number[],
-    id: number,
-    setter: React.Dispatch<React.SetStateAction<number[]>>,
-  ) => {
-    setter(list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
   };
 
   return (
@@ -654,18 +636,16 @@ function TemplateFormDialog({
             label="可见范围"
             scope={visibility}
             onScopeChange={setVisibility}
-            users={users}
             selected={visibleIds}
-            onToggle={(id) => toggleUser(visibleIds, id, setVisibleIds)}
+            onChange={setVisibleIds}
             options={VISIBILITY_SCOPE_OPTIONS}
           />
           <ScopeBlock
             label="管理范围"
             scope={management}
             onScopeChange={setManagement}
-            users={users}
             selected={manageIds}
-            onToggle={(id) => toggleUser(manageIds, id, setManageIds)}
+            onChange={setManageIds}
             options={MANAGEMENT_SCOPE_OPTIONS}
           />
         </div>
@@ -687,17 +667,15 @@ function ScopeBlock({
   label,
   scope,
   onScopeChange,
-  users,
   selected,
-  onToggle,
+  onChange,
   options,
 }: {
   label: string;
   scope: VisibilityScope;
   onScopeChange: (v: VisibilityScope) => void;
-  users: UserOption[];
   selected: number[];
-  onToggle: (id: number) => void;
+  onChange: (ids: number[]) => void;
   options: readonly { value: string; label: string }[];
 }) {
   return (
@@ -712,28 +690,7 @@ function ScopeBlock({
         </SelectContent>
       </Select>
       {scope === "partial" && (
-        <div className="max-h-32 overflow-y-auto rounded-md border p-2">
-          {users.length === 0 ? (
-            <div className="text-xs text-muted-foreground">暂无用户</div>
-          ) : (
-            <div className="grid grid-cols-2 gap-1">
-              {users.map((u) => (
-                <label
-                  key={u.id}
-                  className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs hover:bg-muted"
-                >
-                  <Checkbox
-                    checked={selected.includes(u.id)}
-                    onCheckedChange={() => onToggle(u.id)}
-                  />
-                  <span className="truncate">
-                    {u.name || u.username}（{u.username}）
-                  </span>
-                </label>
-              ))}
-            </div>
-          )}
-        </div>
+        <UserPicker value={selected} onChange={onChange} />
       )}
     </div>
   );
