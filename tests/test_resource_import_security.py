@@ -128,8 +128,14 @@ class ResourceImportSafetyTests(unittest.TestCase):
         async def prepare(file: UploadFile = File(...)):
             return {"unexpected": True}
 
+        @app.post("/api/tasks/split-import")
+        async def create_task(file: UploadFile = File(...)):
+            return {"unexpected": True}
+
         with TestClient(app) as client:
             response = client.post("/api/resource-import/prepare", content=b"x", headers={"Content-Length": str(514 * 1024 * 1024)})
+            self.assertEqual(response.status_code, 413)
+            response = client.post("/api/tasks/split-import", content=b"x", headers={"Content-Length": str(514 * 1024 * 1024)})
             self.assertEqual(response.status_code, 413)
         with patch.object(import_guard, "RESOURCE_IMPORT_MAX_TOTAL_BYTES", 0), TestClient(app) as client:
             boundary = b"--guard\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.pptx\"\r\n\r\n"
@@ -142,6 +148,12 @@ class ResourceImportSafetyTests(unittest.TestCase):
 
             response = client.post(
                 "/api/resource-import/prepare",
+                content=chunks(),
+                headers={"Content-Type": "multipart/form-data; boundary=guard"},
+            )
+            self.assertEqual(response.status_code, 413)
+            response = client.post(
+                "/api/tasks/split-import",
                 content=chunks(),
                 headers={"Content-Type": "multipart/form-data; boundary=guard"},
             )

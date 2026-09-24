@@ -10,6 +10,16 @@ from starlette.formparsers import MultiPartException
 import json
 
 
+_RESOURCE_IMPORT_UPLOAD_PATHS = {
+    "/api/tasks/split-import",
+}
+
+
+def _is_resource_import_request(scope) -> bool:
+    path = scope.get("path", "")
+    return path.startswith("/api/resource-import/") or path.rstrip("/") in _RESOURCE_IMPORT_UPLOAD_PATHS
+
+
 class ResourceImportRequestGuard:
     """Bound request streams before multipart parsing spools them to disk."""
 
@@ -17,7 +27,7 @@ class ResourceImportRequestGuard:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or not scope.get("path", "").startswith("/api/resource-import/") or scope.get("method") not in {"POST", "DELETE"}:
+        if scope["type"] != "http" or not _is_resource_import_request(scope) or scope.get("method") not in {"POST", "DELETE"}:
             return await self.app(scope, receive, send)
         headers = dict(scope.get("headers", []))
         multipart = headers.get(b"content-type", b"").startswith(b"multipart/form-data")
