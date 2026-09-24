@@ -28,6 +28,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { ApiError, api, downloadFile } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { PageHeader } from "@/components/common/PageHeader";
 import { AdminConfigPage } from "./AdminConfigPage";
 
 // ==================== 升级遮罩 ====================
@@ -617,14 +618,49 @@ function RuntimeTab() {
 
   return (
     <div className="flex flex-col gap-4">
+      <Card>
+        <CardHeader className="border-b pb-4">
+          <CardTitle>服务控制</CardTitle>
+          <CardDescription>
+            {data.mode === "systemd"
+              ? <>使用 systemd 服务管理（{data.service_name}）。配置修改后需要重启服务生效。</>
+              : <>使用 run.sh/stop.sh 脚本管理服务。配置修改后需要重启服务生效。</>}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="pt-4">
+          <div className="flex flex-wrap gap-2">
+            <Button variant="default" onClick={handleUpgrade} disabled={operationPending} className="bg-blue-600 hover:bg-blue-700">
+              {upgradeMut.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ArrowUpCircle className="mr-2 h-4 w-4" />}
+              系统升级
+            </Button>
+            <Button variant="outline" onClick={handleRestart} disabled={operationPending}>
+              {restartMut.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RotateCw className="mr-2 h-4 w-4" />}
+              重启服务
+            </Button>
+            <Button variant="destructive" onClick={handleShutdown} disabled={operationPending}>
+              {shutdownMut.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Power className="mr-2 h-4 w-4" />}
+              关闭系统
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="flex items-end justify-between gap-3">
+        <div>
+          <h2 className="text-base font-semibold tracking-tight">运行状态</h2>
+          <p className="mt-1 text-xs text-muted-foreground">服务、存储和 Windows 渲染子进程的实时状态。</p>
+        </div>
+        <span className="text-xs text-muted-foreground">每 5 秒自动刷新</span>
+      </div>
+
       {/* 状态卡片 */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <Card>
+      <div className="grid items-stretch gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <Card className="flex min-h-[148px] flex-col">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">服务模式</CardTitle>
             <Server className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex flex-1 flex-col justify-between gap-3">
             <div className="text-2xl font-bold">
               {data.mode === "systemd" ? (
                 <Badge variant="default" className="text-sm">systemd</Badge>
@@ -647,12 +683,12 @@ function RuntimeTab() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="flex min-h-[148px] flex-col">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">OSS 连接状态</CardTitle>
             <HardDrive className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex flex-1 flex-col justify-between gap-3">
             <div className="text-2xl font-bold">
               <Badge
                 variant={data.oss.status === "connected" ? "default" : data.oss.status === "disconnected" || data.oss.status === "misconfigured" ? "destructive" : "secondary"}
@@ -672,12 +708,12 @@ function RuntimeTab() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="flex min-h-[148px] flex-col">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">运行时长</CardTitle>
             <Clock className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex flex-1 flex-col justify-between gap-3">
             <div className="text-2xl font-bold">{formatUptime(data.uptime_seconds)}</div>
             <p className="text-xs text-muted-foreground">
               启动时间: {new Date(data.start_time).toLocaleString('zh-CN')}
@@ -685,12 +721,12 @@ function RuntimeTab() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="flex min-h-[148px] flex-col">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">后端服务</CardTitle>
             <Server className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex flex-1 flex-col justify-between gap-3">
             <div className="text-2xl font-bold">
               <Badge variant="default" className="text-sm">运行中</Badge>
             </div>
@@ -700,12 +736,12 @@ function RuntimeTab() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="flex min-h-[148px] flex-col">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">前端服务</CardTitle>
             <Server className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex flex-1 flex-col justify-between gap-3">
             <div className="text-2xl font-bold">
               {data.frontend_pid ? (
                 <Badge variant="default" className="text-sm">运行中</Badge>
@@ -725,12 +761,12 @@ function RuntimeTab() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="flex min-h-[148px] flex-col">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Windows 子进程运行</CardTitle>
             <Server className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex flex-1 flex-col justify-between gap-3">
             <div className="text-2xl font-bold">
               <Badge
                 variant={data.windows_renderer.process.status === "running" ? "default" : data.windows_renderer.process.status === "disconnected" ? "destructive" : "secondary"}
@@ -749,12 +785,12 @@ function RuntimeTab() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="flex min-h-[148px] flex-col">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Windows 子进程连接</CardTitle>
             <Wifi className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex flex-1 flex-col justify-between gap-3">
             <div className="text-2xl font-bold">
               <Badge
                 variant={data.windows_renderer.connection.status === "connected" ? "default" : "secondary"}
@@ -771,12 +807,12 @@ function RuntimeTab() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="flex min-h-[148px] flex-col">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">配置文件</CardTitle>
             <HardDrive className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex flex-1 flex-col justify-between gap-3">
             <div className="text-sm font-bold truncate" title={data.config_file}>
               {data.config_file}
             </div>
@@ -786,12 +822,12 @@ function RuntimeTab() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="flex min-h-[148px] flex-col">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">开机自启</CardTitle>
             <Server className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex flex-1 flex-col justify-between gap-3">
             <div className="text-2xl font-bold">
               {data.mode === "systemd" ? (
                 <Badge
@@ -813,60 +849,6 @@ function RuntimeTab() {
         </Card>
       </div>
 
-      {/* 控制按钮 */}
-      <Card>
-        <CardHeader>
-          <CardTitle>服务控制</CardTitle>
-          <CardDescription>
-            {data.mode === "systemd" ? (
-              <>使用 systemd 服务管理（{data.service_name}）。所有配置修改需要重启服务后生效。</>
-            ) : (
-              <>使用 run.sh/stop.sh 脚本管理服务。所有配置修改需要重启服务后生效。</>
-            )}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-wrap gap-3">
-            <Button
-              variant="default"
-              onClick={handleUpgrade}
-              disabled={operationPending}
-              className="bg-blue-600 hover:bg-blue-700"
-            >
-              {upgradeMut.isPending ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <ArrowUpCircle className="mr-2 h-4 w-4" />
-              )}
-              系统升级
-            </Button>
-            <Button
-              variant="outline"
-              onClick={handleRestart}
-              disabled={operationPending}
-            >
-              {restartMut.isPending ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <RotateCw className="mr-2 h-4 w-4" />
-              )}
-              重启服务
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={handleShutdown}
-              disabled={operationPending}
-            >
-              {shutdownMut.isPending ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <Power className="mr-2 h-4 w-4" />
-              )}
-              关闭系统
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
     </div>
   );
 }
@@ -1272,12 +1254,13 @@ export function AdminSystemPage({ section = "runtime" }: { section?: SystemSecti
   }
 
   const title = section === "logs" ? "日志管理" : "运行管理";
+  const description = section === "logs"
+    ? "查看和筛选服务日志，定位运行异常与系统问题。"
+    : "查看服务、存储和 Windows 渲染子进程状态，并执行系统维护操作。";
 
   return (
     <div className="page-shell">
-      <header className="flex items-center gap-4">
-        <h1 className="page-title">{title}</h1>
-      </header>
+      <PageHeader title={title} description={description} />
       {section === "logs" ? <LogTab /> : <RuntimeTab />}
     </div>
   );

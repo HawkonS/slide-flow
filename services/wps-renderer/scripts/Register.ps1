@@ -47,7 +47,10 @@ if (-not $PSBoundParameters.ContainsKey('TlsCertFile') -or [string]::IsNullOrWhi
 if (-not $PSBoundParameters.ContainsKey('TlsKeyFile') -or [string]::IsNullOrWhiteSpace($TlsKeyFile)) { $TlsKeyFile = $existingKey }
 $existingNetworkBind = ($configObject.PSObject.Properties.Name -contains 'allow_network_bind') -and [bool]$configObject.allow_network_bind
 $networkBind = $AllowNetworkBind -or $existingNetworkBind
-Assert-RendererListen $ListenHost $Port $networkBind $TlsCertFile $TlsKeyFile
+# Use named arguments here.  The third parameter is a [switch]; positional
+# binding can shift the following TLS strings into the switch parameter and
+# make two empty TLS values look like a partially configured pair.
+Assert-RendererListen -ListenHost $ListenHost -Port $Port -AllowNetworkBind:$networkBind -TlsCertFile $TlsCertFile -TlsKeyFile $TlsKeyFile
 $tokenPath = if ($TokenFile) { Resolve-RendererPath $TokenFile } else { $layout.Token }
 $tokenValue = Set-RendererToken $tokenPath $Token $identity
 Set-RendererJsonProperty $configObject "wpscli" $WpsCli

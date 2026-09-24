@@ -43,6 +43,21 @@ function Required-String($Object, [string]$Name) {
     return $value
 }
 
+function Resolve-Git([string]$ConfiguredPath = "") {
+    $candidates = @()
+    if ($ConfiguredPath) { $candidates += $ConfiguredPath }
+    $candidates += "git"
+    $candidates += "C:\Program Files\Git\cmd\git.exe"
+    $candidates += "C:\Program Files\Git\bin\git.exe"
+    $candidates += "C:\Program Files (x86)\Git\cmd\git.exe"
+    foreach ($candidate in $candidates) {
+        $command = Get-Command $candidate -ErrorAction SilentlyContinue
+        if ($command -and $command.Source) { return $command.Source }
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $candidate).Path) }
+    }
+    throw "Git was not found. Install Git for Windows or set the 'git' field in windows-renderer.config.json, then run Update.ps1 again."
+}
+
 Assert-Administrator
 $sourceRoot = Split-Path -Parent $PSCommandPath
 $sourceRoot = [IO.Path]::GetFullPath($sourceRoot)
@@ -57,6 +72,7 @@ $rendererHost = Optional-String $settings "renderer_host" "127.0.0.1"
 $port = Optional-Int $settings "renderer_port" 8765
 $workerId = Optional-String $settings "worker_id"
 $version = Optional-String $settings "version"
+$gitPath = Optional-String $settings "git"
 if (-not $version) { $version = [DateTime]::Now.ToString("yyyy.MM.dd-HHmmss") }
 
 $current = Join-Path $installRoot "current"
@@ -69,9 +85,13 @@ $fontScript = Join-Path $sourceRoot "scripts\Register-FontSync.ps1"
 $renderScript = Join-Path $sourceRoot "scripts\Register-RenderPull.ps1"
 $tokenFile = Join-Path $installRoot "shared\token.txt"
 
-$status = git -C $sourceRoot status --porcelain --untracked-files=no
+$git = Resolve-Git $gitPath
+$status = & $git -C $sourceRoot status --porcelain --untracked-files=no
+if ($LASTEXITCODE -ne 0) { throw "Could not inspect the source checkout with Git: $sourceRoot" }
 if ($status) { throw "The source checkout has local tracked changes. Commit or remove them before updating." }
-git -C $sourceRoot pull --ff-only
+$branch = & $git -C $sourceRoot symbolic-ref --short -q HEAD
+if ($LASTEXITCODE -ne 0 -or -not $branch) { throw "The source checkout is not on a local branch; check out the branch you want to update first." }
+& $git -C $sourceRoot pull --ff-only
 if ($LASTEXITCODE -ne 0) { throw "Could not fast-forward the source checkout." }
 
 $upgradeArgs = @{

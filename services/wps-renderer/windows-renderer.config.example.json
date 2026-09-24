@@ -6,5 +6,6 @@
   "renderer_host": "127.0.0.1",
   "renderer_port": 8765,
   "worker_id": "",
-  "version": ""
+  "version": "",
+  "git": "git"
 }
