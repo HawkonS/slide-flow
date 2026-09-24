@@ -72,6 +72,7 @@ class OSSStorageTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "disabled")
         self.assertEqual(result["message"], "当前使用本地存储")
+        self.assertIsNone(result["endpoint_type"])
         require_bucket.assert_not_called()
 
     def test_health_status_does_not_reuse_oss_result_after_switching_to_local(self):
@@ -124,6 +125,7 @@ class OSSStorageTests(unittest.TestCase):
             second = storage.health_status()
 
         self.assertEqual(first["status"], "connected")
+        self.assertEqual(first["endpoint_type"], "external")
         self.assertEqual(second, first)
         self.assertEqual(primary.calls, [("get_bucket_info",)])
         self.assertEqual(fallback.calls, [("get_bucket_info",)])
@@ -139,7 +141,23 @@ class OSSStorageTests(unittest.TestCase):
             result = storage.health_status()
 
         self.assertEqual(result["status"], "disconnected")
+        self.assertIsNone(result["endpoint_type"])
         self.assertNotIn("secret endpoint details", result["message"])
+
+    def test_health_status_reports_internal_endpoint_when_primary_succeeds(self):
+        storage = OSSStorage()
+        bucket = _EndpointBucket()
+        with (
+            patch.object(settings, "storage_backend", "oss"),
+            patch.object(settings, "oss_internal_endpoint", "https://oss-cn-beijing-internal.aliyuncs.com"),
+            patch.object(storage, "ensure_configured"),
+            patch.object(storage, "_require_bucket", return_value=bucket),
+        ):
+            result = storage.health_status()
+
+        self.assertEqual(result["status"], "connected")
+        self.assertEqual(result["endpoint_type"], "internal")
+        self.assertIn("内网", result["message"])
 
     def test_unconfigured_oss_fails_with_actionable_configuration_error(self):
         storage = OSSStorage()

@@ -173,9 +173,15 @@ class OSSStorage:
     def _probe_health(self) -> dict[str, object]:
         if not self.enabled:
             if settings.storage_backend.strip().lower() == "local":
-                return {"status": "disabled", "message": "当前使用本地存储", "checked_at": time.time()}
+                return {
+                    "status": "disabled",
+                    "endpoint_type": None,
+                    "message": "当前使用本地存储",
+                    "checked_at": time.time(),
+                }
             return {
                 "status": "misconfigured",
+                "endpoint_type": None,
                 "message": self.configuration_error() or "storage.backend 配置无效",
                 "checked_at": time.time(),
             }
@@ -183,13 +189,31 @@ class OSSStorage:
             self.ensure_configured()
             # ``get_bucket_info`` is a metadata-only request and does not read
             # user content. It validates credentials, endpoint and bucket ACL.
-            self._with_endpoint_fallback("health check", lambda bucket: bucket.get_bucket_info())
-            return {"status": "connected", "message": "OSS 连接正常", "checked_at": time.time()}
+            primary = self._require_bucket()
+            endpoint_type: str | None = None
+
+            def check_bucket(bucket):
+                nonlocal endpoint_type
+                bucket.get_bucket_info()
+                endpoint_type = "internal" if bucket is primary and self._normalise_endpoint(settings.oss_internal_endpoint) else "external"
+
+            self._with_endpoint_fallback("health check", check_bucket)
+            return {
+                "status": "connected",
+                "endpoint_type": endpoint_type,
+                "message": f"OSS 连接正常（{'内网' if endpoint_type == 'internal' else '外网'}）",
+                "checked_at": time.time(),
+            }
         except StorageConfigurationError as exc:
-            return {"status": "misconfigured", "message": str(exc), "checked_at": time.time()}
+            return {"status": "misconfigured", "endpoint_type": None, "message": str(exc), "checked_at": time.time()}
         except Exception:
             logger.warning("OSS health check failed", exc_info=False)
-            return {"status": "disconnected", "message": STORAGE_UNAVAILABLE_MESSAGE, "checked_at": time.time()}
+            return {
+                "status": "disconnected",
+                "endpoint_type": None,
+                "message": STORAGE_UNAVAILABLE_MESSAGE,
+                "checked_at": time.time(),
+            }
 
     def reset_health_cache(self) -> None:
         """Discard the cached snapshot after configuration changes or in tests."""

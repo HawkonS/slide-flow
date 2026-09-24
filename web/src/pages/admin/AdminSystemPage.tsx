@@ -226,6 +226,7 @@ interface SystemStatus {
   };
   oss: {
     status: "connected" | "disconnected" | "misconfigured" | "disabled";
+    endpoint_type: "internal" | "external" | null;
     message: string;
     checked_at: number;
   };
@@ -241,6 +242,11 @@ const rendererConnectionLabels: Record<SystemStatus["windows_renderer"]["connect
 
 const ossStatusLabels: Record<SystemStatus["oss"]["status"], string> = {
   connected: "已连接", disconnected: "连接失败", misconfigured: "配置错误", disabled: "未启用",
+};
+
+const ossEndpointLabels: Record<Exclude<SystemStatus["oss"]["endpoint_type"], null>, string> = {
+  internal: "内网",
+  external: "外网",
 };
 
 function formatUptime(seconds: number): string {
@@ -652,7 +658,9 @@ function RuntimeTab() {
                 variant={data.oss.status === "connected" ? "default" : data.oss.status === "disconnected" || data.oss.status === "misconfigured" ? "destructive" : "secondary"}
                 className="text-sm"
               >
-                {ossStatusLabels[data.oss.status]}
+                {data.oss.status === "connected"
+                  ? `${ossStatusLabels[data.oss.status]}（${ossEndpointLabels[data.oss.endpoint_type ?? "external"]}）`
+                  : ossStatusLabels[data.oss.status]}
               </Badge>
             </div>
             <p className="mt-1 truncate text-xs text-muted-foreground" title={data.oss.message}>
