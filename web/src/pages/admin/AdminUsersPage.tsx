@@ -37,6 +37,7 @@ import { AdminUser, AdminUsersResponse, UserRole } from "@/lib/types";
 import { useUrlPage } from "@/lib/use-url-page";
 import { cn } from "@/lib/utils";
 import { TagInput } from "@/components/resource/TagInput";
+import { TagFilterChip } from "@/components/resource/filter-chips";
 import { parseTags, serializeTags } from "@/lib/types";
 import { PageHeader } from "@/components/common/PageHeader";
 import { useAuth } from "@/lib/auth";
@@ -45,7 +46,8 @@ import { UserSearchSelect } from "@/components/resource/UserSearchSelect";
 export function AdminUsersPage() {
   const qc = useQueryClient();
   const { user: currentUser, setUser } = useAuth();
-  const [tagFilter, setTagFilter] = React.useState("all");
+  const [tagFilters, setTagFilters] = React.useState<string[]>([]);
+  const [tagFilterMode, setTagFilterMode] = React.useState<"any" | "all">("any");
 
   const [editing, setEditing] = React.useState<AdminUser | null>(null);
   const [createOpen, setCreateOpen] = React.useState(false);
@@ -144,13 +146,14 @@ export function AdminUsersPage() {
   }, []);
   const [page, setPage] = useUrlPage();
   const { data, isLoading, isError, error } = useQuery({
-    queryKey: ["admin", "users", page, pageSize, query, tagFilter],
+    queryKey: ["admin", "users", page, pageSize, query, tagFilters, tagFilterMode],
     queryFn: () => api<AdminUsersResponse>("/api/admin/users", {
       params: {
         page,
         page_size: pageSize,
         search: query || undefined,
-        tag: tagFilter !== "all" ? tagFilter : undefined,
+        tags: tagFilters.length > 0 ? serializeTags(tagFilters) : undefined,
+        tags_mode: tagFilterMode,
       },
     }),
     enabled: pageSize > 0,
@@ -172,7 +175,7 @@ export function AdminUsersPage() {
   React.useEffect(() => {
     setPage(1);
     setSelected(new Set());
-  }, [query, tagFilter, setPage]);
+  }, [query, tagFilters, tagFilterMode, setPage]);
   React.useEffect(() => {
     const visible = new Set(users.filter(canDeleteUser).map((user) => user.id));
     setSelected((previous) => {
@@ -193,7 +196,14 @@ export function AdminUsersPage() {
     <div className="page-shell">
       <PageHeader
         title="用户管理"
-        count={tagFilter !== "all" ? `标签「${tagFilter}」 · ${total} 条` : query ? `搜索到 ${total} 条` : `共 ${total} 条`}
+        description="管理系统用户、角色与用户标签，支持搜索、筛选和批量管理。"
+        count={
+          tagFilters.length > 0
+            ? `标签${tagFilterMode === "all" ? "与" : "或"} · ${tagFilters.length} 项 · ${total} 条`
+            : query
+              ? `搜索到 ${total} 条`
+              : `共 ${total} 条`
+        }
       />
 
       {/* 筛选行 */}
@@ -212,28 +222,26 @@ export function AdminUsersPage() {
             )}
           />
         </div>
-        <Select value={tagFilter} onValueChange={setTagFilter}>
-          <SelectTrigger className="h-8 w-full text-xs sm:w-44">
-            <span className="inline-flex min-w-0 items-center gap-1.5">
-              <Tag className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              <SelectValue placeholder="按标签筛选" />
-            </span>
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">全部标签</SelectItem>
-            {availableTags.map((tag) => (
-              <SelectItem key={tag} value={tag}>
-                {tag}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        {tagFilter !== "all" && (
+        <TagFilterChip
+          label="标签"
+          emptyText="暂无用户标签"
+          tags={availableTags}
+          selected={tagFilters}
+          mode={tagFilterMode}
+          onToggle={(tag) => {
+            setTagFilters((previous) =>
+              previous.includes(tag) ? previous.filter((item) => item !== tag) : [...previous, tag],
+            );
+          }}
+          onClear={() => setTagFilters([])}
+          onChangeMode={setTagFilterMode}
+        />
+        {tagFilters.length > 0 && (
           <Button
             variant="ghost"
             size="sm"
             className="h-8 px-2 text-xs text-muted-foreground"
-            onClick={() => setTagFilter("all")}
+            onClick={() => setTagFilters([])}
           >
             <X className="mr-1 h-3.5 w-3.5" />
             清除筛选

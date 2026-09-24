@@ -90,7 +90,7 @@ export default function TagManagePage() {
       <header className="space-y-1">
         <h1 className="page-title">标签管理</h1>
         <p className="text-sm text-muted-foreground">
-          素材标签与用户标签独立维护，同名标签也不会互相影响。
+          素材标签用于分类和筛选素材，用户标签用于分类和筛选用户。
         </p>
       </header>
 

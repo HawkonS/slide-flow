@@ -1172,6 +1172,28 @@
               "default": "",
               "title": "Tag"
             }
+          },
+          {
+            "name": "tags",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 1000,
+              "default": "",
+              "title": "Tags"
+            }
+          },
+          {
+            "name": "tags_mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 8,
+              "default": "any",
+              "title": "Tags Mode"
+            }
           }
         ],
         "responses": {
@@ -1248,7 +1270,7 @@
           "users"
         ],
         "summary": "User Options",
-        "description": "获取有上限的用户选项，用于异步搜索下拉框。",
+        "description": "获取有上限的用户选项，用于异步搜索和按用户标签选择。",
         "operationId": "user_options_api_users_options_get",
         "parameters": [
           {
@@ -1263,12 +1285,23 @@
             }
           },
           {
+            "name": "tag",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 64,
+              "default": "",
+              "title": "Tag"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
             "schema": {
               "type": "integer",
-              "maximum": 100,
+              "maximum": 500,
               "minimum": 0,
               "default": 50,
               "title": "Limit"
@@ -1960,7 +1993,7 @@
           "tags"
         ],
         "summary": "List User Tags",
-        "description": "Return user-tag definitions for administrative user editors.",
+        "description": "Return user-tag definitions for user editors and permission pickers.",
         "operationId": "list_user_tags_api_user_tags_get",
         "responses": {
           "200": {

@@ -56,7 +56,7 @@ from app.routers.dependencies import (
 router = APIRouter()
 TEMPORARY_PASSWORD_TTL_HOURS = 24
 USER_LIST_MAX_PAGE_SIZE = 100
-USER_OPTIONS_MAX_LIMIT = 100
+USER_OPTIONS_MAX_LIMIT = 500
 USER_BULK_DELETE_MAX = 1000
 SQLITE_ID_CHUNK_SIZE = 500
 USER_AVATAR_MAX_BYTES = 2 * 1024 * 1024
@@ -207,17 +207,37 @@ def list_users(
     page_size: int = Query(20, ge=1, le=USER_LIST_MAX_PAGE_SIZE),
     search: str = Query("", max_length=100),
     tag: str = Query("", max_length=64),
+    tags: str = Query("", max_length=1000),
+    tags_mode: str = Query("any", max_length=8),
     _: Any = Depends(require_admin),
     db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     """获取管理员用户列表，支持服务端筛选和分页。"""
-    tag_filter = tag.strip()
+    # Keep the legacy single-tag parameter working while allowing the UI to
+    # submit a comma-separated set with explicit any/all matching semantics.
+    tag_values = (
+        [item for item in _normalise_user_tags(tags).split(",") if item]
+        if tags.strip()
+        else ([tag.strip()] if tag.strip() else [])
+    )
     search_filter = search.strip()
     where: list[str] = []
     params: list[Any] = []
-    if tag_filter:
-        where.append("EXISTS (SELECT 1 FROM user_tags ut WHERE ut.user_id = users.id AND ut.tag_name = ?)")
-        params.append(tag_filter)
+    if tag_values:
+        if tags_mode.strip().lower() == "all":
+            for tag_value in tag_values:
+                where.append(
+                    "EXISTS (SELECT 1 FROM user_tags ut "
+                    "WHERE ut.user_id = users.id AND ut.tag_name = ?)"
+                )
+                params.append(tag_value)
+        else:
+            placeholders = ", ".join("?" for _ in tag_values)
+            where.append(
+                "EXISTS (SELECT 1 FROM user_tags ut WHERE ut.user_id = users.id "
+                f"AND ut.tag_name IN ({placeholders}))"
+            )
+            params.extend(tag_values)
     if search_filter:
         pattern = f"%{_escape_like(search_filter)}%"
         where.append(
@@ -268,14 +288,16 @@ def list_users(
 @router.get("/users/options")
 def user_options(
     search: str = Query("", max_length=100),
+    tag: str = Query("", max_length=64),
     limit: int = Query(50, ge=0, le=USER_OPTIONS_MAX_LIMIT),
     ids: str = Query("", max_length=2000),
     _: Any = Depends(require_user),
     db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
-    """获取有上限的用户选项，用于异步搜索下拉框。"""
-    # Scope pickers only need display identity; do not expose role, Feishu ID,
-    # or administrative user labels to every authenticated user.
+    """获取有上限的用户选项，用于异步搜索和按用户标签选择。"""
+    # Scope pickers only need display identity; do not attach roles, Feishu IDs,
+    # or each user's full label list. The optional tag filter returns identities
+    # for one selected definition without broadening the response fields.
     selected_ids: list[int] = []
     for raw in ids.split(","):
         raw = raw.strip()
@@ -293,6 +315,18 @@ def user_options(
     where: list[str] = []
     params: list[Any] = []
     search_filter = search.strip()
+    tag_filter = tag.strip()
+    if tag_filter:
+        if db.execute(
+            "SELECT 1 FROM user_tag_definitions WHERE name = ?",
+            (tag_filter,),
+        ).fetchone() is None:
+            return {"users": [], "total": 0}
+        where.append(
+            "EXISTS (SELECT 1 FROM user_tags ut "
+            "WHERE ut.user_id = users.id AND ut.tag_name = ?)"
+        )
+        params.append(tag_filter)
     if search_filter:
         pattern = f"%{_escape_like(search_filter)}%"
         where.append(
@@ -301,6 +335,7 @@ def user_options(
         )
         params.extend([pattern, pattern])
     where_sql = f" WHERE {' AND '.join(where)}" if where else ""
+    total = int(db.execute(f"SELECT COUNT(*) FROM users{where_sql}", params).fetchone()[0])
     rows = list(db.execute(
         "SELECT id, name, username, avatar_url FROM users"
         f"{where_sql} ORDER BY name COLLATE NOCASE, id LIMIT ?",
@@ -317,7 +352,7 @@ def user_options(
         for row in selected_rows:
             by_id[int(row["id"])] = row
         rows = sorted(by_id.values(), key=lambda row: ((row["name"] or "").casefold(), int(row["id"])))
-    return {"users": [_serialize_user_option(row) for row in rows]}
+    return {"users": [_serialize_user_option(row) for row in rows], "total": total}
 
 
 @router.get("/users/{user_id}/avatar")

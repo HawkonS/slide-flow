@@ -202,10 +202,10 @@ def list_tags(
 
 @router.get("/user-tags")
 def list_user_tags(
-    _: Any = Depends(require_admin),
+    _: Any = Depends(require_user),
     db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
-    """Return user-tag definitions for administrative user editors."""
+    """Return user-tag definitions for user editors and permission pickers."""
     return {"groups": _grouped_tags(db, "user_tag_definitions")}
 
 

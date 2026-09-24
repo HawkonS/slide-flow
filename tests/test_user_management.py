@@ -242,6 +242,34 @@ class UserManagementTests(unittest.TestCase):
             self.assertEqual(filtered.status_code, 200, filtered.text)
             self.assertEqual(filtered.json()["total"], len(tagged_ids))
             self.assertIn("department-sales", filtered.json()["available_tags"])
+            filtered_multi = client.get(
+                "/api/admin/users",
+                params={
+                    "tags": "department-sales,missing-tag",
+                    "tags_mode": "any",
+                    "page_size": 100,
+                },
+            )
+            self.assertEqual(filtered_multi.status_code, 200, filtered_multi.text)
+            self.assertEqual(filtered_multi.json()["total"], len(tagged_ids))
+
+            both_id = self.insert_user(
+                "member-both",
+                tags_value="department-sales,department-rd",
+            )
+            tagged_ids.append(both_id)
+            self.create_user_tag("department-rd", admin_id)
+            filtered_all = client.get(
+                "/api/admin/users",
+                params={
+                    "tags": "department-sales,department-rd",
+                    "tags_mode": "all",
+                    "page_size": 100,
+                },
+            )
+            self.assertEqual(filtered_all.status_code, 200, filtered_all.text)
+            self.assertEqual(filtered_all.json()["total"], 1)
+            self.assertEqual(filtered_all.json()["users"][0]["id"], both_id)
 
             options = client.get(
                 "/api/users/options",
@@ -258,6 +286,22 @@ class UserManagementTests(unittest.TestCase):
                 [item["id"] for item in selected_only.json()["users"]],
                 [tagged_ids[-1]],
             )
+            tagged_options = client.get(
+                "/api/users/options",
+                params={"tag": "department-sales", "limit": 500},
+            )
+            self.assertEqual(tagged_options.status_code, 200, tagged_options.text)
+            self.assertEqual(tagged_options.json()["total"], len(tagged_ids))
+            self.assertEqual(
+                {item["id"] for item in tagged_options.json()["users"]},
+                set(tagged_ids),
+            )
+            unknown_tag = client.get(
+                "/api/users/options",
+                params={"tag": "deleted-history-tag", "limit": 500},
+            )
+            self.assertEqual(unknown_tag.status_code, 200, unknown_tag.text)
+            self.assertEqual(unknown_tag.json(), {"users": [], "total": 0})
 
     def test_username_feishu_uniqueness_and_case_insensitive_login(self):
         admin_id = self.insert_user("root", role="system_admin")
@@ -493,13 +537,15 @@ class UserManagementTests(unittest.TestCase):
             "team-red",
         )
 
-    def test_non_admin_cannot_read_or_manage_user_tag_definitions(self):
+    def test_non_admin_can_read_but_cannot_manage_user_tag_definitions(self):
         admin_id = self.insert_user("root", role="system_admin")
         regular_id = self.insert_user("member")
         tag_id = self.create_user_tag("department-sales", admin_id)
         with self.client_for(regular_id) as client:
+            readable = client.get("/api/user-tags")
+            self.assertEqual(readable.status_code, 200, readable.text)
+            self.assertEqual(readable.json()["groups"][0]["tags"][0]["name"], "department-sales")
             for method, path, body in (
-                ("get", "/api/user-tags", None),
                 ("get", "/api/admin/user-tags", None),
                 ("post", "/api/admin/user-tags", {"tags": ["department-rd"]}),
                 ("put", f"/api/admin/user-tags/{tag_id}", {"name": "department-growth"}),
