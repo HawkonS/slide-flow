@@ -104,45 +104,177 @@ fi
 
 log_info "Python: $PYTHON_CMD ($PYTHON_VERSION)"
 
-# 检查 node
-if ! command -v node &>/dev/null; then
-  log_error "未检测到 Node.js，请先安装："
-  if [ "$OS" = "Darwin" ]; then
-    log_error "  brew install node"
-  else
-    log_error "  sudo apt install nodejs npm"
-  fi
+# React Router 7 的构建工具链要求 Node.js 20+。systemd 不会加载 nvm 等
+# 交互式 shell 配置，因此 Linux 上不能只依赖用户登录环境里的 node。
+# 若系统 Node.js 缺失或版本过低，自动下载一份固定版本到项目目录，保证
+# 重启和开机自启时使用同一套运行时。可通过 SLIDEFLOW_NODE_VERSION 覆盖。
+NODE_BIN=""
+NPM_BIN=""
+NODE_RUNTIME_VERSION="${SLIDEFLOW_NODE_VERSION:-20.20.2}"
+NODE_RUNTIME_ROOT="$ROOT_DIR/.runtime"
+if ! [[ "$NODE_RUNTIME_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  log_error "SLIDEFLOW_NODE_VERSION 必须是完整版本号（例如 20.20.2）"
+  exit 1
+fi
+NODE_RUNTIME_MAJOR="${NODE_RUNTIME_VERSION%%.*}"
+if [ "$NODE_RUNTIME_MAJOR" -lt 20 ]; then
+  log_error "SLIDEFLOW_NODE_VERSION 必须是 Node.js 20 或更高版本"
   exit 1
 fi
 
-# 检查 npm
-if ! command -v npm &>/dev/null; then
-  log_error "未检测到 npm，请先安装："
-  if [ "$OS" = "Darwin" ]; then
-    log_error "  brew install node"
-  else
-    log_error "  sudo apt install nodejs npm"
-  fi
-  exit 1
-fi
+node_major_for() {
+  "$1" -p 'process.versions.node.split(".")[0]' 2>/dev/null || true
+}
 
-# React Router 7 的构建工具链要求 Node.js 20+；提前给出明确错误，避免
-# npm 安装阶段只产生 engine 警告后继续生成不可用的前端产物。
-NODE_MAJOR=$(node -p 'process.versions.node.split(".")[0]')
-if [ "$NODE_MAJOR" -lt 20 ]; then
-  log_error "Node.js 版本过低 ($(node --version 2>&1))，需要 Node.js 20 或更高版本"
-  if [ "$OS" = "Darwin" ]; then
-    log_error "请升级: brew install node@20"
+node_arch_for() {
+  case "$(uname -m)" in
+    x86_64|amd64) printf 'x64\n' ;;
+    aarch64|arm64) printf 'arm64\n' ;;
+    armv7l|armv7) printf 'armv7l\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+download_file() {
+  local url="$1"
+  local target="$2"
+  if command -v curl >/dev/null 2>&1; then
+    curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 -o "$target" "$url"
+  elif command -v wget >/dev/null 2>&1; then
+    wget --quiet --tries=3 --timeout=15 -O "$target" "$url"
   else
-    log_error "请安装 Node.js 20 LTS 或更高版本"
+    "$PYTHON_CMD" - "$url" "$target" <<'PY'
+import sys
+import urllib.request
+
+urllib.request.urlretrieve(sys.argv[1], sys.argv[2])
+PY
   fi
-  exit 1
+}
+
+verify_sha256() {
+  local file="$1"
+  local expected="$2"
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s  %s\n' "$expected" "$file" | sha256sum -c - >/dev/null 2>&1
+  elif command -v shasum >/dev/null 2>&1; then
+    [ "$(shasum -a 256 "$file" | awk '{print $1}')" = "$expected" ]
+  else
+    "$PYTHON_CMD" - "$file" "$expected" <<'PY'
+import hashlib
+import sys
+
+digest = hashlib.sha256()
+with open(sys.argv[1], "rb") as handle:
+    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        digest.update(chunk)
+raise SystemExit(0 if digest.hexdigest() == sys.argv[2] else 1)
+PY
+  fi
+}
+
+install_project_node() {
+  local arch package base_url checksum_file expected_checksum
+  local archive temp_dir extracted_dir install_dir
+
+  if [ "$OS" != "Linux" ]; then
+    return 1
+  fi
+  if ! arch="$(node_arch_for)"; then
+    log_error "无法识别 Linux 架构 ($(uname -m))，无法自动安装 Node.js"
+    return 1
+  fi
+
+  package="node-v${NODE_RUNTIME_VERSION}-linux-${arch}.tar.gz"
+  base_url="https://nodejs.org/dist/v${NODE_RUNTIME_VERSION}"
+  install_dir="$NODE_RUNTIME_ROOT/node-v${NODE_RUNTIME_VERSION}-linux-${arch}"
+  if [ -x "$install_dir/bin/node" ] && [ -x "$install_dir/bin/npm" ]; then
+    NODE_BIN="$install_dir/bin/node"
+    NPM_BIN="$install_dir/bin/npm"
+    export PATH="$install_dir/bin:$PATH"
+    return 0
+  fi
+
+  if ! mkdir -p "$NODE_RUNTIME_ROOT"; then
+    log_error "无法创建 Node.js 运行时目录: $NODE_RUNTIME_ROOT"
+    return 1
+  fi
+  if ! temp_dir="$(mktemp -d "$NODE_RUNTIME_ROOT/node-install.XXXXXX")"; then
+    log_error "无法创建 Node.js 临时安装目录: $NODE_RUNTIME_ROOT"
+    return 1
+  fi
+  archive="$temp_dir/$package"
+  checksum_file="$temp_dir/SHASUMS256.txt"
+  install_dir="$NODE_RUNTIME_ROOT/${package%.tar.gz}"
+
+  log_warn "正在自动安装 Node.js ${NODE_RUNTIME_VERSION} (${arch}) 到 ${NODE_RUNTIME_ROOT}"
+  if ! download_file "$base_url/$package" "$archive" \
+      || ! download_file "$base_url/SHASUMS256.txt" "$checksum_file"; then
+    log_error "Node.js 下载失败，请检查服务器网络或设置 SLIDEFLOW_NODE_VERSION"
+    rm -rf "$temp_dir"
+    return 1
+  fi
+
+  expected_checksum="$(awk -v package="$package" '$2 == "*" package || $2 == package {print $1; exit}' "$checksum_file")"
+  if [ -z "$expected_checksum" ] || ! verify_sha256 "$archive" "$expected_checksum"; then
+    log_error "Node.js 安装包校验失败，已删除临时文件"
+    rm -rf "$temp_dir"
+    return 1
+  fi
+
+  rm -rf "$install_dir"
+  if ! tar -xzf "$archive" -C "$temp_dir"; then
+    log_error "Node.js 安装包解压失败"
+    rm -rf "$temp_dir"
+    return 1
+  fi
+  extracted_dir="$temp_dir/node-v${NODE_RUNTIME_VERSION}-linux-${arch}"
+  if [ ! -x "$extracted_dir/bin/node" ] || [ ! -x "$extracted_dir/bin/npm" ]; then
+    log_error "Node.js 安装包内容不完整"
+    rm -rf "$temp_dir"
+    return 1
+  fi
+  if ! mv "$extracted_dir" "$install_dir"; then
+    log_error "无法写入 Node.js 运行时目录: $install_dir"
+    rm -rf "$temp_dir"
+    return 1
+  fi
+  rm -rf "$temp_dir"
+
+  NODE_BIN="$install_dir/bin/node"
+  NPM_BIN="$install_dir/bin/npm"
+  export PATH="$install_dir/bin:$PATH"
+  log_info "Node.js 自动安装完成: $($NODE_BIN --version 2>&1)"
+}
+
+SYSTEM_NODE_BIN="$(command -v node 2>/dev/null || true)"
+if [ -n "$SYSTEM_NODE_BIN" ] && [ "$(node_major_for "$SYSTEM_NODE_BIN")" -ge 20 ] 2>/dev/null \
+    && [ -x "$(dirname "$SYSTEM_NODE_BIN")/npm" ]; then
+  NODE_BIN="$SYSTEM_NODE_BIN"
+  NPM_BIN="$(dirname "$SYSTEM_NODE_BIN")/npm"
+  # npm 的 shebang 通过 PATH 查找 node，确保它与选中的 Node.js 配套。
+  export PATH="$(dirname "$SYSTEM_NODE_BIN"):$PATH"
+else
+  if [ -n "$SYSTEM_NODE_BIN" ]; then
+    log_warn "检测到系统 Node.js $($SYSTEM_NODE_BIN --version 2>&1)，低于要求的 20；准备自动安装兼容版本"
+  else
+    log_warn "未检测到 Node.js，准备自动安装兼容版本"
+  fi
+  if ! install_project_node; then
+    log_error "Node.js 20+ 不可用，启动中止"
+    if [ "$OS" = "Darwin" ]; then
+      log_error "请安装: brew install node@20"
+    else
+      log_error "请检查服务器网络，或手动安装 Node.js 20 LTS"
+    fi
+    exit 1
+  fi
 fi
 
 # 输出版本信息
 log_info "Python : $($PYTHON_CMD --version 2>&1)"
-log_info "Node.js: $(node --version 2>&1)"
-log_info "npm    : $(npm --version 2>&1)"
+log_info "Node.js: $($NODE_BIN --version 2>&1)"
+log_info "npm    : $($NPM_BIN --version 2>&1)"
 
 # ===========================================================
 # Step 2 - 配置文件处理
@@ -414,7 +546,7 @@ log_info "正在检查前端依赖..."
 if [ -f "web/package.json" ]; then
   if [ ! -d "web/node_modules" ]; then
     log_warn "前端依赖缺失，正在安装 (npm install)..."
-    (cd web && npm install)
+    (cd web && "$NPM_BIN" install)
     log_info "前端依赖安装完成"
   else
     log_info "前端依赖已就绪"
@@ -490,7 +622,7 @@ PY
 
   if [ "$NEED_BUILD" = "true" ]; then
     log_info "正在构建前端生产产物 (npm run build)..."
-    if (cd web && npm run build); then
+    if (cd web && "$NPM_BIN" run build); then
       log_info "前端构建完成，产物目录: app/static/dist"
       # 构建成功后写入版本标记，供下次启动比对
       if [ -n "$CURRENT_VERSION" ]; then
@@ -691,7 +823,7 @@ if [ "$DEV_MODE" = "true" ]; then
     export SLIDE_FLOW_HTTPS="$WEB_HTTPS"
     log_info "前端配置: 端口 $SLIDE_FLOW_WEB_PORT | 后端 $SLIDE_FLOW_BACKEND | HTTPS $SLIDE_FLOW_HTTPS"
     # 端口/监听地址均由 vite.config.ts 读取上述环境变量，不再用 CLI 参数覆盖
-    (cd web && npm run dev) \
+    (cd web && "$NPM_BIN" run dev) \
       >"$FRONTEND_LOG" 2>&1 &
     FRONTEND_PID=$!
 

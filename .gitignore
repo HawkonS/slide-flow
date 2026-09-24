@@ -6,6 +6,7 @@ __pycache__/
 
 # Node
 node_modules/
+.runtime/
 
 # Database (tracked for backup)
 # *.db
