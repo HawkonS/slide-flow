@@ -250,6 +250,31 @@ const ossEndpointLabels: Record<Exclude<SystemStatus["oss"]["endpoint_type"], nu
   external: "外网",
 };
 
+function RuntimeStatusBlock({
+  title,
+  icon: Icon,
+  value,
+  detail,
+}: {
+  title: string;
+  icon: React.ElementType;
+  value: React.ReactNode;
+  detail: React.ReactNode;
+}) {
+  return (
+    <section className="surface flex min-h-[132px] flex-col p-4 shadow-sm">
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-sm font-medium leading-5">{title}</h2>
+        <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+      </div>
+      <div className="mt-4 flex flex-1 flex-col justify-end gap-1">
+        <div className="min-h-7 text-lg font-semibold leading-7">{value}</div>
+        <p className="line-clamp-2 min-h-8 text-xs leading-4 text-muted-foreground">{detail}</p>
+      </div>
+    </section>
+  );
+}
+
 function formatUptime(seconds: number): string {
   const days = Math.floor(seconds / 86400);
   const hours = Math.floor((seconds % 86400) / 3600);
@@ -618,17 +643,12 @@ function RuntimeTab() {
 
   return (
     <div className="flex flex-col gap-4">
-      <Card>
-        <CardHeader className="border-b pb-4">
-          <CardTitle>服务控制</CardTitle>
-          <CardDescription>
-            {data.mode === "systemd"
-              ? <>使用 systemd 服务管理（{data.service_name}）。配置修改后需要重启服务生效。</>
-              : <>使用 run.sh/stop.sh 脚本管理服务。配置修改后需要重启服务生效。</>}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="pt-4">
-          <div className="flex flex-wrap gap-2">
+      <section className="surface flex flex-wrap items-center justify-between gap-3 px-4 py-3 shadow-sm">
+        <div className="flex min-w-0 items-center gap-3">
+          <Power className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <h2 className="text-sm font-medium">服务控制</h2>
+        </div>
+        <div className="flex flex-wrap gap-2">
             <Button variant="default" onClick={handleUpgrade} disabled={operationPending} className="bg-blue-600 hover:bg-blue-700">
               {upgradeMut.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ArrowUpCircle className="mr-2 h-4 w-4" />}
               系统升级
@@ -641,212 +661,56 @@ function RuntimeTab() {
               {shutdownMut.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Power className="mr-2 h-4 w-4" />}
               关闭系统
             </Button>
-          </div>
-        </CardContent>
-      </Card>
-
-      <div className="flex items-end justify-between gap-3">
-        <div>
-          <h2 className="text-base font-semibold tracking-tight">运行状态</h2>
-          <p className="mt-1 text-xs text-muted-foreground">服务、存储和 Windows 渲染子进程的实时状态。</p>
         </div>
-        <span className="text-xs text-muted-foreground">每 5 秒自动刷新</span>
-      </div>
+      </section>
 
-      {/* 状态卡片 */}
-      <div className="grid items-stretch gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <Card className="flex min-h-[148px] flex-col">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">服务模式</CardTitle>
-            <Server className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent className="flex flex-1 flex-col justify-between gap-3">
-            <div className="text-2xl font-bold">
-              {data.mode === "systemd" ? (
-                <Badge variant="default" className="text-sm">systemd</Badge>
-              ) : (
-                <Badge variant="secondary" className="text-sm">直接运行</Badge>
-              )}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {data.mode === "systemd" ? (
-                <>
-                  服务: {data.service_name} | 
-                  <span className={data.service_status === "running" ? "text-green-600" : data.service_status === "failed" ? "text-red-600" : "text-amber-600"}>
-                    {serviceStatusLabel[data.service_status]}
-                  </span>
-                </>
-              ) : (
-                "未使用 systemd"
-              )}
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card className="flex min-h-[148px] flex-col">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">OSS 连接状态</CardTitle>
-            <HardDrive className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent className="flex flex-1 flex-col justify-between gap-3">
-            <div className="text-2xl font-bold">
-              <Badge
-                variant={data.oss.status === "connected" ? "default" : data.oss.status === "disconnected" || data.oss.status === "misconfigured" ? "destructive" : "secondary"}
-                className="text-sm"
-              >
-                {data.oss.status === "connected"
-                  ? `${ossStatusLabels[data.oss.status]}（${ossEndpointLabels[data.oss.endpoint_type ?? "external"]}）`
-                  : ossStatusLabels[data.oss.status]}
-              </Badge>
-            </div>
-            <p className="mt-1 truncate text-xs text-muted-foreground" title={data.oss.message}>
-              {data.oss.message}
-            </p>
-            <p className="mt-1 text-[11px] text-muted-foreground">
-              最近检查: {new Date(data.oss.checked_at * 1000).toLocaleTimeString("zh-CN")}
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card className="flex min-h-[148px] flex-col">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">运行时长</CardTitle>
-            <Clock className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent className="flex flex-1 flex-col justify-between gap-3">
-            <div className="text-2xl font-bold">{formatUptime(data.uptime_seconds)}</div>
-            <p className="text-xs text-muted-foreground">
-              启动时间: {new Date(data.start_time).toLocaleString('zh-CN')}
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card className="flex min-h-[148px] flex-col">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">后端服务</CardTitle>
-            <Server className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent className="flex flex-1 flex-col justify-between gap-3">
-            <div className="text-2xl font-bold">
-              <Badge variant="default" className="text-sm">运行中</Badge>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              PID: {data.backend_pid} | 端口: {data.backend_port}
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card className="flex min-h-[148px] flex-col">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">前端服务</CardTitle>
-            <Server className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent className="flex flex-1 flex-col justify-between gap-3">
-            <div className="text-2xl font-bold">
-              {data.frontend_pid ? (
-                <Badge variant="default" className="text-sm">运行中</Badge>
-              ) : data.frontend_mode === "dev" ? (
-                <Badge variant="secondary" className="text-sm">未运行</Badge>
-              ) : (
-                <Badge variant="secondary" className="text-sm">静态托管</Badge>
-              )}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {data.frontend_pid
-                ? `PID: ${data.frontend_pid} | 端口: ${data.frontend_port}`
-                : data.frontend_mode === "dev"
-                  ? `开发模式下未检测到 Vite 监听进程（端口 ${data.frontend_port}）`
-                  : "前端由后端静态托管（经后端端口访问）"}
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card className="flex min-h-[148px] flex-col">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Windows 子进程运行</CardTitle>
-            <Server className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent className="flex flex-1 flex-col justify-between gap-3">
-            <div className="text-2xl font-bold">
-              <Badge
-                variant={data.windows_renderer.process.status === "running" ? "default" : data.windows_renderer.process.status === "disconnected" ? "destructive" : "secondary"}
-                className="text-sm"
-              >
-                {rendererProcessLabels[data.windows_renderer.process.status]}
-              </Badge>
-            </div>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {data.windows_renderer.process.status === "running" && data.windows_renderer.process.task_id
-                ? `Worker: ${data.windows_renderer.process.worker_id ?? "未知"} · 任务: ${data.windows_renderer.process.task_id.slice(0, 8)}`
-                : data.windows_renderer.process.active_task_count > 0
-                  ? `有效租约任务 ${data.windows_renderer.process.active_task_count} 个，Worker 暂无心跳`
-                  : `在线 Worker: ${data.windows_renderer.process.worker_count} 个`}
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card className="flex min-h-[148px] flex-col">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Windows 子进程连接</CardTitle>
-            <Wifi className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent className="flex flex-1 flex-col justify-between gap-3">
-            <div className="text-2xl font-bold">
-              <Badge
-                variant={data.windows_renderer.connection.status === "connected" ? "default" : "secondary"}
-                className="text-sm"
-              >
-                {rendererConnectionLabels[data.windows_renderer.connection.status]}
-              </Badge>
-            </div>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {data.windows_renderer.connection.worker_id
-                ? `Worker: ${data.windows_renderer.connection.worker_id} · ${data.windows_renderer.connection.age_seconds ?? 0} 秒前心跳`
-                : "尚未收到 Windows Worker 心跳"}
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card className="flex min-h-[148px] flex-col">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">配置文件</CardTitle>
-            <HardDrive className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent className="flex flex-1 flex-col justify-between gap-3">
-            <div className="text-sm font-bold truncate" title={data.config_file}>
-              {data.config_file}
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              日志目录: {data.log_dir}
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card className="flex min-h-[148px] flex-col">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">开机自启</CardTitle>
-            <Server className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent className="flex flex-1 flex-col justify-between gap-3">
-            <div className="text-2xl font-bold">
-              {data.mode === "systemd" ? (
-                <Badge
-                  variant={data.service_enabled === "enabled" || data.service_enabled === "enabled-runtime"
-                    ? "default"
-                    : data.service_enabled.startsWith("masked") ? "destructive" : "secondary"}
-                  className="text-sm"
-                >
-                  {serviceEnabledLabel[data.service_enabled]}
-                </Badge>
-              ) : (
-                <Badge variant="outline" className="text-sm">N/A</Badge>
-              )}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {data.mode === "systemd" ? "systemd 服务自启状态" : "直接运行模式无此功能"}
-            </p>
-          </CardContent>
-        </Card>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <RuntimeStatusBlock
+          title="服务模式"
+          icon={Server}
+          value={data.mode === "systemd" ? <Badge variant="default">systemd</Badge> : <Badge variant="secondary">直接运行</Badge>}
+          detail={data.mode === "systemd" ? <>服务：{data.service_name} · {serviceStatusLabel[data.service_status]}</> : "未使用 systemd"}
+        />
+        <RuntimeStatusBlock
+          title="OSS 连接状态"
+          icon={HardDrive}
+          value={data.oss.status === "connected"
+            ? <Badge variant="default">{ossStatusLabels[data.oss.status]}（{ossEndpointLabels[data.oss.endpoint_type ?? "external"]}）</Badge>
+            : <Badge variant={data.oss.status === "disconnected" || data.oss.status === "misconfigured" ? "destructive" : "secondary"}>{ossStatusLabels[data.oss.status]}</Badge>}
+          detail={<>{data.oss.message} · 最近检查 {new Date(data.oss.checked_at * 1000).toLocaleTimeString("zh-CN")}</>}
+        />
+        <RuntimeStatusBlock
+          title="运行时长"
+          icon={Clock}
+          value={formatUptime(data.uptime_seconds)}
+          detail={<>启动时间：{new Date(data.start_time).toLocaleString("zh-CN")}</>}
+        />
+        <RuntimeStatusBlock title="后端服务" icon={Server} value={<Badge variant="default">运行中</Badge>} detail={`PID：${data.backend_pid} · 端口：${data.backend_port}`} />
+        <RuntimeStatusBlock
+          title="前端服务"
+          icon={Server}
+          value={data.frontend_pid ? <Badge variant="default">运行中</Badge> : data.frontend_mode === "dev" ? <Badge variant="secondary">未运行</Badge> : <Badge variant="secondary">静态托管</Badge>}
+          detail={data.frontend_pid ? `PID：${data.frontend_pid} · 端口：${data.frontend_port}` : data.frontend_mode === "dev" ? `开发模式未检测到 Vite（端口 ${data.frontend_port}）` : "由后端静态托管"}
+        />
+        <RuntimeStatusBlock
+          title="Windows 子进程运行"
+          icon={Server}
+          value={<Badge variant={data.windows_renderer.process.status === "running" ? "default" : data.windows_renderer.process.status === "disconnected" ? "destructive" : "secondary"}>{rendererProcessLabels[data.windows_renderer.process.status]}</Badge>}
+          detail={data.windows_renderer.process.status === "running" && data.windows_renderer.process.task_id ? `Worker：${data.windows_renderer.process.worker_id ?? "未知"} · 任务：${data.windows_renderer.process.task_id.slice(0, 8)}` : data.windows_renderer.process.active_task_count > 0 ? `有效租约任务 ${data.windows_renderer.process.active_task_count} 个，Worker 暂无心跳` : `在线 Worker：${data.windows_renderer.process.worker_count} 个`}
+        />
+        <RuntimeStatusBlock
+          title="Windows 子进程连接"
+          icon={Wifi}
+          value={<Badge variant={data.windows_renderer.connection.status === "connected" ? "default" : "secondary"}>{rendererConnectionLabels[data.windows_renderer.connection.status]}</Badge>}
+          detail={data.windows_renderer.connection.worker_id ? `Worker：${data.windows_renderer.connection.worker_id} · ${data.windows_renderer.connection.age_seconds ?? 0} 秒前心跳` : "尚未收到 Windows Worker 心跳"}
+        />
+        <RuntimeStatusBlock title="配置文件" icon={HardDrive} value={<span className="block truncate text-sm" title={data.config_file}>{data.config_file}</span>} detail={`日志目录：${data.log_dir}`} />
+        <RuntimeStatusBlock
+          title="开机自启"
+          icon={Server}
+          value={data.mode === "systemd" ? <Badge variant={data.service_enabled === "enabled" || data.service_enabled === "enabled-runtime" ? "default" : data.service_enabled.startsWith("masked") ? "destructive" : "secondary"}>{serviceEnabledLabel[data.service_enabled]}</Badge> : <Badge variant="outline">N/A</Badge>}
+          detail={data.mode === "systemd" ? "systemd 服务自启状态" : "直接运行模式无此功能"}
+        />
       </div>
 
     </div>
@@ -1256,7 +1120,7 @@ export function AdminSystemPage({ section = "runtime" }: { section?: SystemSecti
   const title = section === "logs" ? "日志管理" : "运行管理";
   const description = section === "logs"
     ? "查看和筛选服务日志，定位运行异常与系统问题。"
-    : "查看服务、存储和 Windows 渲染子进程状态，并执行系统维护操作。";
+    : "查看服务、存储和 Windows 渲染子进程状态，并执行系统维护操作。每 5 秒自动刷新。";
 
   return (
     <div className="page-shell">
