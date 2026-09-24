@@ -862,8 +862,8 @@ function UserFormDialog({
                     <Tag className="h-4 w-4 text-muted-foreground" />
                     用户标签
                   </div>
-                  <TagInput value={tags} onChange={setTags} placeholder="搜索或选择预设标签" />
-                  <p className="text-xs leading-5 text-muted-foreground">用户标签用于用户列表筛选；预设标签在“管理 → 标签管理”中创建。</p>
+                  <TagInput domain="user" value={tags} onChange={setTags} placeholder="搜索或选择用户标签" />
+                  <p className="text-xs leading-5 text-muted-foreground">用户标签用于人员分类和用户列表筛选；请在“标签管理 → 用户标签”中维护。</p>
                 </section>
 
                 <section className="space-y-3">

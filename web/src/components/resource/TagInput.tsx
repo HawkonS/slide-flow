@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 export interface TagInputProps {
   value: string[];
   onChange: (next: string[]) => void;
+  domain?: "resource" | "user";
   suggestions?: string[];
   placeholder?: string;
   disabled?: boolean;
@@ -52,6 +53,7 @@ export function TagInput(props: TagInputProps) {
   const {
     value,
     onChange,
+    domain = "resource",
     placeholder = "输入后按回车或空格添加",
     disabled,
     className,
@@ -61,16 +63,45 @@ export function TagInput(props: TagInputProps) {
     queryKey: ["config"],
     queryFn: () => api<ConfigResponse>("/api/config"),
     staleTime: 60_000,
+    enabled: domain === "resource",
   });
 
-  const { data: tagsData, isLoading: tagsLoading } = useQuery({
-    queryKey: ["preset-tags"],
-    queryFn: () => api<PresetTagsResponse>("/api/tags"),
+  const { data: tagsData, isLoading: tagsLoading, isError: tagsError } = useQuery({
+    queryKey: ["preset-tags", domain],
+    queryFn: () => api<PresetTagsResponse>(domain === "user" ? "/api/user-tags" : "/api/tags"),
     staleTime: 30_000,
   });
 
-  const allowCustom = configData?.user_custom_tags ?? true;
   const groups = tagsData?.groups ?? [];
+
+  if (domain === "user") {
+    if (tagsLoading) {
+      return (
+        <div className={cn("flex min-h-10 items-center rounded-md border bg-muted/20 px-3 text-sm text-muted-foreground", className)}>
+          正在加载用户标签…
+        </div>
+      );
+    }
+    if (tagsError) {
+      return (
+        <div className={cn("flex min-h-10 items-center rounded-md border border-destructive/40 bg-destructive/5 px-3 text-sm text-destructive", className)}>
+          用户标签加载失败，请刷新后重试
+        </div>
+      );
+    }
+    return (
+      <PresetSelectorTagInput
+        value={value}
+        onChange={onChange}
+        groups={groups}
+        placeholder={placeholder}
+        disabled={disabled}
+        className={className}
+      />
+    );
+  }
+
+  const allowCustom = configData?.user_custom_tags ?? true;
 
   if (configData === undefined || tagsLoading) {
     return (

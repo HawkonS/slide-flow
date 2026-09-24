@@ -152,6 +152,21 @@ class UserManagementTests(unittest.TestCase):
         self.db.commit()
         return int(cursor.lastrowid)
 
+    def create_user_tag(self, name: str, creator_id: int) -> int:
+        category, _, label = name.partition("-")
+        if not label:
+            category, label = "未分类", category
+        cursor = self.db.execute(
+            """
+            INSERT INTO user_tag_definitions
+                (name, category, label, sort_order, created_by, created_at)
+            VALUES (?, ?, ?, 0, ?, ?)
+            """,
+            (name, category, label, creator_id, now_iso()),
+        )
+        self.db.commit()
+        return int(cursor.lastrowid)
+
     def test_operations_admin_can_manage_regular_users_but_not_system_admin(self):
         operations_admin = self.insert_user("operator", role="admin")
         system_admin = self.insert_user("root-admin", role="system_admin")
@@ -197,7 +212,7 @@ class UserManagementTests(unittest.TestCase):
 
     def test_server_side_pagination_search_tag_filter_and_bounded_options(self):
         admin_id = self.insert_user("root", role="system_admin")
-        self.create_tag("department-sales", admin_id)
+        self.create_user_tag("department-sales", admin_id)
         tagged_ids: list[int] = []
         for index in range(125):
             tags_value = "department-sales" if index % 10 == 0 else ""
@@ -295,9 +310,9 @@ class UserManagementTests(unittest.TestCase):
             self.assertEqual(login.status_code, 200, login.text)
             self.assertEqual(login.json()["user"]["username"], "Alice")
 
-    def test_disabled_custom_tags_reject_new_values_but_preserve_history(self):
+    def test_user_tag_definitions_reject_new_values_but_preserve_history(self):
         admin_id = self.insert_user("root", role="system_admin")
-        self.create_tag("department-sales", admin_id)
+        self.create_user_tag("department-sales", admin_id)
         historical_id = self.insert_user("historical", tags_value="legacy-deleted-tag")
         with self.client_for(admin_id) as client:
             rejected = client.post(
@@ -337,7 +352,7 @@ class UserManagementTests(unittest.TestCase):
             )
             self.assertEqual(rejected_new.status_code, 400, rejected_new.text)
 
-    def test_user_and_preset_tags_reject_control_characters(self):
+    def test_user_and_resource_tags_reject_control_characters(self):
         admin_id = self.insert_user("root", role="system_admin")
         with patch.object(settings, "user_custom_tags", True), self.client_for(admin_id) as client:
             user_response = client.post(
@@ -357,7 +372,13 @@ class UserManagementTests(unittest.TestCase):
             )
             self.assertEqual(preset_response.status_code, 400, preset_response.text)
 
-    def test_tag_usage_and_rename_cover_users_resources_and_shows(self):
+            user_tag_response = client.post(
+                "/api/admin/user-tags",
+                json={"tags": ["team\u0000hidden"]},
+            )
+            self.assertEqual(user_tag_response.status_code, 400, user_tag_response.text)
+
+    def test_resource_tag_usage_and_rename_do_not_touch_user_tags(self):
         admin_id = self.insert_user("root", role="system_admin")
         tagged_user = self.insert_user("tagged", tags_value="team-red")
         tag_id = self.create_tag("team-red", admin_id)
@@ -392,7 +413,7 @@ class UserManagementTests(unittest.TestCase):
             listed = client.get("/api/admin/tags")
             self.assertEqual(listed.status_code, 200, listed.text)
             item = next(item for item in listed.json()["tags"] if item["id"] == tag_id)
-            self.assertEqual(item["usage_count"], 3)
+            self.assertEqual(item["usage_count"], 2)
 
             renamed = client.put(f"/api/admin/tags/{tag_id}", json={"name": "team-blue"})
             self.assertEqual(renamed.status_code, 200, renamed.text)
@@ -400,7 +421,7 @@ class UserManagementTests(unittest.TestCase):
 
         self.assertEqual(
             self.db.execute("SELECT tags FROM users WHERE id = ?", (tagged_user,)).fetchone()[0],
-            "team-blue",
+            "team-red",
         )
         self.assertEqual(
             self.db.execute("SELECT tags FROM resources WHERE id = ?", (resource_id,)).fetchone()[0],
@@ -412,8 +433,80 @@ class UserManagementTests(unittest.TestCase):
         )
         self.assertEqual(
             self.db.execute("SELECT tag_name FROM user_tags WHERE user_id = ?", (tagged_user,)).fetchone()[0],
+            "team-red",
+        )
+
+    def test_user_tags_are_independent_and_rename_only_assigned_users(self):
+        admin_id = self.insert_user("root", role="system_admin")
+        regular_user = self.insert_user("member", tags_value="team-red")
+        resource_tag_id = self.create_tag("team-red", admin_id)
+        user_tag_id = self.create_user_tag("team-red", admin_id)
+        timestamp = now_iso()
+        resource_id = int(
+            self.db.execute(
+                """
+                INSERT INTO resources (
+                    name, owner_id, subject, tags, status, visibility_scope,
+                    management_scope, secrecy_level, created_at, updated_at
+                ) VALUES ('Resource', ?, '', 'team-red', 'active', 'public',
+                          'private', 'public', ?, ?)
+                """,
+                (admin_id, timestamp, timestamp),
+            ).lastrowid
+        )
+        self.db.commit()
+
+        with self.client_for(admin_id) as client:
+            resource_tags = client.get("/api/admin/tags")
+            user_tags = client.get("/api/admin/user-tags")
+            self.assertEqual(resource_tags.status_code, 200, resource_tags.text)
+            self.assertEqual(user_tags.status_code, 200, user_tags.text)
+            self.assertEqual(
+                next(item for item in resource_tags.json()["tags"] if item["id"] == resource_tag_id)["usage_count"],
+                1,
+            )
+            self.assertEqual(
+                next(item for item in user_tags.json()["tags"] if item["id"] == user_tag_id)["usage_count"],
+                1,
+            )
+
+            renamed = client.put(
+                f"/api/admin/user-tags/{user_tag_id}",
+                json={"name": "team-blue"},
+            )
+            self.assertEqual(renamed.status_code, 200, renamed.text)
+
+        self.assertEqual(
+            self.db.execute("SELECT tags FROM users WHERE id = ?", (regular_user,)).fetchone()[0],
             "team-blue",
         )
+        self.assertEqual(
+            self.db.execute("SELECT tag_name FROM user_tags WHERE user_id = ?", (regular_user,)).fetchone()[0],
+            "team-blue",
+        )
+        self.assertEqual(
+            self.db.execute("SELECT tags FROM resources WHERE id = ?", (resource_id,)).fetchone()[0],
+            "team-red",
+        )
+        self.assertEqual(
+            self.db.execute("SELECT name FROM tags WHERE id = ?", (resource_tag_id,)).fetchone()[0],
+            "team-red",
+        )
+
+    def test_non_admin_cannot_read_or_manage_user_tag_definitions(self):
+        admin_id = self.insert_user("root", role="system_admin")
+        regular_id = self.insert_user("member")
+        tag_id = self.create_user_tag("department-sales", admin_id)
+        with self.client_for(regular_id) as client:
+            for method, path, body in (
+                ("get", "/api/user-tags", None),
+                ("get", "/api/admin/user-tags", None),
+                ("post", "/api/admin/user-tags", {"tags": ["department-rd"]}),
+                ("put", f"/api/admin/user-tags/{tag_id}", {"name": "department-growth"}),
+                ("delete", f"/api/admin/user-tags/{tag_id}", None),
+            ):
+                response = getattr(client, method)(path, json=body) if body is not None else getattr(client, method)(path)
+                self.assertEqual(response.status_code, 403, (method, path, response.text))
 
     def test_transfer_delete_moves_all_user_scoped_data_and_records_audit(self):
         admin_id = self.insert_user("root", role="system_admin")
@@ -1134,6 +1227,15 @@ class UserSchemaMigrationTests(unittest.TestCase):
                     row["tag_name"]
                     for row in migrated.execute(
                         "SELECT tag_name FROM user_tags WHERE user_id = 1"
+                    ).fetchall()
+                },
+                {"team-a", "team-b"},
+            )
+            self.assertEqual(
+                {
+                    row["name"]
+                    for row in migrated.execute(
+                        "SELECT name FROM user_tag_definitions"
                     ).fetchall()
                 },
                 {"team-a", "team-b"},

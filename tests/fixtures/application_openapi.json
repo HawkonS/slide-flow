@@ -1954,6 +1954,30 @@
         }
       }
     },
+    "/api/user-tags": {
+      "get": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "List User Tags",
+        "description": "Return user-tag definitions for administrative user editors.",
+        "operationId": "list_user_tags_api_user_tags_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response List User Tags Api User Tags Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/tags": {
       "get": {
         "tags": [
@@ -2003,6 +2027,71 @@
                   "additionalProperties": true,
                   "type": "object",
                   "title": "Response Admin Create Tags Api Admin Tags Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/user-tags": {
+      "get": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "Admin List User Tags",
+        "description": "Return user-tag definitions and assigned-user counts.",
+        "operationId": "admin_list_user_tags_api_admin_user_tags_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Admin List User Tags Api Admin User Tags Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "Admin Create User Tags",
+        "operationId": "admin_create_user_tags_api_admin_user_tags_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TagsCreatePayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Admin Create User Tags Api Admin User Tags Post"
                 }
               }
             }
@@ -2145,6 +2234,102 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Admin Delete Tag Api Admin Tags  Tag Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/user-tags/{tag_id}": {
+      "put": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "Admin Update User Tag",
+        "operationId": "admin_update_user_tag_api_admin_user_tags__tag_id__put",
+        "parameters": [
+          {
+            "name": "tag_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Tag Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TagUpdatePayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Admin Update User Tag Api Admin User Tags  Tag Id  Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "Admin Delete User Tag",
+        "operationId": "admin_delete_user_tag_api_admin_user_tags__tag_id__delete",
+        "parameters": [
+          {
+            "name": "tag_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Tag Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Admin Delete User Tag Api Admin User Tags  Tag Id  Delete"
                 }
               }
             }

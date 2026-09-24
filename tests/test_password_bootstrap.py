@@ -70,6 +70,15 @@ def _db() -> sqlite3.Connection:
             tag_name TEXT NOT NULL,
             PRIMARY KEY (user_id, tag_name)
         );
+        CREATE TABLE user_tag_definitions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            category TEXT NOT NULL DEFAULT '未分类',
+            label TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_by INTEGER,
+            created_at TEXT NOT NULL
+        );
         CREATE TABLE admin_audit_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             actor_user_id INTEGER,

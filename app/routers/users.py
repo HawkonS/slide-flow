@@ -141,19 +141,19 @@ def _validated_user_tags(
 ) -> str:
     normalised = _normalise_user_tags(value)
     tags = [tag for tag in normalised.split(",") if tag]
-    if tags and not settings.user_custom_tags:
+    if tags:
         placeholders = ",".join("?" for _ in tags)
         existing = {
             row["name"]
             for row in db.execute(
-                f"SELECT name FROM tags WHERE name IN ({placeholders})",
+                f"SELECT name FROM user_tag_definitions WHERE name IN ({placeholders})",
                 tags,
             ).fetchall()
         }
         historical = set(_normalise_user_tags(existing_value).split(",")) - {""}
         missing = [tag for tag in tags if tag not in existing and tag not in historical]
         if missing:
-            raise HTTPException(400, f"以下标签不是预设标签：{'、'.join(missing[:5])}")
+            raise HTTPException(400, f"以下标签不是已定义的用户标签：{'、'.join(missing[:5])}")
     return normalised
 
 
@@ -245,7 +245,7 @@ def list_users(
         for row in db.execute(
             """
             SELECT name FROM (
-                SELECT name, sort_order, id, 0 AS source_order FROM tags
+                SELECT name, sort_order, id, 0 AS source_order FROM user_tag_definitions
                 UNION ALL
                 SELECT DISTINCT tag_name AS name, 2147483647, 2147483647, 1 FROM user_tags
             )
@@ -800,6 +800,7 @@ def transfer_and_delete_user(
             ("task_events", "owner_id"),
             ("resource_import_commits", "owner_id"),
             ("tags", "created_by"),
+            ("user_tag_definitions", "created_by"),
         ):
             db.execute(f"UPDATE {table} SET {col} = ? WHERE {col} = ?", (tid, user_id))
 

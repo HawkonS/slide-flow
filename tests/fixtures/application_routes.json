@@ -436,6 +436,14 @@
     ]
   },
   {
+    "path": "/api/user-tags",
+    "name": "list_user_tags",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
     "path": "/api/admin/tags",
     "name": "admin_list_tags",
     "kind": "http",
@@ -444,8 +452,24 @@
     ]
   },
   {
+    "path": "/api/admin/user-tags",
+    "name": "admin_list_user_tags",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
     "path": "/api/admin/tags",
     "name": "admin_create_tags",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/admin/user-tags",
+    "name": "admin_create_user_tags",
     "kind": "http",
     "methods": [
       "POST"
@@ -468,8 +492,24 @@
     ]
   },
   {
+    "path": "/api/admin/user-tags/{tag_id}",
+    "name": "admin_update_user_tag",
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ]
+  },
+  {
     "path": "/api/admin/tags/{tag_id}",
     "name": "admin_delete_tag",
+    "kind": "http",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/admin/user-tags/{tag_id}",
+    "name": "admin_delete_user_tag",
     "kind": "http",
     "methods": [
       "DELETE"

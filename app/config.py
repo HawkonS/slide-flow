@@ -108,7 +108,7 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
             {"key": "app.slow_request_threshold", "label": "慢请求阈值（秒）", "default": "1.0", "type": "float", "hot_reload": True, "desc": "超过该阈值的请求会被记录到慢请求日志"},
             {"key": "app.split_task_timeout", "label": "拆分任务超时（秒）", "default": "600", "type": "int", "hot_reload": False, "desc": "PPT 拆分任务超时时间"},
             {"key": "app.max_concurrent_splits", "label": "最大并发拆分数", "default": "2", "type": "int", "hot_reload": False, "desc": "最大并发的 PPT 拆分任务数"},
-            {"key": "app.user_custom_tags", "label": "允许用户自定义标签", "default": "false", "type": "bool", "hot_reload": True, "desc": "开启后用户可自由创建标签；关闭后只能选择管理员预设标签"},
+            {"key": "app.user_custom_tags", "label": "允许自定义素材标签", "default": "false", "type": "bool", "hot_reload": True, "desc": "开启后素材编辑可自由创建素材标签；关闭后只能选择管理员预设的素材标签"},
         ],
     },
     {

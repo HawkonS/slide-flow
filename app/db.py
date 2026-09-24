@@ -5,6 +5,7 @@ import os
 import queue
 import re
 import sqlite3
+import unicodedata
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from app.config import (
 from app.core.bootstrap import prepare_initial_admin
 from app.core.fonts import normalize_font_name
 
-DB_SCHEMA_VERSION = 13
+DB_SCHEMA_VERSION = 14
 
 
 def now_iso() -> str:
@@ -206,6 +207,16 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_user_tags_name_user
                 ON user_tags(tag_name, user_id);
+
+            CREATE TABLE IF NOT EXISTS user_tag_definitions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                category TEXT NOT NULL DEFAULT '未分类',
+                label TEXT NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL
+            );
 
             CREATE TABLE IF NOT EXISTS admin_audit_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -693,6 +704,50 @@ def _migrate_schema(db: sqlite3.Connection, schema_version: int) -> None:
                     "UPDATE users SET tags = ? WHERE id = ?",
                     (normalised_value, int(row["id"])),
                 )
+
+    # Version 14 separates user-label definitions from resource-label
+    # definitions.  Existing assignments are promoted into the new definition
+    # table so upgrades never make an already assigned label disappear from
+    # the user editor.
+    if schema_version < 14:
+        existing_names = {
+            str(row["tag_name"]).strip()
+            for row in db.execute(
+                "SELECT DISTINCT tag_name FROM user_tags WHERE tag_name <> ''"
+            ).fetchall()
+            if str(row["tag_name"] or "").strip()
+        }
+        for row in db.execute("SELECT tags FROM users WHERE tags <> ''").fetchall():
+            existing_names.update(
+                tag.strip()
+                for tag in re.split(r"[，,\s]+", row["tags"] or "")
+                if tag.strip()
+            )
+        next_sort = int(
+            db.execute(
+                "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM user_tag_definitions"
+            ).fetchone()[0]
+        )
+        created_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        for name in sorted(existing_names):
+            if len(name) > 64 or any(unicodedata.category(char).startswith("C") for char in name):
+                continue
+            if re.search(r"[，,\s]", name):
+                continue
+            if "-" in name:
+                category, label = (part.strip() for part in name.split("-", 1))
+                if not category or not label:
+                    category, label = "未分类", name
+            else:
+                category, label = "未分类", name
+            cursor = db.execute(
+                "INSERT OR IGNORE INTO user_tag_definitions "
+                "(name, category, label, sort_order, created_by, created_at) "
+                "VALUES (?, ?, ?, ?, NULL, ?)",
+                (name, category, label, next_sort, created_at),
+            )
+            if cursor.rowcount:
+                next_sort += 1
     db.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_nocase "
         "ON users(username COLLATE NOCASE)"
