@@ -4,7 +4,9 @@ param(
     [string]$InstallRoot = "C:\ProgramData\SlideFlow\WpsRenderer",
     [string]$MainUrl = "http://127.0.0.1:18088",
     [string]$RendererUrl = "http://127.0.0.1:8765",
-    [string]$TokenFile = ""
+    [string]$TokenFile = "",
+    [string]$MainTokenFile = "",
+    [string]$RendererTokenFile = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,16 +25,24 @@ function Assert-LoopbackHttpUrl([string]$Value, [string]$Label) {
 
 $MainUrl = Assert-LoopbackHttpUrl $MainUrl "MainUrl"
 $RendererUrl = Assert-LoopbackHttpUrl $RendererUrl "RendererUrl"
-if (-not $TokenFile) { $TokenFile = Join-Path $InstallRoot "shared\token.txt" }
-if (-not (Test-Path -LiteralPath $TokenFile -PathType Leaf)) { throw "Token file not found: $TokenFile" }
-$token = (Get-Content -LiteralPath $TokenFile -Raw).Trim()
-if ($token.Length -lt 32 -or $token -match '\s') { throw "Renderer token file is invalid." }
-$headers = @{ Authorization = "Bearer $token"; Accept = "application/json" }
+if (-not $MainTokenFile -and $TokenFile) { $MainTokenFile = $TokenFile }
+if (-not $RendererTokenFile -and $TokenFile) { $RendererTokenFile = $TokenFile }
+if (-not $MainTokenFile) { $MainTokenFile = Join-Path $InstallRoot "shared\token.txt" }
+if (-not $RendererTokenFile) { $RendererTokenFile = Join-Path $InstallRoot "shared\token.txt" }
+foreach ($path in @($MainTokenFile, $RendererTokenFile)) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Token file not found: $path" }
+}
+$mainToken = (Get-Content -LiteralPath $MainTokenFile -Raw).Trim()
+$rendererToken = (Get-Content -LiteralPath $RendererTokenFile -Raw).Trim()
+if ($mainToken.Length -lt 32 -or $mainToken -match '\s') { throw "Main token file is invalid." }
+if ($rendererToken.Length -lt 32 -or $rendererToken -match '\s') { throw "Renderer token file is invalid." }
+$mainHeaders = @{ Authorization = "Bearer $mainToken"; Accept = "application/json" }
+$rendererHeaders = @{ Authorization = "Bearer $rendererToken"; Accept = "application/json" }
 
-$renderer = Invoke-RestMethod -Uri "$RendererUrl/v1/health" -Headers $headers -Method Get -TimeoutSec 10
+$renderer = Invoke-RestMethod -Uri "$RendererUrl/v1/health" -Headers $rendererHeaders -Method Get -TimeoutSec 10
 if ($renderer.status -notin @("ok", "draining")) { throw "Renderer health is not ready." }
-$font = Invoke-RestMethod -Uri "$MainUrl/api/renderer/font-sync/status" -Headers $headers -Method Get -TimeoutSec 10
-$render = Invoke-RestMethod -Uri "$MainUrl/api/renderer/render-tasks/status" -Headers $headers -Method Get -TimeoutSec 10
+$font = Invoke-RestMethod -Uri "$MainUrl/api/renderer/font-sync/status" -Headers $mainHeaders -Method Get -TimeoutSec 10
+$render = Invoke-RestMethod -Uri "$MainUrl/api/renderer/render-tasks/status" -Headers $mainHeaders -Method Get -TimeoutSec 10
 
 Write-Host "Bridge verification passed."
 Write-Host "  Renderer status: $($renderer.status)"

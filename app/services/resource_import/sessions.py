@@ -54,7 +54,7 @@ def _resource_import_root() -> Path:
     return root
 
 
-def reserve_resource_import_directory() -> tuple[str, Path]:
+def reserve_resource_import_directory(*, required_bytes: int = 0) -> tuple[str, Path]:
     """Atomically admit one upload across all Gunicorn workers.
 
     Counting directories without a lock lets simultaneous prepare requests all
@@ -70,7 +70,8 @@ def reserve_resource_import_directory() -> tuple[str, Path]:
                      if child.is_dir() and not child.is_symlink() and _RESOURCE_IMPORT_SESSION_ID_RE.fullmatch(child.name))
         if active >= RESOURCE_IMPORT_MAX_ACTIVE_SESSIONS:
             raise HTTPException(429, "导入任务过多，请等待已有任务完成")
-        if shutil.disk_usage(root).free < RESOURCE_IMPORT_MIN_FREE_BYTES:
+        required_free = RESOURCE_IMPORT_MIN_FREE_BYTES + max(0, int(required_bytes))
+        if shutil.disk_usage(root).free < required_free:
             raise HTTPException(507, "服务器临时空间不足，请稍后重试")
         session_id = uuid.uuid4().hex
         directory = root / session_id

@@ -79,7 +79,7 @@ async def _save_resource_import_upload(
                 if written > max_bytes:
                     raise HTTPException(413, "导入文件过大，请压缩后重试")
                 if total_bytes + written > RESOURCE_IMPORT_MAX_TOTAL_BYTES:
-                    raise HTTPException(413, "本批导入文件总大小超过 512 MB")
+                    raise HTTPException(413, "本批导入文件总大小超过 10 GB")
                 handle.write(chunk)
         await upload.seek(0)
         return target, written

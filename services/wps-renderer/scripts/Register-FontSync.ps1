@@ -6,6 +6,8 @@ param(
     [Parameter(Mandatory = $true)][string]$Url,
     [string]$Token = "",
     [string]$TokenFile = "",
+    [string]$ConfigFile = "",
+    [string]$SyncTokenFile = "",
     [int]$PollSeconds = 5,
     [string]$TaskName = "SlideFlow-WPS-Font-Sync"
 )
@@ -19,15 +21,26 @@ if ($PollSeconds -lt 1 -or $PollSeconds -gt 300) { throw "PollSeconds must be be
 $layout = Get-RendererLayout $InstallRoot "config.json"
 $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 $existing = Get-RendererManagedTask $TaskName 'SlideFlow WPS font pull protocol v1'
-if ($existing -and $existing.Principal.UserId -and [string]$existing.Principal.UserId -ne $currentIdentity) { throw "Refusing to take over a font sync task owned by another Windows account." }
+$currentAccount = ($currentIdentity -split '\\')[-1]
+$existingAccount = if ($existing -and $existing.Principal.UserId) { ([string]$existing.Principal.UserId -split '\\')[-1] } else { "" }
+if ($existingAccount -and $existingAccount -ne $currentAccount) { throw "Refusing to take over a font sync task owned by another Windows account." }
 if (-not $Python) { $Python = Join-Path $layout.CodeRoot ".venv\Scripts\python.exe" }
 $Python = Resolve-RendererExecutable $Python "Python"
 if ($TokenFile) { $Token = (Get-Content -LiteralPath (Resolve-RendererPath $TokenFile) -Raw).Trim() }
 if (-not $Token) { $Token = Read-RendererToken $layout.Token }
 Assert-RendererToken $Token
-$syncConfig = Join-Path $layout.Shared "font-sync.json"
-$syncToken = Join-Path $layout.Shared "font-sync.token"
+$syncConfig = if ($ConfigFile) { Resolve-RendererPath $ConfigFile } else { Join-Path $layout.Shared "font-sync.json" }
+$syncParent = Split-Path -Parent $syncConfig
+$syncStem = [IO.Path]::GetFileNameWithoutExtension($syncConfig)
+$syncToken = if ($SyncTokenFile) {
+    Resolve-RendererPath $SyncTokenFile
+} elseif ($ConfigFile) {
+    Join-Path $syncParent ($syncStem + ".token")
+} else {
+    Join-Path $layout.Shared "font-sync.token"
+}
 New-Item -ItemType Directory -Path $layout.Shared -Force | Out-Null
+New-Item -ItemType Directory -Path $syncParent -Force | Out-Null
 Set-RendererToken $syncToken $Token ([Security.Principal.WindowsIdentity]::GetCurrent().Name) | Out-Null
 @{ url = $Url; token_file = $syncToken; interval = $PollSeconds; install_dir = (Join-Path $env:LOCALAPPDATA "Microsoft\Windows\Fonts") } |
     ConvertTo-Json | Set-Content -LiteralPath $syncConfig -Encoding UTF8

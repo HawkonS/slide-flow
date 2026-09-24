@@ -69,6 +69,10 @@ class RenderPull:
         if not token and config.get("token_file"):
             token = Path(config["token_file"]).read_text(encoding="utf-8").strip()
         self.token = token
+        renderer_token = str(config.get("renderer_token", ""))
+        if not renderer_token and config.get("renderer_token_file"):
+            renderer_token = Path(config["renderer_token_file"]).read_text(encoding="utf-8").strip()
+        self.renderer_token = renderer_token or self.token
         self.worker_id = str(config.get("worker_id") or f"{socket.gethostname()}-{os.getpid()}")
         self.wait_seconds = max(0, min(25, int(config.get("wait_seconds", 25))))
         self.retry_seconds = max(1, min(60, int(config.get("retry_seconds", 5))))
@@ -77,8 +81,9 @@ class RenderPull:
         self.work_dir.mkdir(parents=True, exist_ok=True)
         self._validate_origin(self.base_url, "main task URL", allow_https_any=True)
         self._validate_origin(self.renderer_url, "local renderer URL", loopback_only=True)
-        if len(self.token) < 32 or any(ord(char) < 33 or ord(char) > 126 for char in self.token):
-            raise ValueError("render pull token is invalid")
+        for name, value in (("render pull token", self.token), ("renderer token", self.renderer_token)):
+            if len(value) < 32 or any(ord(char) < 33 or ord(char) > 126 for char in value):
+                raise ValueError(f"{name} is invalid")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", self.worker_id):
             raise ValueError("worker_id is invalid")
 
@@ -98,9 +103,9 @@ class RenderPull:
         if not allow_https_any and not loopback:
             raise ValueError(f"{label} must be loopback")
 
-    def _request(self, base: str, method: str, path: str, body=None, timeout=30, headers=None):
+    def _request(self, base: str, method: str, path: str, body=None, timeout=30, headers=None, token=None):
         data = None
-        request_headers = {"Authorization": "Bearer " + self.token, "Accept": "application/json"}
+        request_headers = {"Authorization": "Bearer " + (token or self.token), "Accept": "application/json"}
         request_headers.update(headers or {})
         if body is not None:
             data = json.dumps(body, separators=(",", ":")).encode("utf-8")
@@ -119,7 +124,7 @@ class RenderPull:
         return self._request(self.base_url, method, path, body, timeout)
 
     def _renderer(self, method, path, body=None, timeout=30, headers=None):
-        return self._request(self.renderer_url, method, path, body, timeout, headers)
+        return self._request(self.renderer_url, method, path, body, timeout, headers, self.renderer_token)
 
     def claim(self):
         query = urllib.parse.urlencode({"worker_id": self.worker_id, "wait_seconds": self.wait_seconds})
@@ -167,7 +172,7 @@ class RenderPull:
         key = uuid.uuid4().hex
         bundle_sha = _sha256_file(bundle)
         headers = {
-            "Authorization": "Bearer " + self.token,
+            "Authorization": "Bearer " + self.renderer_token,
             "Accept": "application/json",
             "Content-Type": "application/zip",
             "Idempotency-Key": key,
@@ -235,7 +240,7 @@ class RenderPull:
             raise ValueError("local renderer page metadata is invalid")
         request = urllib.request.Request(
             self.renderer_url + f"/v1/jobs/{job_id}/pages/{meta['index']}",
-            headers={"Authorization": "Bearer " + self.token, "Accept": "image/png"},
+            headers={"Authorization": "Bearer " + self.renderer_token, "Accept": "image/png"},
         )
         sha, written = hashlib.sha256(), 0
         with urllib.request.urlopen(request, timeout=180) as response, target.open("xb") as output:

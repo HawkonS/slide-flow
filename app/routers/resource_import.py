@@ -138,16 +138,18 @@ async def prepare_resource_import(
             raise HTTPException(400, "图片文件名不能重复，请重命名后重新选择")
         image_names.add(image_name)
     if ppt_file.size is not None and ppt_file.size > RESOURCE_IMPORT_MAX_PPT_BYTES:
-        raise HTTPException(413, "PPT 文件不能超过 256 MB")
+        raise HTTPException(413, "PPT 文件不能超过 10 GB")
     if any(image.size is not None and image.size > RESOURCE_IMPORT_MAX_IMAGE_BYTES for image in image_uploads):
         raise HTTPException(413, "单张图片不能超过 64 MB")
     if sum(int(upload.size or 0) for upload in [ppt_file, *image_uploads]) > RESOURCE_IMPORT_MAX_TOTAL_BYTES:
-        raise HTTPException(413, "本批导入文件总大小超过 512 MB")
+        raise HTTPException(413, "本批导入文件总大小超过 10 GB")
 
     # Reject before multipart data is copied into a new session when the host
     # is already under pressure. The same guard is repeated by the renderer;
     # this one prevents uploads from filling the volume before rendering starts.
-    session_id, temp_dir = reserve_resource_import_directory()
+    session_id, temp_dir = reserve_resource_import_directory(
+        required_bytes=sum(int(upload.size or 0) for upload in [ppt_file, *image_uploads]),
+    )
     try:
         source_path, total_bytes = await _save_resource_import_upload(
             ppt_file, temp_dir, "source_", max_bytes=RESOURCE_IMPORT_MAX_PPT_BYTES, total_bytes=0, stage_oss=True,
@@ -156,7 +158,7 @@ async def prepare_resource_import(
             await _run_resource_import_job(_validate_import_ppt_package, source_path)
         source_path = await _run_resource_import_job(_normalize_import_ppt, source_path, temp_dir)
         if source_path.stat().st_size > RESOURCE_IMPORT_MAX_PPT_BYTES:
-            raise HTTPException(413, "转换后的 PPT 文件不能超过 256 MB")
+            raise HTTPException(413, "转换后的 PPT 文件不能超过 10 GB")
         await _run_resource_import_job(_validate_import_ppt_package, source_path)
         n_slides = await _run_resource_import_job(slide_count, source_path)
         if n_slides <= 0:

@@ -254,10 +254,10 @@ export function FontsPage() {
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="page-title">标准字体</h1>
-            <Badge variant="secondary" className="rounded-md px-2 text-[11px]">{fonts.length} 个字体</Badge>
+            {isAdmin && <Badge variant="secondary" className="rounded-md px-2 text-[11px]">可维护</Badge>}
           </div>
           <p className="mt-1.5 text-sm text-muted-foreground">
-            {isAdmin ? "统一管理字体资源，上传后可按需安装到服务器。" : "浏览字体资源并下载到本机使用。"}
+            统一管理用于 PPT 导入、渲染与导出的字体资源。
           </p>
         </div>
         {isAdmin && (

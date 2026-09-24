@@ -38,6 +38,15 @@ class RenderPullTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 RenderPull(config)
 
+    def test_renderer_can_use_a_separate_local_token(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = self.config(temp)
+            config["token"] = "main-token-" + "m" * 40
+            config["renderer_token"] = "renderer-token-" + "r" * 40
+            worker = RenderPull(config)
+            self.assertEqual(worker.token, config["token"])
+            self.assertEqual(worker.renderer_token, config["renderer_token"])
+
     def test_font_sync_also_rejects_remote_plain_http(self):
         with tempfile.TemporaryDirectory() as temp:
             with self.assertRaises(ValueError):

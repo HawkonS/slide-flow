@@ -133,9 +133,10 @@ class ResourceImportSafetyTests(unittest.TestCase):
             return {"unexpected": True}
 
         with TestClient(app) as client:
-            response = client.post("/api/resource-import/prepare", content=b"x", headers={"Content-Length": str(514 * 1024 * 1024)})
+            oversized_length = import_limits.RESOURCE_IMPORT_MAX_TOTAL_BYTES + 2 * 1024 * 1024
+            response = client.post("/api/resource-import/prepare", content=b"x", headers={"Content-Length": str(oversized_length)})
             self.assertEqual(response.status_code, 413)
-            response = client.post("/api/tasks/split-import", content=b"x", headers={"Content-Length": str(514 * 1024 * 1024)})
+            response = client.post("/api/tasks/split-import", content=b"x", headers={"Content-Length": str(oversized_length)})
             self.assertEqual(response.status_code, 413)
         with patch.object(import_guard, "RESOURCE_IMPORT_MAX_TOTAL_BYTES", 0), TestClient(app) as client:
             boundary = b"--guard\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.pptx\"\r\n\r\n"

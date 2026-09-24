@@ -333,7 +333,9 @@ async def create_resource_import_task(
     # before creating a task so a missing OSS setup gets a clear 503 instead
     # of a task that can never process its upload.
     oss_storage.ensure_configured()
-    session_id, temp_dir = reserve_resource_import_directory()
+    session_id, temp_dir = reserve_resource_import_directory(
+        required_bytes=int(ppt_file.size or 0),
+    )
     params = {
         "name_prefix": name_prefix,
         "subject": subject,

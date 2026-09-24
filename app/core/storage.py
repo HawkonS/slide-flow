@@ -91,7 +91,7 @@ async def stage_upload_via_oss(
     if max_bytes is not None and size > max_bytes:
         raise HTTPException(413, "上传文件过大，请压缩后重试")
     if total_limit is not None and total_bytes + size > total_limit:
-        raise HTTPException(413, "本批导入文件总大小超过 512 MB")
+        raise HTTPException(413, "本批导入文件总大小超过 10 GB")
 
     suffix = safe_suffix(upload.filename)
     target = dest_dir / f"{prefix}{uuid.uuid4().hex[:10]}{suffix}"
