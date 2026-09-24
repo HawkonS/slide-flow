@@ -4,6 +4,7 @@ __pycache__/
 data/
 config.json
 token.txt
+windows-renderer.config.json
 *.log
 logs/
 .runtime/
