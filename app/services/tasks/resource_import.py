@@ -111,7 +111,10 @@ def _execute_resource_import_task(task_id: int, session_id: str) -> None:
             "slide_count": count,
             "fonts": fonts,
             "missing_fonts": missing,
-            "preview_status": session["preview_status"],
+            "preview_status": session["preview_status"] if missing else "rendering",
+            "render_stage": "font_check" if missing else "queueing",
+            "render_completed": 0,
+            "render_total": count,
         })
         _task_update(db, task_id, total=count, progress=0, params=params)
         if missing:
@@ -124,8 +127,6 @@ def _execute_resource_import_task(task_id: int, session_id: str) -> None:
         with _resource_import_operation(session, wait=True):
             session = _session_for_task(session_id)
             ensure_render_task(session)
-        params.update({"workflow_state": "rendering", "preview_status": "rendering"})
-        _task_update(db, task_id, status="pending", message="等待 Windows 转换节点领取任务…", progress=0, total=count, params=params)
     except Exception as exc:
         logger.exception("Resource import task %s failed", task_id)
         row = db.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()

@@ -81,7 +81,13 @@ export function LoginPage() {
     defaultValues: { username: "", password: "" },
   });
 
-  const from = ((location.state as { from?: string } | null)?.from) || "/home";
+  const requestedFrom =
+    ((location.state as { from?: string } | null)?.from) ||
+    sessionStorage.getItem("login_return_to") ||
+    "/home";
+  const from = requestedFrom.startsWith("/") && !requestedFrom.startsWith("//")
+    ? requestedFrom
+    : "/home";
 
   // 加载飞书 SSO 配置
   useEffect(() => {
@@ -141,6 +147,7 @@ export function LoginPage() {
         // 回调已返回完整用户信息，直接登录跳转，无需再请求 /api/me
         setUser(res.user);
         toast.success(`欢迎，${res.user.name || res.user.username}`);
+        sessionStorage.removeItem("login_return_to");
         navigate(from, { replace: true });
       })
       .catch((e) => {
@@ -163,6 +170,7 @@ export function LoginPage() {
       // 登录接口已返回完整用户信息，直接跳转，无需再请求 /api/me
       setUser(user);
       toast.success(`欢迎回来，${user.name || user.username}`);
+      sessionStorage.removeItem("login_return_to");
       navigate(from, { replace: true });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "登录失败");
@@ -182,6 +190,7 @@ export function LoginPage() {
       return;
     }
     sessionStorage.setItem("feishu_sso_state", state);
+    sessionStorage.setItem("login_return_to", from);
     const authUrl =
       `https://open.feishu.cn/open-apis/authen/v1/authorize` +
       `?app_id=${encodeURIComponent(feishuConfig.app_id)}` +

@@ -564,7 +564,7 @@ export default function ResourceManagePage() {
                             "flex h-9 w-16 items-center justify-center overflow-hidden rounded border bg-muted",
                             "cursor-pointer",
                           )}
-                          onClick={() => navigate(`/resources/${r.id}`)}
+                          onClick={() => r.detail_token && navigate(`/resources/${encodeURIComponent(r.detail_token)}`)}
                         >
                           {preview ? (
                             <img
@@ -580,7 +580,7 @@ export default function ResourceManagePage() {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <button type="button" className="max-w-[200px] truncate text-left font-medium hover:text-foreground hover:underline" onClick={() => navigate(`/resources/${r.id}`)} title={r.name}>{r.name}</button>
+                        <button type="button" className="max-w-[200px] truncate text-left font-medium hover:text-foreground hover:underline" onClick={() => r.detail_token && navigate(`/resources/${encodeURIComponent(r.detail_token)}`)} title={r.name}>{r.name}</button>
                       </TableCell>
                       <TableCell className="max-w-[120px] truncate text-sm text-muted-foreground">
                         {r.subject || DEFAULT_RESOURCE_SUBJECT}

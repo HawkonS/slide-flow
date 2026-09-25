@@ -300,6 +300,14 @@
     ]
   },
   {
+    "path": "/api/admin/users/selection-ids",
+    "name": "list_user_selection_ids",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
     "path": "/api/users/options",
     "name": "user_options",
     "kind": "http",
@@ -444,6 +452,30 @@
     ]
   },
   {
+    "path": "/api/subject-tags",
+    "name": "list_subject_tags",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/secrecy-tags",
+    "name": "list_secrecy_tags",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/status-tags",
+    "name": "list_status_tags",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
     "path": "/api/admin/tags",
     "name": "admin_list_tags",
     "kind": "http",
@@ -460,6 +492,14 @@
     ]
   },
   {
+    "path": "/api/admin/{domain}-tags",
+    "name": "admin_list_metadata_tags",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
     "path": "/api/admin/tags",
     "name": "admin_create_tags",
     "kind": "http",
@@ -470,6 +510,14 @@
   {
     "path": "/api/admin/user-tags",
     "name": "admin_create_user_tags",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/admin/{domain}-tags",
+    "name": "admin_create_metadata_tags",
     "kind": "http",
     "methods": [
       "POST"
@@ -500,6 +548,14 @@
     ]
   },
   {
+    "path": "/api/admin/{domain}-tags/{tag_id}",
+    "name": "admin_update_metadata_tag",
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ]
+  },
+  {
     "path": "/api/admin/tags/{tag_id}",
     "name": "admin_delete_tag",
     "kind": "http",
@@ -516,6 +572,14 @@
     ]
   },
   {
+    "path": "/api/admin/{domain}-tags/{tag_id}",
+    "name": "admin_delete_metadata_tag",
+    "kind": "http",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
     "path": "/api/admin/download-records",
     "name": "list_download_records",
     "kind": "http",
@@ -526,6 +590,14 @@
   {
     "path": "/api/resource-import/{session_id}/result",
     "name": "resource_import_result",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/resource-import/{session_id}/status",
+    "name": "resource_import_status",
     "kind": "http",
     "methods": [
       "GET"
@@ -590,6 +662,14 @@
   {
     "path": "/api/resources/{resource_id}/share-links",
     "name": "list_share_links",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/resource-share-links",
+    "name": "list_managed_share_links",
     "kind": "http",
     "methods": [
       "GET"
@@ -662,6 +742,14 @@
   {
     "path": "/api/resources/{resource_id}",
     "name": "get_resource",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/resources/by-key/{detail_token}",
+    "name": "get_resource_by_detail_token",
     "kind": "http",
     "methods": [
       "GET"
@@ -793,6 +881,14 @@
     "kind": "http",
     "methods": [
       "GET"
+    ]
+  },
+  {
+    "path": "/api/templates/compose-download",
+    "name": "compose_template_download",
+    "kind": "http",
+    "methods": [
+      "POST"
     ]
   },
   {

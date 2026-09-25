@@ -11,6 +11,7 @@ import {
   Settings,
   ScrollText,
   Server,
+  Share2,
   Tag,
   Type,
   Users,
@@ -54,6 +55,7 @@ const NAV_SECTIONS: { title: string; items: NavItem[] }[] = [
   {
     title: "管理",
     items: [
+      { key: "shares", to: "/manage/shares", label: "分享管理", icon: Share2 },
       { key: "tasks", to: "/manage/tasks", label: "任务管理", icon: ListTodo },
       { key: "tags", to: "/manage/tags", label: "标签管理", icon: Tag },
     ],

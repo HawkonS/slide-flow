@@ -4,7 +4,9 @@ import shutil
 import uuid
 from app.core.resource_import_fonts import replace_ppt_fonts
 
-RESOURCE_IMPORT_RENDERER_VERSION = "wps-pull-v3-4k"
+# The split output is part of the immutable render attempt. Bump this when
+# package-level cleanup changes so old sessions cannot commit stale page files.
+RESOURCE_IMPORT_RENDERER_VERSION = "wps-pull-v3-4k-fontless"
 IMPORT_EXTENSIONS = {".pptx", ".potx", ".ppsx"}
 
 

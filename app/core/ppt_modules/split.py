@@ -28,6 +28,35 @@ from .xml import _serialize_rels_xml, _serialize_xml_with_ns_preservation
 _logger = logging.getLogger(__name__)
 
 
+def _is_embedded_font_relationship(relationship: ET.Element) -> bool:
+    """Return whether an OPC relationship points to an embedded font part."""
+    return relationship.attrib.get("Type", "").rstrip("/").endswith("/font")
+
+
+def _strip_embedded_font_metadata(
+    presentation_root: ET.Element,
+    rels_root: ET.Element,
+) -> set[str]:
+    """Remove embedded-font declarations and return their package part paths."""
+    font_parts: set[str] = set()
+    for relationship in list(rels_root):
+        if not _is_embedded_font_relationship(relationship):
+            continue
+        target = relationship.attrib.get("Target", "")
+        if target and relationship.attrib.get("TargetMode", "Internal") != "External":
+            font_parts.add(_resolve_rel_path("ppt/", target))
+        rels_root.remove(relationship)
+
+    for parent in presentation_root.iter():
+        for child in list(parent):
+            if _local_name(child.tag) == "embeddedFontLst":
+                parent.remove(child)
+
+    for attribute in ("embedTrueTypeFonts", "saveSubsetFonts"):
+        presentation_root.attrib.pop(attribute, None)
+    return font_parts
+
+
 def _collect_master_deps(master_path: str, entry_map: dict[str, bytes], needed: set[str]) -> None:
     """Collect slideMaster dependencies (theme + media + all referenced layouts).
 
@@ -197,16 +226,25 @@ def _get_shared_entries(entry_map: dict[str, bytes]) -> set[str]:
 
 
 def _filter_content_types(content_types_xml: bytes, needed_entries: set[str]) -> bytes:
-    """Filter [Content_Types].xml to only keep Override entries for needed parts."""
+    """Filter [Content_Types].xml to only keep entries for needed parts."""
     try:
         root = ET.fromstring(content_types_xml)
     except ET.ParseError:
         return content_types_xml
+    needed_extensions = {
+        Path(name).suffix.lstrip(".").lower()
+        for name in needed_entries
+        if Path(name).suffix
+    }
     overrides = root.findall(f"{{{PKG_CT_NS}}}Override")
     for override in overrides:
         part_name = override.get('PartName', '').lstrip('/')
         if part_name not in needed_entries:
             root.remove(override)
+    for default in root.findall(f"{{{PKG_CT_NS}}}Default"):
+        extension = default.get("Extension", "").strip().lower()
+        if extension and extension not in needed_extensions:
+            root.remove(default)
     ET.register_namespace('', PKG_CT_NS)
     return ET.tostring(root, encoding='utf-8', xml_declaration=True)
 
@@ -359,6 +397,7 @@ def split_pptx_to_single_pages(pptx_path: Path, output_dir: Path, progress_callb
 
     presentation_root = ET.fromstring(presentation_xml)
     rels_root = ET.fromstring(rels_xml)
+    embedded_font_parts = _strip_embedded_font_metadata(presentation_root, rels_root)
     slide_list = presentation_root.find(f"{{{P_NS}}}sldIdLst")
     if slide_list is None:
         return []
@@ -394,6 +433,8 @@ def split_pptx_to_single_pages(pptx_path: Path, output_dir: Path, progress_callb
             page_deps, master_path, layout_path = _collect_slide_deps_by_path(slide_path, entry_map)
             needed = shared_entries | page_deps
             needed = _complete_slide_dependencies(entry_map, needed, slide_path, master_path, layout_path)
+            needed.difference_update(embedded_font_parts)
+            needed = {name for name in needed if not name.startswith("ppt/fonts/")}
         else:
             raise ValueError(f"第 {index} 页的幻灯片关系无效，不能安全拆分")
         page_plans.append((index, slide_id, needed, kept_rid, master_path, layout_path))

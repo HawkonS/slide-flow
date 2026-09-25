@@ -6,7 +6,7 @@ from app.core.fonts import missing_fonts
 from app.core.permissions import is_system_admin
 from app.core.permissions import require_admin
 from app.core.permissions import require_user
-from app.core.ppt import detect_ppt_fonts
+from app.core.ppt import detect_ppt_fonts, merge_pptx_files
 from app.core.storage import save_upload
 from app.db import known_font_aliases
 from app.db import now_iso
@@ -15,6 +15,7 @@ from app.routers.dependencies import (
     db_read_dep,
 )
 from app.schemas.templates import (
+    TemplateComposePayload,
     TemplateDeletePayload,
     TemplateOrderPayload,
 )
@@ -272,6 +273,75 @@ def list_templates(
         "all_subjects": all_subjects,
         "all_series": all_series,
     }
+
+
+@router.post(
+    "/api/templates/compose-download",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation": {}
+            }
+        }
+    },
+)
+@_cleanup_oss_materialized
+def compose_template_download(
+    payload: TemplateComposePayload,
+    user: sqlite3.Row = Depends(require_user),
+    db: sqlite3.Connection = Depends(db_read_dep),
+) -> Response:
+    template_ids = [int(template_id) for template_id in payload.template_ids]
+    if len(template_ids) < 2:
+        raise HTTPException(400, "组合下载至少选择 2 个模板")
+    if len(template_ids) > 100:
+        raise HTTPException(400, "单次最多组合 100 个模板")
+    if any(template_id <= 0 for template_id in template_ids):
+        raise HTTPException(400, "模板编号不正确")
+    if len(template_ids) != len(set(template_ids)):
+        raise HTTPException(400, "组合下载不能包含重复模板")
+
+    placeholders = ",".join("?" for _ in template_ids)
+    rows = db.execute(
+        f"SELECT * FROM templates WHERE id IN ({placeholders})",
+        template_ids,
+    ).fetchall()
+    rows_by_id = {int(row["id"]): row for row in rows}
+    if len(rows_by_id) != len(template_ids):
+        raise HTTPException(404, "部分模板不存在")
+    ordered_rows = [rows_by_id[template_id] for template_id in template_ids]
+    if any(not can_view_template(db, row, user) for row in ordered_rows):
+        raise HTTPException(403, "部分模板无可见权限")
+
+    ratios = {str(row["ratio"] or "") for row in ordered_rows}
+    if len(ratios) != 1:
+        raise HTTPException(400, "组合下载需选择相同比例的模板")
+
+    input_paths: list[Path] = []
+    for row in ordered_rows:
+        filename = str(row["office_file_name"] or row["office_path"] or "")
+        if Path(filename).suffix.lower() != ".pptx":
+            raise HTTPException(400, "组合下载目前仅支持 PPTX 模板")
+        path = _resource_file_abs(row["office_path"])
+        if path is None or not path.exists():
+            raise HTTPException(404, f"模板文件不存在：{row['name']}")
+        input_paths.append(path)
+
+    with tempfile.TemporaryDirectory(prefix="slide-flow-template-compose-") as temp_name:
+        output_path = Path(temp_name) / "combined_templates.pptx"
+        try:
+            merge_pptx_files(input_paths, output_path)
+        except (ValueError, zipfile.BadZipFile) as exc:
+            raise HTTPException(400, f"模板组合失败：{exc}") from exc
+        content = output_path.read_bytes()
+
+    filename = f"标准模板组合_{len(template_ids)}页.pptx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        headers={"Content-Disposition": _content_disposition(filename)},
+    )
 
 
 @router.post("/api/templates")

@@ -710,7 +710,11 @@ def _update_parent_task(
     task = db.execute("SELECT params FROM tasks WHERE id=?", (parent,)).fetchone()
     params = json.loads(task["params"] or "{}") if task else {}
     if success:
-        params.update({"workflow_state": "awaiting_confirmation", "preview_status": "ready", "preview_error": None})
+        total = len(_manifest(row, "source_manifest").get("pages", []))
+        params.update({
+            "workflow_state": "awaiting_confirmation", "preview_status": "ready", "preview_error": None,
+            "render_stage": "completed", "render_completed": total, "render_total": total,
+        })
         message, progress = "图片已渲染，等待确认导入", len(_manifest(row, "source_manifest").get("pages", []))
         db.execute(
             "UPDATE tasks SET status='pending', progress=?, total=?, message=?, error_message=NULL, params=?,"
@@ -719,7 +723,10 @@ def _update_parent_task(
         )
     else:
         message = error_message or render_public_message("render_failed")
-        params.update({"workflow_state": "awaiting_render", "preview_status": "error", "preview_error": message})
+        params.update({
+            "workflow_state": "awaiting_render", "preview_status": "error", "preview_error": message,
+            "render_stage": "failed", "render_completed": 0,
+        })
         db.execute(
             "UPDATE tasks SET status='pending', message=?, error_message=?, params=?,"
             " updated_at=strftime('%Y-%m-%dT%H:%M:%S','now','localtime') WHERE id=? AND status<>'cancelled'",

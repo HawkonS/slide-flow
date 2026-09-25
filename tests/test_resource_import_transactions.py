@@ -19,6 +19,7 @@ from app.config import settings
 from app.db import now_iso
 from app.routers.resource_import import commit_resource_import
 from app.routers.resource_import import resource_import_result
+from app.routers.resource_import import resource_import_status
 from app.services import files as import_files
 from app.services.resource_import import commit as import_commit
 from app.services.resource_import import jobs as import_jobs
@@ -81,7 +82,8 @@ class ResourceImportTransactionTests(unittest.TestCase):
             CREATE TABLE users (id INTEGER PRIMARY KEY);
             INSERT INTO users (id) VALUES (1), (2);
             CREATE TABLE resources (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, owner_id INTEGER,
+                id INTEGER PRIMARY KEY AUTOINCREMENT, detail_token TEXT,
+                name TEXT, owner_id INTEGER,
                 subject TEXT, tags TEXT, status TEXT, visibility_scope TEXT,
                 management_scope TEXT, secrecy_level TEXT, current_version INTEGER,
                 updated_by INTEGER, created_at TEXT, updated_at TEXT
@@ -94,6 +96,11 @@ class ResourceImportTransactionTests(unittest.TestCase):
             );
             CREATE TABLE resource_visibility (resource_id INTEGER REFERENCES resources(id), user_id INTEGER REFERENCES users(id));
             CREATE TABLE resource_management (resource_id INTEGER REFERENCES resources(id), user_id INTEGER REFERENCES users(id));
+            CREATE TABLE user_tag_definitions (name TEXT PRIMARY KEY);
+            INSERT INTO user_tag_definitions (name) VALUES ('company-leader');
+            CREATE TABLE user_tags (user_id INTEGER REFERENCES users(id), tag_name TEXT, PRIMARY KEY (user_id, tag_name));
+            CREATE TABLE resource_visibility_tags (resource_id INTEGER REFERENCES resources(id), tag_name TEXT);
+            CREATE TABLE resource_management_tags (resource_id INTEGER REFERENCES resources(id), tag_name TEXT);
             CREATE TABLE resource_import_commits (
                 session_id TEXT PRIMARY KEY, owner_id INTEGER REFERENCES users(id),
                 result_json TEXT NOT NULL, created_at TEXT NOT NULL
@@ -225,6 +232,66 @@ class ResourceImportTransactionTests(unittest.TestCase):
             resource_import_result(session["session_id"], Response(), user={"id": 2}, db=self.db)
         self.assertEqual(caught.exception.status_code, 404)
 
+    def test_status_reports_ready_processing_and_completed_snapshots(self):
+        session = self.session()
+        response = Response()
+        ready = resource_import_status(session["session_id"], response, user=self.user, db=self.db)
+        self.assertEqual(ready, {"status": "ready", "progress": 0, "total": 2, "message": ""})
+        self.assertIn("no-store", response.headers["Cache-Control"])
+
+        session.update(commit_status="processing", commit_progress=1, commit_total=2, commit_message="已保存第 1/2 个单页素材…")
+        import_sessions._write_resource_import_session(session)
+        processing = resource_import_status(session["session_id"], Response(), user=self.user, db=self.db)
+        self.assertEqual(processing, {"status": "processing", "progress": 1, "total": 2, "message": "已保存第 1/2 个单页素材…"})
+
+        self.db.execute(
+            "INSERT INTO resource_import_commits VALUES (?, ?, ?, ?)",
+            (session["session_id"], 1, json.dumps({"created": 2, "resource_ids": [10, 11]}), now_iso()),
+        )
+        self.db.commit()
+        completed = resource_import_status(session["session_id"], Response(), user=self.user, db=self.db)
+        self.assertEqual(completed, {"status": "completed", "created": 2, "progress": 2, "total": 2, "message": "导入完成"})
+
+    def test_commit_publishes_each_page_progress_snapshot(self):
+        session = self.session()
+        snapshots = []
+        write_snapshot = import_commit._write_resource_import_session
+
+        def capture_snapshot(state):
+            snapshots.append(dict(state))
+            write_snapshot(state)
+
+        with patch.object(import_commit, "_write_resource_import_session", side_effect=capture_snapshot):
+            result = asyncio.run(self.commit(session["session_id"]))
+        self.assertEqual(result["created"], 2)
+        self.assertEqual([item["commit_progress"] for item in snapshots], [0, 1, 2])
+        self.assertTrue(all(item["commit_status"] == "processing" for item in snapshots))
+        self.assertEqual([item["commit_total"] for item in snapshots], [2, 2, 2])
+
+    def test_commit_applies_dynamic_tag_grants_to_every_created_resource(self):
+        session = self.session()
+        payload = {
+            **self.payload,
+            "visibility_scope": "partial",
+            "management_scope": "partial",
+            "visible_user_tags": ["company-leader"],
+            "manage_user_tags": ["company-leader"],
+        }
+        result = asyncio.run(self.commit(session["session_id"], payload=payload))
+        self.assertEqual(result["created"], 2)
+        self.assertEqual(
+            self.db.execute(
+                "SELECT COUNT(*) FROM resource_visibility_tags WHERE tag_name = 'company-leader'"
+            ).fetchone()[0],
+            2,
+        )
+        self.assertEqual(
+            self.db.execute(
+                "SELECT COUNT(*) FROM resource_management_tags WHERE tag_name = 'company-leader'"
+            ).fetchone()[0],
+            2,
+        )
+
     def test_concurrent_session_lease_fails_fast_with_conflict(self):
         session = self.session()
         with import_sessions._resource_import_operation(session):
@@ -284,7 +351,10 @@ class ResourceImportTransactionTests(unittest.TestCase):
                 asyncio.run(self.commit(session["session_id"]))
         self.assertEqual(caught.exception.status_code, 400)
         self.assertEqual(calls, 4)
-        for table in ("resources", "resource_versions", "resource_visibility", "resource_management", "resource_import_commits"):
+        for table in (
+            "resources", "resource_versions", "resource_visibility", "resource_management",
+            "resource_visibility_tags", "resource_management_tags", "resource_import_commits",
+        ):
             self.assertEqual(self.count(table), 0, table)
         self.assertEqual(list(self.resources.iterdir()), [])
         self.assertEqual(list(self.thumbs.iterdir()), [])

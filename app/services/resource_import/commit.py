@@ -7,7 +7,7 @@ from app.core.errors import storage_public_message
 from app.core.ppt import split_pptx_to_single_pages
 from app.core.sanitize import sanitize_html
 from app.core.storage import copy_into
-from app.db import now_iso
+from app.db import new_resource_detail_token, now_iso
 from app.services.common import (
     DEFAULT_RESOURCE_SUBJECT,
     _validate_resource_status,
@@ -18,6 +18,7 @@ from app.services.common import (
 from app.services.files import _delete_resource_files, persist_asset
 from app.services.resource_import.limits import (
     RESOURCE_IMPORT_MAX_NAME_LENGTH,
+    RESOURCE_IMPORT_TTL,
 )
 from app.services.resource_import.sessions import (
     _cleanup_resource_import_session,
@@ -32,6 +33,7 @@ from app.services.resource_import.remote_fonts import sha256_file
 from app.services.resource_import.rendering import RESOURCE_IMPORT_RENDERER_VERSION
 from app.services.resources import (
     _insert_version,
+    _set_scope_tags,
     _set_scope_users,
 )
 from fastapi import HTTPException
@@ -41,6 +43,7 @@ import json
 import logging
 import shutil
 import sqlite3
+import time
 import uuid
 
 logger = logging.getLogger(__name__)
@@ -67,10 +70,12 @@ def _commit_resource_import_sync(
     management_scope = _validate_required_scope(payload.get("management_scope"), "管理范围")
     visible_user_ids = payload.get("visible_user_ids") or []
     manage_user_ids = payload.get("manage_user_ids") or []
-    if visibility_scope == "partial" and not visible_user_ids:
-        raise HTTPException(400, "可见范围为部分时请至少选择一位用户")
-    if management_scope == "partial" and not manage_user_ids:
-        raise HTTPException(400, "管理范围为部分时请至少选择一位用户")
+    visible_user_tags = payload.get("visible_user_tags") or []
+    manage_user_tags = payload.get("manage_user_tags") or []
+    if visibility_scope == "partial" and not visible_user_ids and not visible_user_tags:
+        raise HTTPException(400, "可见范围为部分时请至少选择一位用户或一个用户标签")
+    if management_scope == "partial" and not manage_user_ids and not manage_user_tags:
+        raise HTTPException(400, "管理范围为部分时请至少选择一位用户或一个用户标签")
     source_path = _resource_import_file(session, session.get("source_path"))
     if session.get("mode") == "ppt":
         if session.get("renderer_version") != RESOURCE_IMPORT_RENDERER_VERSION or not session.get("split_paths"):
@@ -92,6 +97,15 @@ def _commit_resource_import_sync(
             split_files = split_pptx_to_single_pages(source_path, temp_dir / "split")
         if len(split_files) != int(session["slide_count"]):
             raise RuntimeError("PPT 拆分页数发生变化")
+        # The commit request holds the session lease for the whole transaction,
+        # so publish progress through the session snapshot instead of committing
+        # the task row halfway through an otherwise atomic database operation.
+        session["commit_status"] = "processing"
+        session["commit_progress"] = 0
+        session["commit_total"] = len(split_files)
+        session["commit_message"] = f"正在准备保存，共 {len(split_files)} 个单页素材…"
+        session["expires_at"] = time.time() + RESOURCE_IMPORT_TTL
+        _write_resource_import_session(session)
         image_paths = [_resource_import_file(session, p) for p in session.get("image_paths", [])]
         if not image_paths:
             image_paths = [_resource_import_file(session, p) for p in session.get("preview_paths", [])]
@@ -112,17 +126,19 @@ def _commit_resource_import_sync(
                 uploaded_refs.append(png_ref)
             ts = now_iso()
             db.execute(
-                """INSERT INTO resources (name, owner_id, subject, tags, status,
+                """INSERT INTO resources (detail_token, name, owner_id, subject, tags, status,
                    visibility_scope, management_scope, secrecy_level, current_version,
                    updated_by, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
-                (f"{name_prefix}_{index:02d}", user["id"], subject, tags, status,
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
+                (new_resource_detail_token(), f"{name_prefix}_{index:02d}", user["id"], subject, tags, status,
                  visibility_scope, management_scope, secrecy_level, user["id"], ts, ts),
             )
             resource_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
             resource_ids.append(resource_id)
             _set_scope_users(db, "resource_visibility", resource_id, [int(x) for x in visible_user_ids])
             _set_scope_users(db, "resource_management", resource_id, [int(x) for x in manage_user_ids])
+            _set_scope_tags(db, "resource_visibility_tags", resource_id, visible_user_tags)
+            _set_scope_tags(db, "resource_management_tags", resource_id, manage_user_tags)
             version = _insert_version(
                 db,
                 resource_id=resource_id,
@@ -135,6 +151,9 @@ def _commit_resource_import_sync(
                 change_note="统一导入",
                 created_by=int(user["id"]),
             )
+            session["commit_progress"] = index
+            session["commit_message"] = f"已保存第 {index}/{len(split_files)} 个单页素材…"
+            _write_resource_import_session(session)
         result = {"resource_ids": resource_ids, "created": len(resource_ids)}
         db.execute(
             "INSERT INTO resource_import_commits (session_id, owner_id, result_json, created_at) VALUES (?, ?, ?, ?)",

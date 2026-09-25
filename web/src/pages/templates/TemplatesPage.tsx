@@ -1,9 +1,25 @@
 import * as React from "react";
-import { Check, Download, ImageOff, Loader2, X } from "lucide-react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  ArrowDownUp,
+  Check,
+  Download,
+  Files,
+  ImageOff,
+  Loader2,
+  MoreHorizontal,
+  Pencil,
+  Plus,
+  Search,
+  Trash2,
+  X,
+} from "lucide-react";
 import { toast } from "sonner";
 
+import { TemplateFormDialog, TemplateSortDialog } from "@/pages/admin/AdminTemplatesPage";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -13,6 +29,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
+import {
   TEMPLATE_PLATFORM_LABEL,
   TEMPLATE_TYPE_LABEL,
 } from "@/lib/constants";
@@ -21,13 +45,22 @@ import {
   downloadWithProgress,
   LocalFontInfo,
 } from "@/lib/fonts";
-import { TemplateItem } from "@/lib/types";
+import { isAdminRole, TemplateItem } from "@/lib/types";
 import { useResponsiveGrid } from "@/lib/use-grid-layout";
 import { usePaginatedQuery } from "@/lib/use-paginated-query";
 import { cn } from "@/lib/utils";
 
 export function TemplatesPage() {
+  const { user } = useAuth();
+  const isAdmin = isAdminRole(user?.role);
+  const queryClient = useQueryClient();
   const [detail, setDetail] = React.useState<TemplateItem | null>(null);
+  const [editing, setEditing] = React.useState<TemplateItem | null>(null);
+  const [createOpen, setCreateOpen] = React.useState(false);
+  const [sortOpen, setSortOpen] = React.useState(false);
+  const [query, setQuery] = React.useState("");
+  const [selected, setSelected] = React.useState<Set<number>>(new Set());
+  const [downloadingId, setDownloadingId] = React.useState<number | null>(null);
 
   // 列数由共享 hook 按容器宽度连续计算
   // widthOffset:16 用于补偿 grid 上层 `pl-4` 造成的实际可用宽度 -16 偏差，避免临界宽度下列数抖动
@@ -48,10 +81,100 @@ export function TemplatesPage() {
     pageSize: 500,
   });
 
+  const filtered = React.useMemo(() => {
+    const keyword = query.trim().toLowerCase();
+    if (!keyword) return templates;
+    return templates.filter((template) =>
+      [
+        template.name,
+        template.subject || "",
+        template.series || "",
+        template.platform || "",
+        template.ratio || "",
+        template.template_type || "",
+      ].join(" ").toLowerCase().includes(keyword),
+    );
+  }, [query, templates]);
+
+  React.useEffect(() => {
+    const availableIds = new Set(templates.map((template) => template.id));
+    setSelected((current) => {
+      const next = new Set(Array.from(current).filter((id) => availableIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [templates]);
+
+  const composeDownload = useMutation({
+    mutationFn: async (templateIds: number[]) => {
+      await downloadWithProgress(
+        "/api/templates/compose-download",
+        "标准模板组合_" + templateIds.length + "页.pptx",
+        undefined,
+        undefined,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ template_ids: templateIds }),
+        },
+      );
+    },
+    onSuccess: () => toast.success("组合模板下载完成"),
+    onError: (mutationError: Error) => toast.error(mutationError.message || "组合下载失败"),
+  });
+
+  const deleteTemplate = useMutation({
+    mutationFn: (templateId: number) => api("/api/admin/templates/" + templateId, { method: "DELETE" }),
+    onSuccess: () => {
+      toast.success("模板已删除");
+      void queryClient.invalidateQueries({ queryKey: ["templates"] });
+    },
+    onError: (mutationError: Error) => toast.error(mutationError.message || "删除失败"),
+  });
+
+  const bulkDelete = useMutation({
+    mutationFn: (templateIds: number[]) => api<{ deleted: number }>("/api/admin/templates/bulk-delete", {
+      method: "POST",
+      json: { template_ids: templateIds },
+    }),
+    onSuccess: (result) => {
+      toast.success("已删除 " + result.deleted + " 个模板");
+      setSelected(new Set());
+      void queryClient.invalidateQueries({ queryKey: ["templates"] });
+    },
+    onError: (mutationError: Error) => toast.error(mutationError.message || "批量删除失败"),
+  });
+
+  const selectedInDisplayOrder = templates
+    .filter((template) => selected.has(template.id))
+    .map((template) => template.id);
+
+  const toggleSelection = (templateId: number) => {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(templateId)) next.delete(templateId);
+      else next.add(templateId);
+      return next;
+    });
+  };
+
+  const handleSingleDownload = async (template: TemplateItem) => {
+    const url = template.download_url || "/api/templates/" + template.id + "/download";
+    const filename = template.office_file_name || template.name + ".pptx";
+    setDownloadingId(template.id);
+    try {
+      await downloadWithProgress(url, filename);
+      toast.success("模板下载完成");
+    } catch (downloadError) {
+      toast.error((downloadError as Error).message || "下载失败");
+    } finally {
+      setDownloadingId(null);
+    }
+  };
+
   // 主体 → 系列 → 模板数组
   const grouped = React.useMemo(() => {
     const bySubject = new Map<string, Map<string, TemplateItem[]>>();
-    templates.forEach((t) => {
+    filtered.forEach((t) => {
       const subject = (t.subject || "").trim() || "未设置主体";
       const series = (t.series || "").trim() || "未设置系列";
       if (!bySubject.has(subject)) bySubject.set(subject, new Map());
@@ -63,18 +186,88 @@ export function TemplatesPage() {
       subject,
       seriesList: Array.from(seriesMap.entries()).map(([series, items]) => ({ series, items })),
     }));
-  }, [templates]);
+  }, [filtered]);
 
   return (
     <div className="page-shell">
-      <header className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-1.5">
-          <h1 className="page-title">标准模板</h1>
-          <span className="page-count">
-            {total} 个模板
-          </span>
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="page-title">标准模板</h1>
+            {isAdmin && <Badge variant="secondary" className="rounded-md px-2 text-[11px]">可维护</Badge>}
+            <span className="page-count">{total} 个模板</span>
+          </div>
+          <p className="mt-1.5 text-sm text-muted-foreground">
+            按主体和系列管理标准单页，可单页下载或选择多页组合下载。
+          </p>
         </div>
+        {isAdmin && (
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" className="h-9 gap-1.5" onClick={() => setSortOpen(true)} disabled={templates.length === 0}>
+              <ArrowDownUp className="h-3.5 w-3.5" />排序
+            </Button>
+            <Button size="sm" className="h-9 gap-1.5" onClick={() => setCreateOpen(true)}>
+              <Plus className="h-3.5 w-3.5" />新增模板
+            </Button>
+          </div>
+        )}
       </header>
+
+      <div className="page-toolbar">
+        <div className="relative min-w-0 flex-1 sm:flex-none">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索模板、主体、系列"
+            className={cn(
+              "h-8 w-full rounded-md border bg-background pl-8 pr-3 text-sm shadow-sm outline-none transition sm:w-72",
+              "placeholder:text-muted-foreground focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
+              query.trim() !== "" && "border-primary/40 bg-primary/5",
+            )}
+          />
+        </div>
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+          {selected.size > 0 && <span className="text-xs text-muted-foreground">已选 <span className="font-medium text-primary">{selected.size}</span> 页</span>}
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 gap-1.5"
+            disabled={selected.size < 2 || composeDownload.isPending}
+            onClick={() => composeDownload.mutate(selectedInDisplayOrder)}
+          >
+            {composeDownload.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Files className="h-3.5 w-3.5" />}
+            组合下载
+          </Button>
+          {filtered.length > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8"
+              onClick={() => {
+                const filteredIds = filtered.map((template) => template.id);
+                const allFilteredSelected = filteredIds.every((id) => selected.has(id));
+                setSelected(allFilteredSelected ? new Set() : new Set(filteredIds));
+              }}
+            >
+              {filtered.every((template) => selected.has(template.id)) ? "取消选择" : "全选当前结果"}
+            </Button>
+          )}
+          {isAdmin && selected.size > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive"
+              disabled={bulkDelete.isPending}
+              onClick={() => {
+                if (window.confirm("确认删除选中的 " + selected.size + " 个模板？")) bulkDelete.mutate(Array.from(selected));
+              }}
+            >
+              <Trash2 className="h-3.5 w-3.5" />批量删除
+            </Button>
+          )}
+        </div>
+      </div>
 
       {/* 内容区：contentRef 始终挂载，确保首次渲染（含刷新场景）时 hook 即可拿到稳定的容器尺寸 */}
       <div ref={contentRef} className="min-h-0 flex-1 overflow-auto">
@@ -88,7 +281,7 @@ export function TemplatesPage() {
           </div>
         ) : grouped.length === 0 ? (
           <div className="rounded-md border border-dashed py-16 text-center text-sm text-muted-foreground">
-            暂无模板
+            {query.trim() ? "没有匹配的模板" : "暂无模板"}
           </div>
         ) : (
           <div className="flex flex-col gap-10 pb-4">
@@ -112,7 +305,20 @@ export function TemplatesPage() {
                         </div>
                         <div className="grid content-start" style={gridStyle}>
                           {items.map((t) => (
-                            <TemplateCard key={t.id} template={t} onClick={() => setDetail(t)} />
+                            <TemplateCard
+                              key={t.id}
+                              template={t}
+                              selected={selected.has(t.id)}
+                              isAdmin={isAdmin}
+                              downloading={downloadingId === t.id}
+                              onToggle={() => toggleSelection(t.id)}
+                              onClick={() => setDetail(t)}
+                              onDownload={() => void handleSingleDownload(t)}
+                              onEdit={() => setEditing(t)}
+                              onDelete={() => {
+                                if (window.confirm("确认删除模板「" + t.name + "」？")) deleteTemplate.mutate(t.id);
+                              }}
+                            />
                           ))}
                         </div>
                       </section>
@@ -131,11 +337,44 @@ export function TemplatesPage() {
           if (!open) setDetail(null);
         }}
       />
+      {isAdmin && (
+        <>
+          <TemplateFormDialog open={createOpen} onOpenChange={setCreateOpen} template={null} />
+          <TemplateFormDialog
+            open={editing != null}
+            onOpenChange={(open) => {
+              if (!open) setEditing(null);
+            }}
+            template={editing}
+          />
+          <TemplateSortDialog open={sortOpen} onOpenChange={setSortOpen} templates={templates} />
+        </>
+      )}
     </div>
   );
 }
 
-function TemplateCard({ template, onClick }: { template: TemplateItem; onClick: () => void }) {
+function TemplateCard({
+  template,
+  selected,
+  isAdmin,
+  downloading,
+  onToggle,
+  onClick,
+  onDownload,
+  onEdit,
+  onDelete,
+}: {
+  template: TemplateItem;
+  selected: boolean;
+  isAdmin: boolean;
+  downloading: boolean;
+  onToggle: () => void;
+  onClick: () => void;
+  onDownload: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
   const typeLabel = template.template_type
     ? TEMPLATE_TYPE_LABEL[template.template_type] || template.template_type
     : null;
@@ -149,7 +388,7 @@ function TemplateCard({ template, onClick }: { template: TemplateItem; onClick: 
       role="button"
       tabIndex={0}
       onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
+        if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
           e.preventDefault();
           onClick();
         }
@@ -159,9 +398,35 @@ function TemplateCard({ template, onClick }: { template: TemplateItem; onClick: 
         "shadow-sm ring-1 ring-transparent transition-all duration-200",
         "hover:-translate-y-1 hover:shadow-lg hover:ring-primary/20",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
+        selected && "border-primary/60 ring-primary/30",
       )}
     >
       <div className="relative aspect-[16/9] w-full overflow-hidden bg-muted">
+        <div className="absolute left-2 top-2 z-10" onClick={(event) => event.stopPropagation()}>
+          <Checkbox
+            checked={selected}
+            onCheckedChange={onToggle}
+            aria-label={"选择模板 " + template.name}
+            className="border-white/80 bg-black/35 data-[state=checked]:border-primary data-[state=checked]:bg-primary"
+          />
+        </div>
+        {isAdmin && (
+          <div className="absolute right-2 top-2 z-10" onClick={(event) => event.stopPropagation()}>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="secondary" size="icon" className="h-7 w-7 bg-background/90 shadow-sm" aria-label={"管理模板 " + template.name}>
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={onEdit}><Pencil className="mr-2 h-3.5 w-3.5" />编辑模板</DropdownMenuItem>
+                <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={onDelete}>
+                  <Trash2 className="mr-2 h-3.5 w-3.5" />删除模板
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        )}
         {template.preview_url ? (
           <img
             src={template.preview_url}
@@ -190,10 +455,24 @@ function TemplateCard({ template, onClick }: { template: TemplateItem; onClick: 
           </div>
         </div>
       </div>
-      <div className="px-3 py-2.5">
+      <div className="flex items-center gap-2 px-3 py-2.5">
         <h3 className="line-clamp-1 text-[13px] font-medium" title={template.name}>
           {template.name}
         </h3>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="ml-auto h-7 w-7 shrink-0"
+          title="下载单页模板"
+          aria-label={"下载模板 " + template.name}
+          disabled={downloading}
+          onClick={(event) => {
+            event.stopPropagation();
+            onDownload();
+          }}
+        >
+          {downloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+        </Button>
       </div>
     </article>
   );

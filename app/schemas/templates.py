@@ -9,6 +9,10 @@ class TemplateDeletePayload(ApiPayload):
     template_ids: list[int]
 
 
+class TemplateComposePayload(ApiPayload):
+    template_ids: list[int]
+
+
 class TemplatePayload(ApiPayload):
     name: str = ""
     series: str

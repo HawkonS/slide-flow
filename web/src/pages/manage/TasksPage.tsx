@@ -100,6 +100,9 @@ interface TaskParams {
   fonts?: string[];
   missing_fonts?: string[];
   preview_status?: string;
+  render_stage?: string;
+  render_completed?: number;
+  render_total?: number;
 }
 
 interface TaskResult {
@@ -536,6 +539,7 @@ function TaskDetail({ task }: { task: Task }) {
         {params.file_name && <InfoRow label="PPT 文件" value={params.file_name} />}
         {params.workflow_state && <InfoRow label="处理阶段" value={params.workflow_state === "font_check" ? "字体检测" : params.workflow_state === "rendering" ? "图片渲染" : params.workflow_state === "awaiting_confirmation" ? "等待确认导入" : params.workflow_state === "completed" ? "已完成" : params.workflow_state} />}
         {typeof params.slide_count === "number" && <InfoRow label="页数" value={`${params.slide_count} 页`} />}
+        {typeof params.render_completed === "number" && typeof params.render_total === "number" && <InfoRow label="渲染进度" value={`${params.render_completed} / ${params.render_total} 页`} />}
         {params.subject && <InfoRow label="分类" value={params.subject} />}
         {params.tags && <InfoRow label="标签" value={params.tags} />}
         {params.visibility_scope && (

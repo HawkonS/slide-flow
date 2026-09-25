@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRightLeft, Camera, Copy, KeyRound, Loader2, Pencil, Search, Shield, Tag, Trash2, Upload, User, UserPlus, X } from "lucide-react";
+import { ArrowRightLeft, CalendarDays, Camera, Check, ChevronDown, Copy, KeyRound, Loader2, MoreHorizontal, Pencil, Search, Shield, Tag, Trash2, Upload, User, UserCheck, UserPlus, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -14,6 +14,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -39,9 +45,23 @@ import { cn } from "@/lib/utils";
 import { TagInput } from "@/components/resource/TagInput";
 import { TagFilterChip } from "@/components/resource/filter-chips";
 import { parseTags, serializeTags } from "@/lib/types";
-import { PageHeader } from "@/components/common/PageHeader";
 import { useAuth } from "@/lib/auth";
 import { UserSearchSelect } from "@/components/resource/UserSearchSelect";
+
+const userDateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
+function formatUserDateTime(value: string | null | undefined, emptyText = "-") {
+  if (!value) return emptyText;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : userDateTimeFormatter.format(date).split("/").join("-");
+}
 
 export function AdminUsersPage() {
   const qc = useQueryClient();
@@ -62,6 +82,9 @@ export function AdminUsersPage() {
     return () => window.clearTimeout(timer);
   }, [queryInput]);
 
+  const [selected, setSelected] = React.useState<Set<number>>(new Set());
+  const [filterSelectionIds, setFilterSelectionIds] = React.useState<number[] | null>(null);
+
   const delMut = useMutation({
     mutationFn: async (id: number) => api(`/api/admin/users/${id}`, { method: "DELETE" }),
     onSuccess: () => {
@@ -71,8 +94,6 @@ export function AdminUsersPage() {
     },
     onError: (err: Error) => toast.error(err.message || "删除失败"),
   });
-
-  const [selected, setSelected] = React.useState<Set<number>>(new Set());
 
   const canManageUser = React.useCallback(
     (u: AdminUser) => currentUser?.role === "system_admin" || u.role !== "system_admin",
@@ -125,6 +146,21 @@ export function AdminUsersPage() {
     onError: (err: Error) => toast.error(err.message || "批量删除失败"),
   });
 
+  const selectionIdsMut = useMutation({
+    mutationFn: async () => api<{ user_ids: number[]; total: number }>(
+      "/api/admin/users/selection-ids",
+      {
+        params: {
+          search: query || undefined,
+          tags: tagFilters.length > 0 ? serializeTags(tagFilters) : undefined,
+          tags_mode: tagFilterMode,
+        },
+      },
+    ),
+    onSuccess: (result) => setFilterSelectionIds(result.user_ids),
+    onError: (err: Error) => toast.error(err.message || "加载可选用户失败"),
+  });
+
   // 动态分页
   const contentRef = React.useRef<HTMLDivElement>(null);
   const [pageSize, setPageSize] = React.useState(0);
@@ -135,7 +171,7 @@ export function AdminUsersPage() {
       const H = el.clientHeight;
       if (!H) return;
       const headerH = 45;
-      const rowH = 49;
+      const rowH = 64;
       const rows = Math.min(100, Math.max(5, Math.floor((H - headerH) / rowH)));
       setPageSize((prev) => (prev === rows ? prev : rows));
     };
@@ -145,7 +181,7 @@ export function AdminUsersPage() {
     return () => ro.disconnect();
   }, []);
   const [page, setPage] = useUrlPage();
-  const { data, isLoading, isError, error } = useQuery({
+  const { data, isLoading, isError, error, dataUpdatedAt } = useQuery({
     queryKey: ["admin", "users", page, pageSize, query, tagFilters, tagFilterMode],
     queryFn: () => api<AdminUsersResponse>("/api/admin/users", {
       params: {
@@ -161,7 +197,9 @@ export function AdminUsersPage() {
   const users = data?.users ?? [];
   const availableTags = data?.available_tags ?? [];
   const total = data?.total ?? 0;
+  const stats = data?.stats ?? { total_users: total, active_week: 0, active_today: 0 };
   const totalPages = Math.max(1, Math.ceil(total / Math.max(1, pageSize)));
+  const hasActiveFilters = queryInput.trim() !== "" || query.trim() !== "" || tagFilters.length > 0;
   const handleUserSaved = React.useCallback((savedUser: AdminUser) => {
     qc.invalidateQueries({ queryKey: ["admin", "users"] });
     qc.invalidateQueries({ queryKey: ["users", "options"] });
@@ -175,15 +213,21 @@ export function AdminUsersPage() {
   React.useEffect(() => {
     setPage(1);
     setSelected(new Set());
+    setFilterSelectionIds(null);
   }, [query, tagFilters, tagFilterMode, setPage]);
   React.useEffect(() => {
-    const visible = new Set(users.filter(canDeleteUser).map((user) => user.id));
     setSelected((previous) => {
-      const next = new Set(Array.from(previous).filter((id) => visible.has(id)));
+      const next = new Set(previous);
+      users.forEach((user) => {
+        if (!canDeleteUser(user)) next.delete(user.id);
+      });
       if (next.size === previous.size && Array.from(next).every((id) => previous.has(id))) return previous;
       return next;
     });
   }, [users, canDeleteUser]);
+  React.useEffect(() => {
+    setFilterSelectionIds(null);
+  }, [dataUpdatedAt]);
   const pageStart = (page - 1) * pageSize;
   const pageItemIds = React.useMemo(
     () => users.filter(canDeleteUser).map((u) => u.id),
@@ -191,34 +235,62 @@ export function AdminUsersPage() {
   );
   const allSelected = pageItemIds.length > 0 && pageItemIds.every((id) => selected.has(id));
   const someSelected = pageItemIds.some((id) => selected.has(id)) && !allSelected;
+  const setPageSelection = (checked: boolean, ids: number[]) => {
+    setSelected((current) => {
+      const next = new Set(current);
+      ids.forEach((id) => (checked ? next.add(id) : next.delete(id)));
+      return next;
+    });
+  };
 
   return (
     <div className="page-shell">
-      <PageHeader
-        title="用户管理"
-        description="管理系统用户、角色与用户标签，支持搜索、筛选和批量管理。"
-        count={
-          tagFilters.length > 0
-            ? `标签${tagFilterMode === "all" ? "与" : "或"} · ${tagFilters.length} 项 · ${total} 条`
-            : query
-              ? `搜索到 ${total} 条`
-              : `共 ${total} 条`
-        }
-      />
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="page-title">用户管理</h1>
+          </div>
+          <p className="mt-1.5 text-sm text-muted-foreground">
+            管理系统用户、角色与用户标签，支持搜索、筛选和批量管理。
+          </p>
+        </div>
+        <Button size="sm" className="h-9 shrink-0 gap-1.5" onClick={() => setCreateOpen(true)}>
+          <UserPlus className="h-3.5 w-3.5" />新增用户
+        </Button>
+      </header>
+
+      <section className="grid grid-cols-3 divide-x rounded-md border bg-card shadow-sm" aria-label="用户统计">
+        <div className="min-w-0 px-3 py-2.5 sm:px-4">
+          <div className="truncate text-[11px] font-medium text-muted-foreground">总用户数</div>
+          <div className="mt-1 text-lg font-semibold tabular-nums">{stats.total_users}</div>
+        </div>
+        <div className="min-w-0 px-3 py-2.5 sm:px-4">
+          <div className="truncate text-[11px] font-medium text-muted-foreground">本周活跃用户</div>
+          <div className="mt-1 flex items-center gap-1.5 text-lg font-semibold tabular-nums">
+            <CalendarDays className="h-4 w-4 text-primary" />{stats.active_week}
+          </div>
+        </div>
+        <div className="min-w-0 px-3 py-2.5 sm:px-4">
+          <div className="truncate text-[11px] font-medium text-muted-foreground">今日活跃用户数</div>
+          <div className="mt-1 flex items-center gap-1.5 text-lg font-semibold tabular-nums">
+            <UserCheck className="h-4 w-4 text-muted-foreground" />{stats.active_today}
+          </div>
+        </div>
+      </section>
 
       {/* 筛选行 */}
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="page-toolbar">
         <div className="relative min-w-0 flex-1 sm:flex-none">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <input
             value={queryInput}
             onChange={(e) => setQueryInput(e.target.value)}
-            placeholder="搜索姓名、用户名、标签、飞书 ID"
+            placeholder="搜索姓名、用户名或标签"
             className={cn(
-              "h-8 w-full rounded-md border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition sm:w-56",
+              "h-8 w-full rounded-md border bg-background pl-8 pr-3 text-sm shadow-sm outline-none transition sm:w-72",
               "placeholder:text-muted-foreground",
-              "focus:border-foreground/40 focus:ring-2 focus:ring-ring/20",
-              queryInput.trim() !== "" && "border-foreground/25 bg-primary-weak",
+              "focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
+              queryInput.trim() !== "" && "border-primary/40 bg-primary/5",
             )}
           />
         </div>
@@ -266,14 +338,6 @@ export function AdminUsersPage() {
             <Trash2 className="h-3.5 w-3.5" />
             批量删除
           </Button>
-          <Button
-            size="sm"
-            className="h-8 gap-1.5 px-3 text-sm"
-            onClick={() => setCreateOpen(true)}
-          >
-            <UserPlus className="h-3.5 w-3.5" />
-            新增用户
-          </Button>
         </div>
       </div>
 
@@ -289,34 +353,64 @@ export function AdminUsersPage() {
           </div>
         ) : users.length === 0 ? (
           <div className="rounded-md border border-dashed py-16 text-center text-sm text-muted-foreground">
-            暂无用户
+            {hasActiveFilters ? "没有匹配的用户" : "暂无用户"}
           </div>
         ) : (
           <div className="overflow-hidden rounded-md border bg-card">
-            <Table>
+            <Table className="min-w-[1120px]">
               <TableHeader>
-                <TableRow>
+                <TableRow className="bg-muted/40 hover:bg-muted/40">
                   <TableHead className="w-10">
                     <div className="flex items-center gap-0.5">
                       <Checkbox
                         checked={allSelected ? true : someSelected ? "indeterminate" : false}
-                        onCheckedChange={(checked) => {
-                          if (checked) {
-                            setSelected(new Set(pageItemIds));
-                          } else {
-                            setSelected(new Set());
+                        aria-label="选择当前页用户"
+                        onCheckedChange={(checked) => setPageSelection(Boolean(checked), pageItemIds)}
+                      />
+                      <DropdownMenu
+                        onOpenChange={(open) => {
+                          if (open && filterSelectionIds === null && !selectionIdsMut.isPending) {
+                            selectionIdsMut.mutate();
                           }
                         }}
-                      />
+                      >
+                        <DropdownMenuTrigger asChild>
+                          <button type="button" className="rounded p-0.5 hover:bg-accent" aria-label="选择更多用户">
+                            <ChevronDown className="h-3 w-3 text-muted-foreground" />
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start" className="w-44">
+                          <DropdownMenuItem
+                            disabled={pageItemIds.length === 0}
+                            onClick={() => setSelected(new Set(pageItemIds))}
+                          >
+                            <Check className="mr-2 h-3.5 w-3.5" />全选本页
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            disabled={selectionIdsMut.isPending || filterSelectionIds === null || filterSelectionIds.length === 0}
+                            onClick={() => setSelected(new Set(filterSelectionIds ?? []))}
+                          >
+                            {selectionIdsMut.isPending
+                              ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                              : <Check className="mr-2 h-3.5 w-3.5" />}
+                            {selectionIdsMut.isPending
+                              ? "加载筛选结果…"
+                              : "选择筛选结果" + (filterSelectionIds === null ? "" : " (" + filterSelectionIds.length + ")")}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => setSelected(new Set())}>
+                            <X className="mr-2 h-3.5 w-3.5" />取消选择
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </div>
                   </TableHead>
                   <TableHead>姓名</TableHead>
                   <TableHead>用户名</TableHead>
                   <TableHead className="w-32">角色</TableHead>
                   <TableHead>用户标签</TableHead>
-                  <TableHead>飞书 ID</TableHead>
                   <TableHead>创建时间</TableHead>
-                  <TableHead className="w-32 text-right">操作</TableHead>
+                  <TableHead>最后登录时间</TableHead>
+                  <TableHead className="w-40 text-right">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -325,9 +419,10 @@ export function AdminUsersPage() {
                   const canDeleteTarget = canDeleteUser(u);
                   return (
                   <TableRow key={u.id}>
-                    <TableCell>
+                    <TableCell className="py-3">
                       <Checkbox
                         checked={selected.has(u.id)}
+                        aria-label={`选择用户 ${u.username}`}
                         onCheckedChange={() => toggleOne(u.id)}
                         disabled={!canDeleteTarget}
                       />
@@ -368,46 +463,61 @@ export function AdminUsersPage() {
                         {!u.tags && <span>-</span>}
                       </div>
                     </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">{u.feishu_id || "-"}</TableCell>
-                    <TableCell className="text-sm text-muted-foreground">{u.created_at}</TableCell>
+                    <TableCell className="whitespace-nowrap text-sm text-muted-foreground" title={u.created_at}>
+                      {formatUserDateTime(u.created_at)}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap text-sm text-muted-foreground" title={u.last_login_at || "从未登录"}>
+                      {formatUserDateTime(u.last_login_at, "从未登录")}
+                    </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1">
-                        <Button variant="ghost" size="sm" disabled={!canManageTarget} title={!canManageTarget ? "系统管理员账号仅可由系统管理员管理" : "编辑用户"} onClick={() => setEditing(u)}>
-                          <Pencil className="h-3.5 w-3.5" />
-                        </Button>
                         <Button
-                          variant="ghost"
+                          variant="outline"
                           size="sm"
-                          title="生成新的临时密码"
-                          disabled={resettingPassword || currentUser?.id === u.id || !canManageTarget}
-                          onClick={() => requestPasswordReset(u)}
+                          aria-label={"编辑用户 " + u.username}
+                          disabled={!canManageTarget}
+                          title={!canManageTarget ? "系统管理员账号仅可由系统管理员管理" : "编辑用户"}
+                          onClick={() => setEditing(u)}
                         >
-                          <KeyRound className="h-3.5 w-3.5" />
+                          <Pencil className="mr-1 h-3.5 w-3.5" />编辑
                         </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="text-muted-foreground hover:text-primary"
-                          title="转移数据并删除"
-                          disabled={!canDeleteTarget || delMut.isPending}
-                          onClick={() => setTransferUser(u)}
-                        >
-                          <ArrowRightLeft className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="text-destructive hover:text-destructive"
-                          title="删除用户"
-                          disabled={!canDeleteTarget || delMut.isPending}
-                          onClick={() => {
-                            if (window.confirm(`确认删除用户 ${u.username}？`)) {
-                              delMut.mutate(u.id);
-                            }
-                          }}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
+                              aria-label={"更多用户操作 " + u.username}
+                            >
+                              <MoreHorizontal className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="w-44">
+                            <DropdownMenuItem
+                              disabled={resettingPassword || currentUser?.id === u.id || !canManageTarget}
+                              onClick={() => requestPasswordReset(u)}
+                            >
+                              <KeyRound className="mr-2 h-3.5 w-3.5" />重置密码
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              disabled={!canDeleteTarget || delMut.isPending}
+                              onClick={() => setTransferUser(u)}
+                            >
+                              <ArrowRightLeft className="mr-2 h-3.5 w-3.5" />转移并删除
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              className="text-destructive focus:text-destructive"
+                              disabled={!canDeleteTarget || delMut.isPending}
+                              onClick={() => {
+                                if (window.confirm("确认删除用户 " + u.username + "？")) {
+                                  delMut.mutate(u.id);
+                                }
+                              }}
+                            >
+                              <Trash2 className="mr-2 h-3.5 w-3.5" />删除用户
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       </div>
                     </TableCell>
                   </TableRow>

@@ -1,25 +1,23 @@
-"""Pull-render preview state and legacy transport regression tests."""
+"""Pull-render preview state regression tests."""
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import io
 import json
 import tempfile
-import threading
 import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import httpx
 from PIL import Image
 from fastapi import HTTPException
 
-from app.config import Settings
 from app.routers.resource_import import resource_import_preview
-from app.services.resource_import import previews, remote_renderer, sessions, streaming
-from app.services.resource_import.rendering import _normalize_import_ppt
+from app.services.resource_import import previews, sessions, streaming
+from app.services.resource_import.rendering import (
+    RESOURCE_IMPORT_RENDERER_VERSION,
+    _normalize_import_ppt,
+)
 
 
 class RenderTests(unittest.TestCase):
@@ -67,7 +65,7 @@ class RenderTests(unittest.TestCase):
                 Image.new("RGB", (16, 9)).save(target)
                 paths.append(str(target))
             updated = dict(self.session, preview_status="ready", preview_paths=paths,
-                           render_attempt=attempt, renderer_version="wps-pull-v3-4k")
+                           render_attempt=attempt, renderer_version=RESOURCE_IMPORT_RENDERER_VERSION)
             sessions._write_resource_import_session(updated)
             return {"status": "completed", "preview_count": 2}
 
@@ -97,7 +95,7 @@ class RenderTests(unittest.TestCase):
             Image.new("RGB", (16, 9)).save(path)
             paths.append(str(path))
         updated = dict(self.session, preview_status="ready", preview_paths=paths,
-                       render_attempt=attempt, renderer_version="wps-pull-v3-4k")
+                       render_attempt=attempt, renderer_version=RESOURCE_IMPORT_RENDERER_VERSION)
         sessions._write_resource_import_session(updated)
 
         async def scenario():
@@ -116,73 +114,6 @@ class RenderTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as caught:
             resource_import_preview(self.session["session_id"], 0, user={"id": 1})
         self.assertEqual(caught.exception.status_code, 409)
-
-
-class ClientTests(unittest.TestCase):
-    def setUp(self):
-        config = Settings(root_dir=Path("/tmp"), render_url="http://127.0.0.1:8765", render_token="x" * 48)
-        patcher = patch.object(remote_renderer, "settings", config)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        self.settings = config
-
-    def test_transport_is_private_or_tls(self):
-        for url in ("http://example.com:8765", "https://user:pass@example.com", "https://example.com/path", "https://example.com?token=x"):
-            self.settings.render_url = url
-            with self.assertRaises(RuntimeError):
-                remote_renderer.renderer_connection()
-
-    def test_large_split_pptx_is_checked_against_input_limit_not_png_limit(self):
-        with tempfile.TemporaryDirectory() as temp:
-            path = Path(temp) / "page_56.pptx"
-            with path.open("wb") as output:
-                output.truncate(66 * 1024 * 1024)
-            renderer = object.__new__(remote_renderer.RemoteRenderer)
-            renderer.check = lambda: None
-            renderer.batch_size = 1
-            self.assertEqual(len(renderer._batches([(55, path)], [])), 1)
-
-    def test_input_error_identifies_page_and_size(self):
-        with tempfile.TemporaryDirectory() as temp:
-            path = Path(temp) / "page_57.pptx"
-            with path.open("wb") as output:
-                output.truncate(remote_renderer.MAX_INPUT_FILE_BYTES + 1)
-            renderer = object.__new__(remote_renderer.RemoteRenderer)
-            renderer.check = lambda: None
-            renderer.batch_size = 1
-            with self.assertRaisesRegex(RuntimeError, "第 57 页 PPTX"):
-                renderer._batches([(56, path)], [])
-
-    def test_private_ip_https_does_not_require_a_domain(self):
-        self.settings.render_url = "https://10.0.2.15:8766"
-        url, verify = remote_renderer.renderer_connection()
-        self.assertEqual(url, self.settings.render_url)
-        self.assertIsNotNone(verify)
-
-    def test_download_verified_before_publication(self):
-        buffer = io.BytesIO()
-        Image.new("RGB", (16, 9)).save(buffer, format="PNG")
-        data = buffer.getvalue()
-        renderer = remote_renderer.RemoteRenderer(threading.Event(), lambda message: None)
-        renderer.client.close()
-        renderer.client = httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(200, content=data, headers={"content-type": "image/png"})), base_url="http://test")
-        with tempfile.TemporaryDirectory() as temp:
-            target = Path(temp) / "page.png"
-            renderer.download("a" * 32, {"index": 0, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}, target)
-            self.assertEqual(target.read_bytes(), data)
-        renderer.close()
-
-    def test_cancel_and_total_deadline(self):
-        cancel = threading.Event()
-        renderer = remote_renderer.RemoteRenderer(cancel, lambda message: None)
-        cancel.set()
-        with self.assertRaises(remote_renderer.RenderCancelled):
-            renderer.check()
-        cancel.clear()
-        renderer.deadline = 0
-        with self.assertRaisesRegex(RuntimeError, "总时间"):
-            renderer.check()
-        renderer.close()
 
 
 if __name__ == "__main__":

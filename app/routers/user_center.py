@@ -62,6 +62,7 @@ def _serialize_resource(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.
     
     return {
         "id": resource_id,
+        "detail_token": row["detail_token"],
         "name": row["name"],
         "subject": row["subject"],
         "tags": row["tags"],
@@ -296,12 +297,30 @@ def my_home_stats(
     user_id = int(user["id"])
     system_admin = is_system_admin(user)
 
-    def _visible_count(table: str, vis_table: str, vis_fk: str, *, where_extra: str = "") -> int:
+    def _visible_count(
+        table: str,
+        vis_table: str,
+        vis_fk: str,
+        *,
+        tag_table: str | None = None,
+        where_extra: str = "",
+    ) -> int:
         if system_admin:
             sql = f"SELECT COUNT(*) FROM {table} t"
             if where_extra:
                 sql += f" WHERE {where_extra}"
             return int(db.execute(sql).fetchone()[0])
+        tag_clause = ""
+        params: list[int] = [user_id, user_id]
+        if tag_table:
+            tag_clause = f"""
+                OR (t.visibility_scope = 'partial' AND EXISTS (
+                    SELECT 1 FROM {tag_table} vt
+                    JOIN user_tags ut ON ut.tag_name = vt.tag_name
+                    WHERE vt.{vis_fk} = t.id AND ut.user_id = ?
+                ))
+            """
+            params.append(user_id)
         sql = f"""
             SELECT COUNT(*) FROM {table} t
             WHERE (
@@ -310,11 +329,12 @@ def my_home_stats(
                 OR (t.visibility_scope = 'partial' AND EXISTS (
                     SELECT 1 FROM {vis_table} v WHERE v.{vis_fk} = t.id AND v.user_id = ?
                 ))
+                {tag_clause}
             )
         """
         if where_extra:
             sql += f" AND ({where_extra})"
-        return int(db.execute(sql, (user_id, user_id)).fetchone()[0])
+        return int(db.execute(sql, params).fetchone()[0])
 
     def _mine_count(table: str, *, where_extra: str = "") -> int:
         sql = f"SELECT COUNT(*) FROM {table} WHERE owner_id = ?"
@@ -322,7 +342,12 @@ def my_home_stats(
             sql += f" AND ({where_extra})"
         return int(db.execute(sql, (user_id,)).fetchone()[0])
 
-    resources_total = _visible_count("resources", "resource_visibility", "resource_id")
+    resources_total = _visible_count(
+        "resources",
+        "resource_visibility",
+        "resource_id",
+        tag_table="resource_visibility_tags",
+    )
     resources_mine = _mine_count("resources")
 
     shows_total = _visible_count("shows", "show_visibility", "show_id")

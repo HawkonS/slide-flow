@@ -42,6 +42,21 @@ def _parse_id_list(raw: str | None) -> list[int]:
     raise HTTPException(400, "用户 ID 列表必须是 JSON 整数数组")
 
 
+def _parse_string_list(raw: str | None, *, label: str = "字符串列表") -> list[str]:
+    if not raw:
+        return []
+    raw = raw.strip()
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+        if isinstance(value, list) and all(isinstance(item, str) for item in value):
+            return [item for item in value]
+    except (json.JSONDecodeError, TypeError):
+        pass
+    raise HTTPException(400, f"{label}必须是 JSON 字符串数组")
+
+
 def _reject_removed_query_params(request: Request, *names: str) -> None:
     removed = sorted(name for name in names if name in request.query_params)
     if removed:
@@ -70,15 +85,16 @@ def _validate_required_scope(scope: str | None, label: str) -> str:
 
 
 def _validate_secrecy(level: str) -> str:
-    if level not in {"public", "confidential", "secret"}:
-        raise HTTPException(400, "涉密等级不正确")
-    return level
+    value = (level or "public").strip()
+    if not value or len(value) > 64:
+        raise HTTPException(400, "密级标签不正确")
+    return value
 
 
 def _validate_resource_status(status: str | None) -> str:
     value = (status or "active").strip()
-    if value not in {"active", "disabled"}:
-        raise HTTPException(400, "资源状态不正确")
+    if not value or len(value) > 64:
+        raise HTTPException(400, "状态标签不正确")
     return value
 
 

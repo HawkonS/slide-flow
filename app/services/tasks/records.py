@@ -20,8 +20,10 @@ _TASK_PARAMS_PUBLIC_KEYS = (
     "secrecy_level",
     "visibility_scope",
     "visible_user_ids",
+    "visible_user_tags",
     "management_scope",
     "manage_user_ids",
+    "manage_user_tags",
     "remark_html",
     "status",
     "owner_id",
@@ -36,6 +38,9 @@ _TASK_PARAMS_PUBLIC_KEYS = (
     "missing_fonts",
     "preview_status",
     "preview_error",
+    "render_stage",
+    "render_completed",
+    "render_total",
 )
 
 

@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   FileText,
@@ -9,7 +10,6 @@ import {
 } from "lucide-react";
 
 import { ResourceCard } from "@/components/resource/ResourceCard";
-import { ResourceDetailDialog } from "@/components/resource/ResourceDetailDialog";
 import { ShowCard } from "@/components/show/ShowCard";
 import { ShowDetailDialog } from "@/components/show/ShowDetailDialog";
 import { OfflineCacheBanner } from "@/components/home/OfflineCacheBanner";
@@ -33,6 +33,7 @@ interface HomePins {
 
 export function HomePage() {
   const { user } = useAuth();
+  const navigate = useNavigate();
 
   const { data: stats, isLoading: statsLoading } = useQuery({
     queryKey: ["home", "stats"],
@@ -49,7 +50,6 @@ export function HomePage() {
   const pinnedShows = pins?.shows ?? [];
   const pinnedResources = pins?.resources ?? [];
 
-  const [detailResource, setDetailResource] = React.useState<Resource | null>(null);
   const [detailShow, setDetailShow] = React.useState<Show | null>(null);
 
   const greeting = user?.name || user?.username || "你好";
@@ -156,20 +156,15 @@ export function HomePage() {
         ) : (
           <div className="grid content-start" style={gridStyle}>
             {pinnedResources.map((r) => (
-              <ResourceCard key={r.id} resource={r} onOpen={(x) => setDetailResource(x)} />
+              <ResourceCard
+                key={r.id}
+                resource={r}
+                onOpen={(x) => x.detail_token && navigate(`/resources/${encodeURIComponent(x.detail_token)}`)}
+              />
             ))}
           </div>
         )}
       </section>
-
-      {/* 资源详情弹窗 */}
-      <ResourceDetailDialog
-        open={detailResource != null}
-        onOpenChange={(open) => {
-          if (!open) setDetailResource(null);
-        }}
-        resource={detailResource}
-      />
 
       {/* 放映详情弹窗 */}
       <ShowDetailDialog

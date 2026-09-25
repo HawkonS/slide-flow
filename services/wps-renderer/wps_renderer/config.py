@@ -9,7 +9,6 @@ class Settings:
     wpscli: str
     data_dir: str
     token: str = field(repr=False)
-    host: str = "127.0.0.1"
     port: int = 8765
     max_queue: int = 4
     max_upload_bytes: int = 128 * 1024 * 1024
@@ -30,26 +29,9 @@ class Settings:
     max_records: int = 128
     max_pixels: int = 40_000_000
     process_memory_limit_bytes: int = 1536 * 1024 * 1024
-    allow_network_bind: bool = False
-    # TLS is optional only for a loopback listener used through an SSH tunnel.
-    # Any listener reachable by another host must terminate TLS itself; do not
-    # rely on the caller to remember to put a reverse proxy in front of it.
-    tls_cert_file: str = ""
-    tls_key_file: str = ""
-
     def __post_init__(self):
         if len(self.token) < 32 or len(self.token) > 4096:
             raise ValueError("WPS_RENDER_TOKEN must be a random secret of at least 32 characters")
-        if self.host not in {"127.0.0.1", "::1", "localhost"} and not self.allow_network_bind:
-            raise ValueError("Network bind requires allow_network_bind=true and a private TLS reverse proxy/firewall")
-        if bool(self.tls_cert_file) != bool(self.tls_key_file):
-            raise ValueError("tls_cert_file and tls_key_file must be configured together")
-        if self.host not in {"127.0.0.1", "::1", "localhost"} and (not self.tls_cert_file or not self.tls_key_file):
-            raise ValueError("A non-loopback renderer listener requires a TLS certificate and private key")
-        for name in ("tls_cert_file", "tls_key_file"):
-            value = getattr(self, name)
-            if value and not Path(value).is_file():
-                raise ValueError(f"{name} does not exist: {value}")
         if not 1 <= self.port <= 65535 or not 1 <= self.max_queue <= 32:
             raise ValueError("Invalid port or queue limit")
         if not 1 <= self.max_pages <= 16 or not 72 <= self.max_dpi <= 600:
@@ -80,7 +62,7 @@ class Settings:
         if unknown:
             raise ValueError(f"Unknown configuration keys: {sorted(unknown)}")
         values["token"] = token
-        for name in ("data_dir", "wpscli", "tls_cert_file", "tls_key_file"):
+        for name in ("data_dir", "wpscli"):
             if name in values:
                 if not values[name]:
                     continue

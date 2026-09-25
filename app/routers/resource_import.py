@@ -105,6 +105,36 @@ def resource_import_result(
     return {"status": "pending"}
 
 
+@router.get("/api/resource-import/{session_id}/status")
+def resource_import_status(
+    session_id: str,
+    response: Response,
+    user: sqlite3.Row = Depends(require_user),
+    db: sqlite3.Connection = Depends(db_read_dep),
+) -> dict[str, Any]:
+    """Return non-mutating progress for a long-running import commit."""
+    response.headers["Cache-Control"] = "no-store"
+    receipt = _resource_import_receipt(db, session_id, int(user["id"]))
+    if receipt is not None:
+        return {
+            "status": "completed",
+            "created": int(receipt.get("created", 0)),
+            "progress": int(receipt.get("created", 0)),
+            "total": int(receipt.get("created", 0)),
+            "message": "导入完成",
+        }
+    session = _resource_import_session(session_id, user)
+    total = max(0, int(session.get("commit_total") or session.get("slide_count") or 0))
+    progress = min(total, max(0, int(session.get("commit_progress") or 0)))
+    commit_status = str(session.get("commit_status") or "idle")
+    return {
+        "status": "processing" if commit_status == "processing" else "ready",
+        "progress": progress,
+        "total": total,
+        "message": str(session.get("commit_message") or ""),
+    }
+
+
 @router.post("/api/resource-import/prepare")
 async def prepare_resource_import(
     mode: str = Form("ppt"),
@@ -336,6 +366,9 @@ async def replace_resource_import_fonts(
                         "fonts": fonts,
                         "missing_fonts": missing,
                         "preview_status": preview_status,
+                        "render_stage": "font_check" if missing else "queueing",
+                        "render_completed": 0,
+                        "render_total": int(session.get("slide_count") or task_params.get("slide_count") or 0),
                     })
                     task_db.execute(
                         "UPDATE tasks SET status = 'pending', message = ?, params = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime') WHERE id = ? AND status <> 'cancelled'",

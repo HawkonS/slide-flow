@@ -31,8 +31,8 @@ export interface UserOption {
 }
 
 export type VisibilityScope = "public" | "partial" | "private";
-export type SecrecyLevel = "public" | "confidential" | "secret";
-export type ResourceStatus = "active" | "disabled";
+export type SecrecyLevel = string;
+export type ResourceStatus = string;
 
 export interface ResourceVersion {
   id: number;
@@ -50,6 +50,8 @@ export interface ResourceVersion {
 
 export interface Resource {
   id: number;
+  /** 不可枚举的详情页地址 key */
+  detail_token: string;
   name: string;
   owner_id: number;
   subject: string | null;
@@ -68,6 +70,8 @@ export interface Resource {
   can_manage: boolean;
   visible_user_ids?: number[];
   manage_user_ids?: number[];
+  visible_user_tags?: string[];
+  manage_user_tags?: string[];
   current: ResourceVersion;
   /** 仅在详情接口返回，列表接口不包含 */
   versions?: ResourceVersion[];
@@ -125,6 +129,7 @@ export interface AdminUser {
   role: UserRole;
   must_change_pwd?: boolean;
   temporary_password_expires_at?: string | null;
+  last_login_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -135,6 +140,11 @@ export interface AdminUsersResponse {
   page: number;
   page_size: number;
   total: number;
+  stats: {
+    total_users: number;
+    active_week: number;
+    active_today: number;
+  };
 }
 
 /** 把 tags 字符串切成数组（逗号/空格分隔） */

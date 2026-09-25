@@ -105,10 +105,20 @@ class ResourceImportSafetyTests(unittest.TestCase):
         self.addCleanup(db.close)
         db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY)")
         db.execute("INSERT INTO users (id) VALUES (1)")
+        db.execute("CREATE TABLE user_tag_definitions (name TEXT PRIMARY KEY)")
+        db.execute("INSERT INTO user_tag_definitions (name) VALUES ('company-leader')")
         self.assertEqual(import_validation._validate_resource_import_payload({"visible_user_ids": [1, 1]}, db)["visible_user_ids"], [1])
+        self.assertEqual(
+            import_validation._validate_resource_import_payload(
+                {"visible_user_tags": ["company-leader", "company-leader"]}, db
+            )["visible_user_tags"],
+            ["company-leader"],
+        )
         self.reject(400, import_validation._validate_resource_import_payload, {"visible_user_ids": [True]}, db)
         self.reject(400, import_validation._validate_resource_import_payload, {"visible_user_ids": [2]}, db)
         self.reject(400, import_validation._validate_resource_import_payload, {"visible_user_ids": "1"}, db)
+        self.reject(400, import_validation._validate_resource_import_payload, {"visible_user_tags": [1]}, db)
+        self.reject(400, import_validation._validate_resource_import_payload, {"visible_user_tags": ["missing-tag"]}, db)
         self.reject(400, import_validation._validate_resource_import_payload, {"name_prefix": "x" * 121}, db)
 
     def test_cross_site_origin_rejected_but_proxy_same_origin_works(self):

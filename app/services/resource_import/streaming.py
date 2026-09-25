@@ -45,6 +45,8 @@ def _persist_render_error(session: dict, message: str) -> None:
             "workflow_state": "awaiting_render",
             "preview_status": "error",
             "preview_error": message,
+            "render_stage": "failed",
+            "render_completed": 0,
         })
         db.execute(
             "UPDATE tasks SET status='pending', message=?, error_message=?, params=?, "

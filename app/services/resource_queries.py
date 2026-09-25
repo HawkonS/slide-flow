@@ -41,7 +41,11 @@ def _resource_visibility_sql(
             f"({alias}.owner_id = :vis_uid"
             f" OR {alias}.visibility_scope = 'public'"
             f" OR ({alias}.visibility_scope = 'partial' AND {alias}.id IN"
-            f" (SELECT resource_id FROM resource_visibility WHERE user_id = :vis_uid)))"
+            f" (SELECT resource_id FROM resource_visibility WHERE user_id = :vis_uid))"
+            f" OR ({alias}.visibility_scope = 'partial' AND {alias}.id IN"
+            f" (SELECT rvt.resource_id FROM resource_visibility_tags rvt"
+            f" JOIN user_tags ut ON ut.tag_name = rvt.tag_name"
+            f" WHERE ut.user_id = :vis_uid)))"
         )
 
     if manageable_only:
@@ -51,7 +55,11 @@ def _resource_visibility_sql(
                 f" AND ({alias}.owner_id = :mgmt_uid"
                 f" OR {alias}.management_scope = 'public'"
                 f" OR ({alias}.management_scope = 'partial' AND {alias}.id IN"
-                f" (SELECT resource_id FROM resource_management WHERE user_id = :mgmt_uid)))"
+                f" (SELECT resource_id FROM resource_management WHERE user_id = :mgmt_uid))"
+                f" OR ({alias}.management_scope = 'partial' AND {alias}.id IN"
+                f" (SELECT rmt.resource_id FROM resource_management_tags rmt"
+                f" JOIN user_tags ut ON ut.tag_name = rmt.tag_name"
+                f" WHERE ut.user_id = :mgmt_uid)))"
             )
 
     return cond, params
@@ -116,7 +124,11 @@ def _build_resource_query_sql(
                 "(r.owner_id = :m_uid"
                 " OR r.management_scope = 'public'"
                 " OR (r.management_scope = 'partial' AND r.id IN"
-                " (SELECT resource_id FROM resource_management WHERE user_id = :m_uid)))"
+                " (SELECT resource_id FROM resource_management WHERE user_id = :m_uid))"
+                " OR (r.management_scope = 'partial' AND r.id IN"
+                " (SELECT rmt.resource_id FROM resource_management_tags rmt"
+                " JOIN user_tags ut ON ut.tag_name = rmt.tag_name"
+                " WHERE ut.user_id = :m_uid)))"
             )
             params["m_uid"] = m_uid
 

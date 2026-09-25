@@ -5,10 +5,6 @@ param(
     [string]$Python = "python",
     [string]$WpsCli = "",
     [int]$Port = 8765,
-    [string]$ListenHost = "127.0.0.1",
-    [string]$TlsCertFile = "",
-    [string]$TlsKeyFile = "",
-    [switch]$AllowNetworkBind,
     [string]$TaskName = "SlideFlow-WPS-Renderer",
     [string]$Version = ""
 )
@@ -61,14 +57,6 @@ $tokenPath = Join-Path $shared "token.txt"
 if (-not $Version) { $Version = [DateTime]::Now.ToString("yyyy.MM.dd-HHmmss") }
 if ($Version -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') { throw "Version contains unsafe characters." }
 if ($Port -lt 1 -or $Port -gt 65535) { throw "Port must be between 1 and 65535." }
-if (-not $ListenHost -or $ListenHost -match '[\s/\\]') { throw "ListenHost must be a host name or IP address." }
-$loopbackHosts = @("127.0.0.1", "::1", "localhost")
-$isLoopback = $loopbackHosts -contains $ListenHost.ToLowerInvariant()
-if (-not $isLoopback -and -not $AllowNetworkBind) { throw "Non-loopback listeners require -AllowNetworkBind and HTTPS certificate/key files." }
-if (([bool]$TlsCertFile) -xor ([bool]$TlsKeyFile)) { throw "TlsCertFile and TlsKeyFile must be provided together." }
-if (-not $isLoopback -and (-not $TlsCertFile -or -not $TlsKeyFile)) { throw "Non-loopback listeners require TlsCertFile and TlsKeyFile." }
-if ($TlsCertFile -and -not (Test-Path -LiteralPath $TlsCertFile -PathType Leaf)) { throw "TLS certificate does not exist: $TlsCertFile" }
-if ($TlsKeyFile -and -not (Test-Path -LiteralPath $TlsKeyFile -PathType Leaf)) { throw "TLS private key does not exist: $TlsKeyFile" }
 if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot "wps_renderer"))) { throw "The component source is incomplete: wps_renderer is missing." }
 if (Test-Path -LiteralPath $current) { throw "A current installation already exists. Use Upgrade.ps1 instead of Install.ps1." }
 
@@ -114,11 +102,8 @@ $WpsCli = Resolve-Executable $WpsCli "WPSCLI"
 Set-JsonProperty $config "wpscli" ([IO.Path]::GetFullPath($WpsCli))
 Set-JsonProperty $config "data_dir" (Join-Path $shared "data")
 Set-JsonProperty $config "token_file" $tokenPath
-Set-JsonProperty $config "host" $ListenHost
 Set-JsonProperty $config "port" $Port
-Set-JsonProperty $config "allow_network_bind" ([bool]$AllowNetworkBind)
-Set-JsonProperty $config "tls_cert_file" $(if ($TlsCertFile) { [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $TlsCertFile).Path) } else { "" })
-Set-JsonProperty $config "tls_key_file" $(if ($TlsKeyFile) { [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $TlsKeyFile).Path) } else { "" })
+foreach ($legacyKey in @("host", "allow_network_bind", "tls_cert_file", "tls_key_file")) { $config.PSObject.Properties.Remove($legacyKey) }
 $config | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $configPath -Encoding UTF8
 
 $release = Join-Path $releases $Version
@@ -138,8 +123,7 @@ Move-Item -LiteralPath $release -Destination $current
 & (Join-Path $current "scripts\Register.ps1") -InstallRoot $InstallRoot -Config $configPath -Python (Join-Path $current ".venv\Scripts\pythonw.exe") -TaskName $TaskName -Start
 if ($LASTEXITCODE -ne 0) { throw "Could not register the renderer scheduled task." }
 
-$healthScheme = if ($TlsCertFile) { "https" } else { "http" }
-$healthUri = "{0}://{1}:{2}/v1/health" -f $healthScheme, $ListenHost, $Port
+$healthUri = "http://127.0.0.1:{0}/v1/health" -f $Port
 $healthy = $false
 for ($i = 0; $i -lt 30; $i++) {
     Start-Sleep -Milliseconds 500

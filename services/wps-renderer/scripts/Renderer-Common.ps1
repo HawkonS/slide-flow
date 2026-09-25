@@ -121,19 +121,6 @@ function Write-RendererConfig($Layout, $ConfigObject) {
     $ConfigObject | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $Layout.Config -Encoding UTF8
 }
 
-function Assert-RendererListen([string]$ListenHost, [int]$Port, [switch]$AllowNetworkBind, [string]$TlsCertFile, [string]$TlsKeyFile) {
-    if ([string]::IsNullOrWhiteSpace($ListenHost) -or $ListenHost -match '[\s/\\]') { throw "ListenHost must be a host name or IP address." }
-    if ($Port -lt 1 -or $Port -gt 65535) { throw "Port must be between 1 and 65535." }
-    $loopback = @("127.0.0.1", "::1", "localhost") -contains $ListenHost.ToLowerInvariant()
-    if (-not $loopback -and -not $AllowNetworkBind) { throw "Non-loopback listeners require -AllowNetworkBind and HTTPS certificate/key files." }
-    $hasCert = ([string]::IsNullOrWhiteSpace($TlsCertFile) -eq $false)
-    $hasKey = ([string]::IsNullOrWhiteSpace($TlsKeyFile) -eq $false)
-    if ($TlsCertFile -or $TlsKeyFile) { if (-not ($TlsCertFile -and $TlsKeyFile)) { throw "TlsCertFile and TlsKeyFile must be provided together." } }
-    if (-not $loopback -and (-not $hasCert -or -not $hasKey)) { throw "Non-loopback listeners require TlsCertFile and TlsKeyFile." }
-    if ($hasCert -and -not (Test-Path -LiteralPath $TlsCertFile -PathType Leaf)) { throw "TLS certificate does not exist: $TlsCertFile" }
-    if ($hasKey -and -not (Test-Path -LiteralPath $TlsKeyFile -PathType Leaf)) { throw "TLS private key does not exist: $TlsKeyFile" }
-}
-
 function Get-RendererTask([string]$TaskName) {
     return Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 }
@@ -149,13 +136,8 @@ function Get-RendererManagedTask([string]$TaskName, [string]$Description) {
 function Wait-RendererHealthy($Layout, [int]$Seconds = 30) {
     if ($Seconds -lt 1 -or $Seconds -gt 600) { throw "Health wait must be between 1 and 600 seconds." }
     $config = Read-RendererConfig $Layout
-    $hostName = if ($config.host) { [string]$config.host } else { "127.0.0.1" }
     $port = if ($config.port) { [int]$config.port } else { 8765 }
-    $hasTls = ($config.PSObject.Properties.Name -contains 'tls_cert_file') -and
-        ($config.PSObject.Properties.Name -contains 'tls_key_file') -and
-        $config.tls_cert_file -and $config.tls_key_file
-    $scheme = if ($hasTls) { "https" } else { "http" }
-    $builder = New-Object System.UriBuilder -ArgumentList @($scheme, $hostName, $port)
+    $builder = New-Object System.UriBuilder -ArgumentList @("http", "127.0.0.1", $port)
     $healthUri = $builder.Uri.AbsoluteUri.TrimEnd('/') + "/v1/health"
     $tokenFile = if (($config.PSObject.Properties.Name -contains 'token_file') -and $config.token_file) { [string]$config.token_file } else { $Layout.Token }
     if (-not [IO.Path]::IsPathRooted($tokenFile)) {

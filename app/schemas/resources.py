@@ -12,9 +12,11 @@ class MetadataPayload(ApiPayload):
     tags: str = ""
     status: str = "active"
     visibility_scope: str
-    visible_user_ids: list[int] = []
+    visible_user_ids: list[int] = Field(default_factory=list)
+    visible_user_tags: list[str] = Field(default_factory=list)
     management_scope: str
-    manage_user_ids: list[int] = []
+    manage_user_ids: list[int] = Field(default_factory=list)
+    manage_user_tags: list[str] = Field(default_factory=list)
     secrecy_level: str
 
 

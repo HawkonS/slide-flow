@@ -22,11 +22,11 @@ const DisplayPage = lazy(() => import("@/pages/present/DisplayPage").then((m) =>
 const FullscreenPage = lazy(() => import("@/pages/present/FullscreenPage").then((m) => ({ default: m.FullscreenPage })));
 const PresenterPage = lazy(() => import("@/pages/present/PresenterPage").then((m) => ({ default: m.PresenterPage })));
 const ResourceManagePage = lazy(() => import("@/pages/manage/ResourceManagePage"));
+const ShareManagePage = lazy(() => import("@/pages/manage/ShareManagePage"));
 const TasksPage = lazy(() => import("@/pages/manage/TasksPage"));
 const OfflineCachePage = lazy(() => import("@/pages/manage/OfflineCachePage"));
 const TagManagePage = lazy(() => import("@/pages/manage/TagManagePage"));
 const AdminUsersPage = lazy(() => import("@/pages/admin/AdminUsersPage").then((m) => ({ default: m.AdminUsersPage })));
-const AdminTemplatesPage = lazy(() => import("@/pages/admin/AdminTemplatesPage").then((m) => ({ default: m.AdminTemplatesPage })));
 const AdminSystemPage = lazy(() => import("@/pages/admin/AdminSystemPage").then((m) => ({ default: m.AdminSystemPage })));
 
 // 全屏加载指示器：路由懒加载挂起时显示
@@ -70,12 +70,13 @@ export const router = createBrowserRouter([
       { path: "/home", element: <HomePage /> },
       { path: "/resources", element: <ResourcesPage /> },
       { path: "/resources/import", element: <ResourceImportPage /> },
-      { path: "/resources/:resourceId", element: <ResourceDetailPage /> },
+      { path: "/resources/:resourceKey", element: <ResourceDetailPage /> },
       { path: "/templates", element: <TemplatesPage /> },
       { path: "/fonts", element: <FontsPage /> },
       { path: "/shows", element: <StandardShowsPage /> },
       { path: "/manage/shows", element: <ShowsPage /> },
       { path: "/manage/resources", element: <ResourceManagePage /> },
+      { path: "/manage/shares", element: <ShareManagePage /> },
       { path: "/manage/tasks", element: <TasksPage /> },
       { path: "/manage/offline-cache", element: <OfflineCachePage /> },
       {
@@ -98,7 +99,7 @@ export const router = createBrowserRouter([
         path: "/admin/templates",
         element: (
           <RequireAdmin>
-            <AdminTemplatesPage />
+            <Navigate to="/templates" replace />
           </RequireAdmin>
         ),
       },

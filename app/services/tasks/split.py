@@ -5,9 +5,10 @@ from __future__ import annotations
 from app.core.ppt import split_pptx_to_single_pages
 from app.core.errors import storage_public_message
 from app.db import get_db
-from app.db import now_iso
+from app.db import new_resource_detail_token, now_iso
 from app.services.common import (
     _parse_id_list,
+    _parse_string_list,
 )
 from app.services.files import (
     _compress_hd_image,
@@ -16,6 +17,7 @@ from app.services.files import (
 )
 from app.services.resources import (
     _insert_version,
+    _set_scope_tags,
     _set_scope_users,
 )
 from app.services.tasks.runtime import (
@@ -135,8 +137,10 @@ def _execute_split_task(
         secrecy_level = params["secrecy_level"]
         visibility_scope = params["visibility_scope"]
         visible_user_ids = params["visible_user_ids"]
+        visible_user_tags = params.get("visible_user_tags", "")
         management_scope = params["management_scope"]
         manage_user_ids = params["manage_user_ids"]
+        manage_user_tags = params.get("manage_user_tags", "")
         remark_html = params["remark_html"]
         owner_id = params["owner_id"]
         has_images = bool(image_paths)
@@ -175,12 +179,13 @@ def _execute_split_task(
             db.execute(
                 """
                 INSERT INTO resources (
-                    name, owner_id, subject, tags, status,
+                    detail_token, name, owner_id, subject, tags, status,
                     visibility_scope, management_scope, secrecy_level,
                     current_version, updated_by, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
                 """,
                 (
+                    new_resource_detail_token(),
                     f"{name_prefix}_{index:02d}",
                     owner_id,
                     subject,
@@ -200,6 +205,18 @@ def _execute_split_task(
             resource_ids.append(resource_id)
             _set_scope_users(db, "resource_visibility", resource_id, _parse_id_list(visible_user_ids))
             _set_scope_users(db, "resource_management", resource_id, _parse_id_list(manage_user_ids))
+            _set_scope_tags(
+                db,
+                "resource_visibility_tags",
+                resource_id,
+                _parse_string_list(visible_user_tags, label="可见用户标签"),
+            )
+            _set_scope_tags(
+                db,
+                "resource_management_tags",
+                resource_id,
+                _parse_string_list(manage_user_tags, label="管理用户标签"),
+            )
             _insert_version(
                 db,
                 resource_id=resource_id,

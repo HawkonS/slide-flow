@@ -198,7 +198,7 @@ export function ResourcesPage() {
   }, []);
 
   const handleOpenDetail = (r: Resource) => {
-    navigate(`/resources/${r.id}`);
+    if (r.detail_token) navigate(`/resources/${encodeURIComponent(r.detail_token)}`);
   };
 
   const handleEdit = async (r: Resource) => {

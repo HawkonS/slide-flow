@@ -144,10 +144,7 @@ try {
     $Python = Resolve-Executable $Python "Python"
     & $Python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"
     if ($LASTEXITCODE -ne 0) { throw "Python 3.10 or newer is required." }
-    $hasTls = ($config.PSObject.Properties.Name -contains 'tls_cert_file') -and ($config.PSObject.Properties.Name -contains 'tls_key_file')
-    $scheme = if ($hasTls -and $config.tls_cert_file -and $config.tls_key_file) { "https" } else { "http" }
-    $listenHost = if ($config.host) { [string]$config.host } else { "127.0.0.1" }
-    $baseUri = "{0}://{1}:{2}" -f $scheme, $listenHost, $port
+    $baseUri = "http://127.0.0.1:{0}" -f $port
     $healthUri = "$baseUri/v1/health"
     $sourceBytes = [int64]((Get-ChildItem -LiteralPath $sourceRoot -Recurse -File | Measure-Object -Property Length -Sum).Sum)
     $drive = New-Object -TypeName System.IO.DriveInfo -ArgumentList @([IO.Path]::GetPathRoot($InstallRoot))

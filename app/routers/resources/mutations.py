@@ -12,6 +12,7 @@ from app.core.sanitize import sanitize_html
 from app.core.storage import save_upload
 from app.core.oss import storage as oss_storage
 from app.db import known_font_aliases
+from app.db import new_resource_detail_token
 from app.db import now_iso
 from app.routers.dependencies import (
     db_dep,
@@ -24,6 +25,7 @@ from app.services.common import (
     DEFAULT_RESOURCE_SUBJECT,
     _json_loads,
     _parse_id_list,
+    _parse_string_list,
     _reject_removed_form_fields,
     _validate_resource_status,
     _validate_resource_subject,
@@ -45,7 +47,9 @@ from app.services.resources import (
     _delete_latest_resource_version,
     _insert_version,
     _resource_row,
+    _resource_row_by_detail_token,
     _serialize_resource,
+    _set_scope_tags,
     _set_scope_users,
     _version_row,
 )
@@ -76,8 +80,10 @@ async def create_resource(
     tags: str = Form(""),
     visibility_scope: str = Form("private"),
     visible_user_ids: str = Form(""),
+    visible_user_tags: str = Form(""),
     management_scope: str = Form("private"),
     manage_user_ids: str = Form(""),
+    manage_user_tags: str = Form(""),
     secrecy_level: str = Form("public"),
     status: str = Form("active"),
     subject: str = Form(DEFAULT_RESOURCE_SUBJECT),
@@ -93,6 +99,14 @@ async def create_resource(
     secrecy_level = _validate_secrecy(secrecy_level)
     status = _validate_resource_status(status)
     subject = _validate_resource_subject(subject)
+    visible_ids = _parse_id_list(visible_user_ids)
+    manage_ids = _parse_id_list(manage_user_ids)
+    visible_tags = _parse_string_list(visible_user_tags, label="可见用户标签")
+    manage_tags = _parse_string_list(manage_user_tags, label="管理用户标签")
+    if visibility_scope == "partial" and not visible_ids and not visible_tags:
+        raise HTTPException(400, "可见范围为部分时请至少选择一位用户或一个用户标签")
+    if management_scope == "partial" and not manage_ids and not manage_tags:
+        raise HTTPException(400, "管理范围为部分时请至少选择一位用户或一个用户标签")
     oss_storage.ensure_configured()
 
     uploaded_refs: list[str] = []
@@ -115,20 +129,22 @@ async def create_resource(
             db.execute(
                 """
                 INSERT INTO resources (
-                    name, owner_id, subject, tags, status,
+                    detail_token, name, owner_id, subject, tags, status,
                     visibility_scope, management_scope, secrecy_level,
                     current_version, updated_by, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
                 """,
                 (
-                    name, user["id"], subject, tags, status,
+                    new_resource_detail_token(), name, user["id"], subject, tags, status,
                     visibility_scope, management_scope, secrecy_level,
                     user["id"], ts, ts,
                 ),
             )
             resource_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
-            _set_scope_users(db, "resource_visibility", resource_id, _parse_id_list(visible_user_ids))
-            _set_scope_users(db, "resource_management", resource_id, _parse_id_list(manage_user_ids))
+            _set_scope_users(db, "resource_visibility", resource_id, visible_ids)
+            _set_scope_users(db, "resource_management", resource_id, manage_ids)
+            _set_scope_tags(db, "resource_visibility_tags", resource_id, visible_tags)
+            _set_scope_tags(db, "resource_management_tags", resource_id, manage_tags)
             _insert_version(
                 db,
                 resource_id=resource_id,
@@ -163,6 +179,18 @@ def get_resource(
     return {"resource": _serialize_resource(db, row, user)}
 
 
+@router.get("/api/resources/by-key/{detail_token}")
+def get_resource_by_detail_token(
+    detail_token: str,
+    user: sqlite3.Row = Depends(require_user),
+    db: sqlite3.Connection = Depends(db_read_dep),
+) -> dict[str, Any]:
+    row = _resource_row_by_detail_token(db, detail_token)
+    if not can_view_resource(db, row, user):
+        raise HTTPException(403, "无可见权限")
+    return {"resource": _serialize_resource(db, row, user)}
+
+
 @router.put("/api/resources/{resource_id}/metadata")
 def update_resource_metadata(
     resource_id: int,
@@ -175,6 +203,12 @@ def update_resource_metadata(
         raise HTTPException(403, "无管理权限")
     subject = _validate_resource_subject(payload.subject)
     status = _validate_resource_status(payload.status)
+    visibility_scope = _validate_scope(payload.visibility_scope)
+    management_scope = _validate_scope(payload.management_scope)
+    if visibility_scope == "partial" and not payload.visible_user_ids and not payload.visible_user_tags:
+        raise HTTPException(400, "可见范围为部分时请至少选择一位用户或一个用户标签")
+    if management_scope == "partial" and not payload.manage_user_ids and not payload.manage_user_tags:
+        raise HTTPException(400, "管理范围为部分时请至少选择一位用户或一个用户标签")
     db.execute(
         """
         UPDATE resources
@@ -186,8 +220,8 @@ def update_resource_metadata(
             subject,
             payload.tags,
             status,
-            _validate_scope(payload.visibility_scope),
-            _validate_scope(payload.management_scope),
+            visibility_scope,
+            management_scope,
             _validate_secrecy(payload.secrecy_level),
             user["id"],
             now_iso(),
@@ -196,6 +230,8 @@ def update_resource_metadata(
     )
     _set_scope_users(db, "resource_visibility", resource_id, payload.visible_user_ids)
     _set_scope_users(db, "resource_management", resource_id, payload.manage_user_ids)
+    _set_scope_tags(db, "resource_visibility_tags", resource_id, payload.visible_user_tags)
+    _set_scope_tags(db, "resource_management_tags", resource_id, payload.manage_user_tags)
     db.commit()
     return {"resource": _serialize_resource(db, _resource_row(db, resource_id), user)}
 
@@ -385,7 +421,9 @@ def batch_update_resources(
         "visibility_scope": _validate_scope,
         "management_scope": _validate_scope,
     }
-    allowed_relational = {"visible_user_ids", "manage_user_ids"}
+    allowed_relational = {
+        "visible_user_ids", "manage_user_ids", "visible_user_tags", "manage_user_tags"
+    }
 
     invalid = set(fields.keys()) - set(allowed_scalar.keys()) - allowed_relational - {"tags"}
     if invalid:
@@ -452,6 +490,10 @@ def batch_update_resources(
             _set_scope_users(db, "resource_visibility", rid, fields["visible_user_ids"])
         if "manage_user_ids" in fields:
             _set_scope_users(db, "resource_management", rid, fields["manage_user_ids"])
+        if "visible_user_tags" in fields:
+            _set_scope_tags(db, "resource_visibility_tags", rid, fields["visible_user_tags"])
+        if "manage_user_tags" in fields:
+            _set_scope_tags(db, "resource_management_tags", rid, fields["manage_user_tags"])
 
         updated += 1
 

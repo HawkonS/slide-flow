@@ -103,6 +103,7 @@ def _serialize_user(row: sqlite3.Row | None) -> dict[str, Any] | None:
             if "temporary_password_expires_at" in row.keys()
             else None
         ),
+        "last_login_at": row["last_login_at"] if "last_login_at" in row.keys() else None,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }

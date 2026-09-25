@@ -53,6 +53,7 @@ def _db() -> sqlite3.Connection:
             must_change_pwd INTEGER NOT NULL DEFAULT 0,
             session_version INTEGER NOT NULL DEFAULT 1,
             temporary_password_expires_at TEXT,
+            last_login_at TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );

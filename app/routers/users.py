@@ -11,7 +11,7 @@ import mimetypes
 import tempfile
 import unicodedata
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
@@ -63,12 +63,26 @@ USER_AVATAR_MAX_BYTES = 2 * 1024 * 1024
 USER_AVATAR_MAX_PIXELS = 16_000_000
 USER_SELECT_COLUMNS = (
     "id, name, username, role, feishu_id, avatar_url, tags, must_change_pwd, "
-    "temporary_password_expires_at, created_at, updated_at"
+    "temporary_password_expires_at, last_login_at, created_at, updated_at"
 )
 
 
 def _temporary_password_expiry() -> str:
     return (datetime.utcnow() + timedelta(hours=TEMPORARY_PASSWORD_TTL_HOURS)).isoformat(timespec="seconds") + "Z"
+
+
+def _activity_cutoffs(now: datetime | None = None) -> tuple[str, str]:
+    """Return UTC cutoffs for the local calendar week and local calendar day."""
+    local_now = now or datetime.now().astimezone()
+    if local_now.tzinfo is None:
+        local_now = local_now.astimezone()
+    today_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = today_start - timedelta(days=today_start.weekday())
+
+    def as_utc_iso(value: datetime) -> str:
+        return value.astimezone(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds") + "Z"
+
+    return as_utc_iso(week_start), as_utc_iso(today_start)
 
 
 def _normalise_user_tags(value: str) -> str:
@@ -141,6 +155,29 @@ def _validated_user_tags(
 ) -> str:
     normalised = _normalise_user_tags(value)
     tags = [tag for tag in normalised.split(",") if tag]
+    if settings.user_custom_user_tags and tags:
+        next_sort = int(
+            db.execute(
+                "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM user_tag_definitions"
+            ).fetchone()[0]
+        )
+        for tag in tags:
+            if db.execute("SELECT 1 FROM user_tag_definitions WHERE name = ?", (tag,)).fetchone():
+                continue
+            if "-" in tag:
+                category, label = (part.strip() for part in tag.split("-", 1))
+                if not category or not label:
+                    category, label = "未分类", tag
+            else:
+                category, label = "未分类", tag
+            db.execute(
+                "INSERT OR IGNORE INTO user_tag_definitions "
+                "(name, category, label, sort_order, created_by, created_at) "
+                "VALUES (?, ?, ?, ?, NULL, ?)",
+                (tag, category, label, next_sort, now_iso()),
+            )
+            next_sort += 1
+        return normalised
     if tags:
         placeholders = ",".join("?" for _ in tags)
         existing = {
@@ -201,20 +238,14 @@ def _id_chunks(values: list[int]) -> list[list[int]]:
     ]
 
 
-@router.get("/admin/users")
-def list_users(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=USER_LIST_MAX_PAGE_SIZE),
-    search: str = Query("", max_length=100),
-    tag: str = Query("", max_length=64),
-    tags: str = Query("", max_length=1000),
-    tags_mode: str = Query("any", max_length=8),
-    _: Any = Depends(require_admin),
-    db: sqlite3.Connection = Depends(db_read_dep),
-) -> dict[str, Any]:
-    """获取管理员用户列表，支持服务端筛选和分页。"""
-    # Keep the legacy single-tag parameter working while allowing the UI to
-    # submit a comma-separated set with explicit any/all matching semantics.
+def _user_filter_clause(
+    *,
+    search: str,
+    tag: str,
+    tags: str,
+    tags_mode: str,
+) -> tuple[list[str], list[Any]]:
+    """Build the shared search/tag filters for list and bulk selection APIs."""
     tag_values = (
         [item for item in _normalise_user_tags(tags).split(",") if item]
         if tags.strip()
@@ -243,11 +274,33 @@ def list_users(
         where.append(
             "(name LIKE ? ESCAPE '\\' COLLATE NOCASE "
             "OR username LIKE ? ESCAPE '\\' COLLATE NOCASE "
-            "OR feishu_id LIKE ? ESCAPE '\\' COLLATE NOCASE "
             "OR EXISTS (SELECT 1 FROM user_tags sut WHERE sut.user_id = users.id "
             "AND sut.tag_name LIKE ? ESCAPE '\\' COLLATE NOCASE))"
         )
-        params.extend([pattern, pattern, pattern, pattern])
+        params.extend([pattern, pattern, pattern])
+    return where, params
+
+
+@router.get("/admin/users")
+def list_users(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=USER_LIST_MAX_PAGE_SIZE),
+    search: str = Query("", max_length=100),
+    tag: str = Query("", max_length=64),
+    tags: str = Query("", max_length=1000),
+    tags_mode: str = Query("any", max_length=8),
+    _: Any = Depends(require_admin),
+    db: sqlite3.Connection = Depends(db_read_dep),
+) -> dict[str, Any]:
+    """获取管理员用户列表，支持服务端筛选和分页。"""
+    # Keep the legacy single-tag parameter working while allowing the UI to
+    # submit a comma-separated set with explicit any/all matching semantics.
+    where, params = _user_filter_clause(
+        search=search,
+        tag=tag,
+        tags=tags,
+        tags_mode=tags_mode,
+    )
 
     where_sql = f" WHERE {' AND '.join(where)}" if where else ""
     total = int(
@@ -259,6 +312,17 @@ def list_users(
         "ORDER BY id DESC LIMIT ? OFFSET ?",
         [*params, page_size, offset],
     ).fetchall()
+    week_start, today_start = _activity_cutoffs()
+    stats_row = db.execute(
+        """
+        SELECT
+            COUNT(*) AS total_users,
+            COALESCE(SUM(CASE WHEN last_login_at >= ? THEN 1 ELSE 0 END), 0) AS active_week,
+            COALESCE(SUM(CASE WHEN last_login_at >= ? THEN 1 ELSE 0 END), 0) AS active_today
+        FROM users
+        """,
+        (week_start, today_start),
+    ).fetchone()
 
     available_tags = [
         row["name"]
@@ -282,7 +346,48 @@ def list_users(
         "page": page,
         "page_size": page_size,
         "total": total,
+        "stats": {
+            "total_users": int(stats_row["total_users"]),
+            "active_week": int(stats_row["active_week"]),
+            "active_today": int(stats_row["active_today"]),
+        },
     }
+
+
+@router.get("/admin/users/selection-ids")
+def list_user_selection_ids(
+    search: str = Query("", max_length=100),
+    tag: str = Query("", max_length=64),
+    tags: str = Query("", max_length=1000),
+    tags_mode: str = Query("any", max_length=8),
+    admin: sqlite3.Row = Depends(require_admin),
+    db: sqlite3.Connection = Depends(db_read_dep),
+) -> dict[str, Any]:
+    """Return every currently filtered user that the administrator may delete."""
+    where, params = _user_filter_clause(
+        search=search,
+        tag=tag,
+        tags=tags,
+        tags_mode=tags_mode,
+    )
+    where.append("users.id != ?")
+    params.append(int(admin["id"]))
+    if not is_system_admin(admin):
+        where.append("users.role != ?")
+        params.append(ROLE_SYSTEM_ADMIN)
+
+    where_sql = f" WHERE {' AND '.join(where)}"
+    rows = db.execute(
+        f"SELECT id FROM users{where_sql} ORDER BY id DESC LIMIT ?",
+        [*params, USER_BULK_DELETE_MAX + 1],
+    ).fetchall()
+    if len(rows) > USER_BULK_DELETE_MAX:
+        raise HTTPException(
+            400,
+            f"筛选结果超过 {USER_BULK_DELETE_MAX} 个可批量操作用户，请缩小筛选范围",
+        )
+    user_ids = [int(row["id"]) for row in rows]
+    return {"user_ids": user_ids, "total": len(user_ids)}
 
 
 @router.get("/users/options")

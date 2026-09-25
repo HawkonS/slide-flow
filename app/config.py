@@ -108,7 +108,8 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
             {"key": "app.slow_request_threshold", "label": "慢请求阈值（秒）", "default": "1.0", "type": "float", "hot_reload": True, "desc": "超过该阈值的请求会被记录到慢请求日志"},
             {"key": "app.split_task_timeout", "label": "拆分任务超时（秒）", "default": "600", "type": "int", "hot_reload": False, "desc": "PPT 拆分任务超时时间"},
             {"key": "app.max_concurrent_splits", "label": "最大并发拆分数", "default": "2", "type": "int", "hot_reload": False, "desc": "最大并发的 PPT 拆分任务数"},
-            {"key": "app.user_custom_tags", "label": "允许自定义素材标签", "default": "false", "type": "bool", "hot_reload": True, "desc": "开启后素材编辑可自由创建素材标签；关闭后只能选择管理员预设的素材标签"},
+            {"key": "app.user_custom_tags", "label": "允许自定义分类标签", "default": "false", "type": "bool", "hot_reload": True, "desc": "开启后素材编辑可自由创建分类标签；关闭后只能选择管理员预设的分类标签"},
+            {"key": "app.user_custom_user_tags", "label": "允许自定义用户标签", "default": "false", "type": "bool", "hot_reload": True, "desc": "开启后用户编辑可自由创建用户标签；关闭后只能选择管理员预设的用户标签"},
         ],
     },
     {
@@ -128,15 +129,9 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
         "key": "render",
         "label": "Windows WPS 渲染服务",
         "items": [
-            {"key": "render.url", "label": "旧版主动推送地址", "default": "", "type": "str", "hot_reload": False, "desc": "仅保留给诊断/兼容工具；生产 PPT 转 PNG 已改为 Windows 主动领取，不再由主程序调用该地址"},
             {"key": "render.token", "label": "Windows Worker 密钥", "default": "", "type": "str", "hot_reload": False, "secret": True, "desc": "字体同步、PPT 转 PNG 领取和本机 WPS Renderer 共用；推荐环境变量 SLIDE_FLOW_RENDER_TOKEN"},
             {"key": "render.token_file", "label": "渲染密钥文件", "default": "", "type": "str", "hot_reload": False, "desc": "可选，权限受限的 UTF-8 密钥文件路径；优先级：环境变量 > token_file > render.token"},
-            {"key": "render.ca_file", "label": "TLS CA 证书", "default": "", "type": "str", "hot_reload": False, "desc": "私有 CA 文件绝对路径；留空使用系统信任库，不允许关闭证书校验"},
-            {"key": "render.connect_timeout", "label": "兼容连接超时（秒）", "default": "5", "type": "int", "hot_reload": False, "desc": "仅用于旧版诊断客户端"},
-            {"key": "render.read_timeout", "label": "兼容传输超时（秒）", "default": "30", "type": "int", "hot_reload": False, "desc": "仅用于旧版诊断客户端"},
-            {"key": "render.total_timeout", "label": "预览等待上限（秒）", "default": "1800", "type": "int", "hot_reload": False, "desc": "同步兼容调用等待持久化渲染任务完成的总上限"},
-            {"key": "render.retries", "label": "兼容重试次数", "default": "2", "type": "int", "hot_reload": False, "desc": "仅用于旧版诊断客户端"},
-            {"key": "render.batch_size", "label": "兼容批量页数", "default": "2", "type": "int", "hot_reload": False, "desc": "仅用于旧版诊断客户端；Windows Pull Worker 按持久化任务逐页安全转换"},
+            {"key": "render.total_timeout", "label": "预览等待上限（秒）", "default": "1800", "type": "int", "hot_reload": False, "desc": "等待持久化渲染任务完成的总上限"},
             {"key": "render.dpi", "label": "渲染 DPI", "default": "288", "type": "int", "hot_reload": False, "desc": "72–300，默认 288；按 4K PNG 渲染，前台小图由 OSS 图片处理参数生成"},
         ],
     },
@@ -184,7 +179,15 @@ DEFAULT_PROPERTIES: dict[str, str] = {
     for group in (*CONFIG_SCHEMA, *OPERATION_CONFIG_SCHEMA)
     for item in group["items"]
 }
-LEGACY_CONFIG_KEYS = {"security.default_password"}
+LEGACY_CONFIG_KEYS = {
+    "security.default_password",
+    "render.url",
+    "render.ca_file",
+    "render.connect_timeout",
+    "render.read_timeout",
+    "render.retries",
+    "render.batch_size",
+}
 
 
 def _render_properties(values: dict[str, str]) -> str:
@@ -316,6 +319,7 @@ _PROP_TO_ATTR: dict[str, str] = {
     "app.split_task_timeout": "split_task_timeout",
     "app.max_concurrent_splits": "max_concurrent_splits",
     "app.user_custom_tags": "user_custom_tags",
+    "app.user_custom_user_tags": "user_custom_user_tags",
     "image.hd.max_resolution": "image_hd_max_resolution",
     "image.hd.dpi": "image_hd_dpi",
     "image.hd.format": "image_hd_format",
@@ -352,14 +356,8 @@ def _resolve_path(raw: str) -> Path:
 class Settings:
     root_dir: Path
 
-    render_url: str = ""
     render_token: str = field(default="", repr=False)
-    render_ca_file: str = ""
-    render_connect_timeout: int = 5
-    render_read_timeout: int = 30
     render_total_timeout: int = 1800
-    render_retries: int = 2
-    render_batch_size: int = 2
     render_dpi: int = int(DEFAULT_PROPERTIES["render.dpi"])
 
     # 基础配置
@@ -418,6 +416,7 @@ class Settings:
     split_task_timeout: int = int(DEFAULT_PROPERTIES["app.split_task_timeout"])
     max_concurrent_splits: int = int(DEFAULT_PROPERTIES["app.max_concurrent_splits"])
     user_custom_tags: bool = _parse_bool(DEFAULT_PROPERTIES["app.user_custom_tags"])
+    user_custom_user_tags: bool = _parse_bool(DEFAULT_PROPERTIES["app.user_custom_user_tags"])
 
     # 图片压缩配置
     image_hd_max_resolution: int = int(DEFAULT_PROPERTIES["image.hd.max_resolution"])
@@ -483,6 +482,12 @@ def _coerce_value(raw: str, value_type: str) -> Any:
     return raw
 
 
+def _env_or_config(name: str, fallback: str) -> str:
+    """Use a non-empty environment override, otherwise keep file config."""
+    value = os.getenv(name)
+    return value.strip() if isinstance(value, str) and value.strip() else fallback
+
+
 CONFIG_SECRET_MASK = "********"
 
 
@@ -517,11 +522,11 @@ def read_config_secret(key: str) -> str:
         "oss.access_key_secret": "ALIBABA_CLOUD_ACCESS_KEY_SECRET",
     }
     env_name = env_overrides.get(key)
-    if key == "render.token" and props.get("render.token_file") and "SLIDE_FLOW_RENDER_TOKEN" not in os.environ:
+    if key == "render.token" and props.get("render.token_file") and not os.getenv("SLIDE_FLOW_RENDER_TOKEN", "").strip():
         return _resolve_path(props["render.token_file"]).read_text(encoding="utf-8").strip()
     if env_name:
         # 环境变量覆盖值才是实际生效的配置。
-        return os.getenv(env_name, props[key])
+        return _env_or_config(env_name, props[key])
     return props[key]
 
 
@@ -553,13 +558,13 @@ def legacy_default_password_candidates() -> list[str]:
 
 
 def remove_legacy_default_password_config() -> None:
-    """Remove the retired shared password from local config and its backup."""
+    """Remove retired configuration keys from local config and its backup."""
     for path in (PROPERTIES_FILE, PROPERTIES_FILE.with_suffix(PROPERTIES_FILE.suffix + ".bak")):
         if not path.exists():
             continue
         lines = [
             line for line in path.read_text(encoding="utf-8").splitlines()
-            if not line.strip().startswith("security.default_password=")
+            if line.partition("=")[0].strip() not in LEGACY_CONFIG_KEYS
         ]
         _write_text_atomic(path, "\n".join(lines).rstrip() + "\n")
 
@@ -605,7 +610,7 @@ def load_settings() -> Settings:
     response_cache_enabled = _parse_bool(get_value("server.response_cache"))
 
     # 安全配置
-    secret_key = os.getenv("SLIDE_FLOW_SECRET", get_value("security.secret_key"))
+    secret_key = _env_or_config("SLIDE_FLOW_SECRET", get_value("security.secret_key"))
     session_ttl_hours = int(get_value("security.session_ttl_hours"))
     show_token_ttl_seconds = int(get_value("security.show_token_ttl_seconds"))
 
@@ -632,6 +637,7 @@ def load_settings() -> Settings:
     split_task_timeout = int(get_value("app.split_task_timeout"))
     max_concurrent_splits = int(get_value("app.max_concurrent_splits"))
     user_custom_tags = _parse_bool(get_value("app.user_custom_tags"))
+    user_custom_user_tags = _parse_bool(get_value("app.user_custom_user_tags"))
 
     # 图片压缩配置
     image_hd_max_resolution = int(get_value("image.hd.max_resolution"))
@@ -651,7 +657,7 @@ def load_settings() -> Settings:
     # 飞书 SSO
     feishu_sso_enabled = _parse_bool(get_value("feishu.sso_enabled"))
     feishu_app_id = get_value("feishu.app_id")
-    feishu_app_secret = os.getenv("FEISHU_APP_SECRET", get_value("feishu.app_secret"))
+    feishu_app_secret = _env_or_config("FEISHU_APP_SECRET", get_value("feishu.app_secret"))
 
     # OSS credentials may come from the instance RAM role or environment.
     storage_backend = get_value("storage.backend")
@@ -661,28 +667,22 @@ def load_settings() -> Settings:
     oss_bucket = get_value("oss.bucket")
     oss_prefix = get_value("oss.prefix")
     oss_connect_timeout_seconds = int(get_value("oss.connect_timeout_seconds"))
-    oss_access_key_id = os.getenv("ALIBABA_CLOUD_ACCESS_KEY_ID", get_value("oss.access_key_id"))
-    oss_access_key_secret = os.getenv("ALIBABA_CLOUD_ACCESS_KEY_SECRET", get_value("oss.access_key_secret"))
+    oss_access_key_id = _env_or_config("ALIBABA_CLOUD_ACCESS_KEY_ID", get_value("oss.access_key_id"))
+    oss_access_key_secret = _env_or_config("ALIBABA_CLOUD_ACCESS_KEY_SECRET", get_value("oss.access_key_secret"))
     oss_url_expire_seconds = int(get_value("oss.url_expire_seconds"))
 
     # 数据库路径
     db_path = db_dir / "slide_flow.db"
 
     render_token = get_value("render.token")
-    if get_value("render.token_file") and "SLIDE_FLOW_RENDER_TOKEN" not in os.environ:
+    if get_value("render.token_file") and not os.getenv("SLIDE_FLOW_RENDER_TOKEN", "").strip():
         render_token = _resolve_path(get_value("render.token_file")).read_text(encoding="utf-8").strip()
-    render_token = os.getenv("SLIDE_FLOW_RENDER_TOKEN", render_token)
+    render_token = _env_or_config("SLIDE_FLOW_RENDER_TOKEN", render_token)
 
     s = Settings(
         root_dir=ROOT_DIR,
-        render_url=os.getenv("SLIDE_FLOW_RENDER_URL", get_value("render.url")),
         render_token=render_token,
-        render_ca_file=str(_resolve_path(get_value("render.ca_file"))) if get_value("render.ca_file") else "",
-        render_connect_timeout=int(get_value("render.connect_timeout")),
-        render_read_timeout=int(get_value("render.read_timeout")),
         render_total_timeout=int(get_value("render.total_timeout")),
-        render_retries=int(get_value("render.retries")),
-        render_batch_size=int(get_value("render.batch_size")),
         render_dpi=int(get_value("render.dpi")),
         site_name=site_name,
         port=port,
@@ -725,6 +725,7 @@ def load_settings() -> Settings:
         split_task_timeout=split_task_timeout,
         max_concurrent_splits=max_concurrent_splits,
         user_custom_tags=user_custom_tags,
+        user_custom_user_tags=user_custom_user_tags,
         image_hd_max_resolution=image_hd_max_resolution,
         image_hd_dpi=image_hd_dpi,
         image_hd_format=image_hd_format,

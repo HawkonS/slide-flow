@@ -52,6 +52,11 @@ export function ResourceCard({
   const queryClient = useQueryClient();
   const version = resource.current;
   const preview = version?.preview_url || version?.original_preview_url || null;
+  const retinaPreview = version?.original_preview_url || preview;
+  const previewSrcSet =
+    preview && retinaPreview && preview !== retinaPreview
+      ? `${preview} 1x, ${retinaPreview} 2x`
+      : undefined;
   const canManage = resource.can_manage;
 
   const [addOpen, setAddOpen] = React.useState(false);
@@ -143,15 +148,18 @@ export function ResourceCard({
       tabIndex={0}
       onClick={() => onOpen?.(resource)}
       onKeyDown={handleKeyDown}
-      className="group relative flex cursor-pointer flex-col overflow-hidden rounded-lg border bg-card text-card-foreground shadow-sm transition hover:border-foreground/20 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="group relative flex min-w-0 cursor-pointer flex-col overflow-hidden rounded-lg border bg-card text-card-foreground shadow-sm transition hover:border-foreground/20 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <div className="relative aspect-[16/9] w-full overflow-hidden bg-muted">
         {preview ? (
           <img
             src={preview}
+            srcSet={previewSrcSet}
             alt={resource.name}
             loading="lazy"
-            className="h-full w-full object-contain"
+            decoding="async"
+            draggable={false}
+            className="block h-full w-full object-contain"
           />
         ) : (
           <div className="flex h-full w-full items-center justify-center text-muted-foreground">
@@ -259,12 +267,12 @@ export function ResourceCard({
         )}
       </div>
 
-      <div className="border-t bg-[hsl(var(--surface-subtle))] px-3 py-2.5">
+      <div className="h-[52px] shrink-0 overflow-hidden border-t bg-[hsl(var(--surface-subtle))] px-3 py-2.5">
         <h3 className="line-clamp-1 text-[13px] font-medium text-foreground">{resource.name}</h3>
         <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
           <span>v{resource.current_version}</span>
           <span aria-hidden="true">·</span>
-          <span>{resource.subject || "未设置主体"}</span>
+          <span className="min-w-0 truncate">{resource.subject || "未设置主体"}</span>
         </div>
       </div>
     </article>

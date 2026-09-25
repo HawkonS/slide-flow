@@ -1,6 +1,5 @@
 import argparse
 import logging
-import ssl
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -23,7 +22,7 @@ def main():
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
     # One worker is deliberate: WPS/font activation must never overlap.
     server_options = {
-        "host": settings.host,
+        "host": "127.0.0.1",
         "port": settings.port,
         "workers": 1,
         "access_log": False,
@@ -33,12 +32,6 @@ def main():
         "server_header": False,
         "log_config": None,
     }
-    if settings.tls_cert_file:
-        server_options.update(
-            ssl_certfile=settings.tls_cert_file,
-            ssl_keyfile=settings.tls_key_file,
-            ssl_version=ssl.TLSVersion.TLSv1_2,
-        )
     uvicorn.run(create_app(settings), **server_options)
 
 

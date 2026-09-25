@@ -28,7 +28,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-type TagDomain = "resource" | "user";
+type TagDomain = "resource" | "subject" | "secrecy" | "status" | "user";
 
 interface AdminTag {
   id: number;
@@ -42,6 +42,7 @@ interface AdminTag {
 
 interface AdminTagsResponse {
   tags: AdminTag[];
+  resource_custom_tags?: boolean;
   user_custom_tags?: boolean;
 }
 
@@ -57,10 +58,28 @@ interface CategoryGroup {
 
 const domainCopy = {
   resource: {
-    label: "素材标签",
-    description: "用于单页素材与放映内容的分类、检索和筛选。",
+    label: "分类标签",
+    description: "用于单页素材与放映内容的通用分类、检索和筛选。",
     usage: "素材使用",
-    empty: "暂无素材标签，点击右上角“添加素材标签”创建",
+    empty: "暂无分类标签，点击右上角“添加分类标签”创建",
+  },
+  subject: {
+    label: "主体标签",
+    description: "用于维护素材导入和编辑时可选择的主体。",
+    usage: "素材使用",
+    empty: "暂无主体标签，点击右上角“添加主体标签”创建",
+  },
+  secrecy: {
+    label: "密级标签",
+    description: "用于维护素材导入和编辑时可选择的密级。",
+    usage: "素材使用",
+    empty: "暂无密级标签，点击右上角“添加密级标签”创建",
+  },
+  status: {
+    label: "状态标签",
+    description: "用于维护素材导入和编辑时可选择的状态。",
+    usage: "素材使用",
+    empty: "暂无状态标签，点击右上角“添加状态标签”创建",
   },
   user: {
     label: "用户标签",
@@ -71,16 +90,20 @@ const domainCopy = {
 } satisfies Record<TagDomain, Record<string, string>>;
 
 function domainEndpoint(domain: TagDomain): string {
-  return domain === "user" ? "/api/admin/user-tags" : "/api/admin/tags";
+  if (domain === "resource") return "/api/admin/tags";
+  return `/api/admin/${domain}-tags`;
 }
+
+const TAG_DOMAINS: TagDomain[] = ["resource", "subject", "secrecy", "status", "user"];
 
 export default function TagManagePage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const domain: TagDomain = searchParams.get("tab") === "user" ? "user" : "resource";
+  const requestedDomain = searchParams.get("tab") as TagDomain | null;
+  const domain: TagDomain = requestedDomain && TAG_DOMAINS.includes(requestedDomain) ? requestedDomain : "resource";
 
   const handleTabChange = (value: string) => {
     const next = new URLSearchParams(searchParams);
-    if (value === "user") next.set("tab", "user");
+    if (value !== "resource") next.set("tab", value);
     else next.delete("tab");
     setSearchParams(next, { replace: true });
   };
@@ -90,27 +113,24 @@ export default function TagManagePage() {
       <header className="space-y-1">
         <h1 className="page-title">标签管理</h1>
         <p className="text-sm text-muted-foreground">
-          素材标签用于分类和筛选素材，用户标签用于分类和筛选用户。
+          分类、主体、密级、状态与用户标签分别维护，互不混用。
         </p>
       </header>
 
       <Tabs value={domain} onValueChange={handleTabChange} className="flex min-h-0 flex-1 flex-col">
         <TabsList className="w-fit">
-          <TabsTrigger value="resource" className="gap-1.5">
-            <Tag className="h-3.5 w-3.5" />
-            素材标签
-          </TabsTrigger>
-          <TabsTrigger value="user" className="gap-1.5">
-            <UserRound className="h-3.5 w-3.5" />
-            用户标签
-          </TabsTrigger>
+          {TAG_DOMAINS.map((item) => (
+            <TabsTrigger key={item} value={item} className="gap-1.5">
+              {item === "user" ? <UserRound className="h-3.5 w-3.5" /> : <Tag className="h-3.5 w-3.5" />}
+              {domainCopy[item].label}
+            </TabsTrigger>
+          ))}
         </TabsList>
-        <TabsContent value="resource" className="mt-3 flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
-          <TagDomainPanel domain="resource" />
-        </TabsContent>
-        <TabsContent value="user" className="mt-3 flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
-          <TagDomainPanel domain="user" />
-        </TabsContent>
+        {TAG_DOMAINS.map((item) => (
+          <TabsContent key={item} value={item} className="mt-3 flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
+            <TagDomainPanel domain={item} />
+          </TabsContent>
+        ))}
       </Tabs>
     </div>
   );
@@ -120,7 +140,7 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
   const qc = useQueryClient();
   const copy = domainCopy[domain];
   const endpoint = domainEndpoint(domain);
-  const queryKey = ["admin", domain === "user" ? "user-tags" : "tags"];
+  const queryKey = ["admin", `${domain}-tags`];
   const { data, isLoading, isError, error } = useQuery({
     queryKey,
     queryFn: () => api<AdminTagsResponse>(endpoint),
@@ -151,15 +171,18 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
     }));
   }, [filtered]);
 
+  const customConfigKey = domain === "resource" ? "resource_custom_tags" : "user_custom_tags";
+  const customAllowed = domain === "resource" ? data?.resource_custom_tags : data?.user_custom_tags;
   const configMutation = useMutation({
     mutationFn: (next: boolean) =>
-      api<{ user_custom_tags: boolean }>("/api/admin/tags/config", {
+      api<{ resource_custom_tags: boolean; user_custom_tags: boolean }>("/api/admin/tags/config", {
         method: "PUT",
-        json: { user_custom_tags: next },
+        json: { [customConfigKey]: next },
       }),
     onSuccess: (result) => {
-      toast.success(result.user_custom_tags ? "已允许自定义素材标签" : "已限制为预设素材标签");
-      qc.invalidateQueries({ queryKey: ["admin", "tags"] });
+      const enabled = domain === "resource" ? result.resource_custom_tags : result.user_custom_tags;
+      toast.success(enabled ? `已允许自定义${copy.label}` : `已限制为预设${copy.label}`);
+      qc.invalidateQueries({ queryKey });
       qc.invalidateQueries({ queryKey: ["config"] });
     },
     onError: (mutationError: Error) => toast.error(mutationError.message || "更新失败"),
@@ -169,7 +192,7 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
     onSuccess: () => {
       toast.success(`${copy.label}已删除`);
       qc.invalidateQueries({ queryKey });
-      qc.invalidateQueries({ queryKey: ["preset-tags", domain] });
+      qc.invalidateQueries({ queryKey: domain === "resource" || domain === "user" ? ["preset-tags", domain] : ["metadata-tags", domain] });
       if (domain === "user") qc.invalidateQueries({ queryKey: ["admin", "users"] });
     },
     onError: (mutationError: Error) => toast.error(mutationError.message || "删除失败"),
@@ -191,7 +214,7 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
   };
   const invalidate = () => {
     qc.invalidateQueries({ queryKey });
-    qc.invalidateQueries({ queryKey: ["preset-tags", domain] });
+    qc.invalidateQueries({ queryKey: domain === "resource" || domain === "user" ? ["preset-tags", domain] : ["metadata-tags", domain] });
     if (domain === "user") qc.invalidateQueries({ queryKey: ["admin", "users"] });
   };
 
@@ -202,17 +225,17 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
           <div className="text-sm font-medium">{copy.label}</div>
           <div className="mt-0.5 text-xs text-muted-foreground">{copy.description}</div>
         </div>
-        {domain === "resource" && (
+        {(domain === "resource" || domain === "user") && (
           <label
             className={cn(
               "flex h-8 items-center gap-2 rounded-md border bg-background px-3 text-xs text-muted-foreground transition",
-              data?.user_custom_tags && "border-primary/40 bg-primary/5 text-foreground",
+              customAllowed && "border-primary/40 bg-primary/5 text-foreground",
               configMutation.isPending && "opacity-60",
             )}
           >
-            <span>允许自定义素材标签</span>
+            <span>允许自定义{copy.label}</span>
             <Switch
-              checked={data?.user_custom_tags ?? false}
+              checked={customAllowed ?? false}
               disabled={configMutation.isPending || isLoading}
               onCheckedChange={(checked) => configMutation.mutate(Boolean(checked))}
             />
@@ -279,7 +302,10 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
                       {group.tags.map((item) => (
                         <li key={item.id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm transition hover:bg-accent/30">
                           <div className="flex min-w-0 items-center gap-2">
-                            <span className="truncate font-medium">{item.name}</span>
+                            <span className="truncate font-medium">{item.label || item.name}</span>
+                            {item.label && item.label !== item.name && (
+                              <span className="truncate text-xs text-muted-foreground">{item.name}</span>
+                            )}
                             <span className="shrink-0 text-xs text-muted-foreground">
                               {copy.usage} <span className="text-foreground">{item.usage_count}</span>
                             </span>
@@ -364,7 +390,15 @@ function CreateTagsDialog({
           <textarea
             value={text}
             onChange={(event) => setText(event.target.value)}
-            placeholder={domain === "user" ? "部门-销售\n部门-研发\n人员-外部协作" : "用途-封面\n行业-金融\n风格-简约"}
+            placeholder={domain === "user"
+              ? "部门-销售\n部门-研发\n人员-外部协作"
+              : domain === "resource"
+                ? "用途-封面\n行业-金融\n风格-简约"
+                : domain === "subject"
+                  ? "集团\n子公司\n产品线"
+                  : domain === "secrecy"
+                    ? "内部公开\n内部保密"
+                    : "草稿\n已发布\n已归档"}
             disabled={mutation.isPending}
             className={cn(
               "min-h-[160px] w-full rounded-md border bg-background px-3 py-2 text-sm shadow-sm outline-none transition",
@@ -426,7 +460,7 @@ function EditTagDialog({
         <DialogHeader><DialogTitle>编辑{copy.label}</DialogTitle></DialogHeader>
         <div className="grid gap-3">
           <p className="text-xs leading-relaxed text-muted-foreground">
-            重命名只会更新{domain === "user" ? "用户标签及已分配用户" : "素材标签及已使用的素材、放映"}，不会影响另一类标签。
+            重命名只会更新当前{copy.label}及其已使用素材，不会影响其他标签类型。
           </p>
           <input
             value={name}

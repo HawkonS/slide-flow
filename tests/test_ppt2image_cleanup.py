@@ -88,7 +88,7 @@ class Ppt2ImageCleanupTests(unittest.TestCase):
             violations,
             [],
             "The retired PPT2Image path must not return; use the supported "
-            "WPS remote renderer and generic PPTX utilities instead.",
+            "Windows pull renderer and generic PPTX utilities instead.",
         )
 
     def test_current_renderer_and_generic_ppt_modules_remain_present(self):
@@ -96,7 +96,6 @@ class Ppt2ImageCleanupTests(unittest.TestCase):
         # supported implementation while deleting an obsolete conversion path.
         for relative in (
             "app/services/resource_import/rendering.py",
-            "app/services/resource_import/remote_renderer.py",
             "app/core/ppt.py",
             "app/core/ppt_modules/images.py",
         ):

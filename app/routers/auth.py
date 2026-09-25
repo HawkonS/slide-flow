@@ -275,8 +275,15 @@ def login(
     if user is None or not password_ok or temporary_password_expired:
         _record_login_failure(db, ip, username_key)
         raise HTTPException(401, "用户名或密码错误")
-    
+
     _clear_login_failures(db, username_key)
+    login_at = now_iso()
+    db.execute(
+        "UPDATE users SET last_login_at = ? WHERE id = ?",
+        (login_at, int(user["id"])),
+    )
+    db.commit()
+    user = db.execute("SELECT * FROM users WHERE id = ?", (int(user["id"]),)).fetchone()
     token = create_session_token(
         int(user["id"]),
         settings.secret_key,

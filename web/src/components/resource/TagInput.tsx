@@ -33,6 +33,7 @@ interface PresetTagsResponse {
 }
 
 interface ConfigResponse {
+  resource_custom_tags?: boolean;
   user_custom_tags?: boolean;
 }
 
@@ -45,8 +46,8 @@ function splitInput(raw: string): string[] {
 
 /**
  * 二级标签输入组件：
- * - user_custom_tags=false：仅预设模式，主输入框模糊搜索 + 下方建议面板（不可自定义）
- * - user_custom_tags=true ：自由输入 + 按分类分组的建议
+ * - 对应域 custom_tags=false：仅预设模式，主输入框模糊搜索 + 下方建议面板（不可自定义）
+ * - 对应域 custom_tags=true ：自由输入 + 按分类分组的建议
  * - API 加载中：退回到自由输入模式（fallback）
  */
 export function TagInput(props: TagInputProps) {
@@ -63,7 +64,6 @@ export function TagInput(props: TagInputProps) {
     queryKey: ["config"],
     queryFn: () => api<ConfigResponse>("/api/config"),
     staleTime: 60_000,
-    enabled: domain === "resource",
   });
 
   const { data: tagsData, isLoading: tagsLoading, isError: tagsError } = useQuery({
@@ -74,36 +74,18 @@ export function TagInput(props: TagInputProps) {
 
   const groups = tagsData?.groups ?? [];
 
-  if (domain === "user") {
-    if (tagsLoading) {
+  const allowCustom = domain === "user"
+    ? (configData?.user_custom_tags ?? false)
+    : (configData?.resource_custom_tags ?? true);
+
+  if (configData === undefined || tagsLoading) {
+    if (domain === "user") {
       return (
         <div className={cn("flex min-h-10 items-center rounded-md border bg-muted/20 px-3 text-sm text-muted-foreground", className)}>
           正在加载用户标签…
         </div>
       );
     }
-    if (tagsError) {
-      return (
-        <div className={cn("flex min-h-10 items-center rounded-md border border-destructive/40 bg-destructive/5 px-3 text-sm text-destructive", className)}>
-          用户标签加载失败，请刷新后重试
-        </div>
-      );
-    }
-    return (
-      <PresetSelectorTagInput
-        value={value}
-        onChange={onChange}
-        groups={groups}
-        placeholder={placeholder}
-        disabled={disabled}
-        className={className}
-      />
-    );
-  }
-
-  const allowCustom = configData?.user_custom_tags ?? true;
-
-  if (configData === undefined || tagsLoading) {
     return (
       <FreeInputTagInput
         value={value}
@@ -113,6 +95,14 @@ export function TagInput(props: TagInputProps) {
         disabled={disabled}
         className={className}
       />
+    );
+  }
+
+  if (tagsError && domain === "user") {
+    return (
+      <div className={cn("flex min-h-10 items-center rounded-md border border-destructive/40 bg-destructive/5 px-3 text-sm text-destructive", className)}>
+        用户标签加载失败，请刷新后重试
+      </div>
     );
   }
 

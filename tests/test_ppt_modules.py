@@ -103,6 +103,76 @@ class PptPublicContractTests(unittest.TestCase):
             ppt.split_pptx_to_single_pages(enriched,self.root/"limited",max_total_bytes=1)
         self.assertFalse(list((self.root/"limited").glob("*.pptx")))
 
+    def test_split_removes_embedded_fonts_and_their_package_metadata(self):
+        source = self.build()
+        with zipfile.ZipFile(source) as package:
+            parts = {name: package.read(name) for name in package.namelist()}
+
+        presentation = ET.fromstring(parts["ppt/presentation.xml"])
+        presentation.set("embedTrueTypeFonts", "1")
+        presentation.set("saveSubsetFonts", "1")
+        embedded_fonts = ET.SubElement(presentation, f"{{{P_NS}}}embeddedFontLst")
+        embedded_font = ET.SubElement(embedded_fonts, f"{{{P_NS}}}embeddedFont")
+        ET.SubElement(embedded_font, f"{{{P_NS}}}font", {"typeface": "Test Sans"})
+        ET.SubElement(embedded_font, f"{{{P_NS}}}regular", {f"{{{R_NS}}}id": "rIdFont1"})
+        parts["ppt/presentation.xml"] = ET.tostring(
+            presentation, encoding="utf-8", xml_declaration=True
+        )
+
+        relationships = ET.fromstring(parts["ppt/_rels/presentation.xml.rels"])
+        ET.SubElement(
+            relationships,
+            f"{{{relationships.tag.rsplit('}', 1)[0][1:]}}}Relationship",
+            {
+                "Id": "rIdFont1",
+                "Type": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/font",
+                "Target": "fonts/font1.fntdata",
+            },
+        )
+        parts["ppt/_rels/presentation.xml.rels"] = ET.tostring(
+            relationships, encoding="utf-8", xml_declaration=True
+        )
+        parts["ppt/fonts/font1.fntdata"] = b"embedded-font-payload" * 1000
+        content_types = ET.fromstring(parts["[Content_Types].xml"])
+        content_types.append(
+            ET.Element(
+                "{http://schemas.openxmlformats.org/package/2006/content-types}Default",
+                {"Extension": "fntdata", "ContentType": "application/x-fontdata"},
+            )
+        )
+        parts["[Content_Types].xml"] = ET.tostring(
+            content_types, encoding="utf-8", xml_declaration=True
+        )
+
+        embedded_source = self.root / "embedded-fonts.pptx"
+        with zipfile.ZipFile(embedded_source, "w", zipfile.ZIP_DEFLATED) as package:
+            for name, data in parts.items():
+                package.writestr(name, data)
+
+        pages = ppt.split_pptx_to_single_pages(embedded_source, self.root / "fontless-pages")
+        self.assertEqual(len(pages), 2)
+        for page in pages:
+            self.assert_valid_package(page)
+            with zipfile.ZipFile(page) as package:
+                self.assertFalse(any(name.startswith("ppt/fonts/") for name in package.namelist()))
+                split_presentation = ET.fromstring(package.read("ppt/presentation.xml"))
+                self.assertNotIn("embedTrueTypeFonts", split_presentation.attrib)
+                self.assertNotIn("saveSubsetFonts", split_presentation.attrib)
+                self.assertIsNone(split_presentation.find(f"{{{P_NS}}}embeddedFontLst"))
+                split_relationships = ET.fromstring(
+                    package.read("ppt/_rels/presentation.xml.rels")
+                )
+                self.assertFalse(
+                    any(rel.attrib.get("Type", "").endswith("/font") for rel in split_relationships)
+                )
+                split_content_types = ET.fromstring(package.read("[Content_Types].xml"))
+                self.assertFalse(
+                    any(
+                        node.attrib.get("Extension", "").lower() == "fntdata"
+                        for node in split_content_types
+                    )
+                )
+
     def test_image_pptx_is_inspectable_and_preserves_images(self):
         source = self.build()
         self.assertEqual(ppt.slide_count(source), 2)

@@ -1264,6 +1264,86 @@
         }
       }
     },
+    "/api/admin/users/selection-ids": {
+      "get": {
+        "tags": [
+          "users"
+        ],
+        "summary": "List User Selection Ids",
+        "description": "Return every currently filtered user that the administrator may delete.",
+        "operationId": "list_user_selection_ids_api_admin_users_selection_ids_get",
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 100,
+              "default": "",
+              "title": "Search"
+            }
+          },
+          {
+            "name": "tag",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 64,
+              "default": "",
+              "title": "Tag"
+            }
+          },
+          {
+            "name": "tags",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 1000,
+              "default": "",
+              "title": "Tags"
+            }
+          },
+          {
+            "name": "tags_mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 8,
+              "default": "any",
+              "title": "Tags Mode"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response List User Selection Ids Api Admin Users Selection Ids Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/users/options": {
       "get": {
         "tags": [
@@ -2011,6 +2091,75 @@
         }
       }
     },
+    "/api/subject-tags": {
+      "get": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "List Subject Tags",
+        "operationId": "list_subject_tags_api_subject_tags_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response List Subject Tags Api Subject Tags Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/secrecy-tags": {
+      "get": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "List Secrecy Tags",
+        "operationId": "list_secrecy_tags_api_secrecy_tags_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response List Secrecy Tags Api Secrecy Tags Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/status-tags": {
+      "get": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "List Status Tags",
+        "operationId": "list_status_tags_api_status_tags_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response List Status Tags Api Status Tags Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/tags": {
       "get": {
         "tags": [
@@ -2125,6 +2274,102 @@
                   "additionalProperties": true,
                   "type": "object",
                   "title": "Response Admin Create User Tags Api Admin User Tags Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/{domain}-tags": {
+      "get": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "Admin List Metadata Tags",
+        "operationId": "admin_list_metadata_tags_api_admin__domain__tags_get",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Domain"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Admin List Metadata Tags Api Admin  Domain  Tags Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "Admin Create Metadata Tags",
+        "operationId": "admin_create_metadata_tags_api_admin__domain__tags_post",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Domain"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TagsCreatePayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Admin Create Metadata Tags Api Admin  Domain  Tags Post"
                 }
               }
             }
@@ -2380,6 +2625,120 @@
         }
       }
     },
+    "/api/admin/{domain}-tags/{tag_id}": {
+      "put": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "Admin Update Metadata Tag",
+        "operationId": "admin_update_metadata_tag_api_admin__domain__tags__tag_id__put",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Domain"
+            }
+          },
+          {
+            "name": "tag_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Tag Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TagUpdatePayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Admin Update Metadata Tag Api Admin  Domain  Tags  Tag Id  Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "Admin Delete Metadata Tag",
+        "operationId": "admin_delete_metadata_tag_api_admin__domain__tags__tag_id__delete",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Domain"
+            }
+          },
+          {
+            "name": "tag_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Tag Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Admin Delete Metadata Tag Api Admin  Domain  Tags  Tag Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/download-records": {
       "get": {
         "tags": [
@@ -2473,6 +2832,48 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Resource Import Result Api Resource Import  Session Id  Result Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/resource-import/{session_id}/status": {
+      "get": {
+        "summary": "Resource Import Status",
+        "description": "Return non-mutating progress for a long-running import commit.",
+        "operationId": "resource_import_status_api_resource_import__session_id__status_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Resource Import Status Api Resource Import  Session Id  Status Get"
                 }
               }
             }
@@ -2853,6 +3254,82 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response List Share Links Api Resources  Resource Id  Share Links Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/resource-share-links": {
+      "get": {
+        "summary": "List Managed Share Links",
+        "operationId": "list_managed_share_links_api_resource_share_links_get",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1,
+              "title": "Page"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Page Size"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 100,
+              "default": "",
+              "title": "Search"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "all",
+              "title": "Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response List Managed Share Links Api Resource Share Links Get"
                 }
               }
             }
@@ -3726,6 +4203,47 @@
         }
       }
     },
+    "/api/resources/by-key/{detail_token}": {
+      "get": {
+        "summary": "Get Resource By Detail Token",
+        "operationId": "get_resource_by_detail_token_api_resources_by_key__detail_token__get",
+        "parameters": [
+          {
+            "name": "detail_token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Detail Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Resource By Detail Token Api Resources By Key  Detail Token  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/resources/{resource_id}/metadata": {
       "put": {
         "summary": "Update Resource Metadata",
@@ -4530,6 +5048,40 @@
                   "title": "Response Create Template Api Templates Post"
                 }
               }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/templates/compose-download": {
+      "post": {
+        "summary": "Compose Template Download",
+        "operationId": "compose_template_download_api_templates_compose_download_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplateComposePayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/vnd.openxmlformats-officedocument.presentationml.presentation": {}
             }
           },
           "422": {
@@ -7230,6 +7782,11 @@
             "title": "Visible User Ids",
             "default": ""
           },
+          "visible_user_tags": {
+            "type": "string",
+            "title": "Visible User Tags",
+            "default": ""
+          },
           "management_scope": {
             "type": "string",
             "title": "Management Scope",
@@ -7238,6 +7795,11 @@
           "manage_user_ids": {
             "type": "string",
             "title": "Manage User Ids",
+            "default": ""
+          },
+          "manage_user_tags": {
+            "type": "string",
+            "title": "Manage User Tags",
             "default": ""
           },
           "secrecy_level": {
@@ -7361,6 +7923,11 @@
             "title": "Visible User Ids",
             "default": ""
           },
+          "visible_user_tags": {
+            "type": "string",
+            "title": "Visible User Tags",
+            "default": ""
+          },
           "management_scope": {
             "type": "string",
             "title": "Management Scope",
@@ -7369,6 +7936,11 @@
           "manage_user_ids": {
             "type": "string",
             "title": "Manage User Ids",
+            "default": ""
+          },
+          "manage_user_tags": {
+            "type": "string",
+            "title": "Manage User Tags",
             "default": ""
           },
           "remark_html": {
@@ -8027,8 +8599,14 @@
               "type": "integer"
             },
             "type": "array",
-            "title": "Visible User Ids",
-            "default": []
+            "title": "Visible User Ids"
+          },
+          "visible_user_tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Visible User Tags"
           },
           "management_scope": {
             "type": "string",
@@ -8039,8 +8617,14 @@
               "type": "integer"
             },
             "type": "array",
-            "title": "Manage User Ids",
-            "default": []
+            "title": "Manage User Ids"
+          },
+          "manage_user_tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Manage User Tags"
           },
           "secrecy_level": {
             "type": "string",
@@ -8468,16 +9052,31 @@
       },
       "TagsConfigPayload": {
         "properties": {
+          "resource_custom_tags": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resource Custom Tags"
+          },
           "user_custom_tags": {
-            "type": "boolean",
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "User Custom Tags"
           }
         },
         "additionalProperties": false,
         "type": "object",
-        "required": [
-          "user_custom_tags"
-        ],
         "title": "TagsConfigPayload"
       },
       "TagsCreatePayload": {
@@ -8515,6 +9114,23 @@
           "task_ids"
         ],
         "title": "TaskDeletePayload"
+      },
+      "TemplateComposePayload": {
+        "properties": {
+          "template_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Template Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "template_ids"
+        ],
+        "title": "TemplateComposePayload"
       },
       "TemplateDeletePayload": {
         "properties": {

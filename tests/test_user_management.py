@@ -5,6 +5,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -66,6 +67,7 @@ class UserManagementTests(unittest.TestCase):
             [
                 patch.object(settings, "storage_backend", "local"),
                 patch.object(settings, "user_custom_tags", False),
+                patch.object(settings, "user_custom_user_tags", False),
             ]
         )
         for patcher in self.patchers:
@@ -98,14 +100,15 @@ class UserManagementTests(unittest.TestCase):
         tags_value: str = "",
         must_change_pwd: int = 0,
         expires_at: str | None = None,
+        last_login_at: str | None = None,
     ) -> int:
         timestamp = now_iso()
         cursor = self.db.execute(
             """
             INSERT INTO users (
                 name, username, username_key, password_hash, feishu_id, tags, role,
-                must_change_pwd, temporary_password_expires_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                must_change_pwd, temporary_password_expires_at, last_login_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 name or username,
@@ -117,6 +120,7 @@ class UserManagementTests(unittest.TestCase):
                 role,
                 must_change_pwd,
                 expires_at,
+                last_login_at,
                 timestamp,
                 timestamp,
             ),
@@ -204,6 +208,12 @@ class UserManagementTests(unittest.TestCase):
             )
             self.assertEqual(forbidden_create.status_code, 403, forbidden_create.text)
 
+            selection = client.get("/api/admin/users/selection-ids")
+            self.assertEqual(selection.status_code, 200, selection.text)
+            self.assertIn(user_id, selection.json()["user_ids"])
+            self.assertNotIn(operations_admin, selection.json()["user_ids"])
+            self.assertNotIn(system_admin, selection.json()["user_ids"])
+
         audit_actions = {
             row["action"]
             for row in self.db.execute("SELECT action FROM admin_audit_events").fetchall()
@@ -271,6 +281,17 @@ class UserManagementTests(unittest.TestCase):
             self.assertEqual(filtered_all.json()["total"], 1)
             self.assertEqual(filtered_all.json()["users"][0]["id"], both_id)
 
+            selection = client.get(
+                "/api/admin/users/selection-ids",
+                params={
+                    "tags": "department-sales,department-rd",
+                    "tags_mode": "all",
+                },
+            )
+            self.assertEqual(selection.status_code, 200, selection.text)
+            self.assertEqual(selection.json()["user_ids"], [both_id])
+            self.assertEqual(selection.json()["total"], 1)
+
             options = client.get(
                 "/api/users/options",
                 params={"limit": 5, "ids": str(tagged_ids[-1])},
@@ -278,6 +299,7 @@ class UserManagementTests(unittest.TestCase):
             self.assertEqual(options.status_code, 200, options.text)
             self.assertLessEqual(len(options.json()["users"]), 6)
             self.assertIn(tagged_ids[-1], {item["id"] for item in options.json()["users"]})
+
             selected_only = client.get(
                 "/api/users/options",
                 params={"limit": 0, "ids": str(tagged_ids[-1])},
@@ -302,6 +324,51 @@ class UserManagementTests(unittest.TestCase):
             )
             self.assertEqual(unknown_tag.status_code, 200, unknown_tag.text)
             self.assertEqual(unknown_tag.json(), {"users": [], "total": 0})
+
+    def test_login_updates_last_login_without_touching_profile_timestamp(self):
+        user_id = self.insert_user("login-user")
+        before = self.db.execute(
+            "SELECT updated_at, last_login_at FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        self.assertIsNone(before["last_login_at"])
+
+        with TestClient(self.app) as client:
+            response = client.post(
+                "/api/auth/login",
+                json={"username": "login-user", "password": "correct-horse-battery-staple"},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        recorded = self.db.execute(
+            "SELECT updated_at, last_login_at FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        self.assertIsNotNone(recorded["last_login_at"])
+        self.assertEqual(recorded["updated_at"], before["updated_at"])
+        self.assertEqual(response.json()["user"]["last_login_at"], recorded["last_login_at"])
+
+    def test_user_stats_use_last_login_and_ignore_active_filters(self):
+        admin_id = self.insert_user("stats-admin", role="system_admin")
+        local_now = datetime.now().astimezone()
+        today_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = today_start - timedelta(days=today_start.weekday())
+
+        def utc_iso(value: datetime) -> str:
+            return value.astimezone(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds") + "Z"
+
+        self.insert_user("active-today", last_login_at=utc_iso(local_now))
+        self.insert_user("inactive-old", last_login_at=utc_iso(week_start - timedelta(seconds=1)))
+
+        with self.client_for(admin_id) as client:
+            response = client.get(
+                "/api/admin/users",
+                params={"search": "stats-admin", "page_size": 10},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(
+            payload["stats"],
+            {"total_users": 3, "active_week": 1, "active_today": 1},
+        )
 
     def test_username_feishu_uniqueness_and_case_insensitive_login(self):
         admin_id = self.insert_user("root", role="system_admin")
@@ -395,6 +462,81 @@ class UserManagementTests(unittest.TestCase):
                 },
             )
             self.assertEqual(rejected_new.status_code, 400, rejected_new.text)
+
+    def test_custom_user_tags_can_be_enabled_and_are_promoted_to_definitions(self):
+        admin_id = self.insert_user("root", role="system_admin")
+        with patch.object(settings, "user_custom_user_tags", True), self.client_for(admin_id) as client:
+            created = client.post(
+                "/api/admin/users",
+                json={
+                    "name": "Custom Tagged",
+                    "username": "custom-tagged",
+                    "tags": "department-growth",
+                    "role": "user",
+                },
+            )
+            self.assertEqual(created.status_code, 200, created.text)
+            listed = client.get("/api/user-tags")
+            self.assertEqual(listed.status_code, 200, listed.text)
+            names = {
+                tag["name"]
+                for group in listed.json()["groups"]
+                for tag in group["tags"]
+            }
+            self.assertIn("department-growth", names)
+
+    def test_resource_metadata_tag_definitions_are_independent_and_rename_usage(self):
+        admin_id = self.insert_user("root", role="system_admin")
+        timestamp = now_iso()
+        resource_id = int(
+            self.db.execute(
+                """
+                INSERT INTO resources (
+                    detail_token, name, owner_id, subject, tags, status,
+                    visibility_scope, management_scope, secrecy_level,
+                    created_at, updated_at
+                ) VALUES ('metadata-tag-resource-token-000001', 'Resource', ?, '集团', '',
+                          'active', 'public', 'private', 'public', ?, ?)
+                """,
+                (admin_id, timestamp, timestamp),
+            ).lastrowid
+        )
+        self.db.execute(
+            """
+            INSERT INTO subject_tag_definitions
+                (name, category, label, sort_order, created_by, created_at)
+            VALUES ('集团', '未分类', '集团', 10, ?, ?)
+            """,
+            (admin_id, timestamp),
+        )
+        self.db.commit()
+
+        with self.client_for(admin_id) as client:
+            for domain in ("subject", "secrecy", "status"):
+                public_list = client.get(f"/api/{domain}-tags")
+                admin_list = client.get(f"/api/admin/{domain}-tags")
+                self.assertEqual(public_list.status_code, 200, public_list.text)
+                self.assertEqual(admin_list.status_code, 200, admin_list.text)
+
+            subject_tags = client.get("/api/admin/subject-tags").json()["tags"]
+            subject = next(item for item in subject_tags if item["name"] == "集团")
+            self.assertEqual(subject["usage_count"], 1)
+
+            created = client.post("/api/admin/secrecy-tags", json={"tags": ["内部"]})
+            self.assertEqual(created.status_code, 200, created.text)
+            self.assertEqual(created.json()["created"][0]["name"], "内部")
+
+            renamed = client.put(
+                f"/api/admin/subject-tags/{subject['id']}",
+                json={"name": "集团总部"},
+            )
+            self.assertEqual(renamed.status_code, 200, renamed.text)
+            self.assertEqual(renamed.json()["name"], "集团总部")
+
+        stored = self.db.execute(
+            "SELECT subject FROM resources WHERE id = ?", (resource_id,)
+        ).fetchone()[0]
+        self.assertEqual(stored, "集团总部")
 
     def test_user_and_resource_tags_reject_control_characters(self):
         admin_id = self.insert_user("root", role="system_admin")
@@ -963,10 +1105,11 @@ class UserManagementTests(unittest.TestCase):
             self.assertEqual(replay.status_code, 400, replay.text)
 
         updated = self.db.execute(
-            "SELECT name, avatar_url FROM users WHERE id = ?", (user_id,)
+            "SELECT name, avatar_url, last_login_at FROM users WHERE id = ?", (user_id,)
         ).fetchone()
         self.assertEqual(updated["name"], "After")
         self.assertEqual(updated["avatar_url"], managed_ref)
+        self.assertIsNotNone(updated["last_login_at"])
 
     def test_feishu_state_is_consumed_when_upstream_rejects_code(self):
         with (

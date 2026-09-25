@@ -4,6 +4,7 @@ import json
 import os
 import queue
 import re
+import secrets
 import sqlite3
 import unicodedata
 from datetime import datetime, timedelta
@@ -17,7 +18,12 @@ from app.config import (
 from app.core.bootstrap import prepare_initial_admin
 from app.core.fonts import normalize_font_name
 
-DB_SCHEMA_VERSION = 14
+DB_SCHEMA_VERSION = 19
+
+
+def new_resource_detail_token() -> str:
+    """Create a non-sequential, URL-safe identifier for a resource detail page."""
+    return secrets.token_urlsafe(32)
 
 
 def now_iso() -> str:
@@ -195,6 +201,7 @@ def init_db() -> None:
                 must_change_pwd INTEGER NOT NULL DEFAULT 0,
                 session_version INTEGER NOT NULL DEFAULT 1,
                 temporary_password_expires_at TEXT,
+                last_login_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -209,6 +216,36 @@ def init_db() -> None:
                 ON user_tags(tag_name, user_id);
 
             CREATE TABLE IF NOT EXISTS user_tag_definitions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                category TEXT NOT NULL DEFAULT '未分类',
+                label TEXT NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS subject_tag_definitions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                category TEXT NOT NULL DEFAULT '未分类',
+                label TEXT NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS secrecy_tag_definitions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                category TEXT NOT NULL DEFAULT '未分类',
+                label TEXT NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS status_tag_definitions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
                 category TEXT NOT NULL DEFAULT '未分类',
@@ -241,14 +278,15 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS resources (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                detail_token TEXT NOT NULL DEFAULT '',
                 name TEXT NOT NULL,
                 owner_id INTEGER NOT NULL REFERENCES users(id),
                 subject TEXT NOT NULL DEFAULT '',
                 tags TEXT NOT NULL DEFAULT '',
-                status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'disabled')),
+                status TEXT NOT NULL DEFAULT 'active',
                 visibility_scope TEXT NOT NULL CHECK(visibility_scope IN ('public', 'partial', 'private')),
                 management_scope TEXT NOT NULL CHECK(management_scope IN ('public', 'partial', 'private')),
-                secrecy_level TEXT NOT NULL CHECK(secrecy_level IN ('public', 'confidential', 'secret')),
+                secrecy_level TEXT NOT NULL,
                 current_version INTEGER NOT NULL DEFAULT 1,
                 updated_by INTEGER REFERENCES users(id),
                 created_at TEXT NOT NULL,
@@ -267,10 +305,29 @@ def init_db() -> None:
                 PRIMARY KEY (resource_id, user_id)
             );
 
+            CREATE TABLE IF NOT EXISTS resource_visibility_tags (
+                resource_id INTEGER NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+                tag_name TEXT NOT NULL REFERENCES user_tag_definitions(name) ON UPDATE CASCADE ON DELETE CASCADE,
+                PRIMARY KEY (resource_id, tag_name)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_resource_visibility_tags_name
+                ON resource_visibility_tags(tag_name, resource_id);
+
+            CREATE TABLE IF NOT EXISTS resource_management_tags (
+                resource_id INTEGER NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+                tag_name TEXT NOT NULL REFERENCES user_tag_definitions(name) ON UPDATE CASCADE ON DELETE CASCADE,
+                PRIMARY KEY (resource_id, tag_name)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_resource_management_tags_name
+                ON resource_management_tags(tag_name, resource_id);
+
             CREATE TABLE IF NOT EXISTS resource_share_tokens (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 resource_id INTEGER NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
                 token_hash TEXT NOT NULL UNIQUE,
+                token_ciphertext TEXT,
                 created_by INTEGER NOT NULL REFERENCES users(id),
                 expires_at TEXT NOT NULL,
                 revoked_at TEXT,
@@ -555,6 +612,8 @@ def init_db() -> None:
 
             """
         )
+        if schema_version < 19:
+            _relax_resource_metadata_constraints(db)
         # Serialize additive migrations across Gunicorn workers. Without the
         # write lock, two workers starting together could both observe a
         # missing column and one would fail with "duplicate column".
@@ -579,6 +638,40 @@ def init_db() -> None:
 
 def _migrate_schema(db: sqlite3.Connection, schema_version: int) -> None:
     """Apply additive, idempotent migrations without requiring data deletion."""
+    resource_columns = {
+        row["name"]
+        for row in db.execute("PRAGMA table_info(resources)").fetchall()
+    }
+    if "detail_token" not in resource_columns:
+        db.execute("ALTER TABLE resources ADD COLUMN detail_token TEXT NOT NULL DEFAULT ''")
+    existing_tokens = {
+        str(row["detail_token"])
+        for row in db.execute(
+            "SELECT detail_token FROM resources WHERE detail_token <> ''"
+        ).fetchall()
+    }
+    missing_token_rows = db.execute(
+        "SELECT id FROM resources WHERE detail_token = '' OR detail_token IS NULL ORDER BY id"
+    ).fetchall()
+    for row in missing_token_rows:
+        token = new_resource_detail_token()
+        while token in existing_tokens:
+            token = new_resource_detail_token()
+        db.execute(
+            "UPDATE resources SET detail_token = ? WHERE id = ?",
+            (token, int(row["id"])),
+        )
+        existing_tokens.add(token)
+    db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_detail_token "
+        "ON resources(detail_token) WHERE detail_token <> ''"
+    )
+    share_token_columns = {
+        row["name"]
+        for row in db.execute("PRAGMA table_info(resource_share_tokens)").fetchall()
+    }
+    if "token_ciphertext" not in share_token_columns:
+        db.execute("ALTER TABLE resource_share_tokens ADD COLUMN token_ciphertext TEXT")
     columns = {
         row["name"]
         for row in db.execute("PRAGMA table_info(users)").fetchall()
@@ -591,6 +684,8 @@ def _migrate_schema(db: sqlite3.Connection, schema_version: int) -> None:
         db.execute("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1")
     if "temporary_password_expires_at" not in columns:
         db.execute("ALTER TABLE users ADD COLUMN temporary_password_expires_at TEXT")
+    if "last_login_at" not in columns:
+        db.execute("ALTER TABLE users ADD COLUMN last_login_at TEXT")
     username_key_missing = "username_key" not in columns
     if username_key_missing:
         db.execute("ALTER TABLE users ADD COLUMN username_key TEXT NOT NULL DEFAULT ''")
@@ -600,6 +695,8 @@ def _migrate_schema(db: sqlite3.Connection, schema_version: int) -> None:
     }
     if "objects_cleaned_at" not in render_columns:
         db.execute("ALTER TABLE renderer_ppt_tasks ADD COLUMN objects_cleaned_at TEXT")
+
+    _seed_resource_metadata_tags(db)
     font_task_columns = {
         row["name"]
         for row in db.execute("PRAGMA table_info(renderer_font_tasks)").fetchall()
@@ -764,6 +861,124 @@ def _migrate_schema(db: sqlite3.Connection, schema_version: int) -> None:
         "CREATE INDEX IF NOT EXISTS idx_users_name_nocase "
         "ON users(name COLLATE NOCASE, id)"
     )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_users_last_login_at "
+        "ON users(last_login_at)"
+    )
+
+
+def _relax_resource_metadata_constraints(db: sqlite3.Connection) -> None:
+    """Remove legacy status/secrecy CHECK constraints without losing child rows."""
+    resource_columns = {
+        str(row["name"]) for row in db.execute("PRAGMA table_info(resources)").fetchall()
+    }
+    if "detail_token" not in resource_columns:
+        db.execute("ALTER TABLE resources ADD COLUMN detail_token TEXT NOT NULL DEFAULT ''")
+    schema_sql_row = db.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'resources'"
+    ).fetchone()
+    schema_sql = str(schema_sql_row[0] or "") if schema_sql_row else ""
+    if "CHECK(status IN" not in schema_sql and "CHECK(secrecy_level IN" not in schema_sql:
+        return
+
+    db.execute("PRAGMA foreign_keys = OFF")
+    try:
+        db.execute("BEGIN EXCLUSIVE")
+        db.execute(
+            """
+            CREATE TABLE resources_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                detail_token TEXT NOT NULL DEFAULT '',
+                name TEXT NOT NULL,
+                owner_id INTEGER NOT NULL REFERENCES users(id),
+                subject TEXT NOT NULL DEFAULT '',
+                tags TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'active',
+                visibility_scope TEXT NOT NULL CHECK(visibility_scope IN ('public', 'partial', 'private')),
+                management_scope TEXT NOT NULL CHECK(management_scope IN ('public', 'partial', 'private')),
+                secrecy_level TEXT NOT NULL,
+                current_version INTEGER NOT NULL DEFAULT 1,
+                updated_by INTEGER REFERENCES users(id),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        db.execute(
+            """
+            INSERT INTO resources_new (
+                id, detail_token, name, owner_id, subject, tags, status,
+                visibility_scope, management_scope, secrecy_level, current_version,
+                updated_by, created_at, updated_at
+            )
+            SELECT id, detail_token, name, owner_id, subject, tags, status,
+                   visibility_scope, management_scope, secrecy_level, current_version,
+                   updated_by, created_at, updated_at
+            FROM resources
+            """
+        )
+        db.execute("DROP TABLE resources")
+        db.execute("ALTER TABLE resources_new RENAME TO resources")
+        db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_detail_token "
+            "ON resources(detail_token) WHERE detail_token <> ''"
+        )
+        violations = db.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise RuntimeError("资源表迁移后外键校验失败")
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.execute("PRAGMA foreign_keys = ON")
+
+
+def _seed_resource_metadata_tags(db: sqlite3.Connection) -> None:
+    """Seed fixed metadata choices and promote historical resource values."""
+    created_at = now_iso()
+    defaults = {
+        "secrecy_tag_definitions": [
+            ("public", "公开"),
+            ("confidential", "保密"),
+            ("secret", "秘密"),
+        ],
+        "status_tag_definitions": [("active", "正常"), ("disabled", "停用")],
+    }
+    for table, items in defaults.items():
+        for sort_order, (name, label) in enumerate(items):
+            db.execute(
+                f"INSERT OR IGNORE INTO {table} "
+                "(name, category, label, sort_order, created_by, created_at) "
+                "VALUES (?, '系统默认', ?, ?, NULL, ?)",
+                (name, label, sort_order, created_at),
+            )
+
+    historical = {
+        "subject_tag_definitions": ("subject", "未分类"),
+        "secrecy_tag_definitions": ("secrecy_level", "历史值"),
+        "status_tag_definitions": ("status", "历史值"),
+    }
+    for table, (column, category) in historical.items():
+        next_sort = int(
+            db.execute(f"SELECT COALESCE(MAX(sort_order), -1) + 1 FROM {table}").fetchone()[0]
+        )
+        rows = db.execute(
+            f"SELECT DISTINCT {column} AS value FROM resources "
+            f"WHERE TRIM(COALESCE({column}, '')) <> '' ORDER BY {column}"
+        ).fetchall()
+        for row in rows:
+            value = str(row["value"] or "").strip()
+            if not value:
+                continue
+            cursor = db.execute(
+                f"INSERT OR IGNORE INTO {table} "
+                "(name, category, label, sort_order, created_by, created_at) "
+                "VALUES (?, ?, ?, ?, NULL, ?)",
+                (value, category, value, next_sort, created_at),
+            )
+            if cursor.rowcount:
+                next_sort += 1
 
 
 def _recover_interrupted_tasks(db: sqlite3.Connection) -> None:

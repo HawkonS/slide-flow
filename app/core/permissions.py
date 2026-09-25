@@ -99,6 +99,20 @@ def _linked_user_ids(db: sqlite3.Connection, table: str, resource_id: int) -> se
     return {int(row["user_id"]) for row in rows}
 
 
+def _user_matches_resource_tag(
+    db: sqlite3.Connection,
+    table: str,
+    resource_id: int,
+    user_id: int,
+) -> bool:
+    return db.execute(
+        f"SELECT 1 FROM {table} rt "
+        "JOIN user_tags ut ON ut.tag_name = rt.tag_name "
+        "WHERE rt.resource_id = ? AND ut.user_id = ? LIMIT 1",
+        (resource_id, user_id),
+    ).fetchone() is not None
+
+
 def can_view_resource(db: sqlite3.Connection, resource: sqlite3.Row, user: sqlite3.Row) -> bool:
     if is_system_admin(user):
         return True
@@ -110,7 +124,14 @@ def can_view_resource(db: sqlite3.Connection, resource: sqlite3.Row, user: sqlit
     if scope == "private":
         return False
     if scope == "partial":
-        return int(user["id"]) in _linked_user_ids(db, "resource_visibility", int(resource["id"]))
+        user_id = int(user["id"])
+        resource_id = int(resource["id"])
+        return (
+            user_id in _linked_user_ids(db, "resource_visibility", resource_id)
+            or _user_matches_resource_tag(
+                db, "resource_visibility_tags", resource_id, user_id
+            )
+        )
     return False
 
 
@@ -125,7 +146,14 @@ def can_manage_resource(db: sqlite3.Connection, resource: sqlite3.Row, user: sql
     if scope == "private":
         return False
     if scope == "partial":
-        return int(user["id"]) in _linked_user_ids(db, "resource_management", int(resource["id"]))
+        user_id = int(user["id"])
+        resource_id = int(resource["id"])
+        return (
+            user_id in _linked_user_ids(db, "resource_management", resource_id)
+            or _user_matches_resource_tag(
+                db, "resource_management_tags", resource_id, user_id
+            )
+        )
     return False
 
 

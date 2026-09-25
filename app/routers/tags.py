@@ -28,7 +28,8 @@ class TagUpdatePayload(ApiPayload):
 
 
 class TagsConfigPayload(ApiPayload):
-    user_custom_tags: bool
+    resource_custom_tags: bool | None = None
+    user_custom_tags: bool | None = None
 
 
 def split_tag_name(name: str) -> tuple[str, str]:
@@ -116,6 +117,18 @@ def _user_tag_usage_counts(db: sqlite3.Connection) -> Counter[str]:
             row["tag_name"]: int(row["usage_count"])
             for row in db.execute(
                 "SELECT tag_name, COUNT(*) AS usage_count FROM user_tags GROUP BY tag_name"
+            ).fetchall()
+        }
+    )
+
+
+def _metadata_usage_counts(db: sqlite3.Connection, column: str) -> Counter[str]:
+    return Counter(
+        {
+            str(row["value"]): int(row["usage_count"])
+            for row in db.execute(
+                f"SELECT {column} AS value, COUNT(*) AS usage_count "
+                f"FROM resources WHERE TRIM(COALESCE({column}, '')) <> '' GROUP BY {column}"
             ).fetchall()
         }
     )
@@ -209,6 +222,21 @@ def list_user_tags(
     return {"groups": _grouped_tags(db, "user_tag_definitions")}
 
 
+@router.get("/subject-tags")
+def list_subject_tags(_: Any = Depends(require_user), db: sqlite3.Connection = Depends(db_read_dep)) -> dict[str, Any]:
+    return {"groups": _grouped_tags(db, "subject_tag_definitions")}
+
+
+@router.get("/secrecy-tags")
+def list_secrecy_tags(_: Any = Depends(require_user), db: sqlite3.Connection = Depends(db_read_dep)) -> dict[str, Any]:
+    return {"groups": _grouped_tags(db, "secrecy_tag_definitions")}
+
+
+@router.get("/status-tags")
+def list_status_tags(_: Any = Depends(require_user), db: sqlite3.Connection = Depends(db_read_dep)) -> dict[str, Any]:
+    return {"groups": _grouped_tags(db, "status_tag_definitions")}
+
+
 @router.get("/admin/tags")
 def admin_list_tags(
     _: Any = Depends(require_admin),
@@ -217,7 +245,7 @@ def admin_list_tags(
     """管理员视图：返回所有预设标签 + 使用次数 + 当前用户自定义标签配置"""
     return {
         "tags": _admin_list_definitions(db, "tags", _resource_tag_usage_counts(db)),
-        "user_custom_tags": settings.user_custom_tags,
+        "resource_custom_tags": settings.user_custom_tags,
     }
 
 
@@ -232,8 +260,29 @@ def admin_list_user_tags(
             db,
             "user_tag_definitions",
             _user_tag_usage_counts(db),
-        )
+        ),
+        "user_custom_tags": settings.user_custom_user_tags,
     }
+
+
+_METADATA_DOMAINS = {
+    "subject": ("subject_tag_definitions", "subject"),
+    "secrecy": ("secrecy_tag_definitions", "secrecy_level"),
+    "status": ("status_tag_definitions", "status"),
+}
+
+
+@router.get("/admin/{domain}-tags")
+def admin_list_metadata_tags(
+    domain: str,
+    _: Any = Depends(require_admin),
+    db: sqlite3.Connection = Depends(db_read_dep),
+) -> dict[str, Any]:
+    config = _METADATA_DOMAINS.get(domain)
+    if config is None:
+        raise HTTPException(404, "标签类型不存在")
+    table, column = config
+    return {"tags": _admin_list_definitions(db, table, _metadata_usage_counts(db, column))}
 
 
 @router.post("/admin/tags")
@@ -255,16 +304,38 @@ def admin_create_user_tags(
     return _create_definitions(db, "user_tag_definitions", payload, int(admin["id"]))
 
 
+@router.post("/admin/{domain}-tags")
+def admin_create_metadata_tags(
+    domain: str,
+    payload: TagsCreatePayload,
+    admin: sqlite3.Row = Depends(require_admin),
+    db: sqlite3.Connection = Depends(db_dep),
+) -> dict[str, Any]:
+    config = _METADATA_DOMAINS.get(domain)
+    if config is None:
+        raise HTTPException(404, "标签类型不存在")
+    return _create_definitions(db, config[0], payload, int(admin["id"]))
+
+
 @router.put("/admin/tags/config")
 def admin_update_tags_config(
     payload: TagsConfigPayload,
     _: Any = Depends(require_admin),
 ) -> dict[str, Any]:
     """更新 user_custom_tags 配置项（管理员），写入 properties 并热加载"""
-    new_value = bool(payload.user_custom_tags)
-    write_properties({"app.user_custom_tags": "true" if new_value else "false"})
+    if payload.resource_custom_tags is None and payload.user_custom_tags is None:
+        raise HTTPException(400, "请至少提交一个自定义标签配置")
+    updates: dict[str, str] = {}
+    if payload.resource_custom_tags is not None:
+        updates["app.user_custom_tags"] = "true" if payload.resource_custom_tags else "false"
+    if payload.user_custom_tags is not None:
+        updates["app.user_custom_user_tags"] = "true" if payload.user_custom_tags else "false"
+    write_properties(updates)
     reload_settings()
-    return {"user_custom_tags": settings.user_custom_tags}
+    return {
+        "resource_custom_tags": settings.user_custom_tags,
+        "user_custom_tags": settings.user_custom_user_tags,
+    }
 
 
 def _load_definition(db: sqlite3.Connection, table: str, tag_id: int) -> sqlite3.Row:
@@ -343,6 +414,36 @@ def admin_update_user_tag(
     return _serialize_tag(_load_definition(db, "user_tag_definitions", tag_id))
 
 
+@router.put("/admin/{domain}-tags/{tag_id}")
+def admin_update_metadata_tag(
+    domain: str,
+    tag_id: int,
+    payload: TagUpdatePayload,
+    _: Any = Depends(require_admin),
+    db: sqlite3.Connection = Depends(db_dep),
+) -> dict[str, Any]:
+    config = _METADATA_DOMAINS.get(domain)
+    if config is None:
+        raise HTTPException(404, "标签类型不存在")
+    table, column = config
+    new_name = _validate_tag_name(payload.name)
+    row = _load_definition(db, table, tag_id)
+    if db.execute(f"SELECT id FROM {table} WHERE name = ? AND id != ?", (new_name, tag_id)).fetchone():
+        raise HTTPException(409, "标签名称已存在")
+    if domain == "status" and row["name"] in {"active", "disabled"} and new_name != row["name"]:
+        raise HTTPException(400, "系统状态标签的内部值不能重命名")
+    category, label = split_tag_name(new_name)
+    old_name = str(row["name"])
+    db.execute(
+        f"UPDATE {table} SET name = ?, category = ?, label = ? WHERE id = ?",
+        (new_name, category, label, tag_id),
+    )
+    if old_name != new_name:
+        db.execute(f"UPDATE resources SET {column} = ? WHERE {column} = ?", (new_name, old_name))
+    db.commit()
+    return _serialize_tag(_load_definition(db, table, tag_id))
+
+
 @router.delete("/admin/tags/{tag_id}")
 def admin_delete_tag(
     tag_id: int,
@@ -364,5 +465,24 @@ def admin_delete_user_tag(
 ) -> dict[str, Any]:
     _load_definition(db, "user_tag_definitions", tag_id)
     db.execute("DELETE FROM user_tag_definitions WHERE id = ?", (tag_id,))
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/admin/{domain}-tags/{tag_id}")
+def admin_delete_metadata_tag(
+    domain: str,
+    tag_id: int,
+    _: Any = Depends(require_admin),
+    db: sqlite3.Connection = Depends(db_dep),
+) -> dict[str, Any]:
+    config = _METADATA_DOMAINS.get(domain)
+    if config is None:
+        raise HTTPException(404, "标签类型不存在")
+    table, _ = config
+    row = _load_definition(db, table, tag_id)
+    if domain == "status" and row["name"] in {"active", "disabled"}:
+        raise HTTPException(400, "系统状态标签不能删除")
+    db.execute(f"DELETE FROM {table} WHERE id = ?", (tag_id,))
     db.commit()
     return {"ok": True}

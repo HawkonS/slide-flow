@@ -71,8 +71,22 @@ def _serialize_show_resource(db: sqlite3.Connection, resource_id: int, version_n
         if owner:
             managers.append({"id": owner["id"], "name": owner["name"], "username": owner["username"]})
         manage_rows = db.execute(
-            "SELECT u.id, u.name, u.username FROM resource_management rm JOIN users u ON u.id = rm.user_id WHERE rm.resource_id = ?",
-            (resource_id,),
+            """
+            SELECT DISTINCT u.id, u.name, u.username
+            FROM users u
+            WHERE u.id IN (
+                SELECT rm.user_id
+                FROM resource_management rm
+                WHERE rm.resource_id = ?
+                UNION
+                SELECT ut.user_id
+                FROM resource_management_tags rmt
+                JOIN user_tags ut ON ut.tag_name = rmt.tag_name
+                WHERE rmt.resource_id = ?
+            )
+            ORDER BY u.name COLLATE NOCASE, u.id
+            """,
+            (resource_id, resource_id),
         ).fetchall()
         for mrow in manage_rows:
             mid = int(mrow["id"])

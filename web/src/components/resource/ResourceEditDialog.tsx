@@ -22,6 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { TagInput } from "@/components/resource/TagInput";
+import { MetadataTagSelect } from "@/components/resource/MetadataTagSelect";
 import { UserPicker } from "@/components/resource/UserPicker";
 import { FilePickerCard } from "@/components/resource/FilePickerCard";
 import { RichTextEditor } from "@/components/resource/RichTextEditor";
@@ -32,8 +33,6 @@ import {
 import {
   DEFAULT_RESOURCE_SUBJECT,
   MANAGEMENT_SCOPE_OPTIONS,
-  RESOURCE_STATUS_FORM_OPTIONS,
-  SECRECY_LEVEL_FORM_OPTIONS,
   VISIBILITY_SCOPE_OPTIONS,
 } from "@/lib/constants";
 import { api, apiUpload } from "@/lib/api";
@@ -55,12 +54,14 @@ interface FormState {
   name: string;
   subject: string;
   tagList: string[];
-  secrecy_level: "public" | "confidential" | "secret";
-  status: "active" | "disabled";
+  secrecy_level: string;
+  status: string;
   visibility_scope: ScopeValue | "";
   management_scope: ScopeValue | "";
   visible_user_ids: number[];
+  visible_user_tags: string[];
   manage_user_ids: number[];
+  manage_user_tags: string[];
   pptFile: File | null;
   pngFile: File | null;
   common_remark_html: string;
@@ -78,7 +79,9 @@ function defaultForm(resource: Resource | null): FormState {
       visibility_scope: "",
       management_scope: "",
       visible_user_ids: [],
+      visible_user_tags: [],
       manage_user_ids: [],
+      manage_user_tags: [],
       pptFile: null,
       pngFile: null,
       common_remark_html: "",
@@ -94,7 +97,9 @@ function defaultForm(resource: Resource | null): FormState {
     visibility_scope: resource.visibility_scope,
     management_scope: resource.management_scope,
     visible_user_ids: resource.visible_user_ids ?? [],
+    visible_user_tags: resource.visible_user_tags ?? [],
     manage_user_ids: resource.manage_user_ids ?? [],
+    manage_user_tags: resource.manage_user_tags ?? [],
     pptFile: null,
     pngFile: null,
     common_remark_html: resource.current?.common_remark_html ?? "",
@@ -107,7 +112,6 @@ export function ResourceEditDialog({
   onOpenChange,
   resource,
   tagSuggestions,
-  subjectSuggestions,
 }: ResourceEditDialogProps) {
   const isCreate = resource == null;
   const [form, setForm] = React.useState<FormState>(() => defaultForm(resource));
@@ -132,9 +136,11 @@ export function ResourceEditDialog({
         fd.append("management_scope", form.management_scope);
         if (form.visibility_scope === "partial") {
           fd.append("visible_user_ids", JSON.stringify(form.visible_user_ids));
+          fd.append("visible_user_tags", JSON.stringify(form.visible_user_tags));
         }
         if (form.management_scope === "partial") {
           fd.append("manage_user_ids", JSON.stringify(form.manage_user_ids));
+          fd.append("manage_user_tags", JSON.stringify(form.manage_user_tags));
         }
         fd.append("remark_html", form.common_remark_html);
         fd.append("ppt_file", form.pptFile);
@@ -155,8 +161,12 @@ export function ResourceEditDialog({
           management_scope: form.management_scope,
           visible_user_ids:
             form.visibility_scope === "partial" ? form.visible_user_ids : [],
+          visible_user_tags:
+            form.visibility_scope === "partial" ? form.visible_user_tags : [],
           manage_user_ids:
             form.management_scope === "partial" ? form.manage_user_ids : [],
+          manage_user_tags:
+            form.management_scope === "partial" ? form.manage_user_tags : [],
         },
       });
 
@@ -259,16 +269,16 @@ export function ResourceEditDialog({
       toast.error("请上传预览图");
       return;
     }
-    if (form.visibility_scope === "partial" && form.visible_user_ids.length === 0) {
-      toast.error("可见范围为部分时请至少选择一位用户");
+    if (form.visibility_scope === "partial" && form.visible_user_ids.length === 0 && form.visible_user_tags.length === 0) {
+      toast.error("可见范围为部分时请至少选择一位用户或一个用户标签");
       return;
     }
     if (isCreate && !form.visibility_scope) {
       toast.error("请选择可见范围");
       return;
     }
-    if (form.management_scope === "partial" && form.manage_user_ids.length === 0) {
-      toast.error("管理范围为部分时请至少选择一位用户");
+    if (form.management_scope === "partial" && form.manage_user_ids.length === 0 && form.manage_user_tags.length === 0) {
+      toast.error("管理范围为部分时请至少选择一位用户或一个用户标签");
       return;
     }
     if (isCreate && !form.management_scope) {
@@ -338,63 +348,36 @@ export function ResourceEditDialog({
           <div className="grid gap-4 sm:grid-cols-3">
             <div className="grid gap-1.5">
               <Label htmlFor="res-subject">主体</Label>
-              <Input
+              <MetadataTagSelect
                 id="res-subject"
-                list="res-subject-list"
+                domain="subject"
                 value={form.subject}
-                onChange={(e) => setForm({ ...form, subject: e.target.value })}
+                onChange={(value) => setForm({ ...form, subject: value })}
               />
-              <datalist id="res-subject-list">
-                {subjectSuggestions.map((s) => (
-                  <option key={s} value={s} />
-                ))}
-              </datalist>
             </div>
 
             <div className="grid gap-1.5">
               <Label>密级</Label>
-              <Select
+              <MetadataTagSelect
+                domain="secrecy"
                 value={form.secrecy_level}
-                onValueChange={(v) =>
-                  setForm({ ...form, secrecy_level: v as FormState["secrecy_level"] })
-                }
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {SECRECY_LEVEL_FORM_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                onChange={(value) => setForm({ ...form, secrecy_level: value })}
+              />
             </div>
 
             <div className="grid gap-1.5">
               <Label>状态</Label>
-              <Select
+              <MetadataTagSelect
+                domain="status"
                 value={form.status}
-                onValueChange={(v) => setForm({ ...form, status: v as FormState["status"] })}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {RESOURCE_STATUS_FORM_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                onChange={(value) => setForm({ ...form, status: value })}
+              />
             </div>
           </div>
 
           {/* 标签 */}
           <div className="grid gap-1.5">
-            <Label>标签</Label>
+            <Label>分类标签</Label>
             <TagInput
               value={form.tagList}
               onChange={(list) => setForm({ ...form, tagList: list })}
@@ -448,20 +431,26 @@ export function ResourceEditDialog({
 
           {form.visibility_scope === "partial" && (
             <div className="grid gap-1.5">
-              <Label className="text-xs text-muted-foreground">可见用户（必选至少 1 人）</Label>
+              <Label className="text-xs text-muted-foreground">可见用户或用户标签（至少选 1 项）</Label>
               <UserPicker
                 value={form.visible_user_ids}
                 onChange={(ids) => setForm({ ...form, visible_user_ids: ids })}
+                tagValue={form.visible_user_tags}
+                onTagChange={(tags) => setForm({ ...form, visible_user_tags: tags })}
+                allowTagSelection
                 excludeIds={ownerId ? [ownerId] : undefined}
               />
             </div>
           )}
           {form.management_scope === "partial" && (
             <div className="grid gap-1.5">
-              <Label className="text-xs text-muted-foreground">可管理用户（必选至少 1 人）</Label>
+              <Label className="text-xs text-muted-foreground">可管理用户或用户标签（至少选 1 项）</Label>
               <UserPicker
                 value={form.manage_user_ids}
                 onChange={(ids) => setForm({ ...form, manage_user_ids: ids })}
+                tagValue={form.manage_user_tags}
+                onTagChange={(tags) => setForm({ ...form, manage_user_tags: tags })}
+                allowTagSelection
                 excludeIds={ownerId ? [ownerId] : undefined}
               />
             </div>

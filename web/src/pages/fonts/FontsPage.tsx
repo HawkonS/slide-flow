@@ -286,25 +286,22 @@ export function FontsPage() {
         </div>
       </section>
 
-      <div className="flex flex-wrap items-center gap-2 rounded-md border bg-card p-2 shadow-sm">
-        <div className="relative min-w-0 flex-1 sm:max-w-sm">
+      <div className="page-toolbar">
+        <div className="relative min-w-0 flex-1 sm:flex-none">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="搜索字体名称、别名或文件名"
             className={cn(
-              "h-9 w-full rounded-md border bg-background pl-8 pr-3 text-sm shadow-sm outline-none transition",
+              "h-8 w-full rounded-md border bg-background pl-8 pr-3 text-sm shadow-sm outline-none transition sm:w-72",
               "placeholder:text-muted-foreground focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
               query.trim() !== "" && "border-primary/40 bg-primary/5",
             )}
           />
         </div>
-        <span className="hidden text-xs text-muted-foreground sm:inline">
-          {filtered.length === fonts.length ? `共 ${fonts.length} 条` : `筛选后 ${filtered.length} / ${fonts.length} 条`}
-        </span>
-        <div className={cn("ml-auto flex items-center gap-2", selected.size > 0 && "rounded-md bg-primary/5 px-1.5 py-0.5")}>
-          {selected.size > 0 && <span className="text-xs font-medium text-primary">已选 {selected.size} 项</span>}
+        <div className="ml-auto flex items-center gap-2">
+          {selected.size > 0 && <span className="text-xs text-muted-foreground">已选 <span className="font-medium text-primary">{selected.size}</span> 项</span>}
           <Button
             variant="outline"
             size="sm"

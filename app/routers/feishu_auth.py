@@ -301,6 +301,14 @@ def feishu_sso_callback(
             db.commit()
             user = db.execute("SELECT * FROM users WHERE id = ?", (int(user["id"]),)).fetchone()
 
+    login_at = now_iso()
+    db.execute(
+        "UPDATE users SET last_login_at = ? WHERE id = ?",
+        (login_at, int(user["id"])),
+    )
+    db.commit()
+    user = db.execute("SELECT * FROM users WHERE id = ?", (int(user["id"]),)).fetchone()
+
     # 6. 创建 session cookie
     token = create_session_token(
         int(user["id"]),

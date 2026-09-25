@@ -469,7 +469,7 @@ export function AdminTemplatesPage() {
   );
 }
 
-function TemplateFormDialog({
+export function TemplateFormDialog({
   open,
   onOpenChange,
   template,
@@ -737,7 +737,7 @@ function buildSortTree(templates: TemplateItem[]): SortSubject[] {
   }));
 }
 
-function TemplateSortDialog({
+export function TemplateSortDialog({
   open,
   onOpenChange,
   templates,

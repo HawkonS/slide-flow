@@ -28,6 +28,9 @@ import re
 import sqlite3
 
 
+RESOURCE_SCOPE_MAX_TAGS = 100
+
+
 def _set_scope_users(db: sqlite3.Connection, table: str, resource_id: int, user_ids: list[int]) -> None:
     ids = sorted({int(user_id) for user_id in user_ids if int(user_id) > 0})
     if len(ids) > 1000:
@@ -53,8 +56,67 @@ def _scope_user_ids(db: sqlite3.Connection, table: str, resource_id: int) -> lis
     return [int(row["user_id"]) for row in rows]
 
 
+def _normalise_scope_tags(db: sqlite3.Connection, tag_names: list[str]) -> list[str]:
+    if not isinstance(tag_names, list) or any(not isinstance(tag, str) for tag in tag_names):
+        raise HTTPException(400, "用户标签范围必须是字符串数组")
+    tags = sorted({tag.strip() for tag in tag_names if tag.strip()})
+    if len(tags) > RESOURCE_SCOPE_MAX_TAGS:
+        raise HTTPException(400, f"单个范围最多选择 {RESOURCE_SCOPE_MAX_TAGS} 个用户标签")
+    if any(len(tag) > 64 for tag in tags):
+        raise HTTPException(400, "用户标签名称不能超过 64 个字符")
+    if tags:
+        placeholders = ",".join("?" for _ in tags)
+        existing = {
+            str(row["name"])
+            for row in db.execute(
+                f"SELECT name FROM user_tag_definitions WHERE name IN ({placeholders})",
+                tags,
+            ).fetchall()
+        }
+        if existing != set(tags):
+            raise HTTPException(400, "可见/管理范围中存在无效用户标签，请重新选择")
+    return tags
+
+
+def _set_scope_tags(
+    db: sqlite3.Connection,
+    table: str,
+    resource_id: int,
+    tag_names: list[str],
+) -> None:
+    tags = _normalise_scope_tags(db, tag_names)
+    db.execute(f"DELETE FROM {table} WHERE resource_id = ?", (resource_id,))
+    for tag_name in tags:
+        db.execute(
+            f"INSERT OR IGNORE INTO {table} (resource_id, tag_name) VALUES (?, ?)",
+            (resource_id, tag_name),
+        )
+
+
+def _scope_tag_names(db: sqlite3.Connection, table: str, resource_id: int) -> list[str]:
+    rows = db.execute(
+        f"SELECT tag_name FROM {table} WHERE resource_id = ? ORDER BY tag_name",
+        (resource_id,),
+    ).fetchall()
+    return [str(row["tag_name"]) for row in rows]
+
+
 def _resource_row(db: sqlite3.Connection, resource_id: int) -> sqlite3.Row:
     row = db.execute("SELECT * FROM resources WHERE id = ?", (resource_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "资源不存在")
+    return row
+
+
+def _resource_row_by_detail_token(
+    db: sqlite3.Connection, detail_token: str
+) -> sqlite3.Row:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", detail_token):
+        raise HTTPException(404, "资源不存在")
+    row = db.execute(
+        "SELECT * FROM resources WHERE detail_token = ?",
+        (detail_token,),
+    ).fetchone()
     if row is None:
         raise HTTPException(404, "资源不存在")
     return row
@@ -155,6 +217,8 @@ def _serialize_resource(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.
             # access.
             "visible_user_ids": _scope_user_ids(db, "resource_visibility", int(row["id"])) if can_manage else [],
             "manage_user_ids": _scope_user_ids(db, "resource_management", int(row["id"])) if can_manage else [],
+            "visible_user_tags": _scope_tag_names(db, "resource_visibility_tags", int(row["id"])) if can_manage else [],
+            "manage_user_tags": _scope_tag_names(db, "resource_management_tags", int(row["id"])) if can_manage else [],
             "current": current,
             "versions": versions,
             "has_personal_remark": _has_personal_remark(

@@ -17,6 +17,7 @@ from app.services.resource_import.limits import (
     RESOURCE_IMPORT_MAX_TAGS_LENGTH,
     RESOURCE_IMPORT_MAX_TOTAL_BYTES,
 )
+from app.services.resources import _normalise_scope_tags
 from fastapi import HTTPException
 from fastapi import Request
 from fastapi import UploadFile
@@ -201,6 +202,9 @@ def _validate_resource_import_payload(payload: dict[str, Any], db: sqlite3.Conne
             if existing != set(ids):
                 raise HTTPException(400, f"{label}中存在已删除或无效的用户，请重新选择")
         checked[field] = ids
+    for field in ("visible_user_tags", "manage_user_tags"):
+        values = payload.get(field, [])
+        checked[field] = _normalise_scope_tags(db, values)
     return checked
 
 

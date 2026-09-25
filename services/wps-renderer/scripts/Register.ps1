@@ -5,13 +5,9 @@ param(
     [string]$Config = "config.json",
     [string]$Python = "",
     [string]$WpsCli = "",
-    [string]$ListenHost = "",
     [int]$Port = 0,
     [string]$Token = "",
     [string]$TokenFile = "",
-    [string]$TlsCertFile = "",
-    [string]$TlsKeyFile = "",
-    [switch]$AllowNetworkBind,
     [string]$TaskName = "SlideFlow-WPS-Renderer",
     [string]$FontTaskUrl = "",
     [string]$FontTaskToken = "",
@@ -37,30 +33,16 @@ $WpsCli = Resolve-RendererExecutable $WpsCli "WPSCLI"
 $pythonDefault = Join-Path $layout.CodeRoot ".venv\Scripts\pythonw.exe"
 if (-not $Python) { $Python = $pythonDefault }
 $Python = Resolve-RendererExecutable $Python "Python"
-$existingHost = if ($configObject.host) { [string]$configObject.host } else { "127.0.0.1" }
 $existingPort = if ($configObject.port) { [int]$configObject.port } else { 8765 }
-if (-not $ListenHost) { $ListenHost = $existingHost }
 if ($Port -eq 0) { $Port = $existingPort }
-$existingCert = if (($configObject.PSObject.Properties.Name -contains 'tls_cert_file') -and $configObject.tls_cert_file) { [string]$configObject.tls_cert_file } else { "" }
-$existingKey = if (($configObject.PSObject.Properties.Name -contains 'tls_key_file') -and $configObject.tls_key_file) { [string]$configObject.tls_key_file } else { "" }
-if (-not $PSBoundParameters.ContainsKey('TlsCertFile') -or [string]::IsNullOrWhiteSpace($TlsCertFile)) { $TlsCertFile = $existingCert }
-if (-not $PSBoundParameters.ContainsKey('TlsKeyFile') -or [string]::IsNullOrWhiteSpace($TlsKeyFile)) { $TlsKeyFile = $existingKey }
-$existingNetworkBind = ($configObject.PSObject.Properties.Name -contains 'allow_network_bind') -and [bool]$configObject.allow_network_bind
-$networkBind = $AllowNetworkBind -or $existingNetworkBind
-# Use named arguments here.  The third parameter is a [switch]; positional
-# binding can shift the following TLS strings into the switch parameter and
-# make two empty TLS values look like a partially configured pair.
-Assert-RendererListen -ListenHost $ListenHost -Port $Port -AllowNetworkBind:$networkBind -TlsCertFile $TlsCertFile -TlsKeyFile $TlsKeyFile
+if ($Port -lt 1 -or $Port -gt 65535) { throw "Port must be between 1 and 65535." }
 $tokenPath = if ($TokenFile) { Resolve-RendererPath $TokenFile } else { $layout.Token }
 $tokenValue = Set-RendererToken $tokenPath $Token $identity
 Set-RendererJsonProperty $configObject "wpscli" $WpsCli
 Set-RendererJsonProperty $configObject "data_dir" (Join-Path $layout.Shared "data")
 Set-RendererJsonProperty $configObject "token_file" $tokenPath
-Set-RendererJsonProperty $configObject "host" $ListenHost
 Set-RendererJsonProperty $configObject "port" $Port
-Set-RendererJsonProperty $configObject "allow_network_bind" ([bool]$networkBind)
-Set-RendererJsonProperty $configObject "tls_cert_file" $(if ($TlsCertFile) { Resolve-RendererPath $TlsCertFile } else { "" })
-Set-RendererJsonProperty $configObject "tls_key_file" $(if ($TlsKeyFile) { Resolve-RendererPath $TlsKeyFile } else { "" })
+foreach ($legacyKey in @("host", "allow_network_bind", "tls_cert_file", "tls_key_file")) { $configObject.PSObject.Properties.Remove($legacyKey) }
 Write-RendererConfig $layout $configObject
 $expectedPython = [IO.Path]::GetFullPath($Python)
 $configPath = [IO.Path]::GetFullPath($layout.Config)
@@ -70,7 +52,7 @@ $trigger = New-ScheduledTaskTrigger -AtStartup
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName $TaskName -Action $action -Principal $principal -Trigger $trigger -Settings $settings -Description 'SlideFlow WPS Renderer protocol v1' -Force | Out-Null
 Enable-ScheduledTask -TaskName $TaskName | Out-Null
-Write-Host "Renderer task '$TaskName' registered. Listener: $ListenHost`:$Port"
+Write-Host "Renderer task '$TaskName' registered. Local listener: 127.0.0.1`:$Port"
 if ($Start) { Start-ScheduledTask -TaskName $TaskName; Write-Host "Renderer task '$TaskName' started." }
 if ($FontTaskUrl) {
     $fontArgs = @{ InstallRoot = $InstallRoot; Python = (Join-Path $layout.CodeRoot ".venv\Scripts\python.exe"); Url = $FontTaskUrl; PollSeconds = $FontPollSeconds }

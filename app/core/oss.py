@@ -47,6 +47,7 @@ class StorageUnavailableError(RuntimeError):
 
 
 STORAGE_UNAVAILABLE_MESSAGE = "对象存储暂时不可用，请稍后重试；如持续失败，请联系管理员检查 OSS 网络"
+INTERNAL_ENDPOINT_COOLDOWN_SECONDS = 60
 
 
 def is_oss_ref(value: str | None) -> bool:
@@ -111,6 +112,9 @@ class OSSStorage:
         self._health_lock = threading.Lock()
         self._health_cache: dict[str, object] | None = None
         self._health_checked_monotonic = 0.0
+        self._endpoint_lock = threading.Lock()
+        self._internal_cooldown_endpoint: tuple[str, str] | None = None
+        self._internal_cooldown_until = 0.0
 
     @property
     def enabled(self) -> bool:
@@ -262,6 +266,30 @@ class OSSStorage:
             self._fallback_bucket = self._build_bucket(endpoint)
         return self._fallback_bucket
 
+    def _internal_endpoint_is_cooling_down(self) -> bool:
+        fallback = self._fallback_endpoint()
+        if fallback is None:
+            return False
+        endpoints = (self._primary_endpoint(), fallback)
+        now = time.monotonic()
+        with self._endpoint_lock:
+            if self._internal_cooldown_endpoint != endpoints:
+                self._internal_cooldown_endpoint = None
+                self._internal_cooldown_until = 0.0
+            if now >= self._internal_cooldown_until:
+                self._internal_cooldown_endpoint = None
+                self._internal_cooldown_until = 0.0
+                return False
+            return self._internal_cooldown_endpoint == endpoints
+
+    def _mark_internal_endpoint_unavailable(self) -> None:
+        fallback = self._fallback_endpoint()
+        if fallback is None:
+            return
+        with self._endpoint_lock:
+            self._internal_cooldown_endpoint = (self._primary_endpoint(), fallback)
+            self._internal_cooldown_until = time.monotonic() + INTERNAL_ENDPOINT_COOLDOWN_SECONDS
+
     @staticmethod
     def _is_retryable_endpoint_error(exc: Exception) -> bool:
         """Only retry connectivity and transient server failures on the other endpoint."""
@@ -277,14 +305,17 @@ class OSSStorage:
 
     def _with_endpoint_fallback(self, operation: str, action):
         primary = self._require_bucket()
+        fallback = self._fallback_bucket_or_none()
+        if fallback is not None and self._internal_endpoint_is_cooling_down():
+            return action(fallback)
         try:
             return action(primary)
         except Exception as exc:
             if not self._is_retryable_endpoint_error(exc):
                 raise
-            fallback = self._fallback_bucket_or_none()
             if fallback is None:
                 raise StorageUnavailableError(STORAGE_UNAVAILABLE_MESSAGE) from exc
+            self._mark_internal_endpoint_unavailable()
             logger.warning(
                 "OSS internal endpoint failed; retrying %s through external endpoint",
                 operation,

@@ -8,8 +8,6 @@ import {
   Download,
   HardDrive,
   Loader2,
-  Pause,
-  Play,
   Power,
   RefreshCw,
   RotateCw,
@@ -767,9 +765,8 @@ function formatFileSize(bytes: number): string {
 
 function LogTab() {
   const [selectedFilename, setSelectedFilename] = React.useState<string | null>(null);
-  const [autoRefresh, setAutoRefresh] = React.useState(true);
-  const [followTail, setFollowTail] = React.useState(true);
-  const [lineLimit, setLineLimit] = React.useState(500);
+  const [followTail, setFollowTail] = React.useState(false);
+  const [lineLimit, setLineLimit] = React.useState(200);
   const [search, setSearch] = React.useState("");
   const [levelFilter, setLevelFilter] = React.useState<LogLevelFilter>("all");
   const [downloadingFilename, setDownloadingFilename] = React.useState<string | null>(null);
@@ -780,7 +777,9 @@ function LogTab() {
   const logsQuery = useQuery({
     queryKey: ["system", "logs"],
     queryFn: async ({ signal }) => api<LogFileInfo[]>("/api/admin/system/logs", { signal }),
-    refetchInterval: autoRefresh ? LOG_REFRESH_INTERVAL : false,
+    refetchInterval: followTail ? LOG_REFRESH_INTERVAL : false,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: false,
   });
 
   React.useEffect(() => {
@@ -789,9 +788,9 @@ function LogTab() {
       setSelectedFilename(null);
       return;
     }
-    if (!selectedFilename || !files.some((file) => file.filename === selectedFilename)) {
-      setSelectedFilename(files[0].filename);
-      setFollowTail(true);
+    if (selectedFilename && !files.some((file) => file.filename === selectedFilename)) {
+      setSelectedFilename(null);
+      setFollowTail(false);
     }
   }, [logsQuery.data, selectedFilename]);
 
@@ -805,9 +804,7 @@ function LogTab() {
       { params: { lines: lineLimit }, signal },
     ),
     enabled: Boolean(selectedFilename),
-    refetchInterval: (query) => autoRefresh && query.state.status === "error"
-      ? LOG_REFRESH_INTERVAL
-      : false,
+    refetchOnWindowFocus: false,
   });
 
   React.useEffect(() => {
@@ -818,10 +815,10 @@ function LogTab() {
       version: selectedFile.version,
     };
     if (!previous || previous.filename !== selectedFilename) return;
-    if (previous.version !== selectedFile.version) {
+    if (followTail && previous.version !== selectedFile.version) {
       void tailQuery.refetch();
     }
-  }, [selectedFilename, selectedFile?.version, tailQuery.refetch]);
+  }, [followTail, selectedFilename, selectedFile?.version, tailQuery.refetch]);
 
   const visibleLines = React.useMemo(() => {
     return (tailQuery.data?.lines ?? [])
@@ -839,7 +836,7 @@ function LogTab() {
 
   const handleSelectFile = (filename: string) => {
     setSelectedFilename(filename);
-    setFollowTail(true);
+    setFollowTail(false);
   };
 
   const handleDownload = async (filename: string) => {
@@ -866,14 +863,17 @@ function LogTab() {
     void Promise.all([logsQuery.refetch(), selectedFilename ? tailQuery.refetch() : Promise.resolve()]);
   };
 
-  const handleToggleAutoRefresh = () => {
-    const next = !autoRefresh;
-    setAutoRefresh(next);
-    if (next) handleRefresh();
+  const handleFollowTailChange = (checked: boolean) => {
+    setFollowTail(checked);
+    if (!checked) return;
+    handleRefresh();
+    requestAnimationFrame(() => {
+      if (!viewerRef.current) return;
+      viewerRef.current.scrollTop = viewerRef.current.scrollHeight;
+    });
   };
 
   const handleJumpToLatest = () => {
-    setFollowTail(true);
     requestAnimationFrame(() => {
       if (!viewerRef.current) return;
       viewerRef.current.scrollTop = viewerRef.current.scrollHeight;
@@ -882,7 +882,7 @@ function LogTab() {
 
   if (logsQuery.isLoading && !logsQuery.data) {
     return (
-      <div className="flex h-64 items-center justify-center text-sm text-muted-foreground">
+      <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground">
         <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 加载日志列表…
       </div>
     );
@@ -890,7 +890,7 @@ function LogTab() {
 
   if (logsQuery.isError && !logsQuery.data) {
     return (
-      <div className="flex h-64 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
         <XCircle className="h-8 w-8 text-destructive" />
         <p>日志列表加载失败：{logsQuery.error.message}</p>
         <Button variant="outline" size="sm" onClick={() => logsQuery.refetch()}>
@@ -908,30 +908,27 @@ function LogTab() {
       : null;
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card px-4 py-3">
+    <div className="flex min-h-0 flex-1 flex-col gap-4">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 rounded-lg border bg-card px-4 py-3">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
           <div className="flex items-center gap-2">
             <Switch
               id="log-follow-tail"
               checked={followTail}
-              onCheckedChange={setFollowTail}
+              onCheckedChange={handleFollowTailChange}
+              disabled={!selectedFilename}
             />
             <label htmlFor="log-follow-tail" className="cursor-pointer font-medium">
-              跟随最新
+              自动跟随最新
             </label>
           </div>
           <span className={cn("flex items-center gap-1.5 text-xs", refreshError ? "text-destructive" : "text-muted-foreground")} aria-live="polite">
-            <span className={cn("h-2 w-2 rounded-full", refreshError ? "bg-red-500" : autoRefresh ? "bg-emerald-500" : "bg-slate-400")} />
-            {refreshError ?? (autoRefresh ? "每 3 秒自动刷新" : "自动刷新已暂停")}
+            <span className={cn("h-2 w-2 rounded-full", refreshError ? "bg-red-500" : followTail ? "bg-emerald-500" : "bg-slate-400")} />
+            {refreshError ?? (followTail ? "每 3 秒刷新并跟随" : "按需加载，自动跟随已关闭")}
             {isRefreshing && <Loader2 className="h-3 w-3 animate-spin" />}
           </span>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={handleToggleAutoRefresh}>
-            {autoRefresh ? <Pause className="mr-1.5 h-4 w-4" /> : <Play className="mr-1.5 h-4 w-4" />}
-            {autoRefresh ? "暂停" : "继续"}
-          </Button>
           <Button variant="outline" size="sm" onClick={handleRefresh} disabled={isRefreshing}>
             <RefreshCw className={cn("mr-1.5 h-4 w-4", isRefreshing && "animate-spin")} />
             刷新
@@ -939,9 +936,9 @@ function LogTab() {
         </div>
       </div>
 
-      <div className="grid min-h-[620px] gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
-        <Card className="overflow-hidden">
-          <CardHeader className="border-b pb-4">
+      <div className="grid min-h-0 flex-1 grid-rows-[minmax(140px,0.35fr)_minmax(300px,1fr)] gap-4 lg:grid-cols-[260px_minmax(0,1fr)] lg:grid-rows-1">
+        <Card className="flex min-h-0 flex-col overflow-hidden">
+          <CardHeader className="shrink-0 border-b pb-4">
             <div className="flex items-center justify-between gap-2">
               <div>
                 <CardTitle className="text-base">日志文件</CardTitle>
@@ -950,7 +947,7 @@ function LogTab() {
               <Badge variant="secondary">{files.length}</Badge>
             </div>
           </CardHeader>
-          <CardContent className="max-h-[710px] overflow-y-auto p-2">
+          <CardContent className="min-h-0 flex-1 overflow-y-auto p-2">
             {files.map((log) => (
               <button
                 type="button"
@@ -975,8 +972,8 @@ function LogTab() {
           </CardContent>
         </Card>
 
-        <Card className="flex min-w-0 flex-col overflow-hidden">
-          <CardHeader className="border-b pb-4">
+        <Card className="flex min-h-0 min-w-0 flex-col overflow-hidden">
+          <CardHeader className="shrink-0 border-b pb-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0">
                 <CardTitle className="truncate text-base" title={selectedFilename ?? undefined}>
@@ -985,7 +982,7 @@ function LogTab() {
                 <CardDescription className="mt-1">
                   {selectedFile
                     ? `${formatFileSize(tailQuery.data?.size_bytes ?? selectedFile.size_bytes)} · 更新于 ${new Date(tailQuery.data?.modified ?? selectedFile.modified).toLocaleString("zh-CN")}`
-                    : "选择左侧日志文件后可直接查看"}
+                    : "选择左侧日志文件后按需加载"}
                 </CardDescription>
               </div>
               {selectedFilename && (
@@ -1066,7 +1063,7 @@ function LogTab() {
                 const distanceToBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
                 if (followTail && distanceToBottom > 80) setFollowTail(false);
               }}
-              className="relative h-[560px] overflow-auto bg-slate-950 font-mono text-[12px] leading-5"
+              className="relative min-h-0 flex-1 overflow-auto bg-slate-950 font-mono text-[12px] leading-5"
             >
               {tailQuery.isLoading && (
                 <div className="absolute inset-0 flex items-center justify-center text-slate-400">
