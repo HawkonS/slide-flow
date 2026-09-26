@@ -43,7 +43,7 @@ import { AdminUser, AdminUsersResponse, UserRole } from "@/lib/types";
 import { useUrlPage } from "@/lib/use-url-page";
 import { cn } from "@/lib/utils";
 import { TagInput } from "@/components/resource/TagInput";
-import { TagFilterChip } from "@/components/resource/filter-chips";
+import { FilterChip, TagFilterChip } from "@/components/resource/filter-chips";
 import { parseTags, serializeTags } from "@/lib/types";
 import { useAuth } from "@/lib/auth";
 import { UserSearchSelect } from "@/components/resource/UserSearchSelect";
@@ -237,6 +237,7 @@ export function AdminUsersPage() {
   const { user: currentUser, setUser } = useAuth();
   const [tagFilters, setTagFilters] = React.useState<string[]>([]);
   const [tagFilterMode, setTagFilterMode] = React.useState<"any" | "all">("any");
+  const [roleFilter, setRoleFilter] = React.useState<UserRole | "all">("all");
   const defaultUserTagsApplied = React.useRef(false);
   const userTagFiltersTouched = React.useRef(false);
   const { data: publicConfig } = useQuery({
@@ -253,6 +254,7 @@ export function AdminUsersPage() {
 
   const [editing, setEditing] = React.useState<AdminUser | null>(null);
   const [createOpen, setCreateOpen] = React.useState(false);
+  const [bulkTagsOpen, setBulkTagsOpen] = React.useState(false);
   const [transferUser, setTransferUser] = React.useState<AdminUser | null>(null);
   const [resetUser, setResetUser] = React.useState<AdminUser | null>(null);
   const [resetPassword, setResetPassword] = React.useState("");
@@ -354,6 +356,7 @@ export function AdminUsersPage() {
           search: query || undefined,
           tags: tagFilters.length > 0 ? serializeTags(tagFilters) : undefined,
           tags_mode: tagFilterMode,
+          role: roleFilter === "all" ? undefined : roleFilter,
         },
       },
     ),
@@ -364,7 +367,7 @@ export function AdminUsersPage() {
   const [pageSize, setPageSize] = React.useState(20);
   const [page, setPage] = useUrlPage();
   const { data, isLoading, isError, error, dataUpdatedAt, isFetching } = useQuery({
-    queryKey: ["admin", "users", page, pageSize, query, tagFilters, tagFilterMode],
+    queryKey: ["admin", "users", page, pageSize, query, tagFilters, tagFilterMode, roleFilter],
     queryFn: () => api<AdminUsersResponse>("/api/admin/users", {
       params: {
         page,
@@ -372,6 +375,7 @@ export function AdminUsersPage() {
         search: query || undefined,
         tags: tagFilters.length > 0 ? serializeTags(tagFilters) : undefined,
         tags_mode: tagFilterMode,
+        role: roleFilter === "all" ? undefined : roleFilter,
       },
     }),
     placeholderData: (previous) => previous,
@@ -381,10 +385,10 @@ export function AdminUsersPage() {
   const total = data?.total ?? 0;
   const stats = data?.stats ?? { total_users: total, active_week: 0, active_today: 0 };
   const totalPages = Math.max(1, Math.ceil(total / Math.max(1, pageSize)));
-  const hasActiveFilters = queryInput.trim() !== "" || query.trim() !== "" || tagFilters.length > 0;
+  const hasActiveFilters = queryInput.trim() !== "" || query.trim() !== "" || tagFilters.length > 0 || roleFilter !== "all";
   const filtersKey = React.useMemo(
-    () => JSON.stringify([query, tagFilters, tagFilterMode]),
-    [query, tagFilters, tagFilterMode],
+    () => JSON.stringify([query, tagFilters, tagFilterMode, roleFilter]),
+    [query, tagFilters, tagFilterMode, roleFilter],
   );
   const previousFiltersKey = React.useRef(filtersKey);
   const handlePageSizeChange = React.useCallback((nextPageSize: number) => {
@@ -505,6 +509,16 @@ export function AdminUsersPage() {
             )}
           />
         </div>
+        <FilterChip
+          label="角色"
+          options={[
+            { value: "all", label: "全部" },
+            ...USER_ROLE_OPTIONS,
+          ]}
+          value={roleFilter}
+          baseValue="all"
+          onChange={(value) => setRoleFilter(value as UserRole | "all")}
+        />
         <TagFilterChip
           label="标签"
           emptyText="暂无用户标签"
@@ -523,7 +537,7 @@ export function AdminUsersPage() {
           }}
           onChangeMode={setTagFilterMode}
         />
-        {tagFilters.length > 0 && (
+        {(tagFilters.length > 0 || roleFilter !== "all") && (
           <Button
             variant="ghost"
             size="sm"
@@ -531,6 +545,7 @@ export function AdminUsersPage() {
             onClick={() => {
               userTagFiltersTouched.current = true;
               setTagFilters([]);
+              setRoleFilter("all");
             }}
           >
             <X className="mr-1 h-3.5 w-3.5" />
@@ -543,6 +558,16 @@ export function AdminUsersPage() {
               已选 <span className="font-medium text-primary">{selected.size}</span> 项
             </span>
           )}
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 gap-1.5"
+            disabled={selected.size === 0}
+            onClick={() => setBulkTagsOpen(true)}
+          >
+            <Tag className="h-3.5 w-3.5" />
+            批量设置标签
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -767,6 +792,11 @@ export function AdminUsersPage() {
         canManageSystemAdmin={currentUser?.role === "system_admin"}
         onSuccess={handleUserSaved}
       />
+      <BulkUserTagsDialog
+        open={bulkTagsOpen}
+        onOpenChange={setBulkTagsOpen}
+        userIds={Array.from(selected)}
+      />
       <Dialog open={!!resetPassword} onOpenChange={(open) => { if (!open) { setResetPassword(""); setResetUser(null); } }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
@@ -814,6 +844,106 @@ export function AdminUsersPage() {
         }}
       />
     </div>
+  );
+}
+
+function BulkUserTagsDialog({
+  open,
+  onOpenChange,
+  userIds,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  userIds: number[];
+}) {
+  const qc = useQueryClient();
+  const [mode, setMode] = React.useState<"add" | "remove" | "replace">("add");
+  const [tags, setTags] = React.useState<string[]>([]);
+
+  React.useEffect(() => {
+    if (!open) {
+      setMode("add");
+      setTags([]);
+    }
+  }, [open]);
+
+  const mutation = useMutation({
+    mutationFn: () => api<{ matched: number; updated: number }>("/api/admin/users/bulk-tags", {
+      method: "POST",
+      json: { user_ids: userIds, tags: serializeTags(tags), mode },
+    }),
+    onSuccess: (result) => {
+      toast.success(result.updated > 0
+        ? "已更新 " + result.updated + " 个用户的标签"
+        : "所选用户的标签无需变更");
+      qc.invalidateQueries({ queryKey: ["admin", "users"] });
+      qc.invalidateQueries({ queryKey: ["users", "options"] });
+      qc.invalidateQueries({ queryKey: ["admin", "user-tags"] });
+      onOpenChange(false);
+    },
+    onError: (err: Error) => toast.error(err.message || "批量设置标签失败"),
+  });
+
+  const submit = () => {
+    if (userIds.length === 0) return;
+    if (mode !== "replace" && tags.length === 0) {
+      toast.error("请至少选择一个用户标签");
+      return;
+    }
+    if (
+      mode === "replace"
+      && tags.length === 0
+      && !window.confirm("确认清空所选 " + userIds.length + " 个用户的全部标签？")
+    ) return;
+    mutation.mutate();
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>批量设置用户标签</DialogTitle>
+          <DialogDescription>
+            将对已选的 {userIds.length} 个用户生效。标签定义在“标签管理 → 用户标签”维护，这里负责批量分配。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-4 py-1">
+          <div className="grid gap-1.5">
+            <Label htmlFor="bulk-user-tag-mode">设置方式</Label>
+            <Select value={mode} onValueChange={(value) => setMode(value as "add" | "remove" | "replace")}>
+              <SelectTrigger id="bulk-user-tag-mode"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="add">追加标签（保留已有标签）</SelectItem>
+                <SelectItem value="remove">移除标签</SelectItem>
+                <SelectItem value="replace">替换全部标签</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid gap-1.5">
+            <Label>用户标签</Label>
+            <TagInput
+              domain="user"
+              value={tags}
+              onChange={setTags}
+              placeholder={mode === "remove" ? "选择要移除的标签" : "搜索或选择用户标签"}
+              disabled={mutation.isPending}
+            />
+            <p className="text-xs leading-5 text-muted-foreground">
+              {mode === "add" && "仅追加所选标签，不会删除用户现有标签。"}
+              {mode === "remove" && "仅移除所选标签，其他标签保持不变。"}
+              {mode === "replace" && "用户现有标签将被所选标签完全替换；不选标签则清空。"}
+            </p>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={mutation.isPending}>取消</Button>
+          <Button onClick={submit} disabled={mutation.isPending || userIds.length === 0}>
+            {mutation.isPending && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+            应用到 {userIds.length} 个用户
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

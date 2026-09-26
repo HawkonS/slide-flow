@@ -44,6 +44,7 @@ from app.services.files import _safe_abs, persist_asset
 from app.db import now_iso
 from app.routers.dependencies import (
     UserPayload,
+    UserBulkTagsPayload,
     UserDeletePayload,
     UserTransferDeletePayload,
     db_dep,
@@ -244,16 +245,23 @@ def _user_filter_clause(
     tag: str,
     tags: str,
     tags_mode: str,
+    role: str,
 ) -> tuple[list[str], list[Any]]:
-    """Build the shared search/tag filters for list and bulk selection APIs."""
+    """Build the shared search, tag, and role filters for user-list APIs."""
     tag_values = (
         [item for item in _normalise_user_tags(tags).split(",") if item]
         if tags.strip()
         else ([tag.strip()] if tag.strip() else [])
     )
     search_filter = search.strip()
+    role_filter = role.strip()
     where: list[str] = []
     params: list[Any] = []
+    if role_filter:
+        if role_filter not in {ROLE_SYSTEM_ADMIN, ROLE_OPERATIONS_ADMIN, ROLE_USER}:
+            raise HTTPException(400, "角色筛选不正确")
+        where.append("users.role = ?")
+        params.append(role_filter)
     if tag_values:
         if tags_mode.strip().lower() == "all":
             for tag_value in tag_values:
@@ -289,6 +297,7 @@ def list_users(
     tag: str = Query("", max_length=64),
     tags: str = Query("", max_length=1000),
     tags_mode: str = Query("any", max_length=8),
+    role: str = Query("", max_length=32),
     _: Any = Depends(require_admin),
     db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
@@ -300,6 +309,7 @@ def list_users(
         tag=tag,
         tags=tags,
         tags_mode=tags_mode,
+        role=role,
     )
 
     where_sql = f" WHERE {' AND '.join(where)}" if where else ""
@@ -360,6 +370,7 @@ def list_user_selection_ids(
     tag: str = Query("", max_length=64),
     tags: str = Query("", max_length=1000),
     tags_mode: str = Query("any", max_length=8),
+    role: str = Query("", max_length=32),
     admin: sqlite3.Row = Depends(require_admin),
     db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
@@ -369,6 +380,7 @@ def list_user_selection_ids(
         tag=tag,
         tags=tags,
         tags_mode=tags_mode,
+        role=role,
     )
     where.append("users.id != ?")
     params.append(int(admin["id"]))
@@ -841,6 +853,93 @@ def delete_user(
     invalidate_user(user_id)
     delete_managed_avatar(target["avatar_url"] or "", user_id=user_id)
     return {"ok": True}
+
+
+@router.post("/admin/users/bulk-tags")
+def bulk_update_user_tags(
+    payload: UserBulkTagsPayload,
+    admin: sqlite3.Row = Depends(require_admin),
+    db: sqlite3.Connection = Depends(db_dep),
+) -> dict[str, Any]:
+    """Add, remove, or replace user tags for a bounded set of users."""
+    user_ids = sorted({int(uid) for uid in payload.user_ids if int(uid) > 0})
+    if not user_ids:
+        raise HTTPException(400, "请选择要设置标签的用户")
+    if len(user_ids) > USER_BULK_DELETE_MAX:
+        raise HTTPException(400, f"一次最多操作 {USER_BULK_DELETE_MAX} 个用户")
+
+    mode = payload.mode.strip().lower()
+    if mode not in {"add", "remove", "replace"}:
+        raise HTTPException(400, "批量标签操作类型不正确")
+    if mode == "remove":
+        normalised_tags = _normalise_user_tags(payload.tags)
+    else:
+        normalised_tags = _validated_user_tags(db, payload.tags)
+    requested_tags = [tag for tag in normalised_tags.split(",") if tag]
+    if mode != "replace" and not requested_tags:
+        raise HTTPException(400, "请至少选择一个用户标签")
+
+    rows: list[sqlite3.Row] = []
+    for chunk in _id_chunks(user_ids):
+        placeholders = ",".join("?" for _ in chunk)
+        rows.extend(
+            db.execute(
+                f"SELECT id, role, tags FROM users WHERE id IN ({placeholders})",
+                chunk,
+            ).fetchall()
+        )
+    if len(rows) != len(user_ids):
+        raise HTTPException(404, "部分用户不存在，请刷新列表后重试")
+    if any(row["role"] == ROLE_SYSTEM_ADMIN for row in rows) and not is_system_admin(admin):
+        raise HTTPException(403, "只有系统管理员能修改系统管理员账号")
+
+    changed_ids: list[int] = []
+    timestamp = now_iso()
+    try:
+        for row in rows:
+            current_tags = [tag for tag in _normalise_user_tags(row["tags"] or "").split(",") if tag]
+            if mode == "add":
+                next_tags = [*current_tags, *(tag for tag in requested_tags if tag not in current_tags)]
+            elif mode == "remove":
+                remove_set = set(requested_tags)
+                next_tags = [tag for tag in current_tags if tag not in remove_set]
+            else:
+                next_tags = requested_tags
+            next_value = ",".join(next_tags)
+            if next_value == (row["tags"] or ""):
+                continue
+            user_id = int(row["id"])
+            db.execute(
+                "UPDATE users SET tags = ?, updated_at = ? WHERE id = ?",
+                (next_value, timestamp, user_id),
+            )
+            _sync_user_tags(db, user_id, next_value)
+            changed_ids.append(user_id)
+        if changed_ids:
+            _audit_admin_action(
+                db,
+                admin,
+                "user.bulk_tags",
+                details={
+                    "user_ids": changed_ids,
+                    "count": len(changed_ids),
+                    "mode": mode,
+                    "tags": requested_tags,
+                },
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    for user_id in changed_ids:
+        invalidate_user(user_id)
+    return {
+        "ok": True,
+        "matched": len(user_ids),
+        "updated": len(changed_ids),
+        "updated_ids": changed_ids,
+    }
 
 
 @router.post("/admin/users/bulk-delete")

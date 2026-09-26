@@ -1194,6 +1194,17 @@
               "default": "any",
               "title": "Tags Mode"
             }
+          },
+          {
+            "name": "role",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 32,
+              "default": "",
+              "title": "Role"
+            }
           }
         ],
         "responses": {
@@ -1315,6 +1326,17 @@
               "maxLength": 8,
               "default": "any",
               "title": "Tags Mode"
+            }
+          },
+          {
+            "name": "role",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 32,
+              "default": "",
+              "title": "Role"
             }
           }
         ],
@@ -1689,6 +1711,50 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Reset User Password Api Admin Users  User Id  Reset Password Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/users/bulk-tags": {
+      "post": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Bulk Update User Tags",
+        "description": "Add, remove, or replace user tags for a bounded set of users.",
+        "operationId": "bulk_update_user_tags_api_admin_users_bulk_tags_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserBulkTagsPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Bulk Update User Tags Api Admin Users Bulk Tags Post"
                 }
               }
             }
@@ -9590,6 +9656,37 @@
           "page_index"
         ],
         "title": "UrlRequest"
+      },
+      "UserBulkTagsPayload": {
+        "properties": {
+          "user_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "maxItems": 1000,
+            "minItems": 1,
+            "title": "User Ids"
+          },
+          "tags": {
+            "type": "string",
+            "maxLength": 1000,
+            "title": "Tags",
+            "default": ""
+          },
+          "mode": {
+            "type": "string",
+            "maxLength": 16,
+            "title": "Mode",
+            "default": "add"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "user_ids"
+        ],
+        "title": "UserBulkTagsPayload"
       },
       "UserDeletePayload": {
         "properties": {

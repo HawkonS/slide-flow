@@ -372,6 +372,14 @@
     ]
   },
   {
+    "path": "/api/admin/users/bulk-tags",
+    "name": "bulk_update_user_tags",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
     "path": "/api/admin/users/bulk-delete",
     "name": "bulk_delete_users",
     "kind": "http",

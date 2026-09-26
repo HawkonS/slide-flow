@@ -50,6 +50,12 @@ class UserDeletePayload(ApiPayload):
     user_ids: list[int] = Field(..., min_length=1, max_length=1000)
 
 
+class UserBulkTagsPayload(ApiPayload):
+    user_ids: list[int] = Field(..., min_length=1, max_length=1000)
+    tags: str = Field(default="", max_length=1000)
+    mode: str = Field(default="add", max_length=16)
+
+
 class UserTransferDeletePayload(ApiPayload):
     target_user_id: int = Field(..., ge=1)
 

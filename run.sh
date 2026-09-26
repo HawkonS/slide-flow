@@ -13,9 +13,9 @@
 #
 # 生产构建策略（产物优先 + 更新感知）：
 #   1. dist/index.html 不存在 → 自动构建（首次部署/产物被清理）；
-#   2. dist 存在时比对 dist/.build_version（构建时写入的 git commit hash，
-#      非 git 环境为源码最新修改时间戳）与当前版本：不一致说明代码已更新
-#      （如 update.sh git pull 后重启）→ 重建并刷新标记；一致 → 直接复用；
+#   2. dist 存在时比对 dist/.build_version（构建时写入的前端源码内容指纹）
+#      与当前源码：不一致说明前端代码已更新（包含尚未提交的本地修改）
+#      → 重建并刷新标记；一致 → 直接复用；
 #   3. 无法获取版本信息时退化为 "dist 存在即复用"；
 #   4. 重建失败但旧 dist 可用时降级继续启动，避免重启死循环。
 # ============================================================
@@ -563,7 +563,7 @@ fi
 # 判定逻辑（产物优先 + 更新感知）：
 #   SLIDEFLOW_FORCE_BUILD=1 → 强制重建；
 #   dist/index.html 缺失 → 构建；
-#   dist/.build_version 与当前版本（git HEAD / 源码 mtime）不一致 → 重建；
+#   dist/.build_version 与当前前端源码内容指纹不一致 → 重建；
 #   其余情况 → 复用现有产物，普通重启不再重复构建。
 #   产物过期/缺失时自动重建；构建失败且已有产物时继续使用现有产物。
 # ===========================================================
@@ -571,28 +571,33 @@ if [ "$DEV_MODE" = "false" ] && [ -f "web/package.json" ]; then
   DIST_INDEX="app/static/dist/index.html"
   BUILD_VERSION_FILE="app/static/dist/.build_version"
 
-  # 计算当前源码版本标识：优先 git commit hash，
-  # 非 git 环境退化为 web 源码（排除 node_modules）最新修改时间戳
-  CURRENT_VERSION=""
-  if command -v git &>/dev/null && git rev-parse --git-dir >/dev/null 2>&1; then
-    CURRENT_VERSION="$(git rev-parse HEAD 2>/dev/null || true)"
-  fi
-  if [ -z "$CURRENT_VERSION" ]; then
-    CURRENT_VERSION="$("$PYTHON_CMD" - <<'PY' 2>/dev/null || true
+  # 对前端源码路径和文件内容计算稳定指纹。不能只使用 git HEAD：开发环境中
+  # 未提交的修改不会改变 commit hash，会导致重启后继续复用旧的 dist。
+  # 排除依赖、缓存和 TypeScript 增量构建文件，避免构建本身改变指纹。
+  CURRENT_VERSION="$("$PYTHON_CMD" - <<'PY' 2>/dev/null || true
+import hashlib
 import os
-mt = 0
+
+digest = hashlib.sha256()
+excluded_dirs = {'node_modules', 'dist', '.vite', '.vite-temp'}
+
 for root, dirs, files in os.walk('web'):
-    if 'node_modules' in dirs:
-        dirs.remove('node_modules')
-    for name in files:
-        try:
-            mt = max(mt, int(os.path.getmtime(os.path.join(root, name))))
-        except OSError:
-            pass
-print(f'ts:{mt}')
+    dirs[:] = sorted(name for name in dirs if name not in excluded_dirs)
+    for name in sorted(files):
+        if name == '.DS_Store' or name.endswith('.tsbuildinfo'):
+            continue
+        path = os.path.join(root, name)
+        relative = os.path.relpath(path, 'web').replace(os.sep, '/')
+        digest.update(relative.encode('utf-8'))
+        digest.update(b'\0')
+        with open(path, 'rb') as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+                digest.update(chunk)
+        digest.update(b'\0')
+
+print(digest.hexdigest())
 PY
 )"
-  fi
 
   NEED_BUILD="false"
   BUILD_REASON=""

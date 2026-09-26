@@ -1373,6 +1373,77 @@ class UserManagementTests(unittest.TestCase):
             )
             self.assertEqual(replay.status_code, 400, replay.text)
 
+    def test_user_list_and_selection_ids_support_role_filter(self):
+        admin_id = self.insert_user("root", role="system_admin")
+        operations_id = self.insert_user("operator", role="admin")
+        regular_id = self.insert_user("regular", role="user")
+        with self.client_for(admin_id) as client:
+            listed = client.get("/api/admin/users", params={"role": "admin"})
+            self.assertEqual(listed.status_code, 200, listed.text)
+            self.assertEqual([item["id"] for item in listed.json()["users"]], [operations_id])
+
+            selection = client.get("/api/admin/users/selection-ids", params={"role": "user"})
+            self.assertEqual(selection.status_code, 200, selection.text)
+            self.assertEqual(selection.json()["user_ids"], [regular_id])
+
+            invalid = client.get("/api/admin/users", params={"role": "owner"})
+            self.assertEqual(invalid.status_code, 400, invalid.text)
+
+    def test_bulk_user_tags_support_add_remove_and_replace(self):
+        admin_id = self.insert_user("root", role="system_admin")
+        first_id = self.insert_user("tag-first", tags_value="部门-销售")
+        second_id = self.insert_user("tag-second")
+        timestamp = now_iso()
+        self.db.executemany(
+            """
+            INSERT INTO user_tag_definitions
+                (name, category, label, sort_order, created_by, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                ("部门-销售", "部门", "销售", 0, admin_id, timestamp),
+                ("部门-研发", "部门", "研发", 1, admin_id, timestamp),
+                ("人员-外部", "人员", "外部", 2, admin_id, timestamp),
+            ],
+        )
+        self.db.commit()
+
+        with self.client_for(admin_id) as client:
+            added = client.post(
+                "/api/admin/users/bulk-tags",
+                json={"user_ids": [first_id, second_id], "tags": "部门-研发", "mode": "add"},
+            )
+            self.assertEqual(added.status_code, 200, added.text)
+            self.assertEqual(added.json()["updated"], 2)
+
+            removed = client.post(
+                "/api/admin/users/bulk-tags",
+                json={"user_ids": [first_id, second_id], "tags": "部门-销售", "mode": "remove"},
+            )
+            self.assertEqual(removed.status_code, 200, removed.text)
+            self.assertEqual(removed.json()["updated"], 1)
+
+            replaced = client.post(
+                "/api/admin/users/bulk-tags",
+                json={"user_ids": [first_id, second_id], "tags": "人员-外部", "mode": "replace"},
+            )
+            self.assertEqual(replaced.status_code, 200, replaced.text)
+            self.assertEqual(replaced.json()["updated"], 2)
+
+        stored = self.db.execute(
+            "SELECT id, tags FROM users WHERE id IN (?, ?) ORDER BY id",
+            (first_id, second_id),
+        ).fetchall()
+        self.assertEqual([row["tags"] for row in stored], ["人员-外部", "人员-外部"])
+        synced = self.db.execute(
+            "SELECT user_id, tag_name FROM user_tags WHERE user_id IN (?, ?) ORDER BY user_id",
+            (first_id, second_id),
+        ).fetchall()
+        self.assertEqual(
+            [(row["user_id"], row["tag_name"]) for row in synced],
+            [(first_id, "人员-外部"), (second_id, "人员-外部")],
+        )
+
     def test_bulk_delete_is_atomic_when_any_user_is_missing(self):
         admin_id = self.insert_user("root", role="system_admin")
         user_id = self.insert_user("bulk-user")
