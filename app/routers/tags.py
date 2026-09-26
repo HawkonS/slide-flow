@@ -272,7 +272,7 @@ def list_subject_tags(user: sqlite3.Row = Depends(require_user), db: sqlite3.Con
 @router.get("/secrecy-tags")
 def list_secrecy_tags(user: sqlite3.Row = Depends(require_user), db: sqlite3.Connection = Depends(db_read_dep)) -> dict[str, Any]:
     return {
-        "groups": _grouped_tags(db, "secrecy_tag_definitions"),
+        "groups": _grouped_tags(db, "secrecy_tag_definitions", flat_category="密级"),
         "can_create": is_admin(user) or settings.user_custom_secrecy_tags,
     }
 
@@ -280,7 +280,7 @@ def list_secrecy_tags(user: sqlite3.Row = Depends(require_user), db: sqlite3.Con
 @router.get("/status-tags")
 def list_status_tags(user: sqlite3.Row = Depends(require_user), db: sqlite3.Connection = Depends(db_read_dep)) -> dict[str, Any]:
     return {
-        "groups": _grouped_tags(db, "status_tag_definitions"),
+        "groups": _grouped_tags(db, "status_tag_definitions", flat_category="状态"),
         "can_create": is_admin(user) or settings.user_custom_status_tags,
     }
 
@@ -319,6 +319,12 @@ _METADATA_DOMAINS = {
     "status": ("status_tag_definitions", "status"),
 }
 
+_METADATA_FLAT_CATEGORIES = {
+    "subject": "主体",
+    "secrecy": "密级",
+    "status": "状态",
+}
+
 
 def _metadata_user_creation_enabled(domain: str) -> bool:
     if domain == "secrecy":
@@ -345,7 +351,7 @@ def create_metadata_tags(
         config[0],
         payload,
         int(user["id"]),
-        flat_category="主体" if domain == "subject" else None,
+        flat_category=_METADATA_FLAT_CATEGORIES[domain],
     )
 
 
@@ -364,7 +370,7 @@ def admin_list_metadata_tags(
             db,
             table,
             _metadata_usage_counts(db, column),
-            flat_category="主体" if domain == "subject" else None,
+            flat_category=_METADATA_FLAT_CATEGORIES[domain],
         )
     }
     if domain == "secrecy":
@@ -408,7 +414,7 @@ def admin_create_metadata_tags(
         config[0],
         payload,
         int(admin["id"]),
-        flat_category="主体" if domain == "subject" else None,
+        flat_category=_METADATA_FLAT_CATEGORIES[domain],
     )
 
 
@@ -596,7 +602,7 @@ def admin_update_metadata_tag(
         raise HTTPException(409, "标签名称已存在")
     if domain == "status" and row["name"] in {"active", "disabled"} and new_name != row["name"]:
         raise HTTPException(400, "系统状态标签的内部值不能重命名")
-    category, label = ("主体", new_name) if domain == "subject" else split_tag_name(new_name)
+    category, label = _METADATA_FLAT_CATEGORIES[domain], new_name
     old_name = str(row["name"])
     db.execute(
         f"UPDATE {table} SET name = ?, category = ?, label = ? WHERE id = ?",

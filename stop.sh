@@ -103,14 +103,19 @@ except ImportError:
 
 port = int(sys.argv[1])
 project_root = Path(sys.argv[2]).resolve()
-listeners = {
-    connection.pid
-    for connection in psutil.net_connections(kind="inet")
-    if connection.pid is not None
-    and connection.status == psutil.CONN_LISTEN
-    and connection.laddr
-    and connection.laddr.port == port
-}
+try:
+    listeners = {
+        connection.pid
+        for connection in psutil.net_connections(kind="inet")
+        if connection.pid is not None
+        and connection.status == psutil.CONN_LISTEN
+        and connection.laddr
+        and connection.laddr.port == port
+    }
+except (psutil.AccessDenied, PermissionError):
+    # macOS may deny system-wide socket inspection even for processes owned by
+    # the current user. Let the shell fall back to lsof instead of aborting.
+    raise SystemExit(3)
 managed = []
 unmanaged = []
 for pid in sorted(listeners):

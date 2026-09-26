@@ -45,6 +45,9 @@ class ResourceMetadataDefaultsTests(unittest.TestCase):
             "INSERT INTO secrecy_tag_definitions VALUES (1, 'public', '系统默认', '公开', 0, NULL)"
         )
         db.execute(
+            "INSERT INTO secrecy_tag_definitions VALUES (2, '内部', '未分类', '内部', 0, 7)"
+        )
+        db.execute(
             "INSERT INTO status_tag_definitions VALUES (1, 'active', '历史值', 'active', 0, NULL)"
         )
         db.execute(
@@ -54,9 +57,20 @@ class ResourceMetadataDefaultsTests(unittest.TestCase):
         _maintain_resource_metadata_tags(db)
 
         self.assertEqual(db.execute("SELECT COUNT(*) FROM subject_tag_definitions").fetchone()[0], 0)
-        self.assertEqual(db.execute("SELECT COUNT(*) FROM secrecy_tag_definitions").fetchone()[0], 0)
-        remaining = db.execute("SELECT name FROM status_tag_definitions").fetchall()
-        self.assertEqual([row["name"] for row in remaining], ["草稿"])
+        secrecy = db.execute(
+            "SELECT name, category, label FROM secrecy_tag_definitions"
+        ).fetchall()
+        self.assertEqual(
+            [(row["name"], row["category"], row["label"]) for row in secrecy],
+            [("内部", "密级", "内部")],
+        )
+        remaining = db.execute(
+            "SELECT name, category, label FROM status_tag_definitions"
+        ).fetchall()
+        self.assertEqual(
+            [(row["name"], row["category"], row["label"]) for row in remaining],
+            [("草稿", "状态", "草稿")],
+        )
 
 
 if __name__ == "__main__":

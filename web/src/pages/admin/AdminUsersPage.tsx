@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRightLeft, CalendarDays, Camera, Check, ChevronDown, CloudDownload, Copy, KeyRound, Loader2, MoreHorizontal, Pencil, Search, Shield, Tag, Trash2, Upload, User, UserCheck, UserPlus, X } from "lucide-react";
+import { ArrowRightLeft, CalendarDays, Camera, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, CloudDownload, Copy, KeyRound, Loader2, MoreHorizontal, Pencil, Search, Shield, Tag, Trash2, Upload, User, UserCheck, UserPlus, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -47,6 +47,169 @@ import { TagFilterChip } from "@/components/resource/filter-chips";
 import { parseTags, serializeTags } from "@/lib/types";
 import { useAuth } from "@/lib/auth";
 import { UserSearchSelect } from "@/components/resource/UserSearchSelect";
+
+const USER_PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
+
+type PaginationItem = number | "ellipsis-start" | "ellipsis-end";
+
+function getPaginationItems(page: number, totalPages: number): PaginationItem[] {
+  if (totalPages <= 7) {
+    return Array.from({ length: totalPages }, (_, index) => index + 1);
+  }
+  if (page <= 4) {
+    return [1, 2, 3, 4, 5, "ellipsis-end", totalPages];
+  }
+  if (page >= totalPages - 3) {
+    return [1, "ellipsis-start", totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1, totalPages];
+  }
+  return [1, "ellipsis-start", page - 1, page, page + 1, "ellipsis-end", totalPages];
+}
+
+function UserPagination({
+  page,
+  totalPages,
+  total,
+  pageSize,
+  isFetching,
+  onPageChange,
+  onPageSizeChange,
+}: {
+  page: number;
+  totalPages: number;
+  total: number;
+  pageSize: number;
+  isFetching: boolean;
+  onPageChange: (nextPage: number) => void;
+  onPageSizeChange: (nextPageSize: number) => void;
+}) {
+  const [jumpValue, setJumpValue] = React.useState(String(page));
+  React.useEffect(() => setJumpValue(String(page)), [page]);
+
+  const start = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const end = Math.min(page * pageSize, total);
+  const submitJump = () => {
+    const nextPage = Number.parseInt(jumpValue, 10);
+    if (!Number.isFinite(nextPage)) {
+      setJumpValue(String(page));
+      return;
+    }
+    onPageChange(Math.min(totalPages, Math.max(1, nextPage)));
+  };
+
+  return (
+    <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t pt-3 text-sm text-muted-foreground select-none">
+      <div className="flex min-w-0 items-center gap-3">
+        <span className="whitespace-nowrap">
+          显示 {start}-{end}，共 {total} 条
+        </span>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <span className="hidden sm:inline">每页</span>
+          <Select value={String(pageSize)} onValueChange={(value) => onPageSizeChange(Number(value))}>
+            <SelectTrigger className="h-8 w-[72px] text-xs" aria-label="每页条数">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {USER_PAGE_SIZE_OPTIONS.map((option) => (
+                <SelectItem key={option} value={String(option)}>{option} 条</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        {isFetching && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" aria-label="正在更新" />}
+      </div>
+
+      <div className="flex items-center gap-1">
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="h-8 w-8"
+          disabled={page <= 1 || isFetching}
+          onClick={() => onPageChange(1)}
+          aria-label="第一页"
+          title="第一页"
+        >
+          <ChevronsLeft className="h-3.5 w-3.5" />
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="h-8 w-8"
+          disabled={page <= 1 || isFetching}
+          onClick={() => onPageChange(page - 1)}
+          aria-label="上一页"
+          title="上一页"
+        >
+          <ChevronLeft className="h-3.5 w-3.5" />
+        </Button>
+
+        <div className="hidden items-center gap-1 sm:flex">
+          {getPaginationItems(page, totalPages).map((item) => (
+            typeof item === "number" ? (
+              <Button
+                key={item}
+                type="button"
+                variant={item === page ? "secondary" : "ghost"}
+                size="icon"
+                className={cn("h-8 w-8 text-xs", item === page && "pointer-events-none font-semibold")}
+                disabled={isFetching}
+                onClick={() => onPageChange(item)}
+                aria-label={`第 ${item} 页`}
+                aria-current={item === page ? "page" : undefined}
+              >
+                {item}
+              </Button>
+            ) : (
+              <span key={item} className="w-6 text-center text-muted-foreground" aria-hidden="true">…</span>
+            )
+          ))}
+        </div>
+
+        <div className="flex items-center gap-1 sm:hidden">
+          <Input
+            value={jumpValue}
+            onChange={(event) => setJumpValue(event.target.value.replace(/[^0-9]/g, ""))}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") submitJump();
+            }}
+            inputMode="numeric"
+            aria-label="跳转到页码"
+            className="h-8 w-12 px-1.5 text-center text-xs"
+            disabled={isFetching}
+          />
+          <span className="whitespace-nowrap text-xs">/ {totalPages}</span>
+        </div>
+
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="h-8 w-8"
+          disabled={page >= totalPages || isFetching}
+          onClick={() => onPageChange(page + 1)}
+          aria-label="下一页"
+          title="下一页"
+        >
+          <ChevronRight className="h-3.5 w-3.5" />
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="h-8 w-8"
+          disabled={page >= totalPages || isFetching}
+          onClick={() => onPageChange(totalPages)}
+          aria-label="最后一页"
+          title="最后一页"
+        >
+          <ChevronsRight className="h-3.5 w-3.5" />
+        </Button>
+        <span className="hidden whitespace-nowrap pl-1 text-xs text-muted-foreground sm:inline">第 {page} / {totalPages} 页</span>
+      </div>
+    </div>
+  );
+}
 
 const userDateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric",
@@ -198,27 +361,9 @@ export function AdminUsersPage() {
     onError: (err: Error) => toast.error(err.message || "加载可选用户失败"),
   });
 
-  // 动态分页
-  const contentRef = React.useRef<HTMLDivElement>(null);
-  const [pageSize, setPageSize] = React.useState(0);
-  React.useEffect(() => {
-    const el = contentRef.current;
-    if (!el) return;
-    const compute = () => {
-      const H = el.clientHeight;
-      if (!H) return;
-      const headerH = 45;
-      const rowH = 64;
-      const rows = Math.min(100, Math.max(5, Math.floor((H - headerH) / rowH)));
-      setPageSize((prev) => (prev === rows ? prev : rows));
-    };
-    compute();
-    const ro = new ResizeObserver(compute);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
+  const [pageSize, setPageSize] = React.useState(20);
   const [page, setPage] = useUrlPage();
-  const { data, isLoading, isError, error, dataUpdatedAt } = useQuery({
+  const { data, isLoading, isError, error, dataUpdatedAt, isFetching } = useQuery({
     queryKey: ["admin", "users", page, pageSize, query, tagFilters, tagFilterMode],
     queryFn: () => api<AdminUsersResponse>("/api/admin/users", {
       params: {
@@ -229,7 +374,7 @@ export function AdminUsersPage() {
         tags_mode: tagFilterMode,
       },
     }),
-    enabled: pageSize > 0,
+    placeholderData: (previous) => previous,
   });
   const users = data?.users ?? [];
   const availableTags = data?.available_tags ?? [];
@@ -237,6 +382,17 @@ export function AdminUsersPage() {
   const stats = data?.stats ?? { total_users: total, active_week: 0, active_today: 0 };
   const totalPages = Math.max(1, Math.ceil(total / Math.max(1, pageSize)));
   const hasActiveFilters = queryInput.trim() !== "" || query.trim() !== "" || tagFilters.length > 0;
+  const filtersKey = React.useMemo(
+    () => JSON.stringify([query, tagFilters, tagFilterMode]),
+    [query, tagFilters, tagFilterMode],
+  );
+  const previousFiltersKey = React.useRef(filtersKey);
+  const handlePageSizeChange = React.useCallback((nextPageSize: number) => {
+    if (!USER_PAGE_SIZE_OPTIONS.includes(nextPageSize as (typeof USER_PAGE_SIZE_OPTIONS)[number])) return;
+    setPageSize(nextPageSize);
+    setPage(1);
+    setSelected(new Set());
+  }, [setPage]);
   const handleUserSaved = React.useCallback((savedUser: AdminUser) => {
     qc.invalidateQueries({ queryKey: ["admin", "users"] });
     qc.invalidateQueries({ queryKey: ["users", "options"] });
@@ -245,13 +401,18 @@ export function AdminUsersPage() {
     }
   }, [currentUser, qc, setUser]);
   React.useEffect(() => {
-    if (pageSize > 0 && data && page > totalPages) setPage(totalPages);
+    if (data && page > totalPages) setPage(totalPages);
   }, [data, page, pageSize, totalPages, setPage]);
   React.useEffect(() => {
+    // useUrlPage 的 setter 可能随 URL searchParams 更新而改变引用。
+    // 仅在筛选条件的实际值发生变化时回到第一页，避免翻页后该 effect
+    // 因 setter 引用变化再次执行并把刚设置的页码重置为 1。
+    if (previousFiltersKey.current === filtersKey) return;
+    previousFiltersKey.current = filtersKey;
     setPage(1);
     setSelected(new Set());
     setFilterSelectionIds(null);
-  }, [query, tagFilters, tagFilterMode, setPage]);
+  }, [filtersKey, setPage]);
   React.useEffect(() => {
     setSelected((previous) => {
       const next = new Set(previous);
@@ -265,7 +426,6 @@ export function AdminUsersPage() {
   React.useEffect(() => {
     setFilterSelectionIds(null);
   }, [dataUpdatedAt]);
-  const pageStart = (page - 1) * pageSize;
   const pageItemIds = React.useMemo(
     () => users.filter(canDeleteUser).map((u) => u.id),
     [users, canDeleteUser],
@@ -400,8 +560,8 @@ export function AdminUsersPage() {
       </div>
 
       {/* 内容区 */}
-      <div ref={contentRef} className="min-h-0 flex-1 overflow-auto">
-        {pageSize === 0 || isLoading ? (
+      <div className={cn("min-h-0 flex-1 overflow-auto transition-opacity", isFetching && "opacity-70")} aria-busy={isFetching}>
+        {isLoading ? (
           <div className="flex items-center justify-center py-16 text-muted-foreground">
             <Loader2 className="mr-2 h-5 w-5 animate-spin" /> 加载中…
           </div>
@@ -588,33 +748,16 @@ export function AdminUsersPage() {
       </div>
 
       {/* 分页条 */}
-      {pageSize > 0 && !isLoading && !isError && total > 0 && (
-        <div className="flex shrink-0 items-center justify-between border-t pt-3 text-sm text-muted-foreground select-none">
-          <span>
-            显示 {pageStart + 1}-{Math.min(pageStart + users.length, total)}，共 {total} 条
-          </span>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page <= 1}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-            >
-              上一页
-            </Button>
-            <span className="min-w-[52px] text-center text-foreground select-none">
-              {page} / {totalPages}
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page >= totalPages}
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-            >
-              下一页
-            </Button>
-          </div>
-        </div>
+      {!isLoading && !isError && total > 0 && (
+        <UserPagination
+          page={page}
+          totalPages={totalPages}
+          total={total}
+          pageSize={pageSize}
+          isFetching={isFetching}
+          onPageChange={setPage}
+          onPageSizeChange={handlePageSizeChange}
+        />
       )}
 
       <UserFormDialog

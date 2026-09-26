@@ -962,7 +962,8 @@ def _maintain_resource_metadata_tags(db: sqlite3.Connection) -> None:
 
     Older releases generated subject, secrecy and status definitions from
     built-in defaults or historical resource values. Remove only those known
-    generated rows; resource data itself remains unchanged.
+    generated rows, then keep every remaining metadata definition flat;
+    resource data itself remains unchanged.
     """
     db.execute(
         "DELETE FROM subject_tag_definitions "
@@ -971,11 +972,18 @@ def _maintain_resource_metadata_tags(db: sqlite3.Connection) -> None:
     db.execute(
         "UPDATE subject_tag_definitions SET category = '主体', label = name"
     )
-    for table in ("secrecy_tag_definitions", "status_tag_definitions"):
+    for table, category in (
+        ("secrecy_tag_definitions", "密级"),
+        ("status_tag_definitions", "状态"),
+    ):
         db.execute(
             f"DELETE FROM {table} "
             "WHERE created_by IS NULL AND is_default_filter = 0 "
             "AND category IN ('系统默认', '历史值')"
+        )
+        db.execute(
+            f"UPDATE {table} SET category = ?, label = name",
+            (category,),
         )
 
 

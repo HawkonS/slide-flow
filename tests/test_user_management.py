@@ -539,6 +539,18 @@ class UserManagementTests(unittest.TestCase):
             created = client.post("/api/admin/secrecy-tags", json={"tags": ["内部"]})
             self.assertEqual(created.status_code, 200, created.text)
             self.assertEqual(created.json()["created"][0]["name"], "内部")
+            self.assertEqual(created.json()["created"][0]["category"], "密级")
+            self.assertEqual(created.json()["created"][0]["label"], "内部")
+
+            created_status = client.post("/api/admin/status-tags", json={"tags": ["草稿"]})
+            self.assertEqual(created_status.status_code, 200, created_status.text)
+            self.assertEqual(created_status.json()["created"][0]["category"], "状态")
+            self.assertEqual(created_status.json()["created"][0]["label"], "草稿")
+
+            secrecy_groups = client.get("/api/secrecy-tags").json()["groups"]
+            status_groups = client.get("/api/status-tags").json()["groups"]
+            self.assertEqual([group["category"] for group in secrecy_groups], ["密级"])
+            self.assertEqual([group["category"] for group in status_groups], ["状态"])
 
             renamed = client.put(
                 f"/api/admin/subject-tags/{subject['id']}",

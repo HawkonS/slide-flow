@@ -37,11 +37,20 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import {
   TEMPLATE_PLATFORM_LABEL,
+  TEMPLATE_PLATFORM_OPTIONS,
   TEMPLATE_TYPE_LABEL,
+  TEMPLATE_TYPE_OPTIONS,
 } from "@/lib/constants";
 import {
   detectLocalFonts,
@@ -62,6 +71,10 @@ export function TemplatesPage() {
   const [editing, setEditing] = React.useState<TemplateItem | null>(null);
   const [sortOpen, setSortOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
+  const [subjectFilter, setSubjectFilter] = React.useState("all");
+  const [seriesFilter, setSeriesFilter] = React.useState("all");
+  const [platformFilter, setPlatformFilter] = React.useState("all");
+  const [typeFilter, setTypeFilter] = React.useState("all");
   const [selected, setSelected] = React.useState<Set<number>>(new Set());
   const [downloadingId, setDownloadingId] = React.useState<number | null>(null);
 
@@ -86,20 +99,53 @@ export function TemplatesPage() {
     pageSize: 500,
   });
 
+  const filterOptions = React.useMemo(() => {
+    const unique = (values: (string | null | undefined)[]) =>
+      Array.from(new Set(values.map((value) => (value || "").trim()).filter(Boolean)))
+        .sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+
+    return {
+      subjects: unique(templates.map((template) => template.subject)),
+    };
+  }, [templates]);
+
+  const availableSeries = React.useMemo(() => {
+    const values = templates
+      .filter((template) => subjectFilter === "all" || (template.subject || "").trim() === subjectFilter)
+      .map((template) => (template.series || "").trim())
+      .filter(Boolean);
+    return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+  }, [subjectFilter, templates]);
+
   const filtered = React.useMemo(() => {
     const keyword = query.trim().toLowerCase();
-    if (!keyword) return templates;
-    return templates.filter((template) =>
-      [
+    return templates.filter((template) => {
+      const matchesKeyword = !keyword || [
         template.name,
         template.subject || "",
         template.series || "",
         template.platform || "",
         template.ratio || "",
         template.template_type || "",
-      ].join(" ").toLowerCase().includes(keyword),
-    );
-  }, [query, templates]);
+      ].join(" ").toLowerCase().includes(keyword);
+      const matchesSubject = subjectFilter === "all" || (template.subject || "").trim() === subjectFilter;
+      const matchesSeries = seriesFilter === "all" || (template.series || "").trim() === seriesFilter;
+      const matchesPlatform = platformFilter === "all" || template.platform === platformFilter;
+      const matchesType = typeFilter === "all" || template.template_type === typeFilter;
+      return matchesKeyword && matchesSubject && matchesSeries && matchesPlatform && matchesType;
+    });
+  }, [query, subjectFilter, seriesFilter, platformFilter, typeFilter, templates]);
+
+  const hasFilters = query.trim() !== ""
+    || [subjectFilter, seriesFilter, platformFilter, typeFilter].some((value) => value !== "all");
+
+  const clearFilters = () => {
+    setQuery("");
+    setSubjectFilter("all");
+    setSeriesFilter("all");
+    setPlatformFilter("all");
+    setTypeFilter("all");
+  };
 
   React.useEffect(() => {
     const availableIds = new Set(templates.map((template) => template.id));
@@ -257,18 +303,81 @@ export function TemplatesPage() {
       </section>
 
       <div className="page-toolbar">
-        <div className="relative min-w-0 flex-1 sm:flex-none">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜索模板、主体、系列"
-            className={cn(
-              "h-8 w-full rounded-md border bg-background pl-8 pr-3 text-sm shadow-sm outline-none transition sm:w-72",
-              "placeholder:text-muted-foreground focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
-              query.trim() !== "" && "border-primary/40 bg-primary/5",
-            )}
-          />
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+          <div className="relative min-w-[14rem] flex-1 sm:max-w-72">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索模板、主体、系列"
+              className={cn(
+                "h-8 w-full rounded-md border bg-background pl-8 pr-3 text-sm shadow-sm outline-none transition",
+                "placeholder:text-muted-foreground focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
+                query.trim() !== "" && "border-primary/40 bg-primary/5",
+              )}
+            />
+          </div>
+          <Select
+            value={subjectFilter}
+            onValueChange={(value) => {
+              setSubjectFilter(value);
+              setSeriesFilter("all");
+            }}
+          >
+            <SelectTrigger className="h-8 w-[126px] text-xs" aria-label="按主体筛选">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部主体</SelectItem>
+              {filterOptions.subjects.map((subject) => (
+                <SelectItem key={subject} value={subject}>{subject}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={seriesFilter} onValueChange={setSeriesFilter}>
+            <SelectTrigger className="h-8 w-[126px] text-xs" aria-label="按系列筛选">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部系列</SelectItem>
+              {availableSeries.map((seriesName) => (
+                <SelectItem key={seriesName} value={seriesName}>{seriesName}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={platformFilter} onValueChange={setPlatformFilter}>
+            <SelectTrigger className="h-8 w-[110px] text-xs" aria-label="按平台筛选">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部平台</SelectItem>
+              {TEMPLATE_PLATFORM_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={typeFilter} onValueChange={setTypeFilter}>
+            <SelectTrigger className="h-8 w-[110px] text-xs" aria-label="按类型筛选">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部类型</SelectItem>
+              {TEMPLATE_TYPE_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {hasFilters && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 gap-1 px-2 text-xs text-muted-foreground"
+              onClick={clearFilters}
+            >
+              <X className="h-3.5 w-3.5" />
+              清除筛选
+            </Button>
+          )}
         </div>
         <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
           {selected.size > 0 && <span className="text-xs text-muted-foreground">已选 <span className="font-medium text-primary">{selected.size}</span> 页</span>}
@@ -327,7 +436,7 @@ export function TemplatesPage() {
           </div>
         ) : grouped.length === 0 ? (
           <div className="rounded-md border border-dashed py-16 text-center text-sm text-muted-foreground">
-            {query.trim() ? "没有匹配的模板" : "暂无模板"}
+            {hasFilters ? "没有匹配的模板" : "暂无模板"}
           </div>
         ) : (
           <div className="flex flex-col gap-10 pb-4">
@@ -349,14 +458,15 @@ export function TemplatesPage() {
                           <h3 className="text-sm font-medium text-foreground/80">{series}</h3>
                           <span className="text-xs text-muted-foreground">· {items.length}</span>
                           <Button
-                            variant="outline"
-                            size="sm"
-                            className="ml-auto h-7 gap-1.5 px-2.5 text-xs"
+                            variant="ghost"
+                            size="icon"
+                            className="ml-auto h-7 w-7 text-muted-foreground hover:bg-primary/10 hover:text-primary"
+                            title={`下载「${series}」完整系列`}
+                            aria-label={`下载系列 ${series}`}
                             disabled={composeDownload.isPending || downloadingId != null}
                             onClick={() => handleSeriesDownload(subject, series)}
                           >
-                            {composeDownload.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Files className="h-3.5 w-3.5" />}
-                            下载整系列
+                            {composeDownload.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
                           </Button>
                         </div>
                         <div className="grid content-start" style={gridStyle}>

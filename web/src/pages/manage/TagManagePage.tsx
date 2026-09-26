@@ -159,6 +159,7 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
   const [collapsed, setCollapsed] = React.useState<Set<string>>(new Set());
   const [createOpen, setCreateOpen] = React.useState(false);
   const [editTag, setEditTag] = React.useState<AdminTag | null>(null);
+  const isFlatDomain = domain === "subject" || domain === "secrecy" || domain === "status";
 
   const tags = data?.tags ?? [];
   const filtered = React.useMemo(() => {
@@ -169,9 +170,9 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
     );
   }, [query, tags]);
   const groups = React.useMemo<CategoryGroup[]>(() => {
-    if (domain === "subject") {
+    if (isFlatDomain) {
       return [{
-        category: "主体",
+        category: domainCopy[domain].label,
         tags: [...filtered].sort((a, b) => a.sort_order - b.sort_order || a.id - b.id),
       }];
     }
@@ -185,7 +186,7 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
       category,
       tags: items.sort((a, b) => a.sort_order - b.sort_order || a.id - b.id),
     }));
-  }, [domain, filtered]);
+  }, [domain, filtered, isFlatDomain]);
 
   const customConfigKey: keyof TagsCustomConfig | null = domain === "resource"
     ? "resource_custom_tags"
@@ -331,7 +332,7 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder={domain === "subject" ? `搜索${copy.label}` : `搜索${copy.label}或分类`}
+            placeholder={isFlatDomain ? `搜索${copy.label}` : `搜索${copy.label}或分类`}
             className={cn(
               "h-8 w-full rounded-md border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition sm:w-64",
               "placeholder:text-muted-foreground focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
@@ -358,7 +359,7 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
             {query.trim() ? `未找到匹配的${copy.label}` : copy.empty}
           </div>
         ) : (
-          domain === "subject" ? (
+          isFlatDomain ? (
             <ul className="divide-y rounded-lg border bg-card">
               {groups[0]?.tags.map(renderTagRow)}
             </ul>
@@ -438,8 +439,8 @@ function CreateTagsDialog({
         <DialogHeader><DialogTitle>添加{copy.label}</DialogTitle></DialogHeader>
         <div className="grid gap-3">
           <p className="text-xs leading-relaxed text-muted-foreground">
-            {domain === "subject"
-              ? "每行输入一个主体名称，也可用中英文逗号批量分隔。主体是平面标签，不分级。"
+            {domain === "subject" || domain === "secrecy" || domain === "status"
+              ? `每行输入一个${copy.label}名称，也可用中英文逗号批量分隔。${copy.label}是平面标签，不分级。`
               : "每行输入一个标签；可使用“分类-标签名”分组，也可用中英文逗号批量分隔。"}
           </p>
           <textarea

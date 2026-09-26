@@ -11,6 +11,7 @@ import {
   Search,
   Server,
   Tags,
+  Type,
   Trash2,
   Upload,
   X,
@@ -270,7 +271,9 @@ export function FontsPage() {
       <section className="grid grid-cols-3 divide-x rounded-md border bg-card shadow-sm" aria-label="字体统计">
         <div className="min-w-0 px-3 py-2.5 sm:px-4">
           <div className="truncate text-[11px] font-medium text-muted-foreground">字体总数</div>
-          <div className="mt-1 text-lg font-semibold tabular-nums">{fonts.length}</div>
+          <div className="mt-1 flex items-center gap-1.5 text-lg font-semibold tabular-nums">
+            <Type className="h-4 w-4 text-primary" />{fonts.length}
+          </div>
         </div>
         <div className="min-w-0 px-3 py-2.5 sm:px-4">
           <div className="truncate text-[11px] font-medium text-muted-foreground">服务器已安装</div>
