@@ -85,22 +85,28 @@ def _validate_required_scope(scope: str | None, label: str) -> str:
 
 
 def _validate_secrecy(level: str) -> str:
-    value = (level or "public").strip()
-    if not value or len(value) > 64:
+    value = (level or "").strip()
+    if not value:
+        raise HTTPException(400, "请选择密级")
+    if len(value) > 64:
         raise HTTPException(400, "密级标签不正确")
     return value
 
 
 def _validate_resource_status(status: str | None) -> str:
-    value = (status or "active").strip()
-    if not value or len(value) > 64:
+    value = (status or "").strip()
+    if not value:
+        raise HTTPException(400, "请选择状态")
+    if len(value) > 64:
         raise HTTPException(400, "状态标签不正确")
     return value
 
 
-def _validate_resource_subject(subject: str | None) -> str:
+def _validate_resource_subject(subject: str | None, *, allow_empty: bool = False) -> str:
     value = (subject or "").strip()
     if not value:
+        if allow_empty:
+            return ""
         value = DEFAULT_RESOURCE_SUBJECT
     if not value:
         raise HTTPException(400, "请填写主体")

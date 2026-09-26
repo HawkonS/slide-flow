@@ -103,13 +103,13 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
         "label": "应用配置",
         "items": [
             {"key": "app.default_resource_subject", "label": "默认资源主题", "default": "", "type": "str", "hot_reload": True, "desc": "新建资源默认主题（留空表示不设置）"},
-            {"key": "app.default_filter_status", "label": "状态筛选默认值", "default": "active", "type": "str", "hot_reload": True, "desc": "资源状态筛选器默认值（留空=全部；active=正常；disabled=停用）"},
-            {"key": "app.default_filter_subject", "label": "主题筛选默认值", "default": "", "type": "str", "hot_reload": True, "desc": "资源主题筛选器默认值（留空=全部）"},
             {"key": "app.slow_request_threshold", "label": "慢请求阈值（秒）", "default": "1.0", "type": "float", "hot_reload": True, "desc": "超过该阈值的请求会被记录到慢请求日志"},
             {"key": "app.split_task_timeout", "label": "拆分任务超时（秒）", "default": "600", "type": "int", "hot_reload": False, "desc": "PPT 拆分任务超时时间"},
             {"key": "app.max_concurrent_splits", "label": "最大并发拆分数", "default": "2", "type": "int", "hot_reload": False, "desc": "最大并发的 PPT 拆分任务数"},
             {"key": "app.user_custom_tags", "label": "允许自定义分类标签", "default": "false", "type": "bool", "hot_reload": True, "desc": "开启后素材编辑可自由创建分类标签；关闭后只能选择管理员预设的分类标签"},
             {"key": "app.user_custom_user_tags", "label": "允许自定义用户标签", "default": "false", "type": "bool", "hot_reload": True, "desc": "开启后用户编辑可自由创建用户标签；关闭后只能选择管理员预设的用户标签"},
+            {"key": "app.user_custom_secrecy_tags", "label": "允许自定义密级标签", "default": "false", "type": "bool", "hot_reload": True, "desc": "开启后普通用户可在素材编辑时创建密级标签；关闭后仅管理员可添加"},
+            {"key": "app.user_custom_status_tags", "label": "允许自定义状态标签", "default": "false", "type": "bool", "hot_reload": True, "desc": "开启后普通用户可在素材编辑时创建状态标签；关闭后仅管理员可添加"},
         ],
     },
     {
@@ -133,6 +133,7 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
             {"key": "render.token_file", "label": "渲染密钥文件", "default": "", "type": "str", "hot_reload": False, "desc": "可选，权限受限的 UTF-8 密钥文件路径；优先级：环境变量 > token_file > render.token"},
             {"key": "render.total_timeout", "label": "预览等待上限（秒）", "default": "1800", "type": "int", "hot_reload": False, "desc": "等待持久化渲染任务完成的总上限"},
             {"key": "render.dpi", "label": "渲染 DPI", "default": "288", "type": "int", "hot_reload": False, "desc": "72–300，默认 288；按 4K PNG 渲染，前台小图由 OSS 图片处理参数生成"},
+            {"key": "render.wps_batch_size", "label": "WPS 单次转换页数", "default": "20", "type": "int", "hot_reload": True, "desc": "1–50；Windows 支持批量协议时一次 WPSCLI 转换的页数，设为 1 可立即回退逐页转换"},
         ],
     },
     {
@@ -313,13 +314,13 @@ _PROP_TO_ATTR: dict[str, str] = {
     "log.max_size_mb": "log_max_size_mb",
     "log.backup_count": "log_backup_count",
     "app.default_resource_subject": "default_resource_subject",
-    "app.default_filter_status": "default_filter_status",
-    "app.default_filter_subject": "default_filter_subject",
     "app.slow_request_threshold": "slow_request_threshold",
     "app.split_task_timeout": "split_task_timeout",
     "app.max_concurrent_splits": "max_concurrent_splits",
     "app.user_custom_tags": "user_custom_tags",
     "app.user_custom_user_tags": "user_custom_user_tags",
+    "app.user_custom_secrecy_tags": "user_custom_secrecy_tags",
+    "app.user_custom_status_tags": "user_custom_status_tags",
     "image.hd.max_resolution": "image_hd_max_resolution",
     "image.hd.dpi": "image_hd_dpi",
     "image.hd.format": "image_hd_format",
@@ -327,6 +328,7 @@ _PROP_TO_ATTR: dict[str, str] = {
     "image.thumb.width": "image_thumb_width",
     "image.thumb.height": "image_thumb_height",
     "image.thumb.quality": "image_thumb_quality",
+    "render.wps_batch_size": "render_wps_batch_size",
     "logo.svg.path": "logo_svg_path",
     "web.https": "web_https",
     "feishu.sso_enabled": "feishu_sso_enabled",
@@ -359,6 +361,7 @@ class Settings:
     render_token: str = field(default="", repr=False)
     render_total_timeout: int = 1800
     render_dpi: int = int(DEFAULT_PROPERTIES["render.dpi"])
+    render_wps_batch_size: int = int(DEFAULT_PROPERTIES["render.wps_batch_size"])
 
     # 基础配置
     site_name: str = DEFAULT_PROPERTIES["site.name"]
@@ -410,13 +413,13 @@ class Settings:
 
     # 应用配置
     default_resource_subject: str = DEFAULT_PROPERTIES["app.default_resource_subject"]
-    default_filter_status: str = DEFAULT_PROPERTIES["app.default_filter_status"]
-    default_filter_subject: str = DEFAULT_PROPERTIES["app.default_filter_subject"]
     slow_request_threshold: float = float(DEFAULT_PROPERTIES["app.slow_request_threshold"])
     split_task_timeout: int = int(DEFAULT_PROPERTIES["app.split_task_timeout"])
     max_concurrent_splits: int = int(DEFAULT_PROPERTIES["app.max_concurrent_splits"])
     user_custom_tags: bool = _parse_bool(DEFAULT_PROPERTIES["app.user_custom_tags"])
     user_custom_user_tags: bool = _parse_bool(DEFAULT_PROPERTIES["app.user_custom_user_tags"])
+    user_custom_secrecy_tags: bool = _parse_bool(DEFAULT_PROPERTIES["app.user_custom_secrecy_tags"])
+    user_custom_status_tags: bool = _parse_bool(DEFAULT_PROPERTIES["app.user_custom_status_tags"])
 
     # 图片压缩配置
     image_hd_max_resolution: int = int(DEFAULT_PROPERTIES["image.hd.max_resolution"])
@@ -631,13 +634,13 @@ def load_settings() -> Settings:
 
     # 应用配置
     default_resource_subject = get_value("app.default_resource_subject")
-    default_filter_status = get_value("app.default_filter_status")
-    default_filter_subject = get_value("app.default_filter_subject")
     slow_request_threshold = float(get_value("app.slow_request_threshold"))
     split_task_timeout = int(get_value("app.split_task_timeout"))
     max_concurrent_splits = int(get_value("app.max_concurrent_splits"))
     user_custom_tags = _parse_bool(get_value("app.user_custom_tags"))
     user_custom_user_tags = _parse_bool(get_value("app.user_custom_user_tags"))
+    user_custom_secrecy_tags = _parse_bool(get_value("app.user_custom_secrecy_tags"))
+    user_custom_status_tags = _parse_bool(get_value("app.user_custom_status_tags"))
 
     # 图片压缩配置
     image_hd_max_resolution = int(get_value("image.hd.max_resolution"))
@@ -684,6 +687,7 @@ def load_settings() -> Settings:
         render_token=render_token,
         render_total_timeout=int(get_value("render.total_timeout")),
         render_dpi=int(get_value("render.dpi")),
+        render_wps_batch_size=int(get_value("render.wps_batch_size")),
         site_name=site_name,
         port=port,
         web_port=web_port,
@@ -719,13 +723,13 @@ def load_settings() -> Settings:
         log_max_size_mb=log_max_size_mb,
         log_backup_count=log_backup_count,
         default_resource_subject=default_resource_subject,
-        default_filter_status=default_filter_status,
-        default_filter_subject=default_filter_subject,
         slow_request_threshold=slow_request_threshold,
         split_task_timeout=split_task_timeout,
         max_concurrent_splits=max_concurrent_splits,
         user_custom_tags=user_custom_tags,
         user_custom_user_tags=user_custom_user_tags,
+        user_custom_secrecy_tags=user_custom_secrecy_tags,
+        user_custom_status_tags=user_custom_status_tags,
         image_hd_max_resolution=image_hd_max_resolution,
         image_hd_dpi=image_hd_dpi,
         image_hd_format=image_hd_format,

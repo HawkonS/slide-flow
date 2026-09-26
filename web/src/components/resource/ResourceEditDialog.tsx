@@ -74,8 +74,8 @@ function defaultForm(resource: Resource | null): FormState {
       name: "",
       subject: DEFAULT_RESOURCE_SUBJECT,
       tagList: [],
-      secrecy_level: "public",
-      status: "active",
+      secrecy_level: "",
+      status: "",
       visibility_scope: "",
       management_scope: "",
       visible_user_ids: [],
@@ -123,6 +123,8 @@ export function ResourceEditDialog({
 
   const mutation = useMutation({
     mutationFn: async () => {
+      if (!form.secrecy_level) throw new Error("请选择密级");
+      if (!form.status) throw new Error("请选择状态");
       if (isCreate) {
         if (!form.pptFile) throw new Error("请上传 PPT 文件");
         if (!form.pngFile) throw new Error("请上传预览图");
@@ -357,7 +359,7 @@ export function ResourceEditDialog({
             </div>
 
             <div className="grid gap-1.5">
-              <Label>密级</Label>
+              <Label>密级 <span className="text-destructive">*</span></Label>
               <MetadataTagSelect
                 domain="secrecy"
                 value={form.secrecy_level}
@@ -366,7 +368,7 @@ export function ResourceEditDialog({
             </div>
 
             <div className="grid gap-1.5">
-              <Label>状态</Label>
+              <Label>状态 <span className="text-destructive">*</span></Label>
               <MetadataTagSelect
                 domain="status"
                 value={form.status}

@@ -5,7 +5,7 @@ from __future__ import annotations
 from app.core.fonts import missing_fonts
 from app.core.errors import storage_public_message
 from app.core.oss import StorageConfigurationError, StorageUnavailableError
-from app.core.permissions import require_user
+from app.core.permissions import is_admin, require_user
 from app.core.ppt import detect_ppt_fonts
 from app.core.ppt import slide_count
 from app.db import get_db, known_font_aliases
@@ -23,6 +23,7 @@ from app.services.files import (
 from app.services.resource_import.commit import (
     _commit_resource_import_sync,
 )
+from app.services.template_import import _commit_template_import_sync
 from app.services.resource_import.jobs import (
     _run_resource_import_job,
 )
@@ -418,6 +419,20 @@ async def commit_resource_import(
 ) -> dict[str, Any]:
     if "commit_result" in session:
         return session["commit_result"]
+    is_template_import = session.get("import_target") == "templates" or (
+        bool(str(payload.get("series") or "").strip())
+        and all(payload.get(field) for field in ("subject", "platform", "ratio", "template_type"))
+    )
+    if is_template_import:
+        if not is_admin(user):
+            raise HTTPException(403, "只有管理员可以导入标准模板")
+        if session.get("import_target") != "templates":
+            # 兼容修复上线前已创建、未写入 import_target 的模板任务。
+            session["import_target"] = "templates"
+            _write_resource_import_session(session)
+        return await _run_resource_import_job(
+            _commit_template_import_sync, session_id, payload, user, db, session,
+        )
     return await _run_resource_import_job(_commit_resource_import_sync, session_id, payload, user, db, session)
 
 

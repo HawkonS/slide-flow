@@ -4,13 +4,14 @@
 """
 import json
 import logging
+import sqlite3
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from app.config import CONFIG_GROUPS, CONFIG_META, CONFIG_SECRET_MASK, PROPERTIES_FILE, ROOT_DIR, _coerce_value, read_config_secret, read_config_view, settings, write_properties
 from app.core.permissions import require_system_admin
-from app.routers.dependencies import ApiPayload
+from app.routers.dependencies import ApiPayload, db_read_dep
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
@@ -94,8 +95,23 @@ def api_admin_config_put(
     return {"applied": [], "pending_restart": pending}
 
 
+def _default_filter_names(
+    db: sqlite3.Connection,
+    table: str,
+    *,
+    multiple: bool,
+) -> str | list[str]:
+    rows = db.execute(
+        f"SELECT name FROM {table} WHERE is_default_filter = 1 ORDER BY sort_order, id"
+    ).fetchall()
+    names = [str(row["name"]) for row in rows]
+    return names if multiple else (names[0] if names else "all")
+
+
 @router.get("/config")
-def api_config() -> dict[str, Any]:
+def api_config(
+    db: sqlite3.Connection = Depends(db_read_dep),
+) -> dict[str, Any]:
     """获取公开配置（无需登录）"""
     from app.config import settings
     
@@ -109,8 +125,13 @@ def api_config() -> dict[str, Any]:
     return {
         "site_name": settings.site_name,
         "logo_svg_path": logo_url,
-        "default_filter_status": settings.default_filter_status,
-        "default_filter_subject": settings.default_filter_subject,
+        "default_filters": {
+            "resource_tags": _default_filter_names(db, "tags", multiple=True),
+            "subject": _default_filter_names(db, "subject_tag_definitions", multiple=False),
+            "secrecy": _default_filter_names(db, "secrecy_tag_definitions", multiple=False),
+            "status": _default_filter_names(db, "status_tag_definitions", multiple=False),
+            "user_tags": _default_filter_names(db, "user_tag_definitions", multiple=True),
+        },
         "feishu_sso_enabled": settings.feishu_sso_enabled,
         "feishu_app_id": settings.feishu_app_id if settings.feishu_sso_enabled else "",
         "resource_custom_tags": settings.user_custom_tags,

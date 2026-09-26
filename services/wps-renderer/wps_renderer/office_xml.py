@@ -38,7 +38,7 @@ def _relationship(node, part_name):
         raise RenderError("unsafe_pptx", "Relationship escapes the Office package")
 
 
-def validate_xml(data, part_name):
+def validate_xml(data, part_name, expected_slides=1):
     nodes = depth = slide_ids = 0
     root_seen = False
     for event, node in ET.iterparse(io.BytesIO(data), events=("start", "end"),
@@ -64,5 +64,5 @@ def validate_xml(data, part_name):
                 raise RenderError("unsafe_pptx", "Unsafe Office content type")
             node.clear()
             depth -= 1
-    if part_name == "ppt/presentation.xml" and slide_ids != 1:
-        raise RenderError("invalid_pptx", "The presentation must reference exactly one slide")
+    if part_name == "ppt/presentation.xml" and expected_slides is not None and slide_ids != expected_slides:
+        raise RenderError("invalid_pptx", f"The presentation must reference exactly {expected_slides} slide(s)")

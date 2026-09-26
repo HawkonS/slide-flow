@@ -23,7 +23,7 @@ from app.core.user_profiles import (
     username_lookup_key,
 )
 from app.db import DB_SCHEMA_VERSION, init_db, now_iso
-from app.routers import auth, feishu_auth, presentation, tags, users
+from app.routers import auth, config as config_router, feishu_auth, presentation, tags, users
 from app.routers.dependencies import db_dep, db_read_dep
 from app.services.files import _init_allowed_file_dirs
 
@@ -34,6 +34,7 @@ def _test_app(db: sqlite3.Connection) -> FastAPI:
     app.include_router(feishu_auth.router, prefix="/api")
     app.include_router(users.router, prefix="/api")
     app.include_router(tags.router, prefix="/api")
+    app.include_router(config_router.router, prefix="/api")
     app.include_router(presentation.router)
 
     def override_db():
@@ -68,6 +69,8 @@ class UserManagementTests(unittest.TestCase):
                 patch.object(settings, "storage_backend", "local"),
                 patch.object(settings, "user_custom_tags", False),
                 patch.object(settings, "user_custom_user_tags", False),
+                patch.object(settings, "user_custom_secrecy_tags", False),
+                patch.object(settings, "user_custom_status_tags", False),
             ]
         )
         for patcher in self.patchers:
@@ -518,6 +521,17 @@ class UserManagementTests(unittest.TestCase):
                 self.assertEqual(public_list.status_code, 200, public_list.text)
                 self.assertEqual(admin_list.status_code, 200, admin_list.text)
 
+            subject_groups = client.get("/api/subject-tags").json()["groups"]
+            self.assertEqual([group["category"] for group in subject_groups], ["主体"])
+            self.assertEqual(subject_groups[0]["tags"][0]["label"], "集团")
+
+            created_subject = client.post(
+                "/api/admin/subject-tags", json={"tags": ["集团-产品线"]}
+            )
+            self.assertEqual(created_subject.status_code, 200, created_subject.text)
+            self.assertEqual(created_subject.json()["created"][0]["category"], "主体")
+            self.assertEqual(created_subject.json()["created"][0]["label"], "集团-产品线")
+
             subject_tags = client.get("/api/admin/subject-tags").json()["tags"]
             subject = next(item for item in subject_tags if item["name"] == "集团")
             self.assertEqual(subject["usage_count"], 1)
@@ -537,6 +551,41 @@ class UserManagementTests(unittest.TestCase):
             "SELECT subject FROM resources WHERE id = ?", (resource_id,)
         ).fetchone()[0]
         self.assertEqual(stored, "集团总部")
+
+    def test_metadata_custom_creation_respects_domain_settings(self):
+        admin_id = self.insert_user("root", role="system_admin")
+        user_id = self.insert_user("member")
+
+        with self.client_for(user_id) as client:
+            secrecy_list = client.get("/api/secrecy-tags")
+            status_list = client.get("/api/status-tags")
+            self.assertFalse(secrecy_list.json()["can_create"])
+            self.assertFalse(status_list.json()["can_create"])
+            self.assertEqual(
+                client.post("/api/secrecy-tags", json={"tags": ["内部"]}).status_code,
+                403,
+            )
+            self.assertEqual(
+                client.post("/api/status-tags", json={"tags": ["草稿"]}).status_code,
+                403,
+            )
+
+        with (
+            patch.object(settings, "user_custom_secrecy_tags", True),
+            patch.object(settings, "user_custom_status_tags", True),
+            self.client_for(user_id) as client,
+        ):
+            self.assertTrue(client.get("/api/secrecy-tags").json()["can_create"])
+            self.assertTrue(client.get("/api/status-tags").json()["can_create"])
+            secrecy = client.post("/api/secrecy-tags", json={"tags": ["内部"]})
+            status = client.post("/api/status-tags", json={"tags": ["草稿"]})
+            self.assertEqual(secrecy.status_code, 200, secrecy.text)
+            self.assertEqual(status.status_code, 200, status.text)
+
+        with self.client_for(admin_id) as client:
+            self.assertTrue(client.get("/api/secrecy-tags").json()["can_create"])
+            created = client.post("/api/status-tags", json={"tags": ["已发布"]})
+            self.assertEqual(created.status_code, 200, created.text)
 
     def test_user_and_resource_tags_reject_control_characters(self):
         admin_id = self.insert_user("root", role="system_admin")
@@ -695,6 +744,93 @@ class UserManagementTests(unittest.TestCase):
             ):
                 response = getattr(client, method)(path, json=body) if body is not None else getattr(client, method)(path)
                 self.assertEqual(response.status_code, 403, (method, path, response.text))
+
+    def test_admin_can_manage_default_filters_from_tag_definitions(self):
+        admin_id = self.insert_user("root", role="system_admin")
+        resource_tag_ids = [
+            self.create_tag("industry-a", admin_id),
+            self.create_tag("industry-b", admin_id),
+        ]
+        user_tag_ids = [
+            self.create_user_tag("team-a", admin_id),
+            self.create_user_tag("team-b", admin_id),
+        ]
+        timestamp = now_iso()
+        metadata_ids: dict[str, list[int]] = {}
+        for domain, table, names in (
+            ("subject", "subject_tag_definitions", ("subject-a", "subject-b")),
+            ("secrecy", "secrecy_tag_definitions", ("public", "secret")),
+            ("status", "status_tag_definitions", ("active", "disabled")),
+        ):
+            metadata_ids[domain] = []
+            for sort_order, name in enumerate(names):
+                cursor = self.db.execute(
+                    f"INSERT INTO {table} "
+                    "(name, category, label, sort_order, created_by, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (name, domain, name, sort_order, admin_id, timestamp),
+                )
+                metadata_ids[domain].append(int(cursor.lastrowid))
+        self.db.commit()
+
+        with self.client_for(admin_id) as client:
+            for tag_id in resource_tag_ids:
+                response = client.put(
+                    f"/api/admin/tags/{tag_id}/default-filter",
+                    json={"enabled": True},
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertTrue(response.json()["default_filter"])
+            for tag_id in user_tag_ids:
+                response = client.put(
+                    f"/api/admin/user-tags/{tag_id}/default-filter",
+                    json={"enabled": True},
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+
+            for domain in ("subject", "secrecy", "status"):
+                first_id, second_id = metadata_ids[domain]
+                self.assertEqual(
+                    client.put(
+                        f"/api/admin/{domain}-tags/{first_id}/default-filter",
+                        json={"enabled": True},
+                    ).status_code,
+                    200,
+                )
+                self.assertEqual(
+                    client.put(
+                        f"/api/admin/{domain}-tags/{second_id}/default-filter",
+                        json={"enabled": True},
+                    ).status_code,
+                    200,
+                )
+
+            public_config = client.get("/api/config")
+            self.assertEqual(public_config.status_code, 200, public_config.text)
+            self.assertEqual(
+                public_config.json()["default_filters"],
+                {
+                    "resource_tags": ["industry-a", "industry-b"],
+                    "subject": "subject-b",
+                    "secrecy": "secret",
+                    "status": "disabled",
+                    "user_tags": ["team-a", "team-b"],
+                },
+            )
+
+        for domain, table in (
+            ("subject", "subject_tag_definitions"),
+            ("secrecy", "secrecy_tag_definitions"),
+            ("status", "status_tag_definitions"),
+        ):
+            enabled = self.db.execute(
+                f"SELECT name FROM {table} WHERE is_default_filter = 1"
+            ).fetchall()
+            self.assertEqual([row["name"] for row in enabled], {
+                "subject": ["subject-b"],
+                "secrecy": ["secret"],
+                "status": ["disabled"],
+            }[domain])
 
     def test_transfer_delete_moves_all_user_scoped_data_and_records_audit(self):
         admin_id = self.insert_user("root", role="system_admin")
@@ -1110,6 +1246,92 @@ class UserManagementTests(unittest.TestCase):
         self.assertEqual(updated["name"], "After")
         self.assertEqual(updated["avatar_url"], managed_ref)
         self.assertIsNotNone(updated["last_login_at"])
+
+    def test_admin_can_import_all_visible_feishu_directory_users(self):
+        admin_id = self.insert_user("root", role="system_admin")
+        existing_id = self.insert_user(
+            "existing-feishu",
+            name="Old Name",
+            feishu_id="ou_existing",
+        )
+        avatar_path = settings.assets_dir / "avatars" / "existing.png"
+        avatar_path.parent.mkdir(parents=True, exist_ok=True)
+        avatar_path.write_bytes(b"managed")
+        managed_ref = settings.store_path(avatar_path)
+        self.db.execute(
+            "UPDATE users SET avatar_url = ? WHERE id = ?",
+            (managed_ref, existing_id),
+        )
+        self.db.commit()
+
+        directory_users = [
+            FeishuUserInfo(
+                open_id="ou_existing",
+                name="Updated Name",
+                avatar_url="https://example.feishucdn.com/existing.png",
+                tenant_key="tenant",
+                enterprise_email="existing@example.com",
+            ),
+            FeishuUserInfo(
+                open_id="ou_new",
+                name="New User",
+                avatar_url="https://example.feishucdn.com/new.png",
+                tenant_key="tenant",
+                enterprise_email="new.user@example.com",
+            ),
+        ]
+        with (
+            patch.multiple(
+                settings,
+                feishu_sso_enabled=True,
+                feishu_app_id="cli_test",
+                feishu_app_secret="secret",
+            ),
+            patch.object(feishu_auth, "get_tenant_access_token", return_value="tenant-token"),
+            patch.object(feishu_auth, "get_directory_users", return_value=directory_users),
+            self.client_for(admin_id) as client,
+        ):
+            response = client.post("/api/admin/users/import-feishu")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            response.json(),
+            {"total": 2, "created": 1, "updated": 1, "unchanged": 0},
+        )
+        existing = self.db.execute(
+            "SELECT name, avatar_url FROM users WHERE id = ?",
+            (existing_id,),
+        ).fetchone()
+        self.assertEqual(existing["name"], "Updated Name")
+        self.assertEqual(existing["avatar_url"], managed_ref)
+        created = self.db.execute(
+            "SELECT username, name, role, feishu_id, avatar_url "
+            "FROM users WHERE feishu_id = 'ou_new'"
+        ).fetchone()
+        self.assertIsNotNone(created)
+        self.assertEqual(created["username"], "newuser")
+        self.assertEqual(created["name"], "New User")
+        self.assertEqual(created["role"], "user")
+        self.assertEqual(created["avatar_url"], "https://example.feishucdn.com/new.png")
+        audit = self.db.execute(
+            "SELECT details FROM admin_audit_events WHERE action = 'user.feishu_import'"
+        ).fetchone()
+        self.assertEqual(json.loads(audit["details"])["created"], 1)
+
+    def test_feishu_directory_import_requires_enabled_complete_configuration(self):
+        admin_id = self.insert_user("root", role="system_admin")
+        with (
+            patch.multiple(
+                settings,
+                feishu_sso_enabled=False,
+                feishu_app_id="",
+                feishu_app_secret="",
+            ),
+            self.client_for(admin_id) as client,
+        ):
+            response = client.post("/api/admin/users/import-feishu")
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("启用飞书 SSO", response.json()["detail"])
 
     def test_feishu_state_is_consumed_when_upstream_rejects_code(self):
         with (

@@ -24,7 +24,9 @@ Assert-RendererAdministrator
 $layout = Get-RendererLayout $InstallRoot $Config
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 $existing = Get-RendererManagedTask $TaskName 'SlideFlow WPS Renderer protocol v1'
-if ($existing -and $existing.Principal.UserId -and [string]$existing.Principal.UserId -ne $identity) { throw "Refusing to take over a renderer task owned by another Windows account." }
+$currentAccount = ($identity -split '\\')[-1]
+$existingAccount = if ($existing -and $existing.Principal.UserId) { ([string]$existing.Principal.UserId -split '\\')[-1] } else { "" }
+if ($existingAccount -and $existingAccount -ne $currentAccount) { throw "Refusing to take over a renderer task owned by another Windows account." }
 New-Item -ItemType Directory -Path $layout.Shared, (Join-Path $layout.Shared "data"), (Join-Path $layout.Shared "logs"), (Join-Path $layout.Shared "cache") -Force | Out-Null
 $configObject = Read-RendererConfig $layout
 if (-not $WpsCli -and $configObject.wpscli) { $WpsCli = [string]$configObject.wpscli }

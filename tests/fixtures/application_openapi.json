@@ -2291,6 +2291,60 @@
         }
       }
     },
+    "/api/{domain}-tags": {
+      "post": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "Create Metadata Tags",
+        "operationId": "create_metadata_tags_api__domain__tags_post",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Domain"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TagsCreatePayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create Metadata Tags Api  Domain  Tags Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/{domain}-tags": {
       "get": {
         "tags": [
@@ -2414,6 +2468,178 @@
                   "additionalProperties": true,
                   "type": "object",
                   "title": "Response Admin Update Tags Config Api Admin Tags Config Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/tags/{tag_id}/default-filter": {
+      "put": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "Admin Update Resource Default Filter",
+        "description": "Toggle a resource tag's default filter state.",
+        "operationId": "admin_update_resource_default_filter_api_admin_tags__tag_id__default_filter_put",
+        "parameters": [
+          {
+            "name": "tag_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Tag Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DefaultFilterPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Admin Update Resource Default Filter Api Admin Tags  Tag Id  Default Filter Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/user-tags/{tag_id}/default-filter": {
+      "put": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "Admin Update User Default Filter",
+        "operationId": "admin_update_user_default_filter_api_admin_user_tags__tag_id__default_filter_put",
+        "parameters": [
+          {
+            "name": "tag_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Tag Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DefaultFilterPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Admin Update User Default Filter Api Admin User Tags  Tag Id  Default Filter Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/{domain}-tags/{tag_id}/default-filter": {
+      "put": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "Admin Update Metadata Default Filter",
+        "operationId": "admin_update_metadata_default_filter_api_admin__domain__tags__tag_id__default_filter_put",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Domain"
+            }
+          },
+          {
+            "name": "tag_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Tag Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DefaultFilterPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Admin Update Metadata Default Filter Api Admin  Domain  Tags  Tag Id  Default Filter Put"
                 }
               }
             }
@@ -7520,6 +7746,66 @@
         }
       }
     },
+    "/api/renderer/render-tasks/{task_id}/source-url": {
+      "post": {
+        "tags": [
+          "renderer-render-tasks"
+        ],
+        "summary": "Source Url",
+        "operationId": "source_url_api_renderer_render_tasks__task_id__source_url_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeaseRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/renderer/render-tasks/{task_id}/complete": {
       "post": {
         "tags": [
@@ -7633,6 +7919,32 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/users/import-feishu": {
+      "post": {
+        "tags": [
+          "feishu_auth"
+        ],
+        "summary": "Import Feishu Directory",
+        "description": "Import every directory user visible to the configured Feishu app.",
+        "operationId": "import_feishu_directory_api_admin_users_import_feishu_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "type": "object",
+                  "title": "Response Import Feishu Directory Api Admin Users Import Feishu Post"
                 }
               }
             }
@@ -7805,12 +8117,12 @@
           "secrecy_level": {
             "type": "string",
             "title": "Secrecy Level",
-            "default": "public"
+            "default": ""
           },
           "status": {
             "type": "string",
             "title": "Status",
-            "default": "active"
+            "default": ""
           },
           "subject": {
             "type": "string",
@@ -7911,7 +8223,12 @@
           "secrecy_level": {
             "type": "string",
             "title": "Secrecy Level",
-            "default": "public"
+            "default": ""
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": ""
           },
           "visibility_scope": {
             "type": "string",
@@ -8278,6 +8595,20 @@
           "pages"
         ],
         "title": "CompleteRequest"
+      },
+      "DefaultFilterPayload": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "title": "DefaultFilterPayload"
       },
       "FailedRequest": {
         "properties": {
@@ -9073,6 +9404,28 @@
               }
             ],
             "title": "User Custom Tags"
+          },
+          "secrecy_custom_tags": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secrecy Custom Tags"
+          },
+          "status_custom_tags": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Custom Tags"
           }
         },
         "additionalProperties": false,

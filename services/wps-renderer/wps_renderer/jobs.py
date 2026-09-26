@@ -3,6 +3,7 @@ import logging
 import math
 import os
 import queue
+import re
 import shutil
 import threading
 import time
@@ -19,6 +20,13 @@ from .validation import digest, unpack_bundle
 
 LOG = logging.getLogger(__name__)
 TERMINAL = {"completed", "failed", "cancelled"}
+
+
+def _natural_path_key(path):
+    return tuple(
+        (1, int(part)) if part.isdigit() else (0, part)
+        for part in re.split(r"(\d+)", path.as_posix().casefold())
+    )
 
 
 @dataclass
@@ -429,35 +437,77 @@ class JobManager:
         if not self._fonts_ready(job.manifest):
             raise RenderError("fonts_missing", "Required fonts are not installed; conversion was not started", 409)
         with self.fonts.activate(directory / "input", job.manifest):
-            for item in job.manifest["pages"]:
-                if job.cancel.is_set():
-                    raise RenderError("cancelled", "Render cancelled", 409)
-                stage = output / f"stage-{item['index']}"
-                self.converter(self.settings.wpscli, directory / "input" / item["file"], stage,
-                               job.manifest["dpi"], self.settings.render_timeout_seconds, job.cancel,
-                               lambda: self._check_output(job, output), self.settings.process_memory_limit_bytes)
-                self._check_output(job, output)
-                files = list(stage.rglob("*.png"))
-                if len(files) != 1 or files[0].is_symlink():
-                    raise RenderError("invalid_output", "WPSCLI must produce exactly one PNG per submitted slide")
-                path = files[0]
-                if path.stat().st_size > self.settings.max_output_bytes:
-                    raise RenderError("output_too_large", "Rendered PNG exceeds configured output limit")
-                with Image.open(path) as image:
-                    width, height = image.size
-                    if image.format != "PNG" or width <= 0 or height <= 0 or width * height > self.settings.max_pixels:
-                        raise RenderError("invalid_output", "Invalid PNG format or dimensions")
-                    image.verify()
-                with Image.open(path) as image:
-                    image.load()
-                info = {"index": item["index"], "sha256": digest(path), "size": path.stat().st_size,
-                        "width": width, "height": height, "acknowledged": False}
-                with self.lock:
-                    path.replace(output / f"{item['index']}.png")
-                    shutil.rmtree(stage)
-                    job.pages.append(info)
-                    job.updated_at = time.time()
-                    self._persist(job)
+            if job.manifest.get("version") == 2:
+                self._render_source_batch(job, directory, output)
+            else:
+                self._render_single_pages(job, directory, output)
+
+    def _render_single_pages(self, job, directory, output):
+        for item in job.manifest["pages"]:
+            if job.cancel.is_set():
+                raise RenderError("cancelled", "Render cancelled", 409)
+            stage = output / f"stage-{item['index']}"
+            self.converter(self.settings.wpscli, directory / "input" / item["file"], stage,
+                           job.manifest["dpi"], self.settings.render_timeout_seconds, job.cancel,
+                           lambda: self._check_output(job, output), self.settings.process_memory_limit_bytes)
+            self._check_output(job, output)
+            files = [path for path in stage.rglob("*") if path.is_file() and path.suffix.lower() == ".png"]
+            if len(files) != 1 or files[0].is_symlink():
+                raise RenderError("invalid_output", "WPSCLI must produce exactly one PNG per submitted slide")
+            path = files[0]
+            info = self._inspect_png(item["index"], path)
+            with self.lock:
+                path.replace(output / f"{item['index']}.png")
+                shutil.rmtree(stage)
+                job.pages.append(info)
+                job.updated_at = time.time()
+                self._persist(job)
+
+    def _render_source_batch(self, job, directory, output):
+        pages = job.manifest["pages"]
+        source = job.manifest["source"]
+        if job.cancel.is_set():
+            raise RenderError("cancelled", "Render cancelled", 409)
+        stage = output / "stage-batch"
+        slide_range = ",".join(str(item["slide"]) for item in pages)
+        timeout = min(
+            self.settings.max_batch_timeout_seconds,
+            max(self.settings.render_timeout_seconds, self.settings.render_timeout_seconds * len(pages)),
+        )
+        self.converter(
+            self.settings.wpscli, directory / "input" / source["file"], stage,
+            job.manifest["dpi"], timeout, job.cancel,
+            lambda: self._check_output(job, output), self.settings.process_memory_limit_bytes,
+            slide_range,
+        )
+        self._check_output(job, output)
+        files = sorted(
+            (path for path in stage.rglob("*") if path.is_file() and path.suffix.lower() == ".png"),
+            key=_natural_path_key,
+        )
+        if len(files) != len(pages) or any(path.is_symlink() for path in files):
+            raise RenderError("invalid_output", "WPSCLI output count does not match the requested slide range")
+        inspected = [self._inspect_png(item["index"], path) for item, path in zip(pages, files)]
+        with self.lock:
+            for item, path, info in zip(pages, files, inspected):
+                path.replace(output / f"{item['index']}.png")
+                job.pages.append(info)
+            shutil.rmtree(stage)
+            job.updated_at = time.time()
+            self._persist(job)
+
+    def _inspect_png(self, index, path):
+        if path.stat().st_size > self.settings.max_output_bytes:
+            raise RenderError("output_too_large", "Rendered PNG exceeds configured output limit")
+        with Image.open(path) as image:
+            width, height = image.size
+            if image.format != "PNG" or width <= 0 or height <= 0 or width * height > self.settings.max_pixels:
+                raise RenderError("invalid_output", "Invalid PNG format or dimensions")
+            image.verify()
+        with Image.open(path) as image:
+            image.load()
+        return {"index": index, "sha256": digest(path), "size": path.stat().st_size,
+                "width": width, "height": height, "acknowledged": False}
 
     def _check_output(self, job, output):
         size = 0
@@ -504,7 +554,7 @@ class JobManager:
         with self.lock:
             for job in self.jobs.values():
                 job.cancel.set()
-        deadline = time.monotonic() + (self.settings.render_timeout_seconds + 20 if timeout is None else timeout)
+        deadline = time.monotonic() + (self.settings.max_batch_timeout_seconds + 20 if timeout is None else timeout)
         self.worker.join(timeout=max(0, deadline - time.monotonic()))
         self.cleaner.join(timeout=max(0, deadline - time.monotonic()))
         with self.changed:

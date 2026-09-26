@@ -25,6 +25,8 @@ def _ensure_httpx():
 httpx = _ensure_httpx()
 
 FEISHU_BASE = "https://open.feishu.cn/open-apis"
+FEISHU_CONTACT_PAGE_SIZE = 50
+FEISHU_CONTACT_MAX_PAGES = 1000
 
 # 模块级共享连接池：飞书 API 调用复用 TCP/TLS 连接。
 # 顶层 httpx.post/get 每次都会新建连接并重新握手，网络不佳时
@@ -173,3 +175,111 @@ def get_user_info(user_access_token: str) -> FeishuUserInfo:
         tenant_key=user_data.get("tenant_key", ""),
         enterprise_email=user_data.get("enterprise_email", "") or "",
     )
+
+
+def _list_contact_items(
+    tenant_access_token: str,
+    path: str,
+    *,
+    params: dict[str, object],
+    action: str,
+) -> list[dict]:
+    """Read every page from a Feishu Contact v3 list endpoint."""
+    headers = {"Authorization": f"Bearer {tenant_access_token}"}
+    page_token = ""
+    items: list[dict] = []
+    for _ in range(FEISHU_CONTACT_MAX_PAGES):
+        request_params = {**params, "page_size": FEISHU_CONTACT_PAGE_SIZE}
+        if page_token:
+            request_params["page_token"] = page_token
+        resp = _request(
+            "GET",
+            f"{FEISHU_BASE}{path}",
+            retry=True,
+            headers=headers,
+            params=request_params,
+        )
+        data = resp.json()
+        _check_response(data, action)
+        page = data.get("data", {})
+        if not isinstance(page, dict):
+            raise FeishuAPIError(-1, f"飞书 {action} 返回格式错误：data 字段不是对象")
+        page_items = page.get("items", []) or []
+        if not isinstance(page_items, list):
+            raise FeishuAPIError(-1, f"飞书 {action} 返回格式错误：items 字段不是数组")
+        items.extend(item for item in page_items if isinstance(item, dict))
+        if not page.get("has_more"):
+            return items
+        page_token = str(page.get("page_token") or "")
+        if not page_token:
+            raise FeishuAPIError(-1, f"飞书 {action} 分页响应缺少 page_token")
+    raise FeishuAPIError(-1, f"飞书 {action} 分页数量异常，请检查通讯录范围")
+
+
+def get_directory_users(tenant_access_token: str) -> list[FeishuUserInfo]:
+    """Return all users visible to the app across the Feishu directory tree."""
+    departments = ["0"]
+    department_items = _list_contact_items(
+        tenant_access_token,
+        "/contact/v3/departments/0/children",
+        params={
+            "department_id_type": "open_department_id",
+            "fetch_child": True,
+        },
+        action="获取通讯录部门",
+    )
+    seen_departments = {"0"}
+    for item in department_items:
+        department_id = str(
+            item.get("open_department_id") or item.get("department_id") or ""
+        ).strip()
+        if department_id and department_id not in seen_departments:
+            departments.append(department_id)
+            seen_departments.add(department_id)
+
+    users: dict[str, FeishuUserInfo] = {}
+    for department_id in departments:
+        user_items = _list_contact_items(
+            tenant_access_token,
+            "/contact/v3/users/find_by_department",
+            params={
+                "department_id": department_id,
+                "department_id_type": "open_department_id",
+                "user_id_type": "open_id",
+            },
+            action="获取通讯录用户",
+        )
+        for item in user_items:
+            open_id = str(item.get("open_id") or item.get("user_id") or "").strip()
+            if not open_id:
+                continue
+            avatar = item.get("avatar")
+            avatar_url = ""
+            if isinstance(avatar, dict):
+                avatar_url = str(
+                    avatar.get("avatar_origin")
+                    or avatar.get("avatar_240")
+                    or avatar.get("avatar_72")
+                    or ""
+                )
+            elif item.get("avatar_url"):
+                avatar_url = str(item["avatar_url"])
+            candidate = FeishuUserInfo(
+                open_id=open_id,
+                name=str(item.get("name") or open_id),
+                avatar_url=avatar_url,
+                tenant_key="",
+                enterprise_email=str(item.get("enterprise_email") or ""),
+            )
+            previous = users.get(open_id)
+            if previous is None:
+                users[open_id] = candidate
+            else:
+                users[open_id] = FeishuUserInfo(
+                    open_id=open_id,
+                    name=candidate.name or previous.name,
+                    avatar_url=candidate.avatar_url or previous.avatar_url,
+                    tenant_key=candidate.tenant_key or previous.tenant_key,
+                    enterprise_email=candidate.enterprise_email or previous.enterprise_email,
+                )
+    return list(users.values())

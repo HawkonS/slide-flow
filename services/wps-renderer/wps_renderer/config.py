@@ -21,8 +21,11 @@ class Settings:
     min_free_bytes: int = 512 * 1024 * 1024
     min_free_ratio: float = 0.05
     max_pages: int = 4
+    max_batch_pages: int = 50
+    max_source_slides: int = 500
     max_dpi: int = 300
     render_timeout_seconds: int = 120
+    max_batch_timeout_seconds: int = 1800
     upload_timeout_seconds: int = 180
     download_timeout_seconds: int = 180
     retention_seconds: int = 600
@@ -34,11 +37,12 @@ class Settings:
             raise ValueError("WPS_RENDER_TOKEN must be a random secret of at least 32 characters")
         if not 1 <= self.port <= 65535 or not 1 <= self.max_queue <= 32:
             raise ValueError("Invalid port or queue limit")
-        if not 1 <= self.max_pages <= 16 or not 72 <= self.max_dpi <= 600:
+        if (not 1 <= self.max_pages <= 16 or not 1 <= self.max_batch_pages <= 100
+                or not 1 <= self.max_source_slides <= 500 or not 72 <= self.max_dpi <= 600):
             raise ValueError("Invalid page or DPI limit")
         if not 0 <= self.min_free_ratio < 1:
             raise ValueError("Invalid minimum free-disk ratio")
-        for name in ("max_upload_bytes", "max_expanded_bytes", "max_output_bytes", "max_total_bytes", "min_free_bytes", "render_timeout_seconds", "upload_timeout_seconds", "download_timeout_seconds", "retention_seconds", "max_records", "max_pixels", "process_memory_limit_bytes"):
+        for name in ("max_upload_bytes", "max_expanded_bytes", "max_output_bytes", "max_total_bytes", "min_free_bytes", "render_timeout_seconds", "max_batch_timeout_seconds", "upload_timeout_seconds", "download_timeout_seconds", "retention_seconds", "max_records", "max_pixels", "process_memory_limit_bytes"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive")
         if self.max_input_file_bytes > self.max_upload_bytes or self.max_input_file_bytes <= 0:

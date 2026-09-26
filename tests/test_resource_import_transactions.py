@@ -108,7 +108,14 @@ class ResourceImportTransactionTests(unittest.TestCase):
         """)
         self.db.commit()
         self.user = {"id": 1}
-        self.payload = {"name_prefix": "事务测试", "subject": "测试主体", "visibility_scope": "private", "management_scope": "private"}
+        self.payload = {
+            "name_prefix": "事务测试",
+            "subject": "测试主体",
+            "secrecy_level": "内部",
+            "status": "草稿",
+            "visibility_scope": "private",
+            "management_scope": "private",
+        }
 
     @staticmethod
     def split_source(source, output_dir):

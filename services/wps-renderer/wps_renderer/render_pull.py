@@ -24,6 +24,7 @@ from PIL import Image
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 TASK_ID = re.compile(r"^[0-9a-f]{32}$")
 MAX_PAGE_BYTES = 120 * 1024 * 1024
+MAX_SOURCE_BYTES = 1024 * 1024 * 1024
 MAX_IMAGE_BYTES = 64 * 1024 * 1024
 MAX_METADATA_BYTES = 256 * 1024
 
@@ -132,17 +133,20 @@ class RenderPull:
                           timeout=self.wait_seconds + 10).get("task")
 
     @staticmethod
-    def _download(url: str, target: Path, expected_size: int, expected_sha: str):
+    def _download(
+        url: str, target: Path, expected_size: int, expected_sha: str,
+        max_bytes: int = MAX_PAGE_BYTES,
+    ):
         parsed = urllib.parse.urlsplit(url)
         if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
             raise ValueError("source URL must be a signed HTTPS object URL")
-        if not 0 < expected_size <= MAX_PAGE_BYTES or not SHA256.fullmatch(expected_sha):
+        if not 0 < expected_size <= max_bytes or not SHA256.fullmatch(expected_sha):
             raise ValueError("invalid source metadata")
         digest, written = hashlib.sha256(), 0
         with urllib.request.urlopen(url, timeout=180) as response, target.open("xb") as output:
             for block in iter(lambda: response.read(1024 * 1024), b""):
                 written += len(block)
-                if written > expected_size or written > MAX_PAGE_BYTES:
+                if written > expected_size or written > max_bytes:
                     raise ValueError("source PPTX exceeds declared size")
                 output.write(block)
                 digest.update(block)
@@ -163,12 +167,35 @@ class RenderPull:
             archive.write(source, f"pages/{page['index']}.pptx")
             archive.writestr("manifest.json", json.dumps(manifest, separators=(",", ":")))
 
-    def _submit_local(
-        self, page: dict, source: Path, dpi: int, stop: threading.Event,
+    @staticmethod
+    def _bundle_batch(
+        pages: list[dict], source_meta: dict, source: Path, dpi: int, target: Path,
         required_fonts: list[str], font_hashes: list[str],
-    ) -> Path:
-        bundle = source.with_suffix(".zip")
-        self._bundle(page, source, dpi, bundle, required_fonts, font_hashes)
+    ):
+        manifest = {
+            "version": 2,
+            "dpi": dpi,
+            "source": {
+                "file": "source/deck.pptx",
+                "sha256": source_meta["sha256"],
+                "slide_count": source_meta["slide_count"],
+            },
+            "pages": [
+                {"index": page["index"], "slide": page["index"] + 1}
+                for page in pages
+            ],
+            "fonts": [],
+            "required_fonts": required_fonts,
+            "font_hashes": font_hashes,
+        }
+        with zipfile.ZipFile(target, "x", compression=zipfile.ZIP_STORED) as archive:
+            archive.write(source, "source/deck.pptx")
+            archive.writestr("manifest.json", json.dumps(manifest, separators=(",", ":")))
+
+    def _submit_bundle(
+        self, bundle: Path, expected_indexes: list[int], result_dir: Path,
+        stop: threading.Event,
+    ) -> dict[int, Path]:
         key = uuid.uuid4().hex
         bundle_sha = _sha256_file(bundle)
         headers = {
@@ -215,12 +242,21 @@ class RenderPull:
                 state = self._renderer("GET", f"/v1/jobs/{job_id}")
                 if state.get("status") == "completed":
                     pages = state.get("pages")
-                    if not isinstance(pages, list) or len(pages) != 1 or pages[0].get("index") != page["index"]:
+                    if not isinstance(pages, list) or len(pages) != len(expected_indexes):
                         raise ValueError("local renderer returned invalid pages")
-                    meta = pages[0]
-                    result = source.with_suffix(".png")
-                    self._download_local_page(job_id, meta, result)
-                    return result
+                    by_index = {
+                        item.get("index"): item for item in pages
+                        if isinstance(item, dict) and type(item.get("index")) is int
+                    }
+                    if set(by_index) != set(expected_indexes):
+                        raise ValueError("local renderer returned invalid page indexes")
+                    result_dir.mkdir(parents=True, exist_ok=False)
+                    results = {}
+                    for index in expected_indexes:
+                        result = result_dir / f"{index}.png"
+                        self._download_local_page(job_id, by_index[index], result)
+                        results[index] = result
+                    return results
                 if state.get("status") in {"failed", "cancelled"}:
                     error = state.get("error") or {}
                     code = error.get("code") if isinstance(error, dict) else "render_failed"
@@ -233,6 +269,26 @@ class RenderPull:
                     self._renderer("DELETE", f"/v1/jobs/{job_id}", timeout=5)
                 except Exception:
                     pass
+
+    def _submit_local(
+        self, page: dict, source: Path, dpi: int, stop: threading.Event,
+        required_fonts: list[str], font_hashes: list[str],
+    ) -> Path:
+        bundle = source.with_suffix(".zip")
+        self._bundle(page, source, dpi, bundle, required_fonts, font_hashes)
+        results = self._submit_bundle(bundle, [page["index"]], source.parent / f"result-{page['index']}", stop)
+        return results[page["index"]]
+
+    def _submit_local_batch(
+        self, pages: list[dict], source_meta: dict, source: Path, dpi: int,
+        stop: threading.Event, required_fonts: list[str], font_hashes: list[str],
+    ) -> dict[int, Path]:
+        token = uuid.uuid4().hex
+        bundle = source.parent / f"batch-{token}.zip"
+        self._bundle_batch(pages, source_meta, source, dpi, bundle, required_fonts, font_hashes)
+        return self._submit_bundle(
+            bundle, [page["index"] for page in pages], source.parent / f"result-{token}", stop,
+        )
 
     def _download_local_page(self, job_id: str, meta: dict, target: Path):
         size, digest = meta.get("size"), meta.get("sha256")
@@ -285,6 +341,65 @@ class RenderPull:
         finally:
             connection.close()
 
+    def _batch_capabilities(self, source: dict, requested: int) -> tuple[int, int]:
+        if requested <= 1 or not isinstance(source, dict):
+            return 1, MAX_PAGE_BYTES
+        try:
+            health = self._renderer("GET", "/v1/health", timeout=10)
+        except Exception:
+            return 1, MAX_PAGE_BYTES
+        version = health.get("version")
+        max_batch = health.get("max_batch_pages")
+        max_input = health.get("max_input_file_bytes")
+        max_upload = health.get("max_upload_bytes")
+        max_slides = health.get("max_source_slides")
+        if (type(version) is not int or version < 2 or type(max_batch) is not int
+                or type(max_input) is not int or type(max_upload) is not int
+                or type(max_slides) is not int):
+            return 1, MAX_PAGE_BYTES
+        size, slide_count = source.get("size"), source.get("slide_count")
+        upload_limit = min(MAX_SOURCE_BYTES, max_input, max(0, max_upload - 1024 * 1024))
+        if (type(size) is not int or not 0 < size <= upload_limit
+                or type(slide_count) is not int or not 1 <= slide_count <= max_slides):
+            return 1, MAX_PAGE_BYTES
+        return max(1, min(requested, max_batch)), upload_limit
+
+    def _render_batch_with_fallback(
+        self, pages: list[dict], source_meta: dict, source: Path, dpi: int,
+        stop: threading.Event, required_fonts: list[str], font_hashes: list[str],
+    ) -> dict[int, Path]:
+        try:
+            return self._submit_local_batch(
+                pages, source_meta, source, dpi, stop, required_fonts, font_hashes,
+            )
+        except RuntimeError as exc:
+            splittable = {
+                "render_timeout", "conversion_failed", "output_too_large",
+                "invalid_output", "internal_error",
+            }
+            if len(pages) <= 1 or str(exc) not in splittable:
+                raise
+            middle = len(pages) // 2
+            left = self._render_batch_with_fallback(
+                pages[:middle], source_meta, source, dpi, stop, required_fonts, font_hashes,
+            )
+            right = self._render_batch_with_fallback(
+                pages[middle:], source_meta, source, dpi, stop, required_fonts, font_hashes,
+            )
+            return {**left, **right}
+
+    def _output_url(self, task_id: str, lease_token: str, index: int) -> str:
+        signed = self._main(
+            "POST", f"/api/renderer/render-tasks/{task_id}/urls",
+            {"lease_token": lease_token, "page_index": index},
+        ).get("page")
+        if not isinstance(signed, dict) or signed.get("index") != index:
+            raise ValueError("could not obtain signed page URLs")
+        url = signed.get("upload_url")
+        if not isinstance(url, str):
+            raise ValueError("could not obtain signed output URL")
+        return url
+
     def _renew_loop(
         self, task_id: str, lease_token: str, lease_seconds: int,
         stopped: threading.Event, lost: threading.Event,
@@ -313,8 +428,10 @@ class RenderPull:
         lease_seconds = task.get("lease_seconds")
         required_fonts = task.get("required_fonts", [])
         font_hashes = task.get("font_hashes", [])
+        requested_batch = task.get("batch_size", 1)
         if (not isinstance(pages, list) or not 1 <= len(pages) <= 500 or type(dpi) is not int
                 or not 72 <= dpi <= 300 or type(lease_seconds) is not int or not 60 <= lease_seconds <= 3600
+                or type(requested_batch) is not int or not 1 <= requested_batch <= 50
                 or not isinstance(required_fonts, list) or len(required_fonts) > 128
                 or any(not isinstance(name, str) or not name.strip() or len(name) > 256 for name in required_fonts)
                 or len(set(required_fonts)) != len(required_fonts)
@@ -322,6 +439,27 @@ class RenderPull:
                 or any(not isinstance(digest, str) or not SHA256.fullmatch(digest) for digest in font_hashes)
                 or len(set(font_hashes)) != len(font_hashes)):
             raise ValueError("invalid claimed task manifest")
+        indexes = set()
+        for page in pages:
+            if (not isinstance(page, dict) or type(page.get("index")) is not int
+                    or not 0 <= page["index"] <= 100000 or page["index"] in indexes
+                    or type(page.get("size")) is not int or not 0 < page["size"] <= MAX_PAGE_BYTES
+                    or not isinstance(page.get("sha256"), str) or not SHA256.fullmatch(page["sha256"])):
+                raise ValueError("invalid claimed page manifest")
+            indexes.add(page["index"])
+        source_meta = task.get("source")
+        source_valid = (
+            isinstance(source_meta, dict)
+            and isinstance(source_meta.get("sha256"), str)
+            and SHA256.fullmatch(source_meta["sha256"]) is not None
+            and type(source_meta.get("size")) is int and source_meta["size"] > 0
+            and type(source_meta.get("slide_count")) is int
+            and source_meta["slide_count"] == len(pages)
+            and indexes == set(range(len(pages)))
+        )
+        if not source_valid:
+            source_meta = None
+        batch_size, source_limit = self._batch_capabilities(source_meta, requested_batch)
         stopped, lost = threading.Event(), threading.Event()
         renewer = threading.Thread(
             target=self._renew_loop,
@@ -332,33 +470,53 @@ class RenderPull:
         directory = Path(tempfile.mkdtemp(prefix=f"{task_id}-", dir=self.work_dir))
         results = []
         try:
-            for page in pages:
-                if lost.is_set():
-                    raise LeaseLost("render lease was lost")
-                index = page.get("index")
-                if type(index) is not int or index < 0:
-                    raise ValueError("invalid page index")
-                signed = self._main(
-                    "POST", f"/api/renderer/render-tasks/{task_id}/urls",
-                    {"lease_token": lease_token, "page_index": index},
-                ).get("page")
-                if not isinstance(signed, dict) or signed.get("index") != index:
-                    raise ValueError("could not obtain signed page URLs")
-                source = directory / f"{index}.pptx"
-                self._download(signed["download_url"], source, page["size"], page["sha256"])
-                if lost.is_set():
-                    raise LeaseLost("render lease was lost")
-                image = self._submit_local(
-                    page, source, dpi, lost, required_fonts, font_hashes,
+            if batch_size > 1 and source_meta is not None:
+                signed_source = self._main(
+                    "POST", f"/api/renderer/render-tasks/{task_id}/source-url",
+                    {"lease_token": lease_token},
+                ).get("source")
+                if (not isinstance(signed_source, dict)
+                        or signed_source.get("sha256") != source_meta["sha256"]
+                        or signed_source.get("size") != source_meta["size"]
+                        or signed_source.get("slide_count") != source_meta["slide_count"]):
+                    raise ValueError("could not obtain the signed render source")
+                source = directory / "source.pptx"
+                self._download(
+                    signed_source["download_url"], source, source_meta["size"],
+                    source_meta["sha256"], source_limit,
                 )
-                signed = self._main(
-                    "POST", f"/api/renderer/render-tasks/{task_id}/urls",
-                    {"lease_token": lease_token, "page_index": index},
-                ).get("page")
-                if not isinstance(signed, dict) or signed.get("index") != index:
-                    raise ValueError("could not refresh the signed output URL")
-                self._upload(signed["upload_url"], image, lost)
-                results.append({"index": index, "size": image.stat().st_size, "sha256": _sha256_file(image)})
+                for offset in range(0, len(pages), batch_size):
+                    if lost.is_set():
+                        raise LeaseLost("render lease was lost")
+                    chunk = pages[offset:offset + batch_size]
+                    images = self._render_batch_with_fallback(
+                        chunk, source_meta, source, dpi, lost, required_fonts, font_hashes,
+                    )
+                    for page in chunk:
+                        index = page["index"]
+                        image = images[index]
+                        self._upload(self._output_url(task_id, lease_token, index), image, lost)
+                        results.append({"index": index, "size": image.stat().st_size,
+                                        "sha256": _sha256_file(image)})
+            else:
+                for page in pages:
+                    if lost.is_set():
+                        raise LeaseLost("render lease was lost")
+                    index = page["index"]
+                    signed = self._main(
+                        "POST", f"/api/renderer/render-tasks/{task_id}/urls",
+                        {"lease_token": lease_token, "page_index": index},
+                    ).get("page")
+                    if not isinstance(signed, dict) or signed.get("index") != index:
+                        raise ValueError("could not obtain signed page URLs")
+                    source = directory / f"{index}.pptx"
+                    self._download(signed["download_url"], source, page["size"], page["sha256"])
+                    image = self._submit_local(
+                        page, source, dpi, lost, required_fonts, font_hashes,
+                    )
+                    self._upload(self._output_url(task_id, lease_token, index), image, lost)
+                    results.append({"index": index, "size": image.stat().st_size,
+                                    "sha256": _sha256_file(image)})
             if lost.is_set():
                 raise LeaseLost("render lease was lost")
             self._main("POST", f"/api/renderer/render-tasks/{task_id}/complete", {"lease_token": lease_token, "pages": results}, timeout=300)

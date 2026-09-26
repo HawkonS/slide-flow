@@ -71,8 +71,13 @@ interface TaskOwner {
 }
 
 interface TaskParams {
+  import_target?: "resources" | "templates";
   name_prefix?: string;
+  series?: string;
   subject?: string;
+  platform?: string;
+  ratio?: string;
+  template_type?: string;
   tags?: string;
   secrecy_level?: string;
   visibility_scope?: string;
@@ -109,6 +114,7 @@ interface TaskResult {
   total?: number;
   created?: number;
   resource_ids?: number[];
+  template_ids?: number[];
   message?: string;
   expired?: boolean;
 }
@@ -206,6 +212,9 @@ type TaskStatus =
 const TASK_TYPE_LABEL: Record<string, string> = {
   batch_split_import: "PPT 上传",
 };
+
+const importTaskPath = (task: Task) =>
+  `${task.params.import_target === "templates" ? "/templates/import" : "/resources/import"}?task_id=${task.id}`;
 
 const STATUS_LABEL: Record<TaskStatus, string> = {
   uploading: "上传中",
@@ -381,7 +390,7 @@ function TaskRow({ task, expanded, onToggle, onCancel, canManage, showOwner, isA
         <TableCell>
           <div className="flex flex-col gap-0.5">
             <span className="text-sm font-medium">
-              {task.params.name_prefix || TASK_TYPE_LABEL[task.task_type] || task.task_type}
+              {task.params.series || task.params.name_prefix || TASK_TYPE_LABEL[task.task_type] || task.task_type}
             </span>
             <span className="text-[11px] text-muted-foreground">
               {TASK_TYPE_LABEL[task.task_type] || task.task_type}
@@ -456,7 +465,7 @@ function TaskRow({ task, expanded, onToggle, onCancel, canManage, showOwner, isA
               className="h-7 gap-1 text-xs"
               onClick={(e) => {
                 e.stopPropagation();
-                navigate(`/resources/import?task_id=${task.id}`);
+                navigate(importTaskPath(task));
               }}
             >
               <Upload className="h-3.5 w-3.5" />
@@ -535,7 +544,9 @@ function TaskDetail({ task }: { task: Task }) {
 
       {/* 提交参数 */}
       <DetailCard icon={<FileText className="h-3.5 w-3.5" />} title="提交参数">
-        {params.name_prefix && <InfoRow label="名称前缀" value={params.name_prefix} />}
+        {params.import_target === "templates" && <InfoRow label="导入目标" value="标准模板" />}
+        {params.series && <InfoRow label="系列" value={params.series} />}
+        {params.name_prefix && params.import_target !== "templates" && <InfoRow label="名称前缀" value={params.name_prefix} />}
         {params.file_name && <InfoRow label="PPT 文件" value={params.file_name} />}
         {params.workflow_state && <InfoRow label="处理阶段" value={params.workflow_state === "font_check" ? "字体检测" : params.workflow_state === "rendering" ? "图片渲染" : params.workflow_state === "awaiting_confirmation" ? "等待确认导入" : params.workflow_state === "completed" ? "已完成" : params.workflow_state} />}
         {typeof params.slide_count === "number" && <InfoRow label="页数" value={`${params.slide_count} 页`} />}
@@ -573,7 +584,7 @@ function TaskDetail({ task }: { task: Task }) {
 
       {params.session_id && task.status !== "completed" && task.status !== "cancelled" && (
         <div className="flex items-end">
-          <Button type="button" className="gap-1.5" onClick={() => navigate(`/resources/import?task_id=${task.id}`)}>
+          <Button type="button" className="gap-1.5" onClick={() => navigate(importTaskPath(task))}>
             <Upload className="h-3.5 w-3.5" />继续维护导入
           </Button>
         </div>

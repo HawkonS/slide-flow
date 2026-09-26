@@ -15,6 +15,7 @@ const ResourceImportPage = lazy(() => import("@/pages/resources/ResourceImportPa
 const ResourceDetailPage = lazy(() => import("@/pages/resources/ResourceDetailPage").then((m) => ({ default: m.ResourceDetailPage })));
 const ResourceSharePage = lazy(() => import("@/pages/resources/ResourceDetailPage").then((m) => ({ default: m.ResourceSharePage })));
 const TemplatesPage = lazy(() => import("@/pages/templates/TemplatesPage").then((m) => ({ default: m.TemplatesPage })));
+const TemplateImportPage = lazy(() => import("@/pages/templates/TemplateImportPage").then((m) => ({ default: m.TemplateImportPage })));
 const FontsPage = lazy(() => import("@/pages/fonts/FontsPage").then((m) => ({ default: m.FontsPage })));
 const ShowsPage = lazy(() => import("@/pages/shows/ShowsPage").then((m) => ({ default: m.ShowsPage })));
 const StandardShowsPage = lazy(() => import("@/pages/shows/StandardShowsPage").then((m) => ({ default: m.StandardShowsPage })));
@@ -72,6 +73,14 @@ export const router = createBrowserRouter([
       { path: "/resources/import", element: <ResourceImportPage /> },
       { path: "/resources/:resourceKey", element: <ResourceDetailPage /> },
       { path: "/templates", element: <TemplatesPage /> },
+      {
+        path: "/templates/import",
+        element: (
+          <RequireAdmin>
+            <TemplateImportPage />
+          </RequireAdmin>
+        ),
+      },
       { path: "/fonts", element: <FontsPage /> },
       { path: "/shows", element: <StandardShowsPage /> },
       { path: "/manage/shows", element: <ShowsPage /> },

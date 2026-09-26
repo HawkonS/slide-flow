@@ -77,9 +77,11 @@ def create_app(settings, manager_factory=JobManager):
             draining = service.draining
         if not service.worker.is_alive():
             raise RenderError("worker_unavailable", "Conversion worker is not running; restart the renderer", 503)
-        return {"version": 1, "status": "draining" if draining else "ok", **counts,
+        return {"version": 2, "status": "draining" if draining else "ok", **counts,
                 "max_pages": settings.max_pages, "max_upload_bytes": settings.max_upload_bytes,
                 "max_input_file_bytes": settings.max_input_file_bytes,
+                "max_batch_pages": settings.max_batch_pages,
+                "max_source_slides": settings.max_source_slides,
                 "max_dpi": settings.max_dpi}
 
     @app.post("/v1/admin/drain")

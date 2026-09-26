@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRightLeft, CalendarDays, Camera, Check, ChevronDown, Copy, KeyRound, Loader2, MoreHorizontal, Pencil, Search, Shield, Tag, Trash2, Upload, User, UserCheck, UserPlus, X } from "lucide-react";
+import { ArrowRightLeft, CalendarDays, Camera, Check, ChevronDown, CloudDownload, Copy, KeyRound, Loader2, MoreHorizontal, Pencil, Search, Shield, Tag, Trash2, Upload, User, UserCheck, UserPlus, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -63,11 +63,30 @@ function formatUserDateTime(value: string | null | undefined, emptyText = "-") {
   return Number.isNaN(date.getTime()) ? value : userDateTimeFormatter.format(date).split("/").join("-");
 }
 
+interface PublicConfigResponse {
+  default_filters?: {
+    user_tags?: string[];
+  };
+}
+
 export function AdminUsersPage() {
   const qc = useQueryClient();
   const { user: currentUser, setUser } = useAuth();
   const [tagFilters, setTagFilters] = React.useState<string[]>([]);
   const [tagFilterMode, setTagFilterMode] = React.useState<"any" | "all">("any");
+  const defaultUserTagsApplied = React.useRef(false);
+  const userTagFiltersTouched = React.useRef(false);
+  const { data: publicConfig } = useQuery({
+    queryKey: ["config"],
+    queryFn: () => api<PublicConfigResponse>("/api/config"),
+    staleTime: 60_000,
+  });
+  React.useEffect(() => {
+    if (!publicConfig || defaultUserTagsApplied.current) return;
+    defaultUserTagsApplied.current = true;
+    if (userTagFiltersTouched.current) return;
+    setTagFilters(Array.from(new Set(publicConfig.default_filters?.user_tags ?? [])));
+  }, [publicConfig]);
 
   const [editing, setEditing] = React.useState<AdminUser | null>(null);
   const [createOpen, setCreateOpen] = React.useState(false);
@@ -93,6 +112,24 @@ export function AdminUsersPage() {
       qc.invalidateQueries({ queryKey: ["users", "options"] });
     },
     onError: (err: Error) => toast.error(err.message || "删除失败"),
+  });
+
+  const importFeishuMut = useMutation({
+    mutationFn: async () => api<{ total: number; created: number; updated: number; unchanged: number }>(
+      "/api/admin/users/import-feishu",
+      { method: "POST" },
+    ),
+    onSuccess: (result) => {
+      toast.success(
+        "飞书通讯录同步完成：新增 " + result.created
+          + " 人，更新 " + result.updated
+          + " 人，未变化 " + result.unchanged + " 人",
+      );
+      setPage(1);
+      qc.invalidateQueries({ queryKey: ["admin", "users"] });
+      qc.invalidateQueries({ queryKey: ["users", "options"] });
+    },
+    onError: (err: Error) => toast.error(err.message || "飞书通讯录同步失败"),
   });
 
   const canManageUser = React.useCallback(
@@ -254,9 +291,23 @@ export function AdminUsersPage() {
             管理系统用户、角色与用户标签，支持搜索、筛选和批量管理。
           </p>
         </div>
-        <Button size="sm" className="h-9 shrink-0 gap-1.5" onClick={() => setCreateOpen(true)}>
-          <UserPlus className="h-3.5 w-3.5" />新增用户
-        </Button>
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-9 gap-1.5"
+            disabled={importFeishuMut.isPending}
+            onClick={() => importFeishuMut.mutate()}
+          >
+            {importFeishuMut.isPending
+              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              : <CloudDownload className="h-3.5 w-3.5" />}
+            {importFeishuMut.isPending ? "正在同步…" : "从飞书同步通讯录"}
+          </Button>
+          <Button size="sm" className="h-9 gap-1.5" onClick={() => setCreateOpen(true)}>
+            <UserPlus className="h-3.5 w-3.5" />新增用户
+          </Button>
+        </div>
       </header>
 
       <section className="grid grid-cols-3 divide-x rounded-md border bg-card shadow-sm" aria-label="用户统计">
@@ -301,11 +352,15 @@ export function AdminUsersPage() {
           selected={tagFilters}
           mode={tagFilterMode}
           onToggle={(tag) => {
+            userTagFiltersTouched.current = true;
             setTagFilters((previous) =>
               previous.includes(tag) ? previous.filter((item) => item !== tag) : [...previous, tag],
             );
           }}
-          onClear={() => setTagFilters([])}
+          onClear={() => {
+            userTagFiltersTouched.current = true;
+            setTagFilters([]);
+          }}
           onChangeMode={setTagFilterMode}
         />
         {tagFilters.length > 0 && (
@@ -313,7 +368,10 @@ export function AdminUsersPage() {
             variant="ghost"
             size="sm"
             className="h-8 px-2 text-xs text-muted-foreground"
-            onClick={() => setTagFilters([])}
+            onClick={() => {
+              userTagFiltersTouched.current = true;
+              setTagFilters([]);
+            }}
           >
             <X className="mr-1 h-3.5 w-3.5" />
             清除筛选

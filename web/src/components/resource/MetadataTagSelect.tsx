@@ -1,4 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
+import { Plus } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 
 import {
   Select,
@@ -21,6 +23,7 @@ interface MetadataTag {
 
 interface MetadataTagResponse {
   groups: Array<{ category: string; tags: MetadataTag[] }>;
+  can_create: boolean;
 }
 
 export function useMetadataTagOptions(domain: MetadataTagDomain) {
@@ -32,7 +35,7 @@ export function useMetadataTagOptions(domain: MetadataTagDomain) {
   const options = (query.data?.groups ?? []).flatMap((group) =>
     group.tags.map((tag) => ({ value: tag.name, label: tag.label || tag.name })),
   );
-  return { ...query, options };
+  return { ...query, options, canCreate: query.data?.can_create ?? false };
 }
 
 function fallbackLabel(domain: MetadataTagDomain, value: string): string {
@@ -54,30 +57,49 @@ export function MetadataTagSelect({
   id?: string;
   disabled?: boolean;
 }) {
-  const { options, isLoading, isError } = useMetadataTagOptions(domain);
+  const navigate = useNavigate();
+  const { options, canCreate, isLoading, isError } = useMetadataTagOptions(domain);
+  const createValue = "__create_tag__";
+  const emptyValue = "__empty_tag__";
   const displayed = value && !options.some((item) => item.value === value)
     ? [{ value, label: fallbackLabel(domain, value) }, ...options]
     : options;
   const emptyText = domain === "subject"
-    ? "请先到标签管理维护主体标签"
-    : `暂无可用${domain === "secrecy" ? "密级" : "状态"}标签`;
-
+    ? "请选择主体（可选）"
+    : "请选择" + (domain === "secrecy" ? "密级" : "状态");
   return (
     <div className="grid gap-1">
-      <Select value={value || undefined} onValueChange={onChange} disabled={disabled || isLoading || displayed.length === 0}>
+      <Select
+        value={value || undefined}
+        onValueChange={(nextValue) => {
+          if (nextValue === createValue) {
+            navigate(`/manage/tags?tab=${encodeURIComponent(domain)}`);
+            return;
+          }
+          if (nextValue === emptyValue) {
+            onChange("");
+            return;
+          }
+          onChange(nextValue);
+        }}
+        disabled={disabled || isLoading}
+      >
         <SelectTrigger id={id}>
           <SelectValue placeholder={isLoading ? "正在加载…" : emptyText} />
         </SelectTrigger>
         <SelectContent>
+          {domain === "subject" && <SelectItem value={emptyValue}>不设置</SelectItem>}
+          {canCreate && (
+            <SelectItem value={createValue}>
+              <span className="flex items-center gap-1.5"><Plus className="h-3.5 w-3.5" />新建</span>
+            </SelectItem>
+          )}
           {displayed.map((item) => (
             <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
           ))}
         </SelectContent>
       </Select>
       {isError && <p className="text-xs text-destructive">标签选项加载失败，请刷新后重试</p>}
-      {!isLoading && !isError && displayed.length === 0 && (
-        <p className="text-xs text-muted-foreground">{emptyText}</p>
-      )}
     </div>
   );
 }

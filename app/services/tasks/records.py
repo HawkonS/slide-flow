@@ -14,8 +14,13 @@ import tempfile
 
 
 _TASK_PARAMS_PUBLIC_KEYS = (
+    "import_target",
     "name_prefix",
+    "series",
     "subject",
+    "platform",
+    "ratio",
+    "template_type",
     "tags",
     "secrecy_level",
     "visibility_scope",
@@ -77,7 +82,7 @@ def _serialize_task(row: sqlite3.Row, db: sqlite3.Connection | None = None) -> d
     if isinstance(raw_result_data, dict):
         result_data = {
             key: raw_result_data[key]
-            for key in ("total", "created", "resource_ids", "message", "expired")
+            for key in ("total", "created", "resource_ids", "template_ids", "message", "expired")
             if key in raw_result_data
         }
     else:

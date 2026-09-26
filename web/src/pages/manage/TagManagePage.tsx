@@ -37,6 +37,7 @@ interface AdminTag {
   label: string;
   sort_order: number;
   usage_count: number;
+  default_filter: boolean;
   created_at: string | null;
 }
 
@@ -44,6 +45,15 @@ interface AdminTagsResponse {
   tags: AdminTag[];
   resource_custom_tags?: boolean;
   user_custom_tags?: boolean;
+  secrecy_custom_tags?: boolean;
+  status_custom_tags?: boolean;
+}
+
+interface TagsCustomConfig {
+  resource_custom_tags: boolean;
+  user_custom_tags: boolean;
+  secrecy_custom_tags: boolean;
+  status_custom_tags: boolean;
 }
 
 interface TagsCreateResponse {
@@ -159,6 +169,12 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
     );
   }, [query, tags]);
   const groups = React.useMemo<CategoryGroup[]>(() => {
+    if (domain === "subject") {
+      return [{
+        category: "主体",
+        tags: [...filtered].sort((a, b) => a.sort_order - b.sort_order || a.id - b.id),
+      }];
+    }
     const grouped = new Map<string, AdminTag[]>();
     for (const item of filtered) {
       const current = grouped.get(item.category);
@@ -169,18 +185,28 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
       category,
       tags: items.sort((a, b) => a.sort_order - b.sort_order || a.id - b.id),
     }));
-  }, [filtered]);
+  }, [domain, filtered]);
 
-  const customConfigKey = domain === "resource" ? "resource_custom_tags" : "user_custom_tags";
-  const customAllowed = domain === "resource" ? data?.resource_custom_tags : data?.user_custom_tags;
+  const customConfigKey: keyof TagsCustomConfig | null = domain === "resource"
+    ? "resource_custom_tags"
+    : domain === "user"
+      ? "user_custom_tags"
+      : domain === "secrecy"
+        ? "secrecy_custom_tags"
+        : domain === "status"
+          ? "status_custom_tags"
+          : null;
+  const customAllowed = customConfigKey ? data?.[customConfigKey] : false;
   const configMutation = useMutation({
-    mutationFn: (next: boolean) =>
-      api<{ resource_custom_tags: boolean; user_custom_tags: boolean }>("/api/admin/tags/config", {
+    mutationFn: (next: boolean) => {
+      if (!customConfigKey) throw new Error("该标签类型不支持用户自定义配置");
+      return api<TagsCustomConfig>("/api/admin/tags/config", {
         method: "PUT",
         json: { [customConfigKey]: next },
-      }),
+      });
+    },
     onSuccess: (result) => {
-      const enabled = domain === "resource" ? result.resource_custom_tags : result.user_custom_tags;
+      const enabled = customConfigKey ? result[customConfigKey] : false;
       toast.success(enabled ? `已允许自定义${copy.label}` : `已限制为预设${copy.label}`);
       qc.invalidateQueries({ queryKey });
       qc.invalidateQueries({ queryKey: ["config"] });
@@ -196,6 +222,21 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
       if (domain === "user") qc.invalidateQueries({ queryKey: ["admin", "users"] });
     },
     onError: (mutationError: Error) => toast.error(mutationError.message || "删除失败"),
+  });
+  const defaultFilterMutation = useMutation({
+    mutationFn: ({ id, enabled }: { id: number; enabled: boolean }) =>
+      api<AdminTag>(endpoint + "/" + id + "/default-filter", {
+        method: "PUT",
+        json: { enabled },
+      }),
+    onSuccess: (updated) => {
+      toast.success(
+        (updated.default_filter ? "已设为默认筛选：" : "已取消默认筛选：") + updated.name,
+      );
+      qc.invalidateQueries({ queryKey });
+      qc.invalidateQueries({ queryKey: ["config"] });
+    },
+    onError: (mutationError: Error) => toast.error(mutationError.message || "更新默认筛选失败"),
   });
 
   const toggleCategory = (category: string) => {
@@ -217,6 +258,43 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
     qc.invalidateQueries({ queryKey: domain === "resource" || domain === "user" ? ["preset-tags", domain] : ["metadata-tags", domain] });
     if (domain === "user") qc.invalidateQueries({ queryKey: ["admin", "users"] });
   };
+  const renderTagRow = (item: AdminTag) => (
+    <li key={item.id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm transition hover:bg-accent/30">
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="truncate font-medium">{domain === "subject" ? item.name : (item.label || item.name)}</span>
+        {domain !== "subject" && item.label && item.label !== item.name && (
+          <span className="truncate text-xs text-muted-foreground">{item.name}</span>
+        )}
+        <span className="shrink-0 text-xs text-muted-foreground">
+          {copy.usage} <span className="text-foreground">{item.usage_count}</span>
+        </span>
+      </div>
+      <div className="flex shrink-0 items-center gap-1">
+        <label className="mr-1 flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+          <Switch
+            checked={item.default_filter}
+            onCheckedChange={(enabled) => defaultFilterMutation.mutate({ id: item.id, enabled })}
+            disabled={defaultFilterMutation.isPending && defaultFilterMutation.variables?.id === item.id}
+            aria-label={item.name + "默认筛选"}
+          />
+          默认筛选
+        </label>
+        <Button variant="ghost" size="sm" className="h-7 px-2 text-muted-foreground hover:text-foreground" onClick={() => setEditTag(item)}>
+          <Pencil className="mr-1 h-3.5 w-3.5" /> 编辑
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 px-2 text-destructive hover:bg-destructive/10 hover:text-destructive"
+          onClick={() => handleDelete(item)}
+          disabled={deleteMutation.isPending}
+          aria-label={`删除${item.name}`}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+    </li>
+  );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
@@ -225,7 +303,7 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
           <div className="text-sm font-medium">{copy.label}</div>
           <div className="mt-0.5 text-xs text-muted-foreground">{copy.description}</div>
         </div>
-        {(domain === "resource" || domain === "user") && (
+        {customConfigKey && (
           <label
             className={cn(
               "flex h-8 items-center gap-2 rounded-md border bg-background px-3 text-xs text-muted-foreground transition",
@@ -248,12 +326,12 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <div className="relative min-w-0 flex-1 sm:flex-none">
+            <div className="relative min-w-0 flex-1 sm:flex-none">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder={`搜索${copy.label}或分类`}
+            placeholder={domain === "subject" ? `搜索${copy.label}` : `搜索${copy.label}或分类`}
             className={cn(
               "h-8 w-full rounded-md border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition sm:w-64",
               "placeholder:text-muted-foreground focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
@@ -280,59 +358,34 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
             {query.trim() ? `未找到匹配的${copy.label}` : copy.empty}
           </div>
         ) : (
-          <div className="space-y-3">
-            {groups.map((group) => {
-              const open = !collapsed.has(group.category);
-              return (
-                <section key={group.category} className="overflow-hidden rounded-lg border bg-card">
-                  <button
-                    type="button"
-                    onClick={() => toggleCategory(group.category)}
-                    className="flex w-full items-center justify-between gap-2 border-b bg-muted/30 px-3 py-2 text-sm transition hover:bg-muted/60"
-                  >
-                    <span className="flex items-center gap-1.5 font-medium">
-                      {open ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
-                      {domain === "user" ? <UserRound className="h-3.5 w-3.5 text-muted-foreground" /> : <Tag className="h-3.5 w-3.5 text-muted-foreground" />}
-                      {group.category}
-                      <Badge variant="soft" className="ml-1">{group.tags.length}</Badge>
-                    </span>
-                  </button>
-                  {open && (
-                    <ul className="divide-y">
-                      {group.tags.map((item) => (
-                        <li key={item.id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm transition hover:bg-accent/30">
-                          <div className="flex min-w-0 items-center gap-2">
-                            <span className="truncate font-medium">{item.label || item.name}</span>
-                            {item.label && item.label !== item.name && (
-                              <span className="truncate text-xs text-muted-foreground">{item.name}</span>
-                            )}
-                            <span className="shrink-0 text-xs text-muted-foreground">
-                              {copy.usage} <span className="text-foreground">{item.usage_count}</span>
-                            </span>
-                          </div>
-                          <div className="flex shrink-0 items-center gap-1">
-                            <Button variant="ghost" size="sm" className="h-7 px-2 text-muted-foreground hover:text-foreground" onClick={() => setEditTag(item)}>
-                              <Pencil className="mr-1 h-3.5 w-3.5" /> 编辑
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-7 px-2 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                              onClick={() => handleDelete(item)}
-                              disabled={deleteMutation.isPending}
-                              aria-label={`删除${item.name}`}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </section>
-              );
-            })}
-          </div>
+          domain === "subject" ? (
+            <ul className="divide-y rounded-lg border bg-card">
+              {groups[0]?.tags.map(renderTagRow)}
+            </ul>
+          ) : (
+            <div className="space-y-3">
+              {groups.map((group) => {
+                const open = !collapsed.has(group.category);
+                return (
+                  <section key={group.category} className="overflow-hidden rounded-lg border bg-card">
+                    <button
+                      type="button"
+                      onClick={() => toggleCategory(group.category)}
+                      className="flex w-full items-center justify-between gap-2 border-b bg-muted/30 px-3 py-2 text-sm transition hover:bg-muted/60"
+                    >
+                      <span className="flex items-center gap-1.5 font-medium">
+                        {open ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
+                        {domain === "user" ? <UserRound className="h-3.5 w-3.5 text-muted-foreground" /> : <Tag className="h-3.5 w-3.5 text-muted-foreground" />}
+                        {group.category}
+                        <Badge variant="soft" className="ml-1">{group.tags.length}</Badge>
+                      </span>
+                    </button>
+                    {open && <ul className="divide-y">{group.tags.map(renderTagRow)}</ul>}
+                  </section>
+                );
+              })}
+            </div>
+          )
         )}
       </div>
 
@@ -385,7 +438,9 @@ function CreateTagsDialog({
         <DialogHeader><DialogTitle>添加{copy.label}</DialogTitle></DialogHeader>
         <div className="grid gap-3">
           <p className="text-xs leading-relaxed text-muted-foreground">
-            每行输入一个标签；可使用“分类-标签名”分组，也可用中英文逗号批量分隔。
+            {domain === "subject"
+              ? "每行输入一个主体名称，也可用中英文逗号批量分隔。主体是平面标签，不分级。"
+              : "每行输入一个标签；可使用“分类-标签名”分组，也可用中英文逗号批量分隔。"}
           </p>
           <textarea
             value={text}
@@ -395,7 +450,7 @@ function CreateTagsDialog({
               : domain === "resource"
                 ? "用途-封面\n行业-金融\n风格-简约"
                 : domain === "subject"
-                  ? "集团\n子公司\n产品线"
+                  ? "集团\n产品线\n品牌名称"
                   : domain === "secrecy"
                     ? "内部公开\n内部保密"
                     : "草稿\n已发布\n已归档"}

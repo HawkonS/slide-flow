@@ -67,6 +67,30 @@ class RenderPullTests(unittest.TestCase):
                 self.assertEqual(manifest["required_fonts"], ["Test Sans"])
                 self.assertEqual(manifest["font_hashes"], ["a" * 64])
 
+    def test_batch_bundle_contains_one_multi_page_source_and_page_mapping(self):
+        with tempfile.TemporaryDirectory() as temp:
+            worker = RenderPull(self.config(temp))
+            source = Path(temp) / "deck.pptx"
+            source.write_bytes(b"multi-page-ppt")
+            target = Path(temp) / "batch.zip"
+            source_meta = {
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "size": source.stat().st_size,
+                "slide_count": 3,
+            }
+            pages = [{"index": index} for index in range(3)]
+            worker._bundle_batch(pages, source_meta, source, 288, target, [], [])
+            with zipfile.ZipFile(target) as archive:
+                self.assertEqual(set(archive.namelist()), {"manifest.json", "source/deck.pptx"})
+                manifest = json.loads(archive.read("manifest.json"))
+            self.assertEqual(manifest["version"], 2)
+            self.assertEqual(manifest["source"]["slide_count"], 3)
+            self.assertEqual(manifest["pages"], [
+                {"index": 0, "slide": 1},
+                {"index": 1, "slide": 2},
+                {"index": 2, "slide": 3},
+            ])
+
     def test_process_reports_completed_metadata(self):
         with tempfile.TemporaryDirectory() as temp:
             worker = RenderPull(self.config(temp))
@@ -94,6 +118,99 @@ class RenderPullTests(unittest.TestCase):
             complete = [call for call in calls if call[1].endswith("/complete")]
             self.assertEqual(len(complete), 1)
             self.assertEqual(complete[0][2]["pages"][0]["sha256"], hashlib.sha256(image.read_bytes()).hexdigest())
+
+    def test_process_uses_supported_batch_source_once_and_chunks_by_setting(self):
+        with tempfile.TemporaryDirectory() as temp:
+            worker = RenderPull(self.config(temp))
+            from PIL import Image
+            images = {}
+            for index in range(3):
+                image = Path(temp) / f"rendered-{index}.png"
+                Image.new("RGB", (16, 9), (index, index, index)).save(image)
+                images[index] = image
+            source_bytes = b"full-deck"
+            source_sha = hashlib.sha256(source_bytes).hexdigest()
+            page_sha = hashlib.sha256(b"ppt").hexdigest()
+            calls, batches, downloads, uploads = [], [], [], []
+
+            worker._renderer = lambda method, path, body=None, timeout=30, headers=None: {
+                "version": 2, "max_batch_pages": 50, "max_source_slides": 500,
+                "max_input_file_bytes": 120 * 1024 * 1024,
+                "max_upload_bytes": 128 * 1024 * 1024,
+            }
+
+            def main(method, path, body=None, timeout=30):
+                calls.append((method, path, body))
+                if path.endswith("/source-url"):
+                    return {"source": {
+                        "download_url": "https://bucket.example/deck", "sha256": source_sha,
+                        "size": len(source_bytes), "slide_count": 3,
+                    }}
+                if path.endswith("/urls"):
+                    return {"page": {
+                        "index": body["page_index"],
+                        "upload_url": f"https://bucket.example/output-{body['page_index']}",
+                    }}
+                return {"ok": True}
+
+            def download(url, target, expected_size, expected_sha, max_bytes=120 * 1024 * 1024):
+                downloads.append((url, expected_size, expected_sha, max_bytes))
+                target.write_bytes(source_bytes)
+
+            def submit(pages, source_meta, source, dpi, stop, required, hashes):
+                batches.append([page["index"] for page in pages])
+                self.assertEqual(source.read_bytes(), source_bytes)
+                return {page["index"]: images[page["index"]] for page in pages}
+
+            worker._main = main
+            worker._download = download
+            worker._submit_local_batch = submit
+            worker._upload = lambda url, path, stop: uploads.append((url, path.name))
+            worker._renew_loop = lambda *args: None
+            task = {
+                "task_id": "a" * 32, "lease_token": "l" * 43, "dpi": 288,
+                "lease_seconds": 600, "batch_size": 2,
+                "source": {"sha256": source_sha, "size": len(source_bytes), "slide_count": 3},
+                "pages": [
+                    {"index": index, "size": 3, "sha256": page_sha}
+                    for index in range(3)
+                ],
+            }
+            worker.process(task)
+            self.assertEqual(batches, [[0, 1], [2]])
+            self.assertEqual(len(downloads), 1)
+            self.assertEqual(len(uploads), 3)
+            complete = [call for call in calls if call[1].endswith("/complete")]
+            self.assertEqual([page["index"] for page in complete[0][2]["pages"]], [0, 1, 2])
+
+    def test_batch_timeout_is_bisected_until_single_pages_succeed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            worker = RenderPull(self.config(temp))
+            source = Path(temp) / "deck.pptx"
+            source.write_bytes(b"deck")
+            images = {}
+            from PIL import Image
+            for index in range(4):
+                image = Path(temp) / f"{index}.png"
+                Image.new("RGB", (2, 2)).save(image)
+                images[index] = image
+            attempts = []
+
+            def submit(pages, *_args):
+                attempts.append([page["index"] for page in pages])
+                if len(pages) > 1:
+                    raise RuntimeError("render_timeout")
+                return {pages[0]["index"]: images[pages[0]["index"]]}
+
+            worker._submit_local_batch = submit
+            pages = [{"index": index} for index in range(4)]
+            result = worker._render_batch_with_fallback(
+                pages, {"sha256": "a" * 64, "slide_count": 4}, source, 288,
+                __import__("threading").Event(), [], [],
+            )
+            self.assertEqual(set(result), {0, 1, 2, 3})
+            self.assertEqual(attempts[0], [0, 1, 2, 3])
+            self.assertTrue(all([index] in attempts for index in range(4)))
 
     def test_transient_failures_use_retryable_server_codes(self):
         self.assertEqual(_failure_code(TimeoutError()), "network_error")

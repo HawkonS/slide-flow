@@ -124,10 +124,12 @@ class ProcessTree:
             raise cleanup_error
 
 
-def convert(wpscli, source, output, dpi, timeout, cancel, check_capacity, memory_limit_bytes=1536 * 1024 * 1024):
+def convert(wpscli, source, output, dpi, timeout, cancel, check_capacity,
+            memory_limit_bytes=1536 * 1024 * 1024, slide_range="1"):
     output.mkdir(parents=True, exist_ok=True)
     command = [wpscli, "ppt2photo", str(source), "--output", str(output) + os.sep,
-               "--suffix", "png", "--range", "1", "--dpi", str(dpi), "--timeout", str(timeout), "--json"]
+               "--suffix", "png", "--range", str(slide_range), "--dpi", str(dpi),
+               "--timeout", str(timeout), "--json"]
     try:
         owned = ProcessTree(command, memory_limit_bytes)
     except OSError as exc:

@@ -1,11 +1,14 @@
 import * as React from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 import {
   ArrowDownUp,
   Check,
   Download,
   Files,
+  FolderTree,
   ImageOff,
+  Layers3,
   Loader2,
   MoreHorizontal,
   Pencil,
@@ -51,12 +54,12 @@ import { usePaginatedQuery } from "@/lib/use-paginated-query";
 import { cn } from "@/lib/utils";
 
 export function TemplatesPage() {
+  const navigate = useNavigate();
   const { user } = useAuth();
   const isAdmin = isAdminRole(user?.role);
   const queryClient = useQueryClient();
   const [detail, setDetail] = React.useState<TemplateItem | null>(null);
   const [editing, setEditing] = React.useState<TemplateItem | null>(null);
-  const [createOpen, setCreateOpen] = React.useState(false);
   const [sortOpen, setSortOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
   const [selected, setSelected] = React.useState<Set<number>>(new Set());
@@ -70,6 +73,8 @@ export function TemplatesPage() {
   const {
     items: templates,
     total,
+    allSubjects: subjects,
+    allSeries: series,
     isLoading,
     isError,
     error,
@@ -105,10 +110,10 @@ export function TemplatesPage() {
   }, [templates]);
 
   const composeDownload = useMutation({
-    mutationFn: async (templateIds: number[]) => {
+    mutationFn: async ({ templateIds, filename }: { templateIds: number[]; filename: string }) => {
       await downloadWithProgress(
         "/api/templates/compose-download",
-        "标准模板组合_" + templateIds.length + "页.pptx",
+        filename,
         undefined,
         undefined,
         {
@@ -171,6 +176,21 @@ export function TemplatesPage() {
     }
   };
 
+  const handleSeriesDownload = (subject: string, series: string) => {
+    const seriesItems = templates.filter((template) =>
+      ((template.subject || "").trim() || "未设置主体") === subject
+      && ((template.series || "").trim() || "未设置系列") === series,
+    );
+    if (seriesItems.length === 1) {
+      void handleSingleDownload(seriesItems[0]);
+      return;
+    }
+    composeDownload.mutate({
+      templateIds: seriesItems.map((template) => template.id),
+      filename: `${subject}_${series}_${seriesItems.length}页.pptx`,
+    });
+  };
+
   // 主体 → 系列 → 模板数组
   const grouped = React.useMemo(() => {
     const bySubject = new Map<string, Map<string, TemplateItem[]>>();
@@ -188,6 +208,9 @@ export function TemplatesPage() {
     }));
   }, [filtered]);
 
+  const subjectCount = subjects.length;
+  const seriesCount = series.length;
+
   return (
     <div className="page-shell">
       <header className="flex flex-wrap items-start justify-between gap-3">
@@ -195,7 +218,6 @@ export function TemplatesPage() {
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="page-title">标准模板</h1>
             {isAdmin && <Badge variant="secondary" className="rounded-md px-2 text-[11px]">可维护</Badge>}
-            <span className="page-count">{total} 个模板</span>
           </div>
           <p className="mt-1.5 text-sm text-muted-foreground">
             按主体和系列管理标准单页，可单页下载或选择多页组合下载。
@@ -206,12 +228,33 @@ export function TemplatesPage() {
             <Button variant="outline" size="sm" className="h-9 gap-1.5" onClick={() => setSortOpen(true)} disabled={templates.length === 0}>
               <ArrowDownUp className="h-3.5 w-3.5" />排序
             </Button>
-            <Button size="sm" className="h-9 gap-1.5" onClick={() => setCreateOpen(true)}>
-              <Plus className="h-3.5 w-3.5" />新增模板
+            <Button size="sm" className="h-9 gap-1.5" onClick={() => navigate("/templates/import")}>
+              <Plus className="h-3.5 w-3.5" />导入模板系列
             </Button>
           </div>
         )}
       </header>
+
+      <section className="grid grid-cols-3 divide-x rounded-md border bg-card shadow-sm" aria-label="模板统计">
+        <div className="min-w-0 px-3 py-2.5 sm:px-4">
+          <div className="truncate text-[11px] font-medium text-muted-foreground">模板总数</div>
+          <div className="mt-1 flex items-center gap-1.5 text-lg font-semibold tabular-nums">
+            <Layers3 className="h-4 w-4 text-primary" />{total}
+          </div>
+        </div>
+        <div className="min-w-0 px-3 py-2.5 sm:px-4">
+          <div className="truncate text-[11px] font-medium text-muted-foreground">主体数</div>
+          <div className="mt-1 flex items-center gap-1.5 text-lg font-semibold tabular-nums">
+            <FolderTree className="h-4 w-4 text-muted-foreground" />{subjectCount}
+          </div>
+        </div>
+        <div className="min-w-0 px-3 py-2.5 sm:px-4">
+          <div className="truncate text-[11px] font-medium text-muted-foreground">系列数</div>
+          <div className="mt-1 flex items-center gap-1.5 text-lg font-semibold tabular-nums">
+            <Files className="h-4 w-4 text-muted-foreground" />{seriesCount}
+          </div>
+        </div>
+      </section>
 
       <div className="page-toolbar">
         <div className="relative min-w-0 flex-1 sm:flex-none">
@@ -234,7 +277,10 @@ export function TemplatesPage() {
             size="sm"
             className="h-8 gap-1.5"
             disabled={selected.size < 2 || composeDownload.isPending}
-            onClick={() => composeDownload.mutate(selectedInDisplayOrder)}
+            onClick={() => composeDownload.mutate({
+              templateIds: selectedInDisplayOrder,
+              filename: `标准模板组合_${selectedInDisplayOrder.length}页.pptx`,
+            })}
           >
             {composeDownload.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Files className="h-3.5 w-3.5" />}
             组合下载
@@ -299,9 +345,19 @@ export function TemplatesPage() {
                   <div className="space-y-6 pl-4">
                     {seriesList.map(({ series, items }) => (
                       <section key={series} className="space-y-3">
-                        <div className="flex items-baseline gap-2">
+                        <div className="flex items-center gap-2">
                           <h3 className="text-sm font-medium text-foreground/80">{series}</h3>
                           <span className="text-xs text-muted-foreground">· {items.length}</span>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="ml-auto h-7 gap-1.5 px-2.5 text-xs"
+                            disabled={composeDownload.isPending || downloadingId != null}
+                            onClick={() => handleSeriesDownload(subject, series)}
+                          >
+                            {composeDownload.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Files className="h-3.5 w-3.5" />}
+                            下载整系列
+                          </Button>
                         </div>
                         <div className="grid content-start" style={gridStyle}>
                           {items.map((t) => (
@@ -339,7 +395,6 @@ export function TemplatesPage() {
       />
       {isAdmin && (
         <>
-          <TemplateFormDialog open={createOpen} onOpenChange={setCreateOpen} template={null} />
           <TemplateFormDialog
             open={editing != null}
             onOpenChange={(open) => {

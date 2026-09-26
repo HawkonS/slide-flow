@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import Field
 
 from app.config import reload_settings, settings, write_properties
-from app.core.permissions import require_admin, require_user
+from app.core.permissions import is_admin, require_admin, require_user
 from app.db import now_iso
 from app.routers.dependencies import ApiPayload, db_dep, db_read_dep
 
@@ -30,6 +30,12 @@ class TagUpdatePayload(ApiPayload):
 class TagsConfigPayload(ApiPayload):
     resource_custom_tags: bool | None = None
     user_custom_tags: bool | None = None
+    secrecy_custom_tags: bool | None = None
+    status_custom_tags: bool | None = None
+
+
+class DefaultFilterPayload(ApiPayload):
+    enabled: bool
 
 
 def split_tag_name(name: str) -> tuple[str, str]:
@@ -74,14 +80,35 @@ def _serialize_tag(row: sqlite3.Row) -> dict[str, Any]:
         "category": row["category"],
         "label": row["label"],
         "sort_order": row["sort_order"],
+        "default_filter": bool(row["is_default_filter"]),
         "created_at": row["created_at"],
     }
 
 
-def _grouped_tags(db: sqlite3.Connection, table: str) -> list[dict[str, Any]]:
+def _grouped_tags(
+    db: sqlite3.Connection,
+    table: str,
+    *,
+    flat_category: str | None = None,
+) -> list[dict[str, Any]]:
     rows = db.execute(
-        f"SELECT id, name, category, label, sort_order FROM {table} ORDER BY sort_order, id"
+        f"SELECT id, name, category, label, sort_order, is_default_filter "
+        f"FROM {table} ORDER BY sort_order, id"
     ).fetchall()
+    if flat_category is not None:
+        return [{
+            "category": flat_category,
+            "tags": [
+                {
+                    "id": row["id"],
+                    "name": row["name"],
+                    "label": row["name"],
+                    "sort_order": row["sort_order"],
+                    "default_filter": bool(row["is_default_filter"]),
+                }
+                for row in rows
+            ],
+        }] if rows else []
     groups_map: dict[str, dict[str, Any]] = {}
     for row in rows:
         category = row["category"]
@@ -95,6 +122,7 @@ def _grouped_tags(db: sqlite3.Connection, table: str) -> list[dict[str, Any]]:
                 "name": row["name"],
                 "label": row["label"],
                 "sort_order": row["sort_order"],
+                "default_filter": bool(row["is_default_filter"]),
             }
         )
     groups = sorted(groups_map.values(), key=lambda group: (group["first_sort"], group["category"]))
@@ -138,14 +166,19 @@ def _admin_list_definitions(
     db: sqlite3.Connection,
     table: str,
     usage_counts: Counter[str],
+    *,
+    flat_category: str | None = None,
 ) -> list[dict[str, Any]]:
     rows = db.execute(
-        f"SELECT id, name, category, label, sort_order, created_at "
+        f"SELECT id, name, category, label, sort_order, is_default_filter, created_at "
         f"FROM {table} ORDER BY sort_order, id"
     ).fetchall()
     result: list[dict[str, Any]] = []
     for row in rows:
         item = _serialize_tag(row)
+        if flat_category is not None:
+            item["category"] = flat_category
+            item["label"] = item["name"]
         item["usage_count"] = usage_counts[row["name"]]
         result.append(item)
     return result
@@ -156,6 +189,8 @@ def _create_definitions(
     table: str,
     payload: TagsCreatePayload,
     created_by: int,
+    *,
+    flat_category: str | None = None,
 ) -> dict[str, Any]:
     created: list[dict[str, Any]] = []
     skipped: list[str] = []
@@ -178,7 +213,10 @@ def _create_definitions(
         if db.execute(f"SELECT id FROM {table} WHERE name = ?", (name,)).fetchone() is not None:
             skipped.append(name)
             continue
-        category, label = split_tag_name(name)
+        if flat_category is None:
+            category, label = split_tag_name(name)
+        else:
+            category, label = flat_category, name
         try:
             cursor = db.execute(
                 f"INSERT INTO {table} "
@@ -196,6 +234,7 @@ def _create_definitions(
                 "category": category,
                 "label": label,
                 "sort_order": next_sort,
+                "default_filter": False,
                 "created_at": created_at,
             }
         )
@@ -223,18 +262,27 @@ def list_user_tags(
 
 
 @router.get("/subject-tags")
-def list_subject_tags(_: Any = Depends(require_user), db: sqlite3.Connection = Depends(db_read_dep)) -> dict[str, Any]:
-    return {"groups": _grouped_tags(db, "subject_tag_definitions")}
+def list_subject_tags(user: sqlite3.Row = Depends(require_user), db: sqlite3.Connection = Depends(db_read_dep)) -> dict[str, Any]:
+    return {
+        "groups": _grouped_tags(db, "subject_tag_definitions", flat_category="主体"),
+        "can_create": is_admin(user),
+    }
 
 
 @router.get("/secrecy-tags")
-def list_secrecy_tags(_: Any = Depends(require_user), db: sqlite3.Connection = Depends(db_read_dep)) -> dict[str, Any]:
-    return {"groups": _grouped_tags(db, "secrecy_tag_definitions")}
+def list_secrecy_tags(user: sqlite3.Row = Depends(require_user), db: sqlite3.Connection = Depends(db_read_dep)) -> dict[str, Any]:
+    return {
+        "groups": _grouped_tags(db, "secrecy_tag_definitions"),
+        "can_create": is_admin(user) or settings.user_custom_secrecy_tags,
+    }
 
 
 @router.get("/status-tags")
-def list_status_tags(_: Any = Depends(require_user), db: sqlite3.Connection = Depends(db_read_dep)) -> dict[str, Any]:
-    return {"groups": _grouped_tags(db, "status_tag_definitions")}
+def list_status_tags(user: sqlite3.Row = Depends(require_user), db: sqlite3.Connection = Depends(db_read_dep)) -> dict[str, Any]:
+    return {
+        "groups": _grouped_tags(db, "status_tag_definitions"),
+        "can_create": is_admin(user) or settings.user_custom_status_tags,
+    }
 
 
 @router.get("/admin/tags")
@@ -272,6 +320,35 @@ _METADATA_DOMAINS = {
 }
 
 
+def _metadata_user_creation_enabled(domain: str) -> bool:
+    if domain == "secrecy":
+        return settings.user_custom_secrecy_tags
+    if domain == "status":
+        return settings.user_custom_status_tags
+    return False
+
+
+@router.post("/{domain}-tags")
+def create_metadata_tags(
+    domain: str,
+    payload: TagsCreatePayload,
+    user: sqlite3.Row = Depends(require_user),
+    db: sqlite3.Connection = Depends(db_dep),
+) -> dict[str, Any]:
+    config = _METADATA_DOMAINS.get(domain)
+    if config is None:
+        raise HTTPException(404, "标签类型不存在")
+    if not is_admin(user) and not _metadata_user_creation_enabled(domain):
+        raise HTTPException(403, "当前仅管理员可添加该类标签")
+    return _create_definitions(
+        db,
+        config[0],
+        payload,
+        int(user["id"]),
+        flat_category="主体" if domain == "subject" else None,
+    )
+
+
 @router.get("/admin/{domain}-tags")
 def admin_list_metadata_tags(
     domain: str,
@@ -282,7 +359,19 @@ def admin_list_metadata_tags(
     if config is None:
         raise HTTPException(404, "标签类型不存在")
     table, column = config
-    return {"tags": _admin_list_definitions(db, table, _metadata_usage_counts(db, column))}
+    result = {
+        "tags": _admin_list_definitions(
+            db,
+            table,
+            _metadata_usage_counts(db, column),
+            flat_category="主体" if domain == "subject" else None,
+        )
+    }
+    if domain == "secrecy":
+        result["secrecy_custom_tags"] = settings.user_custom_secrecy_tags
+    elif domain == "status":
+        result["status_custom_tags"] = settings.user_custom_status_tags
+    return result
 
 
 @router.post("/admin/tags")
@@ -314,7 +403,13 @@ def admin_create_metadata_tags(
     config = _METADATA_DOMAINS.get(domain)
     if config is None:
         raise HTTPException(404, "标签类型不存在")
-    return _create_definitions(db, config[0], payload, int(admin["id"]))
+    return _create_definitions(
+        db,
+        config[0],
+        payload,
+        int(admin["id"]),
+        flat_category="主体" if domain == "subject" else None,
+    )
 
 
 @router.put("/admin/tags/config")
@@ -323,29 +418,98 @@ def admin_update_tags_config(
     _: Any = Depends(require_admin),
 ) -> dict[str, Any]:
     """更新 user_custom_tags 配置项（管理员），写入 properties 并热加载"""
-    if payload.resource_custom_tags is None and payload.user_custom_tags is None:
+    if all(
+        value is None
+        for value in (
+            payload.resource_custom_tags,
+            payload.user_custom_tags,
+            payload.secrecy_custom_tags,
+            payload.status_custom_tags,
+        )
+    ):
         raise HTTPException(400, "请至少提交一个自定义标签配置")
     updates: dict[str, str] = {}
     if payload.resource_custom_tags is not None:
         updates["app.user_custom_tags"] = "true" if payload.resource_custom_tags else "false"
     if payload.user_custom_tags is not None:
         updates["app.user_custom_user_tags"] = "true" if payload.user_custom_tags else "false"
+    if payload.secrecy_custom_tags is not None:
+        updates["app.user_custom_secrecy_tags"] = "true" if payload.secrecy_custom_tags else "false"
+    if payload.status_custom_tags is not None:
+        updates["app.user_custom_status_tags"] = "true" if payload.status_custom_tags else "false"
     write_properties(updates)
     reload_settings()
     return {
         "resource_custom_tags": settings.user_custom_tags,
         "user_custom_tags": settings.user_custom_user_tags,
+        "secrecy_custom_tags": settings.user_custom_secrecy_tags,
+        "status_custom_tags": settings.user_custom_status_tags,
     }
 
 
 def _load_definition(db: sqlite3.Connection, table: str, tag_id: int) -> sqlite3.Row:
     row = db.execute(
-        f"SELECT id, name, category, label, sort_order, created_at FROM {table} WHERE id = ?",
+        f"SELECT id, name, category, label, sort_order, is_default_filter, created_at "
+        f"FROM {table} WHERE id = ?",
         (tag_id,),
     ).fetchone()
     if row is None:
         raise HTTPException(404, "标签不存在")
     return row
+
+
+def _update_default_filter(
+    db: sqlite3.Connection,
+    table: str,
+    tag_id: int,
+    enabled: bool,
+    *,
+    exclusive: bool,
+) -> dict[str, Any]:
+    row = _load_definition(db, table, tag_id)
+    if enabled and exclusive:
+        db.execute(f"UPDATE {table} SET is_default_filter = 0")
+    db.execute(
+        f"UPDATE {table} SET is_default_filter = ? WHERE id = ?",
+        (1 if enabled else 0, tag_id),
+    )
+    db.commit()
+    return _serialize_tag(_load_definition(db, table, tag_id))
+
+
+@router.put("/admin/tags/{tag_id}/default-filter")
+def admin_update_resource_default_filter(
+    tag_id: int,
+    payload: DefaultFilterPayload,
+    _: Any = Depends(require_admin),
+    db: sqlite3.Connection = Depends(db_dep),
+) -> dict[str, Any]:
+    """Toggle a resource tag's default filter state."""
+    return _update_default_filter(db, "tags", tag_id, payload.enabled, exclusive=False)
+
+
+@router.put("/admin/user-tags/{tag_id}/default-filter")
+def admin_update_user_default_filter(
+    tag_id: int,
+    payload: DefaultFilterPayload,
+    _: Any = Depends(require_admin),
+    db: sqlite3.Connection = Depends(db_dep),
+) -> dict[str, Any]:
+    return _update_default_filter(db, "user_tag_definitions", tag_id, payload.enabled, exclusive=False)
+
+
+@router.put("/admin/{domain}-tags/{tag_id}/default-filter")
+def admin_update_metadata_default_filter(
+    domain: str,
+    tag_id: int,
+    payload: DefaultFilterPayload,
+    _: Any = Depends(require_admin),
+    db: sqlite3.Connection = Depends(db_dep),
+) -> dict[str, Any]:
+    config = _METADATA_DOMAINS.get(domain)
+    if config is None:
+        raise HTTPException(404, "标签类型不存在")
+    return _update_default_filter(db, config[0], tag_id, payload.enabled, exclusive=True)
 
 
 @router.put("/admin/tags/{tag_id}")
@@ -432,7 +596,7 @@ def admin_update_metadata_tag(
         raise HTTPException(409, "标签名称已存在")
     if domain == "status" and row["name"] in {"active", "disabled"} and new_name != row["name"]:
         raise HTTPException(400, "系统状态标签的内部值不能重命名")
-    category, label = split_tag_name(new_name)
+    category, label = ("主体", new_name) if domain == "subject" else split_tag_name(new_name)
     old_name = str(row["name"])
     db.execute(
         f"UPDATE {table} SET name = ?, category = ?, label = ? WHERE id = ?",

@@ -24,6 +24,7 @@ from app.services.common import (
     _natural_sort_key,
     _reject_removed_form_fields,
     _validate_required_scope,
+    _validate_resource_status,
     _validate_resource_subject,
     _validate_secrecy,
 )
@@ -57,6 +58,13 @@ from app.services.tasks.runtime import (
 )
 from app.services.tasks.split import (
     _execute_split_task,
+)
+from app.services.templates import (
+    _validate_standalone_template_subject,
+    _validate_standalone_template_type,
+    _validate_template_platform,
+    _validate_template_ratio,
+    _validate_template_series,
 )
 from fastapi import APIRouter
 from fastapi import Depends
@@ -168,7 +176,8 @@ async def create_split_import_task(
     name_prefix: str = Form(...),
     subject: str = Form(DEFAULT_RESOURCE_SUBJECT),
     tags: str = Form(""),
-    secrecy_level: str = Form("public"),
+    secrecy_level: str = Form(""),
+    status: str = Form(""),
     visibility_scope: str = Form(""),
     visible_user_ids: str = Form(""),
     visible_user_tags: str = Form(""),
@@ -191,13 +200,17 @@ async def create_split_import_task(
     platform_marker = (images[0].filename or "") if len(images) == 1 else ""
     if platform_marker.startswith("__slide_flow_platform__"):
         _require_resource_import_origin(request)
+        form = await request.form()
+        import_target = str(form.get("import_target") or "").strip()
+        if not import_target:
+            import_target = "templates" if platform_marker.endswith("-template.bin") else "resources"
         return await create_resource_import_task(
             request=request,
             name_prefix=name_prefix,
             subject=subject,
             tags=tags,
             secrecy_level=secrecy_level,
-            status="disabled" if platform_marker.endswith("-disabled.bin") else "active",
+            status=status,
             visibility_scope=visibility_scope,
             visible_user_ids=visible_user_ids,
             visible_user_tags=visible_user_tags,
@@ -205,6 +218,11 @@ async def create_split_import_task(
             manage_user_ids=manage_user_ids,
             manage_user_tags=manage_user_tags,
             remark_html=remark_html,
+            import_target=import_target,
+            series=str(form.get("series") or ""),
+            platform=str(form.get("platform") or "wps"),
+            ratio=str(form.get("ratio") or "16:9"),
+            template_type=str(form.get("template_type") or "content"),
             ppt_file=ppt_file,
             user=user,
             db=db,
@@ -214,7 +232,8 @@ async def create_split_import_task(
     visibility_scope = _validate_required_scope(visibility_scope, "可见范围")
     management_scope = _validate_required_scope(management_scope, "管理范围")
     secrecy_level = _validate_secrecy(secrecy_level)
-    subject = _validate_resource_subject(subject)
+    status = _validate_resource_status(status)
+    subject = _validate_resource_subject(subject, allow_empty=True)
 
     images = sorted(images, key=lambda f: _natural_sort_key(f.filename or ""))
     temp_dir = Path(tempfile.mkdtemp(prefix="task_split_"))
@@ -253,7 +272,7 @@ async def create_split_import_task(
         "source_path": str(source_path),
         "image_paths": image_paths,
         "temp_dir": str(temp_dir),
-        "status": "active",
+        "status": status,
     }
     db.execute(
         """
@@ -312,8 +331,8 @@ async def create_resource_import_task(
     name_prefix: str = Form(...),
     subject: str = Form(DEFAULT_RESOURCE_SUBJECT),
     tags: str = Form(""),
-    secrecy_level: str = Form("public"),
-    status: str = Form("active"),
+    secrecy_level: str = Form(""),
+    status: str = Form(""),
     visibility_scope: str = Form(""),
     visible_user_ids: str = Form(""),
     visible_user_tags: str = Form(""),
@@ -321,6 +340,11 @@ async def create_resource_import_task(
     manage_user_ids: str = Form(""),
     manage_user_tags: str = Form(""),
     remark_html: str = Form(""),
+    import_target: str = Form("resources"),
+    series: str = Form(""),
+    platform: str = Form("wps"),
+    ratio: str = Form("16:9"),
+    template_type: str = Form("content"),
     ppt_file: UploadFile = File(...),
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
@@ -332,11 +356,30 @@ async def create_resource_import_task(
     )
     if Path(ppt_file.filename or "").suffix.lower() not in {".pptx", ".potx", ".ppsx"}:
         raise HTTPException(400, "请上传 PPTX/POTX/PPSX 文件；旧版 PPT 请先另存为 PPTX")
+    if import_target not in {"resources", "templates"}:
+        raise HTTPException(400, "导入目标不正确")
+    if import_target == "templates":
+        if not is_admin(user):
+            raise HTTPException(403, "只有管理员可以导入标准模板")
+        series = _validate_template_series(series)
+        subject = _validate_standalone_template_subject(subject)
+        platform = _validate_template_platform(platform)
+        ratio = _validate_template_ratio(ratio)
+        template_type = _validate_standalone_template_type(template_type)
+        # 任务底层仍共用单页素材的耐久化渲染链路，这两项仅是兼容参数。
+        name_prefix = series
+        secrecy_level = "public"
+        status = "active"
+        tags = ""
+        visible_user_tags = ""
+        manage_user_tags = ""
+        remark_html = ""
+    else:
+        subject = _validate_resource_subject(subject, allow_empty=True)
+        secrecy_level = _validate_secrecy(secrecy_level)
+        status = _validate_resource_status(status)
     visibility_scope = _validate_required_scope(visibility_scope, "可见范围")
     management_scope = _validate_required_scope(management_scope, "管理范围")
-    secrecy_level = _validate_secrecy(secrecy_level)
-    status = status if status in {"active", "disabled"} else "active"
-    subject = _validate_resource_subject(subject)
     # OSS is the configured persistence backend for this workflow. Validate it
     # before creating a task so a missing OSS setup gets a clear 503 instead
     # of a task that can never process its upload.
@@ -345,8 +388,13 @@ async def create_resource_import_task(
         required_bytes=int(ppt_file.size or 0),
     )
     params = {
+        "import_target": import_target,
         "name_prefix": name_prefix,
+        "series": series,
         "subject": subject,
+        "platform": platform,
+        "ratio": ratio,
+        "template_type": template_type,
         "tags": tags,
         "secrecy_level": secrecy_level,
         "status": status,
@@ -385,6 +433,7 @@ async def create_resource_import_task(
             "task_id": task_id,
             "owner_id": int(user["id"]),
             "mode": "ppt",
+            "import_target": import_target,
             "temp_dir": str(temp_dir),
             "source_path": str(source_path),
             "image_paths": [],

@@ -47,7 +47,9 @@ class RendererPptTaskTests(unittest.TestCase):
             );
         """)
         self.db.commit()
-        self.settings = SimpleNamespace(secret_key="unit-test-secret", render_dpi=288)
+        self.settings = SimpleNamespace(
+            secret_key="unit-test-secret", render_dpi=288, render_wps_batch_size=20,
+        )
         self.settings_patch = patch.object(render_tasks, "settings", self.settings)
         self.settings_patch.start()
         self.addCleanup(self.settings_patch.stop)
@@ -58,6 +60,11 @@ class RendererPptTaskTests(unittest.TestCase):
     def insert_task(self, *, status="queued", attempts=0, lease_until=None):
         manifest = {
             "version": 1, "dpi": 288,
+            "batch_size": 20,
+            "source": {
+                "source_ref": "oss://bucket/deck.pptx", "sha256": "d" * 64,
+                "size": 100, "slide_count": 1,
+            },
             "required_fonts": ["Test Sans"], "font_hashes": ["a" * 64],
             "pages": [{"index": 0, "source_ref": "oss://bucket/source.pptx", "sha256": "a" * 64, "size": 10}],
             "outputs": [{"index": 0, "output_ref": "oss://bucket/output.png"}],
@@ -133,6 +140,26 @@ class RendererPptTaskTests(unittest.TestCase):
         payload = render_tasks.claim_payload(row, token)
         self.assertEqual(payload["required_fonts"], ["Test Sans"])
         self.assertEqual(payload["font_hashes"], ["a" * 64])
+
+    def test_claim_payload_carries_batch_source_metadata(self):
+        self.insert_task()
+        row, token = render_tasks.claim_render_task(self.db, "worker-one")
+        payload = render_tasks.claim_payload(row, token)
+        self.assertEqual(payload["batch_size"], 20)
+        self.assertEqual(payload["source"], {
+            "sha256": "d" * 64, "size": 100, "slide_count": 1,
+        })
+
+    def test_source_url_requires_current_lease_and_signs_only_source(self):
+        self.insert_task()
+        row, token = render_tasks.claim_render_task(self.db, "worker-one")
+        with patch.object(render_tasks.oss_storage, "signed_url", return_value="https://bucket/source") as signed:
+            source = render_tasks.refresh_render_task_source_url(self.db, row["task_id"], token)
+        self.assertEqual(source["download_url"], "https://bucket/source")
+        self.assertEqual(source["slide_count"], 1)
+        signed.assert_called_once_with("oss://bucket/deck.pptx")
+        with self.assertRaises(PermissionError):
+            render_tasks.refresh_render_task_source_url(self.db, row["task_id"], "x" * 43)
 
     def test_render_font_inventory_resolves_aliases_to_synced_hashes(self):
         required, hashes = render_tasks._render_font_inventory(self.db, ["Test Sans"])

@@ -18,6 +18,7 @@ from app.services.resource_import.render_tasks import (
     claim_render_task,
     complete_render_task,
     fail_render_task,
+    refresh_render_task_source_url,
     refresh_render_task_urls,
     render_queue_status,
     touch_renderer_worker,
@@ -129,6 +130,19 @@ def urls(task_id: str, payload: UrlRequest, _: None = Depends(_renderer_auth)):
         except Exception as exc:
             raise _lease_error(exc) from exc
         return {"page": page}
+    finally:
+        db.close()
+
+
+@router.post("/render-tasks/{task_id}/source-url")
+def source_url(task_id: str, payload: LeaseRequest, _: None = Depends(_renderer_auth)):
+    db = get_db()
+    try:
+        try:
+            source = refresh_render_task_source_url(db, task_id, payload.lease_token)
+        except Exception as exc:
+            raise _lease_error(exc) from exc
+        return {"source": source}
     finally:
         db.close()
 

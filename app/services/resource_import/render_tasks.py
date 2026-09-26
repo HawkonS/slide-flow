@@ -221,6 +221,13 @@ def _render_font_inventory(db: sqlite3.Connection, names: list[str]) -> tuple[li
 
 def _cleanup_manifest_objects(manifest: dict[str, Any]) -> bool:
     cleaned = True
+    source = manifest.get("source")
+    if isinstance(source, dict) and isinstance(source.get("source_ref"), str):
+        try:
+            oss_storage.delete(source["source_ref"])
+        except Exception:
+            cleaned = False
+            logger.warning("Deferred OSS render-source cleanup", exc_info=True)
     for collection in (
         manifest.get("pages", []), manifest.get("outputs", []), manifest.get("stale_outputs", []),
     ):
@@ -341,6 +348,24 @@ def create_render_task(session: dict[str, Any]) -> sqlite3.Row:
         singles = split_pptx_to_single_pages(source, source_dir, max_total_bytes=512 * 1024 * 1024)
         if len(singles) != expected:
             raise RuntimeError("PPT 拆分页数不一致，未提交渲染")
+        batch_size = max(1, min(50, int(getattr(settings, "render_wps_batch_size", 20))))
+        source_sha256 = sha256_file(source)
+        render_source: dict[str, Any] | None = None
+        if batch_size > 1:
+            source_size = source.stat().st_size
+            if source_size <= 0:
+                raise RuntimeError("待渲染 PPTX 为空")
+            source_ref = oss_storage.upload_file(
+                source, _task_key(task_id, "source", 0, ".pptx"),
+                content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            )
+            refs.append(source_ref)
+            render_source = {
+                "source_ref": source_ref,
+                "sha256": source_sha256,
+                "size": source_size,
+                "slide_count": expected,
+            }
         pages: list[dict[str, Any]] = []
         for index, single in enumerate(singles):
             size = single.stat().st_size
@@ -362,10 +387,13 @@ def create_render_task(session: dict[str, Any]) -> sqlite3.Row:
             "session_id": session["session_id"],
             "render_attempt": attempt,
             "dpi": int(settings.render_dpi),
+            "batch_size": batch_size,
             "pages": pages,
             "outputs": [],
             "stale_outputs": [],
         }
+        if render_source is not None:
+            manifest["source"] = render_source
         db = get_db()
         cancelled_manifests: list[dict[str, Any]] = []
         try:
@@ -406,7 +434,7 @@ def create_render_task(session: dict[str, Any]) -> sqlite3.Row:
                 preview_status="rendering", preview_error=None, preview_paths=[], partial_preview_paths={},
                 render_attempt=attempt, render_task_id=task_id, renderer_version=RESOURCE_IMPORT_RENDERER_VERSION,
                 split_paths=[str(path) for path in singles], split_hashes=[item["sha256"] for item in pages],
-                rendered_source_sha256=sha256_file(source), expires_at=time.time() + RENDER_SESSION_TTL,
+                rendered_source_sha256=source_sha256, expires_at=time.time() + RENDER_SESSION_TTL,
             )
             _write_resource_import_session(session)
             try:
@@ -642,11 +670,36 @@ def claim_payload(row: sqlite3.Row, lease_token: str) -> dict[str, Any]:
         {"index": int(page["index"]), "sha256": page["sha256"], "size": int(page["size"])}
         for page in manifest.get("pages", [])
     ]
-    return {
+    payload = {
         "task_id": row["task_id"], "lease_token": lease_token, "lease_seconds": LEASE_SECONDS,
         "attempts": int(row["attempts"]), "dpi": int(manifest["dpi"]), "pages": pages,
+        "batch_size": max(1, min(50, int(manifest.get("batch_size", 1)))),
         "required_fonts": manifest.get("required_fonts", []),
         "font_hashes": manifest.get("font_hashes", []),
+    }
+    source = manifest.get("source")
+    if isinstance(source, dict):
+        payload["source"] = {
+            "sha256": source.get("sha256"),
+            "size": int(source.get("size", 0)),
+            "slide_count": int(source.get("slide_count", 0)),
+        }
+    return payload
+
+
+def refresh_render_task_source_url(
+    db: sqlite3.Connection, task_id: str, lease_token: str,
+) -> dict[str, Any]:
+    """Issue a fresh signed URL for the immutable multi-page render source."""
+    row = _leased_row(db, task_id, lease_token)
+    source = _manifest(row, "source_manifest").get("source")
+    if not isinstance(source, dict) or not source.get("source_ref"):
+        raise ValueError("render_source_unavailable")
+    return {
+        "download_url": oss_storage.signed_url(source["source_ref"]),
+        "sha256": source.get("sha256"),
+        "size": int(source.get("size", 0)),
+        "slide_count": int(source.get("slide_count", 0)),
     }
 
 

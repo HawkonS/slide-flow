@@ -73,6 +73,31 @@ def _template_preview_file_name(series: str, subject: str, platform: str, ratio:
     return safe_filename(f"{_template_name(series, subject, platform, ratio, template_type)}_预览.png")
 
 
+def _template_page_name(
+    series: str,
+    subject: str,
+    platform: str,
+    ratio: str,
+    template_type: str,
+    page_number: int,
+) -> str:
+    """为系列导入的单页模板生成稳定、可读的名称。"""
+    return f"{_template_name(series, subject, platform, ratio, template_type)}-{page_number:02d}"
+
+
+def _template_page_office_file_name(
+    series: str,
+    subject: str,
+    platform: str,
+    ratio: str,
+    template_type: str,
+    page_number: int,
+) -> str:
+    return safe_filename(
+        f"{_template_page_name(series, subject, platform, ratio, template_type, page_number)}.pptx"
+    )
+
+
 def _rename_template_file(path: Path, file_name: str) -> Path:
     target = path.with_name(file_name)
     if path.resolve() == target.resolve():

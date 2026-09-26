@@ -25,13 +25,16 @@ from wps_renderer.validation import unpack_bundle, validate_pptx
 TOKEN = "test-only-" + "x" * 40
 
 
-def pptx(extra=None):
+def pptx(extra=None, slides=1):
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w") as archive:
         archive.writestr("[Content_Types].xml", '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
-        archive.writestr("ppt/presentation.xml", '<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:sldIdLst><p:sldId id="256"/></p:sldIdLst></p:presentation>')
-        if "ppt/slides/slide1.xml" not in (extra or {}):
-            archive.writestr("ppt/slides/slide1.xml", '<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"/>')
+        slide_ids = "".join(f'<p:sldId id="{256 + index}"/>' for index in range(slides))
+        archive.writestr("ppt/presentation.xml", '<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:sldIdLst>' + slide_ids + '</p:sldIdLst></p:presentation>')
+        for index in range(1, slides + 1):
+            name = f"ppt/slides/slide{index}.xml"
+            if name not in (extra or {}):
+                archive.writestr(name, '<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"/>')
         for name, content in (extra or {}).items():
             archive.writestr(name, content)
     return stream.getvalue()
@@ -50,6 +53,28 @@ def bundle(pages=1, mutate=None):
     return stream.getvalue()
 
 
+def batch_bundle(pages=3, mutate=None):
+    stream = io.BytesIO()
+    data = pptx(slides=pages)
+    manifest = {
+        "version": 2,
+        "dpi": 150,
+        "source": {
+            "file": "source/deck.pptx", "sha256": hashlib.sha256(data).hexdigest(),
+            "slide_count": pages,
+        },
+        "pages": [{"index": index, "slide": index + 1} for index in range(pages)],
+        "fonts": [],
+        "required_fonts": [],
+    }
+    if mutate:
+        mutate(manifest)
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr("manifest.json", json.dumps(manifest))
+        archive.writestr("source/deck.pptx", data)
+    return stream.getvalue()
+
+
 class FakeFonts:
     @contextmanager
     def activate(self, directory, manifest):
@@ -65,6 +90,16 @@ def converter(exe, source, output, dpi, timeout, cancel, check, memory_limit_byt
     nested = output / source.stem
     nested.mkdir()
     Image.new("RGB", (320, 180), "white").save(nested / "page_1.png")
+
+
+def batch_converter(exe, source, output, dpi, timeout, cancel, check, memory_limit_bytes, slide_range="1"):
+    output.mkdir(parents=True)
+    check()
+    nested = output / source.stem
+    nested.mkdir()
+    slides = [int(value) for value in slide_range.split(",")]
+    for slide in reversed(slides):
+        Image.new("RGB", (320, 180), (slide, slide, slide)).save(nested / f"page_{slide}.png")
 
 
 class ServiceTests(unittest.TestCase):
@@ -97,6 +132,39 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(client.post("/v1/admin/drain").status_code, 401)
             self.assertEqual(client.post("/v1/admin/resume").status_code, 401)
             self.assertEqual(client.app.state.manager.jobs, {})
+
+    def test_health_advertises_multi_page_protocol(self):
+        with self.client() as client:
+            health = client.get("/v1/health", headers=self.headers()).json()
+        self.assertEqual(health["version"], 2)
+        self.assertEqual(health["max_batch_pages"], self.settings.max_batch_pages)
+        self.assertEqual(health["max_source_slides"], self.settings.max_source_slides)
+
+    def test_multi_page_source_uses_one_converter_call_and_maps_all_outputs(self):
+        calls = []
+
+        def convert(*args):
+            calls.append(args[-1])
+            return batch_converter(*args)
+
+        with self.client(convert) as client:
+            response = client.post(
+                "/v1/jobs", content=batch_bundle(3), headers=self.headers("batch-source-job-0001"),
+            )
+            self.assertEqual(response.status_code, 202, response.text)
+            final = self.wait(client, response.json()["id"])
+            self.assertEqual(final["status"], "completed", final)
+            self.assertEqual([page["index"] for page in final["pages"]], [0, 1, 2])
+            self.assertEqual(calls, ["1,2,3"])
+
+    def test_multi_page_source_rejects_declared_slide_count_mismatch(self):
+        with self.client(batch_converter) as client:
+            response = client.post(
+                "/v1/jobs",
+                content=batch_bundle(3, lambda manifest: manifest["source"].update(slide_count=2)),
+                headers=self.headers("batch-bad-count-0001"),
+            )
+            self.assertEqual(response.status_code, 422, response.text)
 
     def test_drain_rejects_new_jobs_and_resume_reopens_admission(self):
         started, release = threading.Event(), threading.Event()

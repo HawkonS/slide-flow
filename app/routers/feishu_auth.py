@@ -4,6 +4,7 @@
 """
 import logging
 import hmac
+import json
 import re
 import secrets
 import sqlite3
@@ -17,10 +18,13 @@ from app.config import settings
 from app.core.feishu import (
     FeishuAPIError,
     FeishuUserInfo,
+    get_directory_users,
     get_tenant_access_token,
     get_user_access_token,
     get_user_info,
 )
+from app.core.cache import invalidate_user
+from app.core.permissions import require_admin
 from app.core.security import create_session_token, hash_password
 from app.core.user_profiles import (
     is_managed_avatar_ref,
@@ -140,6 +144,138 @@ def _unique_username(db: sqlite3.Connection, base: str) -> str:
     raise HTTPException(503, "暂时无法分配飞书用户名，请稍后重试")
 
 
+def _validated_feishu_avatar(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        return validate_avatar_url(value)
+    except ValueError:
+        logger.warning("飞书头像地址不在受信任域名列表，已忽略")
+        return ""
+
+
+@router.post("/admin/users/import-feishu")
+def import_feishu_directory(
+    admin: sqlite3.Row = Depends(require_admin),
+    db: sqlite3.Connection = Depends(db_dep),
+) -> dict[str, int]:
+    """Import every directory user visible to the configured Feishu app."""
+    if not settings.feishu_sso_enabled:
+        raise HTTPException(400, "请先启用飞书 SSO")
+    app_id = settings.feishu_app_id.strip()
+    app_secret = settings.feishu_app_secret.strip()
+    if not app_id or not app_secret:
+        raise HTTPException(400, "请先配置飞书 App ID 和 App Secret")
+
+    try:
+        tenant_token = get_tenant_access_token(app_id, app_secret)
+        directory_users = get_directory_users(tenant_token)
+    except FeishuAPIError as exc:
+        logger.warning("拉取飞书通讯录失败: code=%s, msg=%s", exc.code, exc.msg)
+        raise HTTPException(502, f"拉取飞书通讯录失败：{exc.msg}") from None
+
+    created = 0
+    updated = 0
+    unchanged = 0
+    updated_user_ids: list[int] = []
+    try:
+        for feishu_user in directory_users:
+            try:
+                feishu_id = normalise_feishu_id(feishu_user.open_id)
+            except ValueError:
+                logger.warning("飞书通讯录包含无效用户标识，已跳过")
+                unchanged += 1
+                continue
+            display_name = _normalise_feishu_name(feishu_user.name, feishu_id)
+            avatar_url = _validated_feishu_avatar(feishu_user.avatar_url)
+            existing = db.execute(
+                "SELECT * FROM users WHERE feishu_id = ?",
+                (feishu_id,),
+            ).fetchone()
+            if existing is None:
+                username = _unique_username(db, _resolve_feishu_username(feishu_user))
+                ts = now_iso()
+                cursor = db.execute(
+                    """
+                    INSERT INTO users (
+                        name, username, username_key, password_hash, feishu_id,
+                        avatar_url, role, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'user', ?, ?)
+                    """,
+                    (
+                        display_name,
+                        username,
+                        username_lookup_key(username),
+                        hash_password(secrets.token_urlsafe(16)),
+                        feishu_id,
+                        avatar_url,
+                        ts,
+                        ts,
+                    ),
+                )
+                created += 1
+                updated_user_ids.append(int(cursor.lastrowid))
+                continue
+
+            changes: list[str] = []
+            values: list[str] = []
+            if display_name != existing["name"]:
+                changes.append("name = ?")
+                values.append(display_name)
+            if (
+                avatar_url
+                and not is_managed_avatar_ref(
+                    existing["avatar_url"] or "",
+                    user_id=int(existing["id"]),
+                )
+                and avatar_url != existing["avatar_url"]
+            ):
+                changes.append("avatar_url = ?")
+                values.append(avatar_url)
+            if not changes:
+                unchanged += 1
+                continue
+            changes.append("updated_at = ?")
+            values.append(now_iso())
+            values.append(str(existing["id"]))
+            db.execute(
+                f"UPDATE users SET {', '.join(changes)} WHERE id = ?",
+                values,
+            )
+            updated += 1
+            updated_user_ids.append(int(existing["id"]))
+
+        summary = {
+            "total": len(directory_users),
+            "created": created,
+            "updated": updated,
+            "unchanged": unchanged,
+        }
+        db.execute(
+            """
+            INSERT INTO admin_audit_events
+                (actor_user_id, subject_user_id, action, details, created_at)
+            VALUES (?, NULL, 'user.feishu_import', ?, ?)
+            """,
+            (
+                int(admin["id"]),
+                json.dumps(summary, ensure_ascii=False, separators=(",", ":")),
+                now_iso(),
+            ),
+        )
+        db.commit()
+    except sqlite3.IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "飞书通讯录导入发生用户名或用户标识冲突") from None
+    except Exception:
+        db.rollback()
+        raise
+
+    for user_id in updated_user_ids:
+        invalidate_user(user_id)
+    return summary
+
+
 @router.get("/auth/feishu/config")
 def feishu_sso_config(response: Response) -> dict[str, Any]:
     """返回飞书 SSO 公开配置（无需登录）"""
@@ -226,12 +362,7 @@ def feishu_sso_callback(
         ts = now_iso()
         base_username = _resolve_feishu_username(feishu_user)
         username = _unique_username(db, base_username)
-        avatar_url = ""
-        if feishu_user.avatar_url:
-            try:
-                avatar_url = validate_avatar_url(feishu_user.avatar_url)
-            except ValueError:
-                logger.warning("飞书头像地址不在受信任域名列表，已忽略")
+        avatar_url = _validated_feishu_avatar(feishu_user.avatar_url)
         # 使用随机密码（飞书 SSO 用户不通过密码登录）
         random_pwd = hash_password(secrets.token_urlsafe(16))
         try:
@@ -277,12 +408,7 @@ def feishu_sso_callback(
         if display_name != user["name"]:
             updates.append("name = ?")
             values.append(display_name)
-        avatar_url = ""
-        if feishu_user.avatar_url:
-            try:
-                avatar_url = validate_avatar_url(feishu_user.avatar_url)
-            except ValueError:
-                logger.warning("飞书头像地址不在受信任域名列表，已忽略")
+        avatar_url = _validated_feishu_avatar(feishu_user.avatar_url)
         if (
             avatar_url
             and not is_managed_avatar_ref(

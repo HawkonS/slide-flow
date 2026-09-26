@@ -18,7 +18,7 @@ from app.config import (
 from app.core.bootstrap import prepare_initial_admin
 from app.core.fonts import normalize_font_name
 
-DB_SCHEMA_VERSION = 19
+DB_SCHEMA_VERSION = 20
 
 
 def new_resource_detail_token() -> str:
@@ -221,6 +221,7 @@ def init_db() -> None:
                 category TEXT NOT NULL DEFAULT '未分类',
                 label TEXT NOT NULL,
                 sort_order INTEGER NOT NULL DEFAULT 0,
+                is_default_filter INTEGER NOT NULL DEFAULT 0,
                 created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
                 created_at TEXT NOT NULL
             );
@@ -231,6 +232,7 @@ def init_db() -> None:
                 category TEXT NOT NULL DEFAULT '未分类',
                 label TEXT NOT NULL,
                 sort_order INTEGER NOT NULL DEFAULT 0,
+                is_default_filter INTEGER NOT NULL DEFAULT 0,
                 created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
                 created_at TEXT NOT NULL
             );
@@ -241,6 +243,7 @@ def init_db() -> None:
                 category TEXT NOT NULL DEFAULT '未分类',
                 label TEXT NOT NULL,
                 sort_order INTEGER NOT NULL DEFAULT 0,
+                is_default_filter INTEGER NOT NULL DEFAULT 0,
                 created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
                 created_at TEXT NOT NULL
             );
@@ -251,6 +254,7 @@ def init_db() -> None:
                 category TEXT NOT NULL DEFAULT '未分类',
                 label TEXT NOT NULL,
                 sort_order INTEGER NOT NULL DEFAULT 0,
+                is_default_filter INTEGER NOT NULL DEFAULT 0,
                 created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
                 created_at TEXT NOT NULL
             );
@@ -577,6 +581,7 @@ def init_db() -> None:
                 category TEXT NOT NULL DEFAULT '未分类',
                 label TEXT NOT NULL,
                 sort_order INTEGER NOT NULL DEFAULT 0,
+                is_default_filter INTEGER NOT NULL DEFAULT 0,
                 created_by INTEGER NOT NULL REFERENCES users(id),
                 created_at TEXT NOT NULL
             );
@@ -696,7 +701,25 @@ def _migrate_schema(db: sqlite3.Connection, schema_version: int) -> None:
     if "objects_cleaned_at" not in render_columns:
         db.execute("ALTER TABLE renderer_ppt_tasks ADD COLUMN objects_cleaned_at TEXT")
 
-    _seed_resource_metadata_tags(db)
+    # Default filter state belongs to tag definitions rather than deployment
+    # properties. Keep the schema migration additive for existing databases.
+    tag_definition_tables = (
+        "tags",
+        "subject_tag_definitions",
+        "secrecy_tag_definitions",
+        "status_tag_definitions",
+        "user_tag_definitions",
+    )
+    for table in tag_definition_tables:
+        tag_columns = {
+            row["name"] for row in db.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if "is_default_filter" not in tag_columns:
+            db.execute(
+                f"ALTER TABLE {table} ADD COLUMN is_default_filter INTEGER NOT NULL DEFAULT 0"
+            )
+
+    _maintain_resource_metadata_tags(db)
     font_task_columns = {
         row["name"]
         for row in db.execute("PRAGMA table_info(renderer_font_tasks)").fetchall()
@@ -934,51 +957,26 @@ def _relax_resource_metadata_constraints(db: sqlite3.Connection) -> None:
         db.execute("PRAGMA foreign_keys = ON")
 
 
-def _seed_resource_metadata_tags(db: sqlite3.Connection) -> None:
-    """Seed fixed metadata choices and promote historical resource values."""
-    created_at = now_iso()
-    defaults = {
-        "secrecy_tag_definitions": [
-            ("public", "公开"),
-            ("confidential", "保密"),
-            ("secret", "秘密"),
-        ],
-        "status_tag_definitions": [("active", "正常"), ("disabled", "停用")],
-    }
-    for table, items in defaults.items():
-        for sort_order, (name, label) in enumerate(items):
-            db.execute(
-                f"INSERT OR IGNORE INTO {table} "
-                "(name, category, label, sort_order, created_by, created_at) "
-                "VALUES (?, '系统默认', ?, ?, NULL, ?)",
-                (name, label, sort_order, created_at),
-            )
+def _maintain_resource_metadata_tags(db: sqlite3.Connection) -> None:
+    """Keep metadata choices explicitly administrator-maintained.
 
-    historical = {
-        "subject_tag_definitions": ("subject", "未分类"),
-        "secrecy_tag_definitions": ("secrecy_level", "历史值"),
-        "status_tag_definitions": ("status", "历史值"),
-    }
-    for table, (column, category) in historical.items():
-        next_sort = int(
-            db.execute(f"SELECT COALESCE(MAX(sort_order), -1) + 1 FROM {table}").fetchone()[0]
+    Older releases generated subject, secrecy and status definitions from
+    built-in defaults or historical resource values. Remove only those known
+    generated rows; resource data itself remains unchanged.
+    """
+    db.execute(
+        "DELETE FROM subject_tag_definitions "
+        "WHERE created_by IS NULL AND is_default_filter = 0"
+    )
+    db.execute(
+        "UPDATE subject_tag_definitions SET category = '主体', label = name"
+    )
+    for table in ("secrecy_tag_definitions", "status_tag_definitions"):
+        db.execute(
+            f"DELETE FROM {table} "
+            "WHERE created_by IS NULL AND is_default_filter = 0 "
+            "AND category IN ('系统默认', '历史值')"
         )
-        rows = db.execute(
-            f"SELECT DISTINCT {column} AS value FROM resources "
-            f"WHERE TRIM(COALESCE({column}, '')) <> '' ORDER BY {column}"
-        ).fetchall()
-        for row in rows:
-            value = str(row["value"] or "").strip()
-            if not value:
-                continue
-            cursor = db.execute(
-                f"INSERT OR IGNORE INTO {table} "
-                "(name, category, label, sort_order, created_by, created_at) "
-                "VALUES (?, ?, ?, ?, NULL, ?)",
-                (value, category, value, next_sort, created_at),
-            )
-            if cursor.rowcount:
-                next_sort += 1
 
 
 def _recover_interrupted_tasks(db: sqlite3.Connection) -> None:

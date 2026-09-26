@@ -52,6 +52,8 @@ logger = logging.getLogger(__name__)
 def _commit_resource_import_sync(
     session_id: str, payload: dict[str, Any], user: sqlite3.Row, db: sqlite3.Connection, session: dict[str, Any],
 ) -> dict[str, Any]:
+    if session.get("import_target") == "templates":
+        raise HTTPException(400, "该导入任务应保存为标准模板")
     payload = _validate_resource_import_payload(payload, db)
     if session.get("missing_fonts"):
         raise HTTPException(400, "请先替换所有不在标准字体库中的字体")
@@ -62,10 +64,10 @@ def _commit_resource_import_sync(
         raise HTTPException(400, "请填写名称前缀")
     if len(name_prefix) > RESOURCE_IMPORT_MAX_NAME_LENGTH or any(ord(char) < 32 for char in name_prefix):
         raise HTTPException(400, f"名称前缀不能超过 {RESOURCE_IMPORT_MAX_NAME_LENGTH} 个字符且不能包含控制字符")
-    subject = _validate_resource_subject(str(payload.get("subject", DEFAULT_RESOURCE_SUBJECT)))
+    subject = _validate_resource_subject(str(payload.get("subject", DEFAULT_RESOURCE_SUBJECT)), allow_empty=True)
     tags = str(payload.get("tags", ""))
-    secrecy_level = _validate_secrecy(str(payload.get("secrecy_level", "public")))
-    status = _validate_resource_status(str(payload.get("status", "active")))
+    secrecy_level = _validate_secrecy(str(payload.get("secrecy_level", "")))
+    status = _validate_resource_status(str(payload.get("status", "")))
     visibility_scope = _validate_required_scope(payload.get("visibility_scope"), "可见范围")
     management_scope = _validate_required_scope(payload.get("management_scope"), "管理范围")
     visible_user_ids = payload.get("visible_user_ids") or []

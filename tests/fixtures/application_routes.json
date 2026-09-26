@@ -492,6 +492,14 @@
     ]
   },
   {
+    "path": "/api/{domain}-tags",
+    "name": "create_metadata_tags",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
     "path": "/api/admin/{domain}-tags",
     "name": "admin_list_metadata_tags",
     "kind": "http",
@@ -526,6 +534,30 @@
   {
     "path": "/api/admin/tags/config",
     "name": "admin_update_tags_config",
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ]
+  },
+  {
+    "path": "/api/admin/tags/{tag_id}/default-filter",
+    "name": "admin_update_resource_default_filter",
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ]
+  },
+  {
+    "path": "/api/admin/user-tags/{tag_id}/default-filter",
+    "name": "admin_update_user_default_filter",
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ]
+  },
+  {
+    "path": "/api/admin/{domain}-tags/{tag_id}/default-filter",
+    "name": "admin_update_metadata_default_filter",
     "kind": "http",
     "methods": [
       "PUT"
@@ -1282,6 +1314,14 @@
     ]
   },
   {
+    "path": "/api/renderer/render-tasks/{task_id}/source-url",
+    "name": "source_url",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
     "path": "/api/renderer/render-tasks/{task_id}/complete",
     "name": "complete",
     "kind": "http",
@@ -1292,6 +1332,14 @@
   {
     "path": "/api/renderer/render-tasks/{task_id}/failed",
     "name": "failed",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/admin/users/import-feishu",
+    "name": "import_feishu_directory",
     "kind": "http",
     "methods": [
       "POST"
