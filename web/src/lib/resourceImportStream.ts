@@ -2,7 +2,7 @@ export type PreviewRenderEvent =
   | { type: "started" | "progress" | "heartbeat"; message?: string }
   | { type: "page"; index: number; preview_url: string }
   | { type: "completed"; preview_status: "ready"; preview_count: number }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string; recoverable: boolean };
 
 /** Reject partial/foreign results instead of accidentally confirming another
  * session's images or opening a renderer-controlled external URL. */
@@ -33,7 +33,11 @@ export function parsePreviewRenderEvent(
       if (event.preview_status !== "ready" || event.preview_count !== total) throw new Error("渲染结果不完整，请重试图片渲染");
       return { type: "completed", preview_status: "ready", preview_count: total };
     case "error":
-      return { type: "error", message: typeof event.message === "string" ? event.message.slice(0, 2000) : "图片渲染失败，请重试" };
+      return {
+        type: "error",
+        message: typeof event.message === "string" ? event.message.slice(0, 2000) : "图片渲染失败，请重试",
+        recoverable: event.recoverable === true,
+      };
     default:
       throw new Error("渲染服务返回了未知事件，请刷新后重试");
   }

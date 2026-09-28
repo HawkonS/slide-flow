@@ -9,8 +9,8 @@ class ShowCreatePayload(ApiPayload):
     name: str
     subject: str = ""
     tags: str = ""
-    status: str = "active"
-    secrecy_level: str = "public"
+    status: str = ""
+    secrecy_level: str = ""
     visibility_scope: str = "private"
     management_scope: str = "private"
     visible_user_ids: list[int] = []
@@ -23,8 +23,8 @@ class ShowUpdatePayload(ApiPayload):
     name: str
     subject: str = ""
     tags: str = ""
-    status: str = "active"
-    secrecy_level: str = "public"
+    status: str = ""
+    secrecy_level: str = ""
     visibility_scope: str = "private"
     management_scope: str = "private"
     visible_user_ids: list[int] = []

@@ -18,6 +18,7 @@ import {
   VISIBILITY_SCOPE_OPTIONS,
 } from "@/lib/constants";
 import { ApiError, api, apiNdjson, apiUploadWithProgress } from "@/lib/api";
+import { setAutomaticReloadBlocked } from "@/lib/deployment-recovery";
 import { parsePreviewRenderEvent } from "@/lib/resourceImportStream";
 import { releaseImportSession, rememberPendingImport, forgetPendingImport } from "@/lib/resourceImportLifecycle";
 import { FontItem, parseTags, serializeTags } from "@/lib/types";
@@ -28,6 +29,7 @@ export interface ResourceImportWizardProps {
   onSuccess?: () => void;
   ownerId?: number;
   taskId?: number;
+  onTaskCreated?: (taskId: number) => void;
   target?: "resources" | "templates";
 }
 type Step = "upload" | "fonts" | "render" | "confirm";
@@ -58,7 +60,7 @@ const parseStoredIdList = (value: unknown): number[] => {
 };
 const formatSize = (bytes: number) => bytes >= 1024 * MIB ? `${(bytes / (1024 * MIB)).toFixed(2)} GB` : `${(bytes / MIB).toFixed(1)} MB`;
 
-export function ResourceImportWizard({ onOpenChange, onSuccess, ownerId, taskId: initialTaskId, target = "resources" }: ResourceImportWizardProps) {
+export function ResourceImportWizard({ onOpenChange, onSuccess, ownerId, taskId: initialTaskId, onTaskCreated, target = "resources" }: ResourceImportWizardProps) {
   const templateMode = target === "templates";
   const [step, setStep] = React.useState<Step>(initialTaskId ? "fonts" : "upload");
   const [taskId, setTaskId] = React.useState<number | null>(initialTaskId ?? null);
@@ -128,7 +130,17 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, ownerId, taskId:
   const previewsReviewed = previewStatus === "ready" && slideCount > 0 && loadedPreviewCount === slideCount;
   const previewPageCount = Math.max(1, Math.ceil(slideCount / PREVIEW_PAGE_SIZE));
   const stepIndex = STEPS.findIndex((item) => item.id === step);
-  const setOperationSafe = (value: Operation) => { operationRef.current = value; setOperation(value); };
+  const setOperationSafe = (value: Operation) => {
+    operationRef.current = value;
+    setOperation(value);
+  };
+  const startOperation = (value: Exclude<Operation, null>): boolean => {
+    // React state is committed after the event handler returns. The ref closes
+    // that same-tick window so double clicks cannot enqueue duplicate work.
+    if (operationRef.current !== null) return false;
+    setOperationSafe(value);
+    return true;
+  };
   const getPreviewUrl = (index: number) => { const base = previewUrls[index] || `/api/resource-import/${sessionId}/preview/${index}`; return `${base}${base.includes("?") ? "&" : "?"}retry=${previewRetries[index] || 0}`; };
   onSuccessRef.current = onSuccess;
   const completeCommit = React.useCallback((completedSessionId: string, created: number, message = "导入完成") => {
@@ -156,17 +168,27 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, ownerId, taskId:
     else if (!templateMode && remarkHtml.length > 100000) error = "备注内容过长，请精简后继续";
     else if (!visibilityScope) error = "请选择可见范围";
     else if (!managementScope) error = "请选择管理范围";
-    else if (visibilityScope === "partial" && !visibleUserIds.length && (templateMode || !visibleUserTags.length)) error = `可见范围为部分时请至少选择一位用户${templateMode ? "" : "或一个用户标签"}`;
-    else if (managementScope === "partial" && !manageUserIds.length && (templateMode || !manageUserTags.length)) error = `管理范围为部分时请至少选择一位用户${templateMode ? "" : "或一个用户标签"}`;
+    else if (visibilityScope === "partial" && !visibleUserIds.length && !visibleUserTags.length) error = "可见范围为部分时请至少选择一位用户或一个用户标签";
+    else if (managementScope === "partial" && !manageUserIds.length && !manageUserTags.length) error = "管理范围为部分时请至少选择一位用户或一个用户标签";
     setMetadataError(error); if (error) toast.error(error); return !error;
   };
 
   React.useEffect(() => {
     mountedRef.current = true;
+    // A new frontend deployment must not reload this page between upload,
+    // font confirmation, render-task creation, and commit. The task URL makes
+    // server-side work resumable, but form state and an as-yet-unsubmitted
+    // render intent still live only in this tab.
+    setAutomaticReloadBlocked("resource-import-workflow", true);
     const loadFonts = async () => { try { const result = await api<{ fonts: FontItem[] }>("/api/fonts"); if (mountedRef.current) setStandardFonts([...new Map((result.fonts || []).map((font) => [font.family, font])).values()]); } catch { if (mountedRef.current) setStandardFontsError("标准字体库加载失败，请重试后核对字体。"); } finally { if (mountedRef.current) setStandardFontsLoading(false); } };
     void loadFonts();
-    return () => { mountedRef.current = false; renderAbortRef.current?.abort(); if (sessionRef.current && !taskOwnedRef.current && !uploadingRef.current) void releaseImportSession(sessionRef.current); };
-  }, [taskId]);
+    return () => {
+      mountedRef.current = false;
+      renderAbortRef.current?.abort();
+      if (sessionRef.current && !taskOwnedRef.current && !uploadingRef.current) void releaseImportSession(sessionRef.current);
+      setAutomaticReloadBlocked("resource-import-workflow", false);
+    };
+  }, []);
   React.useEffect(() => { contentRef.current?.scrollTo({ top: 0 }); }, [step]);
   React.useEffect(() => {
     if (operation !== "upload") return;
@@ -223,15 +245,23 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, ownerId, taskId:
         setVisibleUserIds(parseStoredIdList(p.visible_user_ids)); setManageUserIds(parseStoredIdList(p.manage_user_ids)); setVisibleUserTags(parseStoredStringList(p.visible_user_tags)); setManageUserTags(parseStoredStringList(p.manage_user_tags)); if (typeof p.remark_html === "string") setRemarkHtml(p.remark_html);
         if (typeof p.slide_count === "number") setSlideCount(p.slide_count); if (Array.isArray(p.fonts)) setFonts(p.fonts.filter((value): value is string => typeof value === "string")); if (Array.isArray(p.missing_fonts)) setMissingFonts(p.missing_fonts.filter((value): value is string => typeof value === "string"));
         if (typeof p.workflow_state === "string" && !(renderErrorRef.current && p.workflow_state === "rendering")) setWorkflowState(p.workflow_state);
-        if (p.preview_status === "ready" || p.preview_status === "blocked" || p.preview_status === "error" || p.preview_status === "pending") {
+        if (p.preview_status === "ready") {
+          setPreviewStatus("ready");
+          renderErrorRef.current = false;
+          setRenderStartedAt(null);
+          setRenderMessage(`全部 ${typeof p.slide_count === "number" ? p.slide_count : slideCount} 页已生成，请核对图片效果`);
+          // The durable task status is authoritative. A browser stream can
+          // remain open after a proxy/network interruption even though the
+          // Windows worker has already completed, so stop that stale stream.
+          renderAbortRef.current?.abort();
+        } else if (!renderErrorRef.current && (p.preview_status === "blocked" || p.preview_status === "error" || p.preview_status === "pending")) {
           setPreviewStatus(p.preview_status);
-          if (p.preview_status === "ready") setRenderStartedAt(null);
         }
-        if (p.preview_status === "rendering") {
+        if (p.preview_status === "rendering" && !renderErrorRef.current) {
           setPreviewStatus("rendering");
           setRenderStartedAt((value) => value ?? Date.now());
         }
-        if (Number.isInteger(p.render_completed) && Number.isInteger(p.render_total)) {
+        if (p.preview_status !== "ready" && !renderErrorRef.current && Number.isInteger(p.render_completed) && Number.isInteger(p.render_total)) {
           const completed = Number(p.render_completed);
           const total = Number(p.render_total);
           if (total >= 0 && completed >= 0 && completed <= total) {
@@ -287,11 +317,12 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, ownerId, taskId:
   };
 
   const createTask = async () => {
+    if (operationRef.current !== null) return;
     const error = pptFile && (!PPT_EXTENSIONS.has(pptFile.name.slice(pptFile.name.lastIndexOf(".")).toLowerCase()) ? PPT_FORMAT_HINT : !pptFile.size ? "PPT 文件为空，请重新选择" : pptFile.size > MAX_PPT_BYTES ? "PPT 文件不能超过 10 GB" : null);
     if (error || !pptFile) { setFileError(error || "请选择 PPT 文件"); toast.error(error || "请选择 PPT 文件"); return; }
-    if (!validateMetadata() || busy) return;
-    setOperationSafe("upload"); setProgress(0); setUploadLoaded(0); setUploadTotal(pptFile.size); setFileError(null); setTaskError(null);
-    const form = new FormData(); form.append("ppt_file", pptFile); form.append("images", new Blob([], { type: "application/octet-stream" }), `__slide_flow_platform__-${templateMode ? "template" : status}.bin`); form.append("import_target", target); form.append("name_prefix", templateMode ? templateSeries.trim() : namePrefix.trim()); form.append("series", templateSeries.trim()); form.append("subject", subject.trim() || DEFAULT_RESOURCE_SUBJECT); form.append("platform", templatePlatform); form.append("ratio", templateRatio); form.append("template_type", templateType); form.append("tags", templateMode ? "" : serializeTags(tagList)); form.append("secrecy_level", templateMode ? "public" : secrecyLevel); form.append("status", templateMode ? "active" : status); form.append("visibility_scope", visibilityScope); form.append("visible_user_ids", JSON.stringify(visibleUserIds)); form.append("visible_user_tags", templateMode ? "[]" : JSON.stringify(visibleUserTags)); form.append("management_scope", managementScope); form.append("manage_user_ids", JSON.stringify(manageUserIds)); form.append("manage_user_tags", templateMode ? "[]" : JSON.stringify(manageUserTags)); form.append("remark_html", templateMode ? "" : remarkHtml);
+    if (!validateMetadata() || !startOperation("upload")) return;
+    setProgress(0); setUploadLoaded(0); setUploadTotal(pptFile.size); setFileError(null); setTaskError(null);
+    const form = new FormData(); form.append("ppt_file", pptFile); form.append("images", new Blob([], { type: "application/octet-stream" }), `__slide_flow_platform__-${templateMode ? "template" : status}.bin`); form.append("import_target", target); form.append("name_prefix", templateMode ? templateSeries.trim() : namePrefix.trim()); form.append("series", templateSeries.trim()); form.append("subject", subject.trim() || DEFAULT_RESOURCE_SUBJECT); form.append("platform", templatePlatform); form.append("ratio", templateRatio); form.append("template_type", templateType); form.append("tags", templateMode ? "" : serializeTags(tagList)); form.append("secrecy_level", templateMode ? "public" : secrecyLevel); form.append("status", templateMode ? "active" : status); form.append("visibility_scope", visibilityScope); form.append("visible_user_ids", JSON.stringify(visibleUserIds)); form.append("visible_user_tags", JSON.stringify(visibleUserTags)); form.append("management_scope", managementScope); form.append("manage_user_ids", JSON.stringify(manageUserIds)); form.append("manage_user_tags", JSON.stringify(manageUserTags)); form.append("remark_html", templateMode ? "" : remarkHtml);
     try {
       const result = await apiUploadWithProgress<{ task_id: number; session_id: string }>(
         "/api/tasks/split-import",
@@ -304,7 +335,7 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, ownerId, taskId:
         "POST",
       );
       if (!mountedRef.current) return;
-      taskOwnedRef.current = true; autoNavigateRef.current = false; setTaskId(result.task_id); sessionRef.current = result.session_id; setSessionId(result.session_id); setStep("fonts"); toast.success("上传任务已创建，后台正在处理");
+      taskOwnedRef.current = true; autoNavigateRef.current = false; setTaskId(result.task_id); onTaskCreated?.(result.task_id); sessionRef.current = result.session_id; setSessionId(result.session_id); setStep("fonts"); toast.success("上传任务已创建，后台正在处理");
     } catch (error) {
       const uncertain = !(error instanceof ApiError) || error.status === 0 || error.status >= 500;
       const message = uncertain
@@ -317,9 +348,8 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, ownerId, taskId:
   };
 
   const replaceFonts = async () => {
-    if (!sessionId || !selectedReplacementCount || busy) return;
+    if (!sessionId || !selectedReplacementCount || !startOperation("replace")) return;
     autoNavigateRef.current = false;
-    setOperationSafe("replace");
     try {
       const selected = Object.fromEntries(Object.entries(replacements).filter(([, value]) => value));
       const result = await api<{ fonts: string[]; missing_fonts: string[]; preview_status?: PreviewStatus }>(`/api/resource-import/${sessionId}/replace-fonts`, { method: "POST", json: selected });
@@ -329,24 +359,66 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, ownerId, taskId:
   };
 
   const generatePreviews = async () => {
-    if (!sessionId || busy || missingFonts.length || selectedReplacementCount) return;
+    if (!sessionId || missingFonts.length || selectedReplacementCount || !startOperation("render")) return;
     autoNavigateRef.current = false;
     const attachToActiveRender = workflowState === "rendering" || previewStatus === "rendering";
-    const controller = new AbortController(); renderAbortRef.current = controller; renderErrorRef.current = false; setOperationSafe("render"); setPreviewStatus("rendering"); setPreviewError(null); if (!attachToActiveRender) { setPreviewUrls({}); setPreviewLoads({}); } setRenderStartedAt((value) => value ?? Date.now()); if (!renderStartedAt) setRenderElapsedSeconds(0); setRenderMessage("正在接入 Windows 图片渲染进度…");
-    const received = new Set<number>();
+    const controller = new AbortController(); renderAbortRef.current = controller; renderErrorRef.current = false; setPreviewStatus("rendering"); setPreviewError(null); if (!attachToActiveRender) { setPreviewUrls({}); setPreviewLoads({}); } setRenderStartedAt((value) => value ?? Date.now()); if (!renderStartedAt) setRenderElapsedSeconds(0); setRenderMessage("正在接入 Windows 图片渲染进度…");
+    let completedViaStream = false;
+    let terminalRenderError = false;
+    let recoverableRenderError = false;
+    let streamEndedWithoutCompletion = false;
+    let keepTrackingInBackground = false;
     try {
-      const result = await apiNdjson<unknown, { preview_status?: PreviewStatus; preview_count?: number }>(`/api/resource-import/${sessionId}/previews`, (raw) => { const event = parsePreviewRenderEvent(raw, sessionId, slideCount, window.location.origin); if (event.type === "page") { received.add(event.index); setPreviewUrls((old) => ({ ...old, [event.index]: event.preview_url })); } else if ((event.type === "progress" || event.type === "started") && event.message) setRenderMessage(event.message); else if (event.type === "error") throw new Error(event.message); }, { method: "POST", signal: controller.signal });
-      if (result?.preview_status !== "ready" || (result.preview_count !== undefined && result.preview_count !== slideCount)) throw new Error("渲染结果不完整，请重试");
+      const result = await apiNdjson<unknown, { preview_status?: PreviewStatus; preview_count?: number }>(`/api/resource-import/${sessionId}/previews`, (raw) => {
+        const event = parsePreviewRenderEvent(raw, sessionId, slideCount, window.location.origin);
+        if (event.type === "page") setPreviewUrls((old) => ({ ...old, [event.index]: event.preview_url }));
+        else if (event.type === "completed") completedViaStream = true;
+        else if ((event.type === "progress" || event.type === "started" || event.type === "heartbeat") && event.message) setRenderMessage(event.message);
+        else if (event.type === "error") {
+          recoverableRenderError = event.recoverable;
+          terminalRenderError = !event.recoverable;
+          throw new Error(event.message);
+        }
+      }, { method: "POST", signal: controller.signal });
+      const completedViaJson = result?.preview_status === "ready" && result.preview_count === slideCount;
+      if (!completedViaStream && !completedViaJson) {
+        streamEndedWithoutCompletion = true;
+        throw new Error("渲染进度连接提前结束");
+      }
       setPreviewStatus("ready"); setRenderMessage(`全部 ${slideCount} 页已生成，请核对图片效果`); toast.success("图片渲染完成");
-    } catch (error) { if (!controller.signal.aborted) { renderErrorRef.current = true; setPreviewStatus("error"); setWorkflowState("awaiting_render"); setRenderMessage("图片渲染已停止，可检查配置或服务后重试"); setPreviewError((error as Error).message || "图片渲染失败，请检查 Windows 转换节点、网络或 OSS 配置后重试"); } }
-    finally { renderAbortRef.current = null; setOperationSafe(null); setRenderStartedAt(null); }
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        const transportInterrupted = Boolean(taskId) && !terminalRenderError && (
+          recoverableRenderError || streamEndedWithoutCompletion || error instanceof TypeError ||
+          (error instanceof DOMException && (error.name === "TimeoutError" || error.name === "NetworkError"))
+        );
+        if (transportInterrupted) {
+          keepTrackingInBackground = true;
+          setPreviewStatus("rendering");
+          setWorkflowState("rendering");
+          setRenderMessage("进度连接已中断，后台渲染仍在继续，正在通过任务状态自动恢复…");
+          setPreviewError(null);
+        } else {
+          renderErrorRef.current = true;
+          setPreviewStatus("error");
+          setWorkflowState("awaiting_render");
+          setRenderMessage("图片渲染已停止，可检查配置或服务后重试");
+          setPreviewError((error as Error).message || "图片渲染失败，请检查 Windows 转换节点、网络或 OSS 配置后重试");
+        }
+      }
+    }
+    finally {
+      if (renderAbortRef.current === controller) renderAbortRef.current = null;
+      setOperationSafe(null);
+      if (!keepTrackingInBackground) setRenderStartedAt(null);
+    }
   };
 
   const commit = async () => {
-    if (!sessionId || busy || !previewsReviewed || missingFonts.length || selectedReplacementCount || !validateMetadata()) return;
-    setOperationSafe("commit"); commitCompletedRef.current = false; setCommitProgress({ status: "processing", progress: 0, total: slideCount, message: `正在准备保存${templateMode ? "标准模板" : "单页素材"}…` }); setUploadError(null); setUploadUncertain(false); uploadingRef.current = true; if (!templateMode) rememberPendingImport(ownerId, { sessionId, slideCount });
+    if (!sessionId || !previewsReviewed || missingFonts.length || selectedReplacementCount || operationRef.current !== null || !validateMetadata() || !startOperation("commit")) return;
+    commitCompletedRef.current = false; setCommitProgress({ status: "processing", progress: 0, total: slideCount, message: `正在准备保存${templateMode ? "标准模板" : "单页素材"}…` }); setUploadError(null); setUploadUncertain(false); uploadingRef.current = true; if (!templateMode) rememberPendingImport(ownerId, { sessionId, slideCount });
     try {
-      const result = await api<{ created: number }>(`/api/resource-import/${sessionId}/commit`, { method: "POST", json: templateMode ? { series: templateSeries.trim(), subject: subject.trim(), platform: templatePlatform, ratio: templateRatio, template_type: templateType, visibility_scope: visibilityScope, management_scope: managementScope, visible_user_ids: visibleUserIds, manage_user_ids: manageUserIds } : { name_prefix: namePrefix.trim(), subject: subject.trim() || DEFAULT_RESOURCE_SUBJECT, tags: serializeTags(tagList), secrecy_level: secrecyLevel, status, visibility_scope: visibilityScope, management_scope: managementScope, visible_user_ids: visibleUserIds, visible_user_tags: visibleUserTags, manage_user_ids: manageUserIds, manage_user_tags: manageUserTags, remark_html: remarkHtml } });
+      const result = await api<{ created: number }>(`/api/resource-import/${sessionId}/commit`, { method: "POST", json: templateMode ? { series: templateSeries.trim(), subject: subject.trim(), platform: templatePlatform, ratio: templateRatio, template_type: templateType, visibility_scope: visibilityScope, management_scope: managementScope, visible_user_ids: visibleUserIds, visible_user_tags: visibleUserTags, manage_user_ids: manageUserIds, manage_user_tags: manageUserTags } : { name_prefix: namePrefix.trim(), subject: subject.trim() || DEFAULT_RESOURCE_SUBJECT, tags: serializeTags(tagList), secrecy_level: secrecyLevel, status, visibility_scope: visibilityScope, management_scope: managementScope, visible_user_ids: visibleUserIds, visible_user_tags: visibleUserTags, manage_user_ids: manageUserIds, manage_user_tags: manageUserTags, remark_html: remarkHtml } });
       if (result.created !== slideCount) throw new Error("服务器返回的保存数量异常，请核对任务结果");
       completeCommit(sessionId, result.created);
     } catch (error) {
@@ -364,10 +436,10 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, ownerId, taskId:
     finally { uploadingRef.current = false; setOperationSafe(null); }
   };
 
-  const next = () => { if (busy) return; autoNavigateRef.current = false; if (step === "upload") void createTask(); else if (step === "fonts" && sessionId && !missingFonts.length && !selectedReplacementCount && !standardFontsLoading && !standardFontsError) { setStep("render"); void generatePreviews(); } else if (step === "render" && previewsReviewed) setStep("confirm"); };
-  const previous = () => { if (!busy) { autoNavigateRef.current = false; setStep(STEPS[Math.max(0, stepIndex - 1)].id); } };
+  const next = () => { if (operationRef.current !== null) return; autoNavigateRef.current = false; if (step === "upload") void createTask(); else if (step === "fonts" && sessionId && !missingFonts.length && !selectedReplacementCount && !standardFontsLoading && !standardFontsError) { setStep("render"); void generatePreviews(); } else if (step === "render" && previewsReviewed) setStep("confirm"); };
+  const previous = () => { if (operationRef.current === null) { autoNavigateRef.current = false; setStep(STEPS[Math.max(0, stepIndex - 1)].id); } };
   const close = () => {
-    if (operation === "upload") {
+    if (operationRef.current === "upload") {
       toast.info("文件仍在上传，请等待上传完成后再关闭页面");
       return;
     }
@@ -381,6 +453,7 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, ownerId, taskId:
     : "正在计算文件大小…";
   const renderedPageCount = previewStatus === "ready" ? slideCount : Object.keys(previewUrls).length;
   const renderPercent = slideCount > 0 ? Math.min(100, Math.round((renderedPageCount / slideCount) * 100)) : 0;
+  const renderIsIndeterminate = previewStatus === "rendering" && renderedPageCount === 0;
   const renderElapsedLabel = renderElapsedSeconds >= 60
     ? `${Math.floor(renderElapsedSeconds / 60)} 分 ${renderElapsedSeconds % 60} 秒`
     : `${renderElapsedSeconds} 秒`;
@@ -423,7 +496,7 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, ownerId, taskId:
           </div>
           <div className="mt-4 grid gap-1.5"><Label>分类标签</Label><TagInput value={tagList} onChange={setTagList} suggestions={[]} /></div>
           </>}
-          <div className="mt-4 grid gap-4 sm:grid-cols-2"><div className="grid gap-1.5"><Label htmlFor="import-visibility">可见范围 <span className="text-destructive">*</span></Label><Select value={visibilityScope} onValueChange={(value) => setVisibilityScope(value as ScopeValue)}><SelectTrigger id="import-visibility"><SelectValue placeholder="请选择可见范围" /></SelectTrigger><SelectContent>{VISIBILITY_SCOPE_OPTIONS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></div><div className="grid gap-1.5"><Label htmlFor="import-management">管理范围 <span className="text-destructive">*</span></Label><Select value={managementScope} onValueChange={(value) => setManagementScope(value as ScopeValue)}><SelectTrigger id="import-management"><SelectValue placeholder="请选择管理范围" /></SelectTrigger><SelectContent>{MANAGEMENT_SCOPE_OPTIONS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></div></div>{visibilityScope === "partial" && <div className="mt-4 space-y-2"><Label>{templateMode ? "可见用户（至少选 1 人）" : "可见用户或用户标签（至少选 1 项）"}</Label><UserPicker value={visibleUserIds} onChange={setVisibleUserIds} tagValue={templateMode ? undefined : visibleUserTags} onTagChange={templateMode ? undefined : setVisibleUserTags} allowTagSelection={!templateMode} /></div>}{managementScope === "partial" && <div className="mt-4 space-y-2"><Label>{templateMode ? "管理用户（至少选 1 人）" : "管理用户或用户标签（至少选 1 项）"}</Label><UserPicker value={manageUserIds} onChange={setManageUserIds} tagValue={templateMode ? undefined : manageUserTags} onTagChange={templateMode ? undefined : setManageUserTags} allowTagSelection={!templateMode} /></div>}{!templateMode && <div className="mt-4 grid gap-2"><Label id="import-remark-label">通用备注</Label><RichTextEditor ariaLabelledBy="import-remark-label" value={remarkHtml} onChange={setRemarkHtml} minHeight={100} /></div>}
+          <div className="mt-4 grid gap-4 sm:grid-cols-2"><div className="grid gap-1.5"><Label htmlFor="import-visibility">可见范围 <span className="text-destructive">*</span></Label><Select value={visibilityScope} onValueChange={(value) => setVisibilityScope(value as ScopeValue)}><SelectTrigger id="import-visibility"><SelectValue placeholder="请选择可见范围" /></SelectTrigger><SelectContent>{VISIBILITY_SCOPE_OPTIONS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></div><div className="grid gap-1.5"><Label htmlFor="import-management">管理范围 <span className="text-destructive">*</span></Label><Select value={managementScope} onValueChange={(value) => setManagementScope(value as ScopeValue)}><SelectTrigger id="import-management"><SelectValue placeholder="请选择管理范围" /></SelectTrigger><SelectContent>{MANAGEMENT_SCOPE_OPTIONS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></div></div>{visibilityScope === "partial" && <div className="mt-4 space-y-2"><Label>可见用户或用户标签（至少选 1 项）</Label><UserPicker value={visibleUserIds} onChange={setVisibleUserIds} tagValue={visibleUserTags} onTagChange={setVisibleUserTags} allowTagSelection lockedIds={ownerId ? [ownerId] : undefined} /></div>}{managementScope === "partial" && <div className="mt-4 space-y-2"><Label>管理用户或用户标签（至少选 1 项）</Label><UserPicker value={manageUserIds} onChange={setManageUserIds} tagValue={manageUserTags} onTagChange={setManageUserTags} allowTagSelection lockedIds={ownerId ? [ownerId] : undefined} /></div>}{!templateMode && <div className="mt-4 grid gap-2"><Label id="import-remark-label">通用备注</Label><RichTextEditor ariaLabelledBy="import-remark-label" value={remarkHtml} onChange={setRemarkHtml} minHeight={100} /></div>}
         </div></section>}
 
       {step === "fonts" && <section className="grid gap-4 rounded-lg border p-4"><div><h2 className="font-medium">2. 字体检测</h2><p className="mt-1 text-sm text-muted-foreground">后台任务会先检测页数和字体；页面关闭后也会保留任务。</p></div>{taskError && <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{taskError}</p>}{!sessionId || !fonts.length ? <div className="flex items-center gap-2 rounded-md bg-muted/40 p-4 text-sm"><Loader2 className="h-4 w-4 animate-spin" />{sessionId ? "正在检测 PPT 页数和字体…" : "正在等待上传任务完成…"}</div> : <><p className="text-sm text-muted-foreground">共 {slideCount} 页，检测到 {fonts.length} 种字体。</p><div className={cn("rounded-md border px-3 py-2 text-sm", missingFonts.length ? "border-amber-300 bg-amber-50 text-amber-900" : "border-green-300 bg-green-50 text-green-900")}>{missingFonts.length ? <><AlertCircle className="mr-1 inline h-4 w-4" />检测到 {missingFonts.length} 个非标准字体，请替换后继续。</> : <><CheckCircle2 className="mr-1 inline h-4 w-4" />字体检测通过，请确认后继续。</>}</div><div className="space-y-3 rounded-md border bg-muted/20 p-3">{fonts.map((font) => <div key={font} className="grid items-center gap-2 sm:grid-cols-[1fr_1.5fr]"><span className={cn("break-words text-sm", missingFonts.includes(font) && "font-medium text-amber-800")}>{font}{missingFonts.includes(font) && <span className="ml-1 text-xs">（非标准字体）</span>}</span><Select disabled={busy || standardFontsLoading || !!standardFontsError} value={replacements[font] || "__keep__"} onValueChange={(value) => setReplacements((old) => { const next = { ...old }; if (value === "__keep__") delete next[font]; else next[font] = value; return next; })}><SelectTrigger aria-label={`替换字体 ${font}`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__keep__">保留原字体</SelectItem>{standardFonts.filter((item) => item.family !== font).map((item) => <SelectItem key={item.id} value={item.family}>{item.family}</SelectItem>)}</SelectContent></Select></div>)}<Button type="button" variant="outline" onClick={replaceFonts} disabled={busy || !selectedReplacementCount || standardFontsLoading || !!standardFontsError}>{operation === "replace" ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : null}{operation === "replace" ? "替换中…" : "应用字体替换"}</Button></div></>}</section>}
@@ -439,12 +512,12 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, ownerId, taskId:
             </Button>
             {previewStatus === "rendering" && <span className="text-xs tabular-nums text-muted-foreground">已运行 {renderElapsedLabel}</span>}
           </div>
-          <div className="h-2 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={renderPercent} aria-label="图片渲染进度">
-            <div className="h-full rounded-full bg-primary transition-[width] duration-300" style={{ width: `${renderPercent}%` }} />
+          <div className="h-2 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={renderIsIndeterminate ? undefined : renderPercent} aria-label="图片渲染进度">
+            <div className={cn("h-full rounded-full bg-primary transition-[width] duration-300", renderIsIndeterminate && "w-full animate-pulse opacity-45")} style={renderIsIndeterminate ? undefined : { width: `${renderPercent}%` }} />
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
             <p role="status" aria-live="polite">{renderMessage || `等待开始 ${slideCount} 页图片渲染`}</p>
-            <span className="shrink-0 tabular-nums">{renderedPageCount} / {slideCount} 页 · {renderPercent}%</span>
+            <span className="shrink-0 tabular-nums">{renderIsIndeterminate ? `整批转换中 · 共 ${slideCount} 页` : `${renderedPageCount} / ${slideCount} 页 · ${renderPercent}%`}</span>
           </div>
         </div>}
         {sessionId && (previewStatus === "ready" || Object.keys(previewUrls).length > 0) && <>

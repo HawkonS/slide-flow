@@ -148,14 +148,24 @@ export function filenameFromDisposition(disposition: string): string | null {
   return plain ? plain[1] : null;
 }
 
+export type ResourceDownloadFormat = "pptx-embedded" | "pptx" | "zip" | "png";
+export type PngDownloadResolution = "4k" | "2k" | "1080p" | "720p";
+
 /** 资源下载 URL */
 export function resourceDownloadUrl(
   resourceId: number,
   versionId: number | null | undefined,
-  withFonts: boolean,
+  format: ResourceDownloadFormat | boolean,
+  resolution?: PngDownloadResolution,
 ): string {
   const params = new URLSearchParams();
-  if (withFonts) params.set("with_fonts", "true");
+  // Keep boolean compatibility for callers outside the resource download dialog.
+  if (typeof format === "boolean") {
+    if (format) params.set("with_fonts", "true");
+  } else {
+    params.set("format", format);
+  }
+  if (format === "png" && resolution) params.set("resolution", resolution);
   if (versionId != null) params.set("version_id", String(versionId));
   const query = params.toString();
   return `/api/resources/${resourceId}/download${query ? `?${query}` : ""}`;

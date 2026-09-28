@@ -5,9 +5,8 @@ import { Button } from "@/components/ui/button";
 import {
   DEFAULT_SORT_KEY,
   RESOURCE_PERMISSION_OPTIONS,
-  RESOURCE_SECRECY_OPTIONS,
-  RESOURCE_STATUS_OPTIONS,
 } from "@/lib/constants";
+import { useMetadataTagOptions } from "@/components/resource/MetadataTagSelect";
 import { cn } from "@/lib/utils";
 import { useResourceFilters } from "@/stores/resource-filters";
 import {
@@ -27,6 +26,16 @@ export interface ResourceFiltersProps {
 
 export function ResourceFilters({ subjects, tags, actions }: ResourceFiltersProps) {
   const s = useResourceFilters();
+  const { options: statusTags } = useMetadataTagOptions("status");
+  const { options: secrecyTags } = useMetadataTagOptions("secrecy");
+  const statusOptions = React.useMemo<ChipOption[]>(
+    () => [{ value: "all", label: "全部" }, ...statusTags],
+    [statusTags],
+  );
+  const secrecyOptions = React.useMemo<ChipOption[]>(
+    () => [{ value: "all", label: "全部" }, ...secrecyTags],
+    [secrecyTags],
+  );
 
   const subjectOptions = React.useMemo<ChipOption[]>(() => {
     const items = subjects.filter(Boolean);
@@ -39,14 +48,14 @@ export function ResourceFilters({ subjects, tags, actions }: ResourceFiltersProp
       {
         key: "status",
         label: "状态",
-        options: RESOURCE_STATUS_OPTIONS,
+        options: statusOptions,
         value: s.status,
         onChange: (v) => s.setStatus(v as typeof s.status),
       },
       {
         key: "secrecy",
         label: "密级",
-        options: RESOURCE_SECRECY_OPTIONS,
+        options: secrecyOptions,
         value: s.secrecy,
         onChange: (v) => s.setSecrecy(v as typeof s.secrecy),
       },
@@ -58,7 +67,7 @@ export function ResourceFilters({ subjects, tags, actions }: ResourceFiltersProp
         onChange: (v) => s.setPermission(v as typeof s.permission),
       },
     ],
-    [s.status, s.secrecy, s.permission, s],
+    [s.status, s.secrecy, s.permission, s, statusOptions, secrecyOptions],
   );
 
   const filterDirtyCount = [

@@ -36,7 +36,7 @@ interface ShowUrlState {
 }
 
 const URL_DEFAULTS: ShowUrlState = {
-  q: "", sub: "all", sec: "all", sta: "active", perm: "all",
+  q: "", sub: "all", sec: "all", sta: "all", perm: "all",
   tags: [], tm: "all", sort: DEFAULT_SORT_KEY, p: 1,
 };
 
@@ -66,8 +66,8 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
     const s = urlState;
     filters.setQuery(s.q);
     filters.setSubject(s.sub);
-    filters.setSecrecy(s.sec as "all" | "public" | "confidential" | "secret");
-    filters.setStatus(s.sta as "all" | "active" | "disabled");
+    filters.setSecrecy(s.sec);
+    filters.setStatus(s.sta);
     filters.setPermission(s.perm as "all" | "created" | "managed" | "visible");
     filters.setTags(s.tags);
     filters.setTagsMode(s.tm as "any" | "all");

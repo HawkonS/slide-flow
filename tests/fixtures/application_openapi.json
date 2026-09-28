@@ -4637,6 +4637,68 @@
         }
       }
     },
+    "/api/resources/{resource_id}/versions/from-import/{session_id}": {
+      "post": {
+        "summary": "Commit Resource Iteration",
+        "operationId": "commit_resource_iteration_api_resources__resource_id__versions_from_import__session_id__post",
+        "parameters": [
+          {
+            "name": "resource_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Resource Id"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Commit Resource Iteration Api Resources  Resource Id  Versions From Import  Session Id  Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/resources/{resource_id}/versions/rollback": {
       "post": {
         "summary": "Rollback Resource Version",
@@ -5066,6 +5128,34 @@
                 }
               ],
               "title": "Version Id"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(pptx-embedded|pptx|zip|png)$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Format"
+            }
+          },
+          {
+            "name": "resolution",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(4k|2k|1080p|720p)$",
+              "default": "4k",
+              "title": "Resolution"
             }
           }
         ],
@@ -8391,6 +8481,11 @@
             "title": "Visible User Ids",
             "default": ""
           },
+          "visible_user_tags": {
+            "type": "string",
+            "title": "Visible User Tags",
+            "default": ""
+          },
           "management_scope": {
             "type": "string",
             "title": "Management Scope",
@@ -8399,6 +8494,11 @@
           "manage_user_ids": {
             "type": "string",
             "title": "Manage User Ids",
+            "default": ""
+          },
+          "manage_user_tags": {
+            "type": "string",
+            "title": "Manage User Tags",
             "default": ""
           },
           "office_file": {
@@ -8501,6 +8601,11 @@
             "title": "Visible User Ids",
             "default": ""
           },
+          "visible_user_tags": {
+            "type": "string",
+            "title": "Visible User Tags",
+            "default": ""
+          },
           "management_scope": {
             "type": "string",
             "title": "Management Scope",
@@ -8509,6 +8614,11 @@
           "manage_user_ids": {
             "type": "string",
             "title": "Manage User Ids",
+            "default": ""
+          },
+          "manage_user_tags": {
+            "type": "string",
+            "title": "Manage User Tags",
             "default": ""
           },
           "office_file": {
@@ -8985,7 +9095,7 @@
           "status": {
             "type": "string",
             "title": "Status",
-            "default": "active"
+            "default": ""
           },
           "visibility_scope": {
             "type": "string",
@@ -9154,12 +9264,12 @@
           "status": {
             "type": "string",
             "title": "Status",
-            "default": "active"
+            "default": ""
           },
           "secrecy_level": {
             "type": "string",
             "title": "Secrecy Level",
-            "default": "public"
+            "default": ""
           },
           "visibility_scope": {
             "type": "string",
@@ -9375,12 +9485,12 @@
           "status": {
             "type": "string",
             "title": "Status",
-            "default": "active"
+            "default": ""
           },
           "secrecy_level": {
             "type": "string",
             "title": "Secrecy Level",
-            "default": "public"
+            "default": ""
           },
           "visibility_scope": {
             "type": "string",

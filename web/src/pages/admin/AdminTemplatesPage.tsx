@@ -51,6 +51,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import {
   MANAGEMENT_SCOPE_OPTIONS,
   TEMPLATE_PLATFORM_LABEL,
@@ -480,6 +481,8 @@ export function TemplateFormDialog({
 }) {
   const qc = useQueryClient();
   const editing = !!template;
+  const { user } = useAuth();
+  const ownerId = template?.owner?.id ?? user?.id;
 
   const [series, setSeries] = React.useState("");
   const [subject, setSubject] = React.useState("");
@@ -488,8 +491,10 @@ export function TemplateFormDialog({
   const [templateType, setTemplateType] = React.useState("content");
   const [visibility, setVisibility] = React.useState<VisibilityScope>("public");
   const [visibleIds, setVisibleIds] = React.useState<number[]>([]);
+  const [visibleTags, setVisibleTags] = React.useState<string[]>([]);
   const [management, setManagement] = React.useState<VisibilityScope>("private");
   const [manageIds, setManageIds] = React.useState<number[]>([]);
+  const [manageTags, setManageTags] = React.useState<string[]>([]);
   const [officeFile, setOfficeFile] = React.useState<File | null>(null);
   const [pngFile, setPngFile] = React.useState<File | null>(null);
   const [loading, setLoading] = React.useState(false);
@@ -503,8 +508,10 @@ export function TemplateFormDialog({
     setTemplateType(template?.template_type || "content");
     setVisibility((template?.visibility_scope as VisibilityScope) || "public");
     setVisibleIds(template?.visible_user_ids || []);
+    setVisibleTags(template?.visible_user_tags || []);
     setManagement((template?.management_scope as VisibilityScope) || "private");
     setManageIds(template?.manage_user_ids || []);
+    setManageTags(template?.manage_user_tags || []);
     setOfficeFile(null);
     setPngFile(null);
     setLoading(false);
@@ -519,6 +526,14 @@ export function TemplateFormDialog({
       toast.error("请选择 Office 文件");
       return;
     }
+    if (visibility === "partial" && !visibleIds.length && !visibleTags.length) {
+      toast.error("可见范围为部分时请至少选择一位用户或一个用户标签");
+      return;
+    }
+    if (management === "partial" && !manageIds.length && !manageTags.length) {
+      toast.error("管理范围为部分时请至少选择一位用户或一个用户标签");
+      return;
+    }
     const body = new FormData();
     body.set("series", series.trim());
     body.set("subject", subject.trim());
@@ -527,8 +542,10 @@ export function TemplateFormDialog({
     body.set("template_type", templateType);
     body.set("visibility_scope", visibility);
     body.set("visible_user_ids", JSON.stringify(visibility === "partial" ? visibleIds : []));
+    body.set("visible_user_tags", JSON.stringify(visibility === "partial" ? visibleTags : []));
     body.set("management_scope", management);
     body.set("manage_user_ids", JSON.stringify(management === "partial" ? manageIds : []));
+    body.set("manage_user_tags", JSON.stringify(management === "partial" ? manageTags : []));
     if (officeFile) body.set("office_file", officeFile);
     if (pngFile) body.set("png_file", pngFile);
 
@@ -638,6 +655,9 @@ export function TemplateFormDialog({
             onScopeChange={setVisibility}
             selected={visibleIds}
             onChange={setVisibleIds}
+            selectedTags={visibleTags}
+            onTagsChange={setVisibleTags}
+            lockedIds={ownerId ? [ownerId] : undefined}
             options={VISIBILITY_SCOPE_OPTIONS}
           />
           <ScopeBlock
@@ -646,6 +666,9 @@ export function TemplateFormDialog({
             onScopeChange={setManagement}
             selected={manageIds}
             onChange={setManageIds}
+            selectedTags={manageTags}
+            onTagsChange={setManageTags}
+            lockedIds={ownerId ? [ownerId] : undefined}
             options={MANAGEMENT_SCOPE_OPTIONS}
           />
         </div>
@@ -669,6 +692,9 @@ function ScopeBlock({
   onScopeChange,
   selected,
   onChange,
+  selectedTags,
+  onTagsChange,
+  lockedIds,
   options,
 }: {
   label: string;
@@ -676,6 +702,9 @@ function ScopeBlock({
   onScopeChange: (v: VisibilityScope) => void;
   selected: number[];
   onChange: (ids: number[]) => void;
+  selectedTags: string[];
+  onTagsChange: (tags: string[]) => void;
+  lockedIds?: number[];
   options: readonly { value: string; label: string }[];
 }) {
   return (
@@ -690,7 +719,14 @@ function ScopeBlock({
         </SelectContent>
       </Select>
       {scope === "partial" && (
-        <UserPicker value={selected} onChange={onChange} />
+        <UserPicker
+          value={selected}
+          onChange={onChange}
+          tagValue={selectedTags}
+          onTagChange={onTagsChange}
+          allowTagSelection
+          lockedIds={lockedIds}
+        />
       )}
     </div>
   );

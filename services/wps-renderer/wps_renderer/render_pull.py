@@ -6,6 +6,7 @@ import errno
 import hashlib
 import http.client
 import json
+import logging
 import os
 import re
 import socket
@@ -17,6 +18,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import zipfile
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from PIL import Image
@@ -27,6 +29,23 @@ MAX_PAGE_BYTES = 120 * 1024 * 1024
 MAX_SOURCE_BYTES = 1024 * 1024 * 1024
 MAX_IMAGE_BYTES = 64 * 1024 * 1024
 MAX_METADATA_BYTES = 256 * 1024
+LOG = logging.getLogger(__name__)
+
+
+def _configure_logging(config_path: Path) -> Path:
+    log_dir = config_path.resolve().parent / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{config_path.stem}.log"
+    handler = RotatingFileHandler(
+        log_path, maxBytes=1024 * 1024, backupCount=3, encoding="utf-8",
+    )
+    logging.basicConfig(
+        level=logging.INFO,
+        handlers=[handler],
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        force=True,
+    )
+    return log_path
 
 
 class LeaseLost(RuntimeError):
@@ -78,6 +97,12 @@ class RenderPull:
         self.wait_seconds = max(0, min(25, int(config.get("wait_seconds", 25))))
         self.retry_seconds = max(1, min(60, int(config.get("retry_seconds", 5))))
         self.renew_seconds = max(10, min(120, int(config.get("renew_seconds", 30))))
+        self.local_job_timeout_seconds = max(
+            60, min(7200, int(config.get("local_job_timeout_seconds", 2100)))
+        )
+        self.poll_failure_exit_seconds = max(
+            60, min(3600, int(config.get("poll_failure_exit_seconds", 300)))
+        )
         self.work_dir = Path(config.get("work_dir") or tempfile.gettempdir()) / "slideflow-render-pull"
         self.work_dir.mkdir(parents=True, exist_ok=True)
         self._validate_origin(self.base_url, "main task URL", allow_https_any=True)
@@ -157,11 +182,13 @@ class RenderPull:
     def _bundle(
         page: dict, source: Path, dpi: int, target: Path,
         required_fonts: list[str], font_hashes: list[str],
+        font_bindings: list[dict[str, str]],
     ):
         manifest = {
             "version": 1, "dpi": dpi,
             "pages": [{"index": page["index"], "file": f"pages/{page['index']}.pptx", "sha256": page["sha256"]}],
             "fonts": [], "required_fonts": required_fonts, "font_hashes": font_hashes,
+            "font_bindings": font_bindings,
         }
         with zipfile.ZipFile(target, "x", compression=zipfile.ZIP_STORED) as archive:
             archive.write(source, f"pages/{page['index']}.pptx")
@@ -171,6 +198,7 @@ class RenderPull:
     def _bundle_batch(
         pages: list[dict], source_meta: dict, source: Path, dpi: int, target: Path,
         required_fonts: list[str], font_hashes: list[str],
+        font_bindings: list[dict[str, str]],
     ):
         manifest = {
             "version": 2,
@@ -187,6 +215,7 @@ class RenderPull:
             "fonts": [],
             "required_fonts": required_fonts,
             "font_hashes": font_hashes,
+            "font_bindings": font_bindings,
         }
         with zipfile.ZipFile(target, "x", compression=zipfile.ZIP_STORED) as archive:
             archive.write(source, "source/deck.pptx")
@@ -238,9 +267,13 @@ class RenderPull:
             job_id = state.get("id")
             if not isinstance(job_id, str) or not TASK_ID.fullmatch(job_id):
                 raise ValueError("local renderer returned an invalid job id")
+            deadline = time.monotonic() + self.local_job_timeout_seconds
             while not stop.wait(0.5):
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("render_timeout")
                 state = self._renderer("GET", f"/v1/jobs/{job_id}")
-                if state.get("status") == "completed":
+                status = state.get("status")
+                if status == "completed":
                     pages = state.get("pages")
                     if not isinstance(pages, list) or len(pages) != len(expected_indexes):
                         raise ValueError("local renderer returned invalid pages")
@@ -257,10 +290,22 @@ class RenderPull:
                         self._download_local_page(job_id, by_index[index], result)
                         results[index] = result
                     return results
-                if state.get("status") in {"failed", "cancelled"}:
+                if status in {"failed", "cancelled"}:
                     error = state.get("error") or {}
                     code = error.get("code") if isinstance(error, dict) else "render_failed"
+                    message = error.get("message") if isinstance(error, dict) else None
+                    if isinstance(message, str) and message:
+                        LOG.error("local renderer job %s failed: %s: %s", job_id, code, message)
                     raise RuntimeError(str(code or "render_failed"))
+                if status == "waiting_fonts":
+                    # Older renderer versions could leave this undocumented
+                    # state pending forever. Treat it as a legacy worker restart
+                    # so the durable main task is retried against the current
+                    # renderer. A real missing font is reported authoritatively
+                    # by FontManager.activate after that retry starts.
+                    raise RuntimeError("worker_restarted")
+                if status not in {"queued", "running"}:
+                    raise RuntimeError("renderer_unavailable")
             raise LeaseLost("render lease was lost")
         finally:
             bundle.unlink(missing_ok=True)
@@ -273,19 +318,26 @@ class RenderPull:
     def _submit_local(
         self, page: dict, source: Path, dpi: int, stop: threading.Event,
         required_fonts: list[str], font_hashes: list[str],
+        font_bindings: list[dict[str, str]],
     ) -> Path:
         bundle = source.with_suffix(".zip")
-        self._bundle(page, source, dpi, bundle, required_fonts, font_hashes)
+        self._bundle(
+            page, source, dpi, bundle, required_fonts, font_hashes, font_bindings,
+        )
         results = self._submit_bundle(bundle, [page["index"]], source.parent / f"result-{page['index']}", stop)
         return results[page["index"]]
 
     def _submit_local_batch(
         self, pages: list[dict], source_meta: dict, source: Path, dpi: int,
         stop: threading.Event, required_fonts: list[str], font_hashes: list[str],
+        font_bindings: list[dict[str, str]],
     ) -> dict[int, Path]:
         token = uuid.uuid4().hex
         bundle = source.parent / f"batch-{token}.zip"
-        self._bundle_batch(pages, source_meta, source, dpi, bundle, required_fonts, font_hashes)
+        self._bundle_batch(
+            pages, source_meta, source, dpi, bundle,
+            required_fonts, font_hashes, font_bindings,
+        )
         return self._submit_bundle(
             bundle, [page["index"] for page in pages], source.parent / f"result-{token}", stop,
         )
@@ -367,10 +419,12 @@ class RenderPull:
     def _render_batch_with_fallback(
         self, pages: list[dict], source_meta: dict, source: Path, dpi: int,
         stop: threading.Event, required_fonts: list[str], font_hashes: list[str],
+        font_bindings: list[dict[str, str]],
     ) -> dict[int, Path]:
         try:
             return self._submit_local_batch(
-                pages, source_meta, source, dpi, stop, required_fonts, font_hashes,
+                pages, source_meta, source, dpi, stop,
+                required_fonts, font_hashes, font_bindings,
             )
         except RuntimeError as exc:
             splittable = {
@@ -381,10 +435,12 @@ class RenderPull:
                 raise
             middle = len(pages) // 2
             left = self._render_batch_with_fallback(
-                pages[:middle], source_meta, source, dpi, stop, required_fonts, font_hashes,
+                pages[:middle], source_meta, source, dpi, stop,
+                required_fonts, font_hashes, font_bindings,
             )
             right = self._render_batch_with_fallback(
-                pages[middle:], source_meta, source, dpi, stop, required_fonts, font_hashes,
+                pages[middle:], source_meta, source, dpi, stop,
+                required_fonts, font_hashes, font_bindings,
             )
             return {**left, **right}
 
@@ -412,11 +468,14 @@ class RenderPull:
                 last_success = time.monotonic()
             except urllib.error.HTTPError as exc:
                 if exc.code in {404, 409}:
+                    LOG.warning("render task %s lease was rejected with HTTP %s", task_id, exc.code)
                     lost.set()
                     return
-            except Exception:
-                pass
+                LOG.warning("render task %s lease renewal failed with HTTP %s", task_id, exc.code)
+            except Exception as exc:
+                LOG.warning("render task %s lease renewal failed: %s", task_id, type(exc).__name__)
             if time.monotonic() - last_success >= lease_seconds - safety_window:
+                LOG.error("render task %s lease could not be renewed before its safety deadline", task_id)
                 lost.set()
                 return
 
@@ -428,6 +487,7 @@ class RenderPull:
         lease_seconds = task.get("lease_seconds")
         required_fonts = task.get("required_fonts", [])
         font_hashes = task.get("font_hashes", [])
+        font_bindings = task.get("font_bindings", [])
         requested_batch = task.get("batch_size", 1)
         if (not isinstance(pages, list) or not 1 <= len(pages) <= 500 or type(dpi) is not int
                 or not 72 <= dpi <= 300 or type(lease_seconds) is not int or not 60 <= lease_seconds <= 3600
@@ -437,7 +497,19 @@ class RenderPull:
                 or len(set(required_fonts)) != len(required_fonts)
                 or not isinstance(font_hashes, list) or len(font_hashes) > 64
                 or any(not isinstance(digest, str) or not SHA256.fullmatch(digest) for digest in font_hashes)
-                or len(set(font_hashes)) != len(font_hashes)):
+                or len(set(font_hashes)) != len(font_hashes)
+                or not isinstance(font_bindings, list) or len(font_bindings) > 512
+                or any(
+                    not isinstance(binding, dict)
+                    or not isinstance(binding.get("name"), str)
+                    or binding.get("name") not in required_fonts
+                    or not isinstance(binding.get("sha256"), str)
+                    or binding.get("sha256") not in font_hashes
+                    for binding in font_bindings
+                )
+                or len({(binding["name"], binding["sha256"]) for binding in font_bindings})
+                != len(font_bindings)
+                or (font_bindings and {binding["name"] for binding in font_bindings} != set(required_fonts))):
             raise ValueError("invalid claimed task manifest")
         indexes = set()
         for page in pages:
@@ -469,6 +541,7 @@ class RenderPull:
         renewer.start()
         directory = Path(tempfile.mkdtemp(prefix=f"{task_id}-", dir=self.work_dir))
         results = []
+        LOG.info("render task %s started with %s page(s)", task_id, len(pages))
         try:
             if batch_size > 1 and source_meta is not None:
                 signed_source = self._main(
@@ -490,7 +563,8 @@ class RenderPull:
                         raise LeaseLost("render lease was lost")
                     chunk = pages[offset:offset + batch_size]
                     images = self._render_batch_with_fallback(
-                        chunk, source_meta, source, dpi, lost, required_fonts, font_hashes,
+                        chunk, source_meta, source, dpi, lost,
+                        required_fonts, font_hashes, font_bindings,
                     )
                     for page in chunk:
                         index = page["index"]
@@ -512,7 +586,8 @@ class RenderPull:
                     source = directory / f"{index}.pptx"
                     self._download(signed["download_url"], source, page["size"], page["sha256"])
                     image = self._submit_local(
-                        page, source, dpi, lost, required_fonts, font_hashes,
+                        page, source, dpi, lost,
+                        required_fonts, font_hashes, font_bindings,
                     )
                     self._upload(self._output_url(task_id, lease_token, index), image, lost)
                     results.append({"index": index, "size": image.stat().st_size,
@@ -520,10 +595,13 @@ class RenderPull:
             if lost.is_set():
                 raise LeaseLost("render lease was lost")
             self._main("POST", f"/api/renderer/render-tasks/{task_id}/complete", {"lease_token": lease_token, "pages": results}, timeout=300)
+            LOG.info("render task %s completed with %s page(s)", task_id, len(results))
         except LeaseLost:
+            LOG.warning("render task %s stopped after its lease was lost", task_id)
             return
         except Exception as exc:
             code = _failure_code(exc)
+            LOG.exception("render task %s failed with code %s", task_id, code)
             if code == "lease_lost":
                 return
             try:
@@ -544,10 +622,24 @@ class RenderPull:
         return True
 
     def run_forever(self):
+        last_success = time.monotonic()
         while True:
             try:
                 self.run_once()
-            except (urllib.error.URLError, TimeoutError, ValueError, OSError, json.JSONDecodeError):
+                last_success = time.monotonic()
+            except (urllib.error.URLError, TimeoutError, ValueError, OSError, json.JSONDecodeError) as exc:
+                unhealthy_seconds = time.monotonic() - last_success
+                LOG.warning(
+                    "render task polling failed for %.0f second(s): %s",
+                    unhealthy_seconds,
+                    type(exc).__name__,
+                )
+                if unhealthy_seconds >= self.poll_failure_exit_seconds:
+                    LOG.error(
+                        "render task polling stayed unhealthy for %.0f second(s); exiting for scheduler recovery",
+                        unhealthy_seconds,
+                    )
+                    raise RuntimeError("render pull polling is unhealthy") from exc
                 time.sleep(self.retry_seconds)
 
 
@@ -555,8 +647,18 @@ def main():
     parser = argparse.ArgumentParser(description="Pull and render SlideFlow PPT tasks")
     parser.add_argument("--config", required=True)
     args = parser.parse_args()
-    config = json.loads(Path(args.config).read_text(encoding="utf-8-sig"))
-    RenderPull(config).run_forever()
+    config_path = Path(args.config).resolve()
+    config = json.loads(config_path.read_text(encoding="utf-8-sig"))
+    log_path = _configure_logging(config_path)
+    worker = RenderPull(config)
+    LOG.info(
+        "render pull worker %s starting; main=%s renderer=%s log=%s",
+        worker.worker_id,
+        worker.base_url,
+        worker.renderer_url,
+        log_path,
+    )
+    worker.run_forever()
 
 
 if __name__ == "__main__":

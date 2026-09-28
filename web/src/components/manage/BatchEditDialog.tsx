@@ -23,11 +23,10 @@ import {
 } from "@/components/ui/select";
 import { UserPicker } from "@/components/resource/UserPicker";
 import { TagInput } from "@/components/resource/TagInput";
+import { useMetadataTagOptions } from "@/components/resource/MetadataTagSelect";
 import {
   DEFAULT_RESOURCE_SUBJECT,
   MANAGEMENT_SCOPE_OPTIONS,
-  RESOURCE_STATUS_FORM_OPTIONS,
-  SECRECY_LEVEL_FORM_OPTIONS,
   VISIBILITY_SCOPE_OPTIONS,
 } from "@/lib/constants";
 import { api } from "@/lib/api";
@@ -70,8 +69,8 @@ function defaultFields(): FieldsState {
   return {
     tags: { enabled: false, mode: "replace", values: [] },
     subject: { enabled: false, value: DEFAULT_RESOURCE_SUBJECT },
-    secrecy_level: { enabled: false, value: "public" },
-    status: { enabled: false, value: "active" },
+    secrecy_level: { enabled: false, value: "" },
+    status: { enabled: false, value: "" },
     visibility_scope: { enabled: false, value: "public", userIds: [] },
     management_scope: { enabled: false, value: "private", userIds: [] },
   };
@@ -129,8 +128,8 @@ function distributionText(
     .join(" / ");
 }
 
-const SECRECY_LABELS: Record<string, string> = { public: "公开", confidential: "保密", secret: "秘密" };
-const STATUS_LABELS: Record<string, string> = { active: "正常", disabled: "停用" };
+const SECRECY_LABELS: Record<string, string> = {};
+const STATUS_LABELS: Record<string, string> = {};
 const SCOPE_LABELS: Record<string, string> = { public: "公开", partial: "部分", private: "仅自己" };
 
 const TAG_MODE_OPTIONS: { value: TagMode; label: string }[] = [
@@ -152,6 +151,8 @@ export function BatchEditDialog({
 }: BatchEditDialogProps) {
   const [fields, setFields] = React.useState<FieldsState>(defaultFields);
   const [confirmStep, setConfirmStep] = React.useState(false);
+  const { options: secrecyOptions } = useMetadataTagOptions("secrecy");
+  const { options: statusOptions } = useMetadataTagOptions("status");
 
   React.useEffect(() => {
     if (open) {
@@ -159,6 +160,20 @@ export function BatchEditDialog({
       setConfirmStep(false);
     }
   }, [open]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    setFields((current) => {
+      const secrecyValue = current.secrecy_level.value || secrecyOptions[0]?.value || "";
+      const statusValue = current.status.value || statusOptions[0]?.value || "";
+      if (secrecyValue === current.secrecy_level.value && statusValue === current.status.value) return current;
+      return {
+        ...current,
+        secrecy_level: { ...current.secrecy_level, value: secrecyValue },
+        status: { ...current.status, value: statusValue },
+      };
+    });
+  }, [open, secrecyOptions, statusOptions]);
 
   const summary = React.useMemo(
     () => computeSummary(resources, resourceIds),
@@ -228,8 +243,8 @@ export function BatchEditDialog({
     }
     if (fields.subject.enabled) parts.push(`主体→${fields.subject.value || "(空)"}`);
     if (fields.secrecy_level.enabled)
-      parts.push(`密级→${SECRECY_LABELS[fields.secrecy_level.value]}`);
-    if (fields.status.enabled) parts.push(`状态→${STATUS_LABELS[fields.status.value]}`);
+      parts.push(`密级→${SECRECY_LABELS[fields.secrecy_level.value] || fields.secrecy_level.value}`);
+    if (fields.status.enabled) parts.push(`状态→${STATUS_LABELS[fields.status.value] || fields.status.value}`);
     if (fields.visibility_scope.enabled)
       parts.push(`可见范围→${SCOPE_LABELS[fields.visibility_scope.value]}`);
     if (fields.management_scope.enabled)
@@ -390,7 +405,7 @@ export function BatchEditDialog({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {SECRECY_LEVEL_FORM_OPTIONS.map((opt) => (
+                    {secrecyOptions.map((opt) => (
                       <SelectItem key={opt.value} value={opt.value}>
                         {opt.label}
                       </SelectItem>
@@ -422,7 +437,7 @@ export function BatchEditDialog({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {RESOURCE_STATUS_FORM_OPTIONS.map((opt) => (
+                    {statusOptions.map((opt) => (
                       <SelectItem key={opt.value} value={opt.value}>
                         {opt.label}
                       </SelectItem>

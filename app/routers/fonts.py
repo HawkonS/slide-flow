@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
@@ -23,6 +23,7 @@ from app.core.permissions import require_user, require_admin
 from app.core.storage import safe_filename, save_upload
 from app.db import now_iso
 from app.services.resource_import.font_tasks import create_font_task, queue_font_deletions
+from app.services.downloads.embed_fonts import embedded_font_cache_status, prepare_embedded_font_cache_for_font
 from app.config import settings
 from app.routers.dependencies import (
     FontDeletePayload,
@@ -34,6 +35,7 @@ from app.routers.dependencies import (
 
 
 router = APIRouter()
+FONT_UPLOAD_MAX_BYTES = 128 * 1024 * 1024
 
 
 def _uploaded_font_abs(stored_path: str | None) -> Path | None:
@@ -140,6 +142,7 @@ def list_fonts(
                 "created_at": row["created_at"],
                 "uploaded_by": row["uploader_name"] or row["uploader_username"] or "未知",
                 "installed_on_server": _installation_path(db, int(row["id"])) is not None,
+                "embedded_cache_status": embedded_font_cache_status(db, int(row["id"])),
             }
         )
     return {"fonts": items}
@@ -147,6 +150,7 @@ def list_fonts(
 
 @router.post("/fonts/upload")
 async def upload_font(
+    background_tasks: BackgroundTasks,
     font_file: UploadFile = File(...),
     display_name: str = Form(default="", max_length=100),
     install_on_server: bool = Form(default=False),
@@ -155,7 +159,9 @@ async def upload_font(
 ) -> dict[str, Any]:
     """上传字体文件（管理员）"""
     target_dir = settings.fonts_dir
-    path = await save_upload(font_file, target_dir, "font_")
+    path = await save_upload(
+        font_file, target_dir, "font_", max_bytes=FONT_UPLOAD_MAX_BYTES
+    )
     
     valid, names = validate_font_file(path)
     if not valid:
@@ -196,6 +202,9 @@ async def upload_font(
             path.unlink(missing_ok=True)
             raise HTTPException(500, f"字体已上传但服务器安装失败：{exc}") from exc
     db.commit()
+    # Prepare the PowerPoint-embeddable payload once while maintaining the
+    # standard font library. Downloads can still lazily backfill legacy rows.
+    background_tasks.add_task(prepare_embedded_font_cache_for_font, font_id)
     
     return {
         "ok": True,

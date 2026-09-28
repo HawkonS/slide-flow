@@ -32,6 +32,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { FilterGroupChip, SubjectFilterChip, TagFilterChip, type ChipOption, type FilterGroup } from "@/components/resource/filter-chips";
+import { useMetadataTagOptions } from "@/components/resource/MetadataTagSelect";
 import {
   Table,
   TableBody,
@@ -44,11 +45,6 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import {
   DEFAULT_RESOURCE_SUBJECT,
-  RESOURCE_SECRECY_LABEL,
-  RESOURCE_SECRECY_OPTIONS,
-  RESOURCE_STATUS_LABEL,
-  RESOURCE_STATUS_OPTIONS,
-  SECRECY_BADGE_TONE,
 } from "@/lib/constants";
 import { parseTags, Resource, serializeTags } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -89,6 +85,16 @@ const URL_DEFAULTS: ManageUrlState = {
 export default function ResourceManagePage() {
   const { user } = useAuth();
   const filters = useManageResourceFilters();
+  const { options: statusTags } = useMetadataTagOptions("status");
+  const { options: secrecyTags } = useMetadataTagOptions("secrecy");
+  const statusOptions = React.useMemo<Option[]>(
+    () => [{ value: "all", label: "全部" }, ...statusTags],
+    [statusTags],
+  );
+  const secrecyOptions = React.useMemo<Option[]>(
+    () => [{ value: "all", label: "全部" }, ...secrecyTags],
+    [secrecyTags],
+  );
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
@@ -244,14 +250,14 @@ export default function ResourceManagePage() {
       {
         key: "status",
         label: "状态",
-        options: RESOURCE_STATUS_OPTIONS,
+        options: statusOptions,
         value: filters.status,
         onChange: (v) => filters.setStatus(v as typeof filters.status),
       },
       {
         key: "secrecy",
         label: "密级",
-        options: RESOURCE_SECRECY_OPTIONS,
+        options: secrecyOptions,
         value: filters.secrecy,
         onChange: (v) => filters.setSecrecy(v as typeof filters.secrecy),
       },
@@ -263,7 +269,7 @@ export default function ResourceManagePage() {
         onChange: (v) => filters.setOwnership(v as typeof filters.ownership),
       },
     ],
-    [filters.status, filters.secrecy, filters.ownership, OWNERSHIP_OPTIONS, filters],
+    [filters.status, filters.secrecy, filters.ownership, OWNERSHIP_OPTIONS, filters, statusOptions, secrecyOptions],
   );
 
   /* ---- Selection ---- */
@@ -538,8 +544,7 @@ export default function ResourceManagePage() {
               </TableHeader>
               <TableBody>
                 {resources.map((r) => {
-                  const preview =
-                    r.current?.preview_url || r.current?.original_preview_url || null;
+                  const preview = r.current?.preview_url || null;
                   const rTags = parseTags(r.tags);
                   const isSelected = selectedIds.has(r.id);
 
@@ -608,18 +613,18 @@ export default function ResourceManagePage() {
                       </TableCell>
                       <TableCell>
                         <Badge
-                          variant={SECRECY_BADGE_TONE[r.secrecy_level] || "outline"}
+                          variant="outline"
                           className="text-[11px]"
                         >
-                          {RESOURCE_SECRECY_LABEL[r.secrecy_level] || r.secrecy_level}
+                          {r.secrecy_level}
                         </Badge>
                       </TableCell>
                       <TableCell>
                         <Badge
-                          variant={r.status === "active" ? "secondary" : "outline"}
+                          variant="outline"
                           className="text-[11px]"
                         >
-                          {RESOURCE_STATUS_LABEL[r.status] || r.status}
+                          {r.status}
                         </Badge>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">

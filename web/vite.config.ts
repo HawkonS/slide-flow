@@ -61,7 +61,9 @@ export default defineConfig({
   },
   build: {
     outDir: path.resolve(configDir, "../app/static/dist"),
-    emptyOutDir: true,
+    // 保留旧 hash 资源，让升级前已打开的页面仍能完成懒加载。
+    // 新入口只引用新 hash；历史文件可由运维按保留周期异步清理。
+    emptyOutDir: false,
     assetsDir: "assets",
     sourcemap: false,
     rollupOptions: {

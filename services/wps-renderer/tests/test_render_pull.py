@@ -31,6 +31,42 @@ class RenderPullTests(unittest.TestCase):
             "work_dir": root,
         }
 
+    @staticmethod
+    def local_submission(job_id="a" * 32):
+        class Response:
+            status = 202
+
+            def read(self, _limit):
+                return json.dumps({"id": job_id}).encode()
+
+        class Connection:
+            def putrequest(self, *_args):
+                pass
+
+            def putheader(self, *_args):
+                pass
+
+            def endheaders(self):
+                pass
+
+            def send(self, _block):
+                pass
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                pass
+
+        return Connection()
+
+    class ImmediateEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _timeout):
+            return False
+
     def test_rejects_non_tls_remote_task_api(self):
         with tempfile.TemporaryDirectory() as temp:
             config = self.config(temp)
@@ -59,13 +95,17 @@ class RenderPullTests(unittest.TestCase):
             source.write_bytes(b"ppt")
             target = Path(temp) / "bundle.zip"
             page = {"index": 1, "sha256": hashlib.sha256(b"ppt").hexdigest()}
-            worker._bundle(page, source, 288, target, ["Test Sans"], ["a" * 64])
+            bindings = [{"name": "Test Sans", "sha256": "a" * 64}]
+            worker._bundle(
+                page, source, 288, target, ["Test Sans"], ["a" * 64], bindings,
+            )
             with zipfile.ZipFile(target) as archive:
                 self.assertEqual(set(archive.namelist()), {"manifest.json", "pages/1.pptx"})
                 manifest = json.loads(archive.read("manifest.json"))
                 self.assertEqual(manifest["pages"][0]["index"], 1)
                 self.assertEqual(manifest["required_fonts"], ["Test Sans"])
                 self.assertEqual(manifest["font_hashes"], ["a" * 64])
+                self.assertEqual(manifest["font_bindings"], bindings)
 
     def test_batch_bundle_contains_one_multi_page_source_and_page_mapping(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -79,7 +119,7 @@ class RenderPullTests(unittest.TestCase):
                 "slide_count": 3,
             }
             pages = [{"index": index} for index in range(3)]
-            worker._bundle_batch(pages, source_meta, source, 288, target, [], [])
+            worker._bundle_batch(pages, source_meta, source, 288, target, [], [], [])
             with zipfile.ZipFile(target) as archive:
                 self.assertEqual(set(archive.namelist()), {"manifest.json", "source/deck.pptx"})
                 manifest = json.loads(archive.read("manifest.json"))
@@ -105,7 +145,7 @@ class RenderPullTests(unittest.TestCase):
                 return {"ok": True}
             worker._main = main
             worker._download = lambda url, target, expected_size, expected_sha: target.write_bytes(b"ppt")
-            worker._submit_local = lambda page, source, dpi, stop, required, hashes: image
+            worker._submit_local = lambda page, source, dpi, stop, required, hashes, bindings: image
             worker._upload = lambda url, path, stop: None
             worker._renew_loop = lambda *args: None
             task = {
@@ -157,7 +197,7 @@ class RenderPullTests(unittest.TestCase):
                 downloads.append((url, expected_size, expected_sha, max_bytes))
                 target.write_bytes(source_bytes)
 
-            def submit(pages, source_meta, source, dpi, stop, required, hashes):
+            def submit(pages, source_meta, source, dpi, stop, required, hashes, bindings):
                 batches.append([page["index"] for page in pages])
                 self.assertEqual(source.read_bytes(), source_bytes)
                 return {page["index"]: images[page["index"]] for page in pages}
@@ -206,11 +246,141 @@ class RenderPullTests(unittest.TestCase):
             pages = [{"index": index} for index in range(4)]
             result = worker._render_batch_with_fallback(
                 pages, {"sha256": "a" * 64, "slide_count": 4}, source, 288,
-                __import__("threading").Event(), [], [],
+                __import__("threading").Event(), [], [], [],
             )
             self.assertEqual(set(result), {0, 1, 2, 3})
             self.assertEqual(attempts[0], [0, 1, 2, 3])
             self.assertTrue(all([index] in attempts for index in range(4)))
+
+    def test_claimed_task_rejects_invalid_font_alias_bindings(self):
+        with tempfile.TemporaryDirectory() as temp:
+            worker = RenderPull(self.config(temp))
+            base = {
+                "task_id": "a" * 32,
+                "lease_token": "l" * 43,
+                "dpi": 288,
+                "lease_seconds": 600,
+                "required_fonts": ["Display A", "Display B"],
+                "font_hashes": ["a" * 64, "b" * 64],
+                "font_bindings": [
+                    {"name": "Display A", "sha256": "a" * 64},
+                    {"name": "Display B", "sha256": "b" * 64},
+                ],
+                "pages": [{
+                    "index": 0,
+                    "size": 3,
+                    "sha256": hashlib.sha256(b"ppt").hexdigest(),
+                }],
+            }
+            invalid = [
+                [{"name": "Unknown", "sha256": "a" * 64}],
+                [
+                    {"name": "Display A", "sha256": "a" * 64},
+                    {"name": "Display A", "sha256": "a" * 64},
+                    {"name": "Display B", "sha256": "b" * 64},
+                ],
+                [{"name": "Display A", "sha256": "a" * 64}],
+            ]
+            for bindings in invalid:
+                with self.subTest(bindings=bindings):
+                    task = {**base, "font_bindings": bindings}
+                    with self.assertRaisesRegex(ValueError, "invalid claimed task manifest"):
+                        worker.process(task)
+
+    def test_claimed_legacy_task_without_alias_bindings_is_accepted(self):
+        with tempfile.TemporaryDirectory() as temp:
+            worker = RenderPull(self.config(temp))
+            image = Path(temp) / "rendered.png"
+            from PIL import Image
+            Image.new("RGB", (16, 9)).save(image)
+            worker._main = lambda method, path, body=None, timeout=30: (
+                {"page": {
+                    "index": 0,
+                    "download_url": "https://bucket.example/source",
+                    "upload_url": "https://bucket.example/output",
+                }} if path.endswith("/urls") else {"ok": True}
+            )
+            worker._download = lambda url, target, expected_size, expected_sha: target.write_bytes(b"ppt")
+            worker._submit_local = lambda page, source, dpi, stop, required, hashes, bindings: image
+            worker._upload = lambda url, path, stop: None
+            worker._renew_loop = lambda *args: None
+            worker.process({
+                "task_id": "a" * 32,
+                "lease_token": "l" * 43,
+                "dpi": 288,
+                "lease_seconds": 600,
+                "required_fonts": ["Legacy Sans"],
+                "font_hashes": ["a" * 64],
+                "pages": [{
+                    "index": 0,
+                    "size": 3,
+                    "sha256": hashlib.sha256(b"ppt").hexdigest(),
+                }],
+            })
+
+    def test_legacy_waiting_fonts_job_is_retried_and_cancelled(self):
+        with tempfile.TemporaryDirectory() as temp:
+            worker = RenderPull(self.config(temp))
+            archive = Path(temp) / "bundle.zip"
+            archive.write_bytes(b"bundle")
+            calls = []
+
+            def renderer(method, path, body=None, timeout=30, headers=None):
+                calls.append((method, path))
+                if method == "GET":
+                    return {"status": "waiting_fonts"}
+                return {}
+
+            worker._renderer = renderer
+            with patch(
+                "wps_renderer.render_pull.http.client.HTTPConnection",
+                return_value=self.local_submission(),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "^worker_restarted$"):
+                    worker._submit_bundle(
+                        archive, [0], Path(temp) / "result", self.ImmediateEvent(),
+                    )
+
+            self.assertIn(("DELETE", "/v1/jobs/" + "a" * 32), calls)
+            self.assertFalse(archive.exists())
+
+    def test_local_renderer_job_has_a_total_deadline(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = self.config(temp)
+            config["local_job_timeout_seconds"] = 60
+            worker = RenderPull(config)
+            archive = Path(temp) / "bundle.zip"
+            archive.write_bytes(b"bundle")
+            calls = []
+
+            def renderer(method, path, body=None, timeout=30, headers=None):
+                calls.append((method, path))
+                return {"status": "running"} if method == "GET" else {}
+
+            worker._renderer = renderer
+            with patch(
+                "wps_renderer.render_pull.http.client.HTTPConnection",
+                return_value=self.local_submission(),
+            ), patch("wps_renderer.render_pull.time.monotonic", side_effect=[0, 1, 61]):
+                with self.assertRaisesRegex(RuntimeError, "^render_timeout$"):
+                    worker._submit_bundle(
+                        archive, [0], Path(temp) / "result", self.ImmediateEvent(),
+                    )
+
+            self.assertEqual(calls[0], ("GET", "/v1/jobs/" + "a" * 32))
+            self.assertEqual(calls[-1], ("DELETE", "/v1/jobs/" + "a" * 32))
+            self.assertFalse(archive.exists())
+
+    def test_polling_exits_after_the_failure_recovery_deadline(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = self.config(temp)
+            config["poll_failure_exit_seconds"] = 60
+            worker = RenderPull(config)
+            with patch.object(worker, "run_once", side_effect=TimeoutError()), patch(
+                "wps_renderer.render_pull.time.monotonic", side_effect=[0, 61]
+            ):
+                with self.assertRaisesRegex(RuntimeError, "polling is unhealthy"):
+                    worker.run_forever()
 
     def test_transient_failures_use_retryable_server_codes(self):
         self.assertEqual(_failure_code(TimeoutError()), "network_error")

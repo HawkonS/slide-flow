@@ -31,18 +31,6 @@ function Optional-String($Object, [string]$Name, [string]$Default = "") {
     return $value.Trim()
 }
 
-function Optional-Int($Object, [string]$Name, [int]$Default) {
-    $property = $Object.PSObject.Properties[$Name]
-    if (-not $property -or $null -eq $property.Value -or [string]::IsNullOrWhiteSpace([string]$property.Value)) { return $Default }
-    try { return [int]$property.Value } catch { throw "Config field '$Name' must be an integer." }
-}
-
-function Required-String($Object, [string]$Name) {
-    $value = Optional-String $Object $Name
-    if (-not $value) { throw "Config field '$Name' is required." }
-    return $value
-}
-
 function Resolve-Git([string]$ConfiguredPath = "") {
     $candidates = @()
     if ($ConfiguredPath) { $candidates += $ConfiguredPath }
@@ -67,9 +55,6 @@ $settings = Read-Settings $Config
 
 $installRoot = Optional-String $settings "install_root" "C:\ProgramData\SlideFlow\WpsRenderer"
 $python = Optional-String $settings "python" "python"
-$mainUrl = Required-String $settings "main_url"
-$port = Optional-Int $settings "renderer_port" 8765
-$workerId = Optional-String $settings "worker_id"
 $version = Optional-String $settings "version"
 $gitPath = Optional-String $settings "git"
 if (-not $version) { $version = [DateTime]::Now.ToString("yyyy.MM.dd-HHmmss") }
@@ -80,9 +65,6 @@ if (-not (Test-Path -LiteralPath $current -PathType Container)) {
 }
 
 $updateScript = Join-Path $sourceRoot "scripts\Upgrade.ps1"
-$fontScript = Join-Path $sourceRoot "scripts\Register-FontSync.ps1"
-$renderScript = Join-Path $sourceRoot "scripts\Register-RenderPull.ps1"
-$tokenFile = Join-Path $installRoot "shared\token.txt"
 
 $git = Resolve-Git $gitPath
 $status = & $git -C $sourceRoot status --porcelain --untracked-files=no
@@ -101,17 +83,6 @@ $upgradeArgs = @{
 }
 & $updateScript @upgradeArgs
 if ($LASTEXITCODE -ne 0) { throw "Renderer upgrade failed." }
-
-$pullArgs = @{
-    InstallRoot = $installRoot
-    Url = $mainUrl
-    TokenFile = $tokenFile
-}
-if ($workerId) { $pullArgs.WorkerId = $workerId }
-& $fontScript @pullArgs
-if ($LASTEXITCODE -ne 0) { throw "Font sync registration failed after upgrade." }
-& $renderScript @pullArgs
-if ($LASTEXITCODE -ne 0) { throw "Render pull registration failed after upgrade." }
 
 Write-Host "SlideFlow Windows Renderer updated successfully."
 Write-Host "Source: $sourceRoot"

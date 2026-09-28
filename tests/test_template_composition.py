@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from PIL import Image
 from pptx import Presentation
@@ -24,6 +24,7 @@ from app.services.files import _init_allowed_file_dirs
 from app.services.resource_import.remote_fonts import sha256_file
 from app.services.resource_import.rendering import RESOURCE_IMPORT_RENDERER_VERSION
 from app.services.resource_import.sessions import _load_resource_import_session_file, _write_resource_import_session
+from app.services.template_import import _commit_template_import_sync
 
 
 class TemplateCompositionTests(unittest.TestCase):
@@ -236,6 +237,13 @@ class TemplateCompositionTests(unittest.TestCase):
         }
         _write_resource_import_session(session)
 
+        self.db.execute(
+            "INSERT INTO user_tag_definitions "
+            "(name, category, label, sort_order, created_at) VALUES (?, ?, ?, ?, ?)",
+            ("company-leader", "组织", "公司领导", 0, "2026-09-26T00:00:00Z"),
+        )
+        self.db.commit()
+
         response = self.client.post(
             f"/api/resource-import/{session_id}/commit",
             json={
@@ -244,10 +252,12 @@ class TemplateCompositionTests(unittest.TestCase):
                 "platform": "wps",
                 "ratio": "16:9",
                 "template_type": "content",
-                "visibility_scope": "public",
-                "management_scope": "private",
+                "visibility_scope": "partial",
+                "management_scope": "partial",
                 "visible_user_ids": [],
+                "visible_user_tags": ["company-leader"],
                 "manage_user_ids": [],
+                "manage_user_tags": ["company-leader"],
             },
         )
         self.assertEqual(response.status_code, 200, response.text)
@@ -260,6 +270,14 @@ class TemplateCompositionTests(unittest.TestCase):
         self.assertEqual([row["sort_order"] for row in rows], [10, 20])
         self.assertTrue(rows[0]["name"].endswith("-01"))
         self.assertTrue(rows[1]["name"].endswith("-02"))
+        self.assertEqual(
+            self.db.execute("SELECT COUNT(*) FROM template_visibility_tags").fetchone()[0],
+            2,
+        )
+        self.assertEqual(
+            self.db.execute("SELECT COUNT(*) FROM template_management_tags").fetchone()[0],
+            2,
+        )
         for row in rows:
             self.assertTrue(settings.abs_path(row["office_path"]).is_file())
             self.assertTrue(settings.abs_path(row["png_path"]).is_file())
@@ -271,6 +289,41 @@ class TemplateCompositionTests(unittest.TestCase):
         self.assertEqual(replay.status_code, 200, replay.text)
         self.assertEqual(replay.json()["template_ids"], response.json()["template_ids"])
         self.assertEqual(self.db.execute("SELECT COUNT(*) FROM templates").fetchone()[0], 2)
+
+    def test_template_import_rejects_invalid_scope_user_ids_before_writes(self):
+        session = {
+            "import_target": "templates",
+            "missing_fonts": [],
+            "slide_count": 1,
+            "preview_status": "ready",
+            "preview_paths": ["preview.png"],
+            "renderer_version": RESOURCE_IMPORT_RENDERER_VERSION,
+            "split_paths": ["page.pptx"],
+        }
+        payload = {
+            "series": "秋季发布会",
+            "subject": "品牌",
+            "platform": "wps",
+            "ratio": "16:9",
+            "template_type": "content",
+            "visibility_scope": "partial",
+            "management_scope": "private",
+            "visible_user_ids": [int(self.bob["id"])],
+            "manage_user_ids": [],
+        }
+
+        for invalid_ids in ([True], [999_999], "1"):
+            with self.subTest(invalid_ids=invalid_ids), self.assertRaises(HTTPException) as raised:
+                _commit_template_import_sync(
+                    "b" * 32,
+                    {**payload, "visible_user_ids": invalid_ids},
+                    self.alice,
+                    self.db,
+                    session,
+                )
+            self.assertEqual(raised.exception.status_code, 400)
+
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM templates").fetchone()[0], 0)
 
     def test_template_upload_uses_shared_durable_import_task(self):
         self.db.execute("UPDATE users SET role = 'admin' WHERE id = ?", (int(self.alice["id"]),))
@@ -292,10 +345,10 @@ class TemplateCompositionTests(unittest.TestCase):
                     "status": "active",
                     "visibility_scope": "public",
                     "visible_user_ids": "[]",
-                    "visible_user_tags": "[]",
+                    "visible_user_tags": "[\"company-leader\"]",
                     "management_scope": "private",
                     "manage_user_ids": "[]",
-                    "manage_user_tags": "[]",
+                    "manage_user_tags": "[\"company-leader\"]",
                     "remark_html": "",
                     "import_target": "templates",
                     "series": "品牌系列",
@@ -315,6 +368,8 @@ class TemplateCompositionTests(unittest.TestCase):
         params = json.loads(row["params"])
         self.assertEqual(params["import_target"], "templates")
         self.assertEqual(params["series"], "品牌系列")
+        self.assertEqual(params["visible_user_tags"], "[\"company-leader\"]")
+        self.assertEqual(params["manage_user_tags"], "[\"company-leader\"]")
         session = _load_resource_import_session_file(response.json()["session_id"])
         self.assertIsNotNone(session)
         self.assertEqual(session["import_target"], "templates")

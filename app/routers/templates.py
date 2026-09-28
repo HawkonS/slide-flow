@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.config import settings
 from app.core.fonts import missing_fonts
 from app.core.permissions import is_system_admin
 from app.core.permissions import require_admin
@@ -22,6 +23,7 @@ from app.schemas.templates import (
 from app.services.common import (
     _json_loads,
     _parse_id_list,
+    _parse_string_list,
     _validate_scope,
 )
 from app.services.downloads.fonts import (
@@ -45,6 +47,7 @@ from app.core.oss import storage as oss_storage
 from app.services.templates import (
     _rename_template_file,
     _serialize_template,
+    _set_template_scope_tags,
     _set_template_scope_users,
     _template_group_order_values,
     _template_name,
@@ -58,6 +61,11 @@ from app.services.templates import (
     _validate_template_series,
     can_view_template,
 )
+from app.services.resources import _normalise_scope_tags
+from app.services.resource_import.validation import (
+    _validate_import_image,
+    _validate_import_ppt_package,
+)
 from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import File
@@ -67,17 +75,19 @@ from fastapi import Query
 from fastapi import Response
 from fastapi import UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
+from starlette.background import BackgroundTask
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 import asyncio
-import io
 import json
 import sqlite3
 import tempfile
 import zipfile
 
 router = APIRouter()
+TEMPLATE_OFFICE_MAX_BYTES = 512 * 1024 * 1024
+TEMPLATE_PREVIEW_MAX_BYTES = 64 * 1024 * 1024
 
 _T = TypeVar("_T")
 
@@ -198,8 +208,11 @@ def list_templates(
         vis_cond = (
             "(t.owner_id = :vis_uid"
             " OR t.visibility_scope = 'public'"
-            " OR (t.visibility_scope = 'partial' AND t.id IN"
-            " (SELECT template_id FROM template_visibility WHERE user_id = :vis_uid)))"
+            " OR (t.visibility_scope = 'partial' AND (t.id IN"
+            " (SELECT template_id FROM template_visibility WHERE user_id = :vis_uid)"
+            " OR EXISTS (SELECT 1 FROM template_visibility_tags tvt"
+            " JOIN user_tags ut ON ut.tag_name = tvt.tag_name"
+            " WHERE tvt.template_id = t.id AND ut.user_id = :vis_uid))))"
         )
 
     where_parts = [vis_cond]
@@ -328,19 +341,29 @@ def compose_template_download(
             raise HTTPException(404, f"模板文件不存在：{row['name']}")
         input_paths.append(path)
 
-    with tempfile.TemporaryDirectory(prefix="slide-flow-template-compose-") as temp_name:
-        output_path = Path(temp_name) / "combined_templates.pptx"
-        try:
-            merge_pptx_files(input_paths, output_path)
-        except (ValueError, zipfile.BadZipFile) as exc:
-            raise HTTPException(400, f"模板组合失败：{exc}") from exc
-        content = output_path.read_bytes()
-
+    settings.downloads_dir.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(
+        prefix="combined_templates_",
+        suffix=".pptx",
+        dir=settings.downloads_dir,
+        delete=False,
+    )
+    output_path = Path(handle.name)
+    handle.close()
+    try:
+        merge_pptx_files(input_paths, output_path)
+    except (ValueError, zipfile.BadZipFile) as exc:
+        output_path.unlink(missing_ok=True)
+        raise HTTPException(400, f"模板组合失败：{exc}") from exc
+    except Exception:
+        output_path.unlink(missing_ok=True)
+        raise
     filename = f"标准模板组合_{len(template_ids)}页.pptx"
-    return Response(
-        content=content,
+    return FileResponse(
+        output_path,
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
         headers={"Content-Disposition": _content_disposition(filename)},
+        background=BackgroundTask(output_path.unlink, missing_ok=True),
     )
 
 
@@ -354,8 +377,10 @@ async def create_template(
     template_type: str = Form(...),
     visibility_scope: str = Form("public"),
     visible_user_ids: str = Form(""),
+    visible_user_tags: str = Form(""),
     management_scope: str = Form("private"),
     manage_user_ids: str = Form(""),
+    manage_user_tags: str = Form(""),
     office_file: UploadFile = File(...),
     png_file: UploadFile | None = File(None),
     user: sqlite3.Row = Depends(require_admin),
@@ -368,13 +393,30 @@ async def create_template(
     template_type = _validate_standalone_template_type(template_type)
     visibility_scope = _validate_scope(visibility_scope)
     management_scope = _validate_scope(management_scope)
+    visible_ids = _parse_id_list(visible_user_ids)
+    manage_ids = _parse_id_list(manage_user_ids)
+    visible_tags = _normalise_scope_tags(
+        db, _parse_string_list(visible_user_tags, label="可见用户标签")
+    )
+    manage_tags = _normalise_scope_tags(
+        db, _parse_string_list(manage_user_tags, label="管理用户标签")
+    )
+    if visibility_scope == "partial" and not visible_ids and not visible_tags:
+        raise HTTPException(400, "可见范围为部分时请至少选择一位用户或一个用户标签")
+    if management_scope == "partial" and not manage_ids and not manage_tags:
+        raise HTTPException(400, "管理范围为部分时请至少选择一位用户或一个用户标签")
     _validate_office_upload(office_file)
     oss_storage.ensure_configured()
     uploaded_refs: list[str] = []
     try:
         with tempfile.TemporaryDirectory(prefix="slide-flow-template-") as temp_name:
             template_dir = Path(temp_name)
-            office_path = await save_upload(office_file, template_dir, "office_", stage_oss=True)
+            office_path = await save_upload(
+                office_file, template_dir, "office_", stage_oss=True,
+                max_bytes=TEMPLATE_OFFICE_MAX_BYTES,
+            )
+            if office_path.suffix.lower() in {".pptx", ".potx", ".ppsx"}:
+                _validate_import_ppt_package(office_path)
             font_names = await asyncio.to_thread(detect_ppt_fonts, office_path)
             missing = missing_fonts(font_names, known_font_aliases(db))
             office_file_name = _template_office_file_name(series, subject, platform, ratio, template_type, Path(office_file.filename or "").suffix)
@@ -385,9 +427,13 @@ async def create_template(
             if png_file is not None and png_file.filename:
                 _validate_png_upload(png_file)
                 png_path = _rename_template_file(
-                    await save_upload(png_file, template_dir, "preview_", stage_oss=True),
+                    await save_upload(
+                        png_file, template_dir, "preview_", stage_oss=True,
+                        max_bytes=TEMPLATE_PREVIEW_MAX_BYTES,
+                    ),
                     _template_preview_file_name(series, subject, platform, ratio, template_type),
                 )
+                _validate_import_image(png_path)
                 png_path = _compress_hd_image(png_path)
                 png_ref = persist_asset(png_path, "templates/png")
                 uploaded_refs.append(png_ref)
@@ -413,8 +459,10 @@ async def create_template(
                 ),
             )
             template_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
-            _set_template_scope_users(db, "template_visibility", template_id, _parse_id_list(visible_user_ids))
-            _set_template_scope_users(db, "template_management", template_id, _parse_id_list(manage_user_ids))
+            _set_template_scope_users(db, "template_visibility", template_id, visible_ids)
+            _set_template_scope_users(db, "template_management", template_id, manage_ids)
+            _set_template_scope_tags(db, "template_visibility_tags", template_id, visible_tags)
+            _set_template_scope_tags(db, "template_management_tags", template_id, manage_tags)
             db.commit()
     except Exception:
         db.rollback()
@@ -434,8 +482,10 @@ async def update_template(
     template_type: str = Form(...),
     visibility_scope: str = Form("public"),
     visible_user_ids: str = Form(""),
+    visible_user_tags: str = Form(""),
     management_scope: str = Form("private"),
     manage_user_ids: str = Form(""),
+    manage_user_tags: str = Form(""),
     office_file: UploadFile | None = File(None),
     png_file: UploadFile | None = File(None),
     user: sqlite3.Row = Depends(require_admin),
@@ -449,6 +499,18 @@ async def update_template(
     template_type = _validate_standalone_template_type(template_type)
     visibility_scope = _validate_scope(visibility_scope)
     management_scope = _validate_scope(management_scope)
+    visible_ids = _parse_id_list(visible_user_ids)
+    manage_ids = _parse_id_list(manage_user_ids)
+    visible_tags = _normalise_scope_tags(
+        db, _parse_string_list(visible_user_tags, label="可见用户标签")
+    )
+    manage_tags = _normalise_scope_tags(
+        db, _parse_string_list(manage_user_tags, label="管理用户标签")
+    )
+    if visibility_scope == "partial" and not visible_ids and not visible_tags:
+        raise HTTPException(400, "可见范围为部分时请至少选择一位用户或一个用户标签")
+    if management_scope == "partial" and not manage_ids and not manage_tags:
+        raise HTTPException(400, "管理范围为部分时请至少选择一位用户或一个用户标签")
     oss_storage.ensure_configured()
     old_paths: list[Path | str | None] = []
     uploaded_refs: list[str] = []
@@ -462,7 +524,12 @@ async def update_template(
             missing = _json_loads(row["missing_fonts"], [])
             if office_file is not None and office_file.filename:
                 _validate_office_upload(office_file)
-                new_office = await save_upload(office_file, template_dir, "office_", stage_oss=True)
+                new_office = await save_upload(
+                    office_file, template_dir, "office_", stage_oss=True,
+                    max_bytes=TEMPLATE_OFFICE_MAX_BYTES,
+                )
+                if new_office.suffix.lower() in {".pptx", ".potx", ".ppsx"}:
+                    _validate_import_ppt_package(new_office)
                 font_names = detect_ppt_fonts(new_office)
                 missing = missing_fonts(font_names, known_font_aliases(db))
                 old_paths.append(row["office_path"])
@@ -472,7 +539,11 @@ async def update_template(
             png_path = row["png_path"]
             if png_file is not None and png_file.filename:
                 _validate_png_upload(png_file)
-                new_png = await save_upload(png_file, template_dir, "preview_", stage_oss=True)
+                new_png = await save_upload(
+                    png_file, template_dir, "preview_", stage_oss=True,
+                    max_bytes=TEMPLATE_PREVIEW_MAX_BYTES,
+                )
+                _validate_import_image(new_png)
                 old_paths.append(row["png_path"])
                 renamed_png = _rename_template_file(new_png, _template_preview_file_name(series, subject, platform, ratio, template_type))
                 renamed_png = _compress_hd_image(renamed_png)
@@ -503,8 +574,10 @@ async def update_template(
                     visibility_scope, management_scope, now_iso(), template_id,
                 ),
             )
-            _set_template_scope_users(db, "template_visibility", template_id, _parse_id_list(visible_user_ids))
-            _set_template_scope_users(db, "template_management", template_id, _parse_id_list(manage_user_ids))
+            _set_template_scope_users(db, "template_visibility", template_id, visible_ids)
+            _set_template_scope_users(db, "template_management", template_id, manage_ids)
+            _set_template_scope_tags(db, "template_visibility_tags", template_id, visible_tags)
+            _set_template_scope_tags(db, "template_management_tags", template_id, manage_tags)
             db.commit()
     except Exception:
         db.rollback()
@@ -569,28 +642,43 @@ def download_template(
     row = _template_row(db, template_id)
     if not can_view_template(db, row, user):
         raise HTTPException(403, "无可见权限")
-    if is_oss_ref(row["office_path"]) and not with_fonts:
-        return RedirectResponse(
-            oss_storage.signed_url(row["office_path"], filename=row["office_file_name"], download=True),
-            status_code=307,
-        )
     path = _resource_file_abs(row["office_path"])
     if path is None or not path.exists():
         raise HTTPException(404, "模板文件不存在")
     filename = row["office_file_name"] or path.name
     if not with_fonts:
-        return FileResponse(path, headers={"Content-Disposition": _content_disposition(filename)})
+        background = None
+        if is_oss_ref(row["office_path"]):
+            from app.services.files import cleanup_materialized, defer_materialized_cleanup
+            defer_materialized_cleanup(path)
+            background = BackgroundTask(cleanup_materialized, [path])
+        return FileResponse(
+            path,
+            headers={"Content-Disposition": _content_disposition(filename)},
+            background=background,
+        )
 
     font_names = _json_loads(row["font_names"], [])
     fonts, _ = _build_fonts_bundle(db, font_names)
     missing = _json_loads(row["missing_fonts"], [])
     filename_base = Path(filename).stem
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as package:
-        package.write(path, arcname=filename)
-        _write_fonts_into_zip(package, fonts, missing)
-    return Response(
-        content=buffer.getvalue(),
+    settings.downloads_dir.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(
+        prefix="template_fonts_", suffix=".zip",
+        dir=settings.downloads_dir, delete=False,
+    )
+    archive_path = Path(handle.name)
+    handle.close()
+    try:
+        with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as package:
+            package.write(path, arcname=filename)
+            _write_fonts_into_zip(package, fonts, missing)
+    except Exception:
+        archive_path.unlink(missing_ok=True)
+        raise
+    return FileResponse(
+        archive_path,
         media_type="application/zip",
         headers={"Content-Disposition": _content_disposition(f"{filename_base}_with_fonts.zip")},
+        background=BackgroundTask(archive_path.unlink, missing_ok=True),
     )

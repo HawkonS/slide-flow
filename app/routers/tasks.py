@@ -33,7 +33,10 @@ from app.services.files import (
     _validate_ppt_upload,
 )
 from app.services.resource_import.limits import (
+    RESOURCE_IMPORT_MAX_IMAGE_BYTES,
+    RESOURCE_IMPORT_MAX_IMAGES,
     RESOURCE_IMPORT_MAX_PPT_BYTES,
+    RESOURCE_IMPORT_MAX_TOTAL_BYTES,
 )
 from app.services.resource_import.sessions import (
     _write_resource_import_session,
@@ -42,6 +45,7 @@ from app.services.resource_import.sessions import (
 from app.services.resource_import.validation import (
     _require_resource_import_origin,
     _save_resource_import_upload,
+    _validate_import_image,
     _validate_import_ppt_package,
 )
 from app.services.resource_import.render_tasks import cancel_render_tasks, cancel_render_tasks_for_parent
@@ -229,6 +233,12 @@ async def create_split_import_task(
             _=None,
         )
     _validate_ppt_upload(ppt_file)
+    if len(images) > RESOURCE_IMPORT_MAX_IMAGES:
+        raise HTTPException(400, f"单次最多上传 {RESOURCE_IMPORT_MAX_IMAGES} 张预览图")
+    if len(name_prefix.strip()) > 120 or len(tags) > 2_000 or len(remark_html) > 100_000:
+        raise HTTPException(400, "素材名称、标签或备注内容过长")
+    if any(len(value) > 20_000 for value in (visible_user_ids, visible_user_tags, manage_user_ids, manage_user_tags)):
+        raise HTTPException(400, "权限范围数据过长，请减少选择项后重试")
     visibility_scope = _validate_required_scope(visibility_scope, "可见范围")
     management_scope = _validate_required_scope(management_scope, "管理范围")
     secrecy_level = _validate_secrecy(secrecy_level)
@@ -238,22 +248,40 @@ async def create_split_import_task(
     images = sorted(images, key=lambda f: _natural_sort_key(f.filename or ""))
     temp_dir = Path(tempfile.mkdtemp(prefix="task_split_"))
 
-    # 保存上传文件到临时目录
-    source_path = await save_upload(ppt_file, temp_dir, "source_", stage_oss=True)
-    image_paths: list[str] = []
-    for img in images:
-        img_path = await save_upload(img, temp_dir, "img_", stage_oss=True)
-        img_path = _compress_hd_image(img_path)
-        image_paths.append(str(img_path))
+    try:
+        total_bytes = 0
+        source_path, source_size = await _save_resource_import_upload(
+            ppt_file, temp_dir, "source_",
+            max_bytes=RESOURCE_IMPORT_MAX_PPT_BYTES,
+            total_bytes=total_bytes,
+            stage_oss=True,
+        )
+        total_bytes += source_size
+        _validate_import_ppt_package(source_path)
+        image_paths: list[str] = []
+        for img in images:
+            img_path, image_size = await _save_resource_import_upload(
+                img, temp_dir, "img_",
+                max_bytes=RESOURCE_IMPORT_MAX_IMAGE_BYTES,
+                total_bytes=total_bytes,
+                stage_oss=True,
+            )
+            total_bytes += image_size
+            if total_bytes > RESOURCE_IMPORT_MAX_TOTAL_BYTES:
+                raise HTTPException(413, "本批导入文件总大小超过 10 GB")
+            _validate_import_image(img_path)
+            img_path = _compress_hd_image(img_path)
+            image_paths.append(str(img_path))
 
-    # 校验 PPT 页数与图片数量
-    n_slides = slide_count(source_path)
-    if n_slides == 0:
+        # 校验 PPT 页数与图片数量
+        n_slides = slide_count(source_path)
+        if n_slides == 0:
+            raise HTTPException(400, "无法读取 PPT 页数")
+        if image_paths and len(image_paths) != n_slides:
+            raise HTTPException(400, f"PPT 共 {n_slides} 页，但提供了 {len(image_paths)} 张图片，数量不一致")
+    except Exception:
         shutil.rmtree(temp_dir, ignore_errors=True)
-        raise HTTPException(400, "无法读取 PPT 页数")
-    if len(image_paths) != 0 and len(image_paths) != n_slides:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        raise HTTPException(400, f"PPT 共 {n_slides} 页，但提供了 {len(image_paths)} 张图片，数量不一致")
+        raise
 
     # 创建 task 记录
     params = {
@@ -368,11 +396,9 @@ async def create_resource_import_task(
         template_type = _validate_standalone_template_type(template_type)
         # 任务底层仍共用单页素材的耐久化渲染链路，这两项仅是兼容参数。
         name_prefix = series
-        secrecy_level = "public"
-        status = "active"
+        secrecy_level = ""
+        status = ""
         tags = ""
-        visible_user_tags = ""
-        manage_user_tags = ""
         remark_html = ""
     else:
         subject = _validate_resource_subject(subject, allow_empty=True)

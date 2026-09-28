@@ -250,7 +250,9 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
   };
   const handleDelete = (item: AdminTag) => {
     const detail = item.usage_count > 0
-      ? `「${item.name}」当前有 ${item.usage_count} 个${domain === "user" ? "用户" : "素材或放映"}在使用。删除定义不会清除历史数据，是否继续？`
+      ? domain === "user"
+        ? `「${item.name}」当前有 ${item.usage_count} 个用户在使用。删除后会同时移除用户分组以及依赖该标签的素材/模板动态权限，是否继续？`
+        : `「${item.name}」当前有 ${item.usage_count} 个素材或放映在使用。删除定义不会清除历史业务字段，是否继续？`
       : `确认删除${copy.label}「${item.name}」？`;
     if (window.confirm(detail)) deleteMutation.mutate(item.id);
   };

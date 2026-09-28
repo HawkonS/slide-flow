@@ -28,21 +28,31 @@ import re
 import sqlite3
 
 
+RESOURCE_SCOPE_MAX_USERS = 1000
 RESOURCE_SCOPE_MAX_TAGS = 100
 
 
-def _set_scope_users(db: sqlite3.Connection, table: str, resource_id: int, user_ids: list[int]) -> None:
-    ids = sorted({int(user_id) for user_id in user_ids if int(user_id) > 0})
-    if len(ids) > 1000:
-        raise HTTPException(400, "单个范围最多选择 1000 位用户")
+def _normalise_scope_user_ids(db: sqlite3.Connection, user_ids: list[int]) -> list[int]:
+    if not isinstance(user_ids, list) or any(type(user_id) is not int for user_id in user_ids):
+        raise HTTPException(400, "用户范围必须是整数数组")
+    ids = sorted({user_id for user_id in user_ids if user_id > 0})
+    if len(ids) > RESOURCE_SCOPE_MAX_USERS:
+        raise HTTPException(400, f"单个范围最多选择 {RESOURCE_SCOPE_MAX_USERS} 位用户")
     if ids:
         placeholders = ",".join("?" for _ in ids)
         existing = {
             int(row["id"])
-            for row in db.execute(f"SELECT id FROM users WHERE id IN ({placeholders})", ids).fetchall()
+            for row in db.execute(
+                f"SELECT id FROM users WHERE id IN ({placeholders})", ids
+            ).fetchall()
         }
         if existing != set(ids):
             raise HTTPException(400, "可见/管理范围中存在无效用户，请重新选择")
+    return ids
+
+
+def _set_scope_users(db: sqlite3.Connection, table: str, resource_id: int, user_ids: list[int]) -> None:
+    ids = _normalise_scope_user_ids(db, user_ids)
     # Validate the complete replacement set before deleting existing rows. This
     # keeps a rejected metadata update from leaving an open partial write in a
     # pooled SQLite connection.
@@ -300,7 +310,8 @@ def _insert_version(
             ts,
         ),
     )
-    return _version_row(db, resource_id)
+    version_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+    return _version_row(db, resource_id, version_id)
 
 
 def _delete_latest_resource_version(

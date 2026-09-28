@@ -85,6 +85,34 @@ def _serialize_task(row: sqlite3.Row, db: sqlite3.Connection | None = None) -> d
             for key in ("total", "created", "resource_ids", "template_ids", "message", "expired")
             if key in raw_result_data
         }
+
+        # Resource detail pages use an opaque detail token rather than the
+        # enumerable numeric resource id. Add the tokens to task results so
+        # the task UI can render direct links without exposing another lookup
+        # endpoint or issuing one request per generated resource.
+        resource_ids = result_data.get("resource_ids")
+        if db is not None and isinstance(resource_ids, list):
+            valid_resource_ids: list[int] = []
+            for resource_id in resource_ids:
+                try:
+                    parsed_id = int(resource_id)
+                except (TypeError, ValueError):
+                    continue
+                if parsed_id > 0 and parsed_id not in valid_resource_ids:
+                    valid_resource_ids.append(parsed_id)
+            if valid_resource_ids:
+                placeholders = ",".join("?" for _ in valid_resource_ids)
+                resource_rows = db.execute(
+                    f"SELECT id, detail_token FROM resources WHERE id IN ({placeholders})",
+                    valid_resource_ids,
+                ).fetchall()
+                detail_tokens = {
+                    str(row["id"]): str(row["detail_token"])
+                    for row in resource_rows
+                    if row["detail_token"]
+                }
+                if detail_tokens:
+                    result_data["resource_detail_tokens"] = detail_tokens
     else:
         result_data = {}
 

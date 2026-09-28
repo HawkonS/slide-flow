@@ -221,28 +221,24 @@ class JobManager:
             if job.cancel.is_set():
                 raise RenderError("cancelled", "Upload was cancelled", 409)
             job.manifest, job.bundle_sha256 = manifest, sha
-            job.fonts_ready = self._fonts_ready(manifest)
-            job.state = "queued" if job.fonts_ready else "waiting_fonts"
+            # Font sync is owned by a separate process. Its completion can race
+            # this process's short-lived installed-font cache, so admission must
+            # never park a job in an unconsumed intermediate state. The worker
+            # performs the authoritative, forced inventory scan in
+            # ``FontManager.activate`` immediately before WPS starts.
+            job.fonts_ready = True
+            job.state = "queued"
             job.updated_at = time.time()
             try:
                 (directory / "bundle.zip").unlink(missing_ok=True)
                 self._persist(job)
-                if job.fonts_ready:
-                    self.queue.put_nowait(job.id)
+                self.queue.put_nowait(job.id)
             except queue.Full as exc:
                 job.state, job.manifest = "uploading", None
                 raise RenderError("queue_full", "Renderer queue is full", 429) from exc
             except Exception:
                 job.state, job.manifest = "uploading", None
                 raise
-
-    def _fonts_ready(self, manifest):
-        """Do not enter the render queue until every declared font is usable."""
-        try:
-            result = self.fonts.check(manifest.get("required_fonts", []), manifest.get("fonts", []))
-            return not result.get("missing") and all(item.get("installed") and not item.get("conflict") for item in result.get("fonts", []))
-        except Exception:
-            return False
 
     def upload_failed(self, job):
         with self.changed:
@@ -434,8 +430,6 @@ class JobManager:
         directory = self.storage.directory(job.id)
         output = directory / "output"
         output.mkdir()
-        if not self._fonts_ready(job.manifest):
-            raise RenderError("fonts_missing", "Required fonts are not installed; conversion was not started", 409)
         with self.fonts.activate(directory / "input", job.manifest):
             if job.manifest.get("version") == 2:
                 self._render_source_batch(job, directory, output)

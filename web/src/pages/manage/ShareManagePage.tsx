@@ -11,9 +11,8 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
-import { RESOURCE_SECRECY_LABEL, SECRECY_BADGE_TONE } from "@/lib/constants";
 
-type ShareStatus = "active" | "expired" | "revoked" | "disabled";
+type ShareStatus = "active" | "expired" | "revoked";
 
 interface ManagedShareLink {
   id: number;
@@ -45,14 +44,12 @@ const STATUS_LABEL: Record<ShareStatus, string> = {
   active: "有效",
   expired: "已过期",
   revoked: "已撤销",
-  disabled: "素材已停用",
 };
 
 const STATUS_TONE: Record<ShareStatus, "success" | "warning" | "destructive" | "outline"> = {
   active: "success",
   expired: "warning",
   revoked: "outline",
-  disabled: "destructive",
 };
 
 function formatDate(value: string | null | undefined) {
@@ -81,7 +78,7 @@ export default function ShareManagePage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const appliedSearch = searchParams.get("q") || "";
   const rawStatus = searchParams.get("status") || "all";
-  const status = ["all", "active", "expired", "revoked", "disabled"].includes(rawStatus)
+  const status = ["all", "active", "expired", "revoked"].includes(rawStatus)
     ? rawStatus
     : "all";
   const page = Math.max(1, Number(searchParams.get("page")) || 1);
@@ -145,16 +142,15 @@ export default function ShareManagePage() {
       <PageHeader
         title="分享管理"
         count={`${data?.stats.total ?? 0} 条`}
-        description="集中查看和撤销你有权管理的单页素材临时分享链接。"
+        description="集中查看和撤销你创建的单页素材临时分享链接。"
       />
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {[
           ["all", "全部", data?.stats.total ?? 0],
           ["active", "有效", data?.stats.active ?? 0],
           ["expired", "已过期", data?.stats.expired ?? 0],
           ["revoked", "已撤销", data?.stats.revoked ?? 0],
-          ["disabled", "素材已停用", data?.stats.disabled ?? 0],
         ].map(([value, label, count]) => (
           <button
             key={String(value)}
@@ -180,7 +176,6 @@ export default function ShareManagePage() {
             <SelectItem value="active">有效</SelectItem>
             <SelectItem value="expired">已过期</SelectItem>
             <SelectItem value="revoked">已撤销</SelectItem>
-            <SelectItem value="disabled">素材已停用</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -212,8 +207,8 @@ export default function ShareManagePage() {
                         <div className="truncate font-medium hover:underline">{item.resource.name}</div>
                         <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
                           <span className="truncate">{item.resource.subject || "未设置主体"}</span>
-                          <Badge variant={SECRECY_BADGE_TONE[item.resource.secrecy_level] || "outline"} className="h-5 shrink-0 px-1.5 text-[10px]">
-                            {RESOURCE_SECRECY_LABEL[item.resource.secrecy_level] || item.resource.secrecy_level}
+                          <Badge variant="outline" className="h-5 shrink-0 px-1.5 text-[10px]">
+                            {item.resource.secrecy_level}
                           </Badge>
                         </div>
                       </button>
@@ -232,7 +227,7 @@ export default function ShareManagePage() {
                         ) : (
                           <span className="self-center px-2 text-[11px] text-muted-foreground" title="该链接创建于集中管理功能上线前，系统未保存可恢复的原始地址">历史链接</span>
                         )}
-                        {(item.status === "active" || item.status === "disabled") && (
+                        {item.status === "active" && (
                           <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-destructive" title="撤销分享链接" aria-label="撤销分享链接" disabled={revoke.isPending} onClick={() => revoke.mutate(item)}><Trash2 /></Button>
                         )}
                       </div>

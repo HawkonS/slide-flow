@@ -118,6 +118,7 @@ def unpack_bundle(bundle, destination, settings):
             pages, fonts = manifest.get("pages"), manifest.get("fonts", [])
             required = manifest.get("required_fonts", [])
             font_hashes = manifest.get("font_hashes")
+            font_bindings = manifest.get("font_bindings", [])
             if font_hashes is not None and (not isinstance(font_hashes, list) or len(font_hashes) > 64
                     or any(not isinstance(sha, str) or not HASH.fullmatch(sha) for sha in font_hashes)
                     or len(set(font_hashes)) != len(font_hashes)):
@@ -132,6 +133,24 @@ def unpack_bundle(bundle, destination, settings):
             if (not isinstance(required, list) or len(required) > 128
                     or any(not isinstance(name, str) or not name.strip() or len(name) > 256 for name in required)):
                 raise RenderError("invalid_manifest", "Invalid required font names")
+            if (not isinstance(font_bindings, list) or len(font_bindings) > 512
+                    or any(
+                        not isinstance(binding, dict)
+                        or not isinstance(binding.get("name"), str)
+                        or binding.get("name") not in required
+                        or not isinstance(binding.get("sha256"), str)
+                        or font_hashes is None
+                        or binding.get("sha256") not in font_hashes
+                        for binding in font_bindings
+                    )):
+                raise RenderError("invalid_manifest", "Invalid font alias bindings")
+            binding_pairs = {
+                (binding["name"], binding["sha256"])
+                for binding in font_bindings
+            }
+            if (len(binding_pairs) != len(font_bindings)
+                    or (font_bindings and {name for name, _ in binding_pairs} != set(required))):
+                raise RenderError("invalid_manifest", "Incomplete or duplicate font alias bindings")
 
             expected = {"manifest.json"}
             indexes = set()

@@ -8,7 +8,7 @@ import { useAuth } from "@/lib/auth";
 /** 标准模板系列导入：复用单页素材的上传、字体检测、渲染与确认流程。 */
 export function TemplateImportPage() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const { user } = useAuth();
   const taskIdParam = Number(searchParams.get("task_id"));
@@ -19,6 +19,11 @@ export function TemplateImportPage() {
       target="templates"
       ownerId={user?.id}
       taskId={taskId}
+      onTaskCreated={(createdTaskId) => {
+        const next = new URLSearchParams(searchParams);
+        next.set("task_id", String(createdTaskId));
+        setSearchParams(next, { replace: true });
+      }}
       onSuccess={() => {
         void queryClient.invalidateQueries({ queryKey: ["templates"] });
       }}

@@ -44,21 +44,6 @@ def unique_child_dir(parent: Path) -> Path:
     return path
 
 
-async def save_upload(upload: UploadFile, dest_dir: Path, prefix: str = "") -> Path:
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    # 统一短命名：prefix + 10 位 hex + 安全扩展名；不再带用户原始文件名
-    suffix = safe_suffix(upload.filename)
-    target = dest_dir / f"{prefix}{uuid.uuid4().hex[:10]}{suffix}"
-    with target.open("wb") as handle:
-        while True:
-            chunk = await upload.read(1024 * 1024)
-            if not chunk:
-                break
-            handle.write(chunk)
-    await upload.seek(0)
-    return target
-
-
 def _upload_size(upload: UploadFile) -> int:
     """Return an upload size without consuming its seekable spool."""
     if upload.size is not None:
@@ -129,26 +114,45 @@ async def save_upload(
     prefix: str = "",
     *,
     stage_oss: bool = False,
+    max_bytes: int | None = None,
 ) -> Path:
+    """Persist an upload with an optional hard byte limit.
+
+    The limit is checked before and during copying. Partial local files are
+    removed on every error, and the upload spool is rewound for callers.
+    """
     backend = settings.storage_backend.strip().lower()
     if stage_oss:
         if backend == "oss":
-            target, _ = await stage_upload_via_oss(upload, dest_dir, prefix)
+            target, _ = await stage_upload_via_oss(
+                upload, dest_dir, prefix, max_bytes=max_bytes
+            )
             return target
         if backend != "local":
             raise StorageConfigurationError("storage.backend 只能配置为 local 或 oss")
+    if max_bytes is not None and _upload_size(upload) > max_bytes:
+        raise HTTPException(413, "上传文件过大，请压缩后重试")
     dest_dir.mkdir(parents=True, exist_ok=True)
     # 统一短命名：prefix + 10 位 hex + 安全扩展名；不再带用户原始文件名
     suffix = safe_suffix(upload.filename)
     target = dest_dir / f"{prefix}{uuid.uuid4().hex[:10]}{suffix}"
-    with target.open("wb") as handle:
-        while True:
-            chunk = await upload.read(1024 * 1024)
-            if not chunk:
-                break
-            handle.write(chunk)
-    await upload.seek(0)
-    return target
+    written = 0
+    try:
+        with target.open("wb") as handle:
+            while True:
+                chunk = await upload.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if max_bytes is not None and written > max_bytes:
+                    raise HTTPException(413, "上传文件过大，请压缩后重试")
+                handle.write(chunk)
+        return target
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    finally:
+        await upload.seek(0)
 
 
 def copy_into(src: Path, dest_dir: Path, prefix: str = "") -> Path:

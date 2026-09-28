@@ -1,20 +1,5 @@
 export const DEFAULT_RESOURCE_SUBJECT = "";
 
-/** 状态筛选（列表页用） */
-export const RESOURCE_STATUS_OPTIONS = [
-  { value: "all", label: "全部" },
-  { value: "active", label: "正常" },
-  { value: "disabled", label: "停用" },
-] as const;
-
-/** 密级筛选（列表页用，后端实际值：public/confidential/secret；"all"=全部） */
-export const RESOURCE_SECRECY_OPTIONS = [
-  { value: "all", label: "全部" },
-  { value: "public", label: "公开" },
-  { value: "confidential", label: "保密" },
-  { value: "secret", label: "秘密" },
-] as const;
-
 /** 权限筛选（列表页用，内存筛选：created/managed/visible） */
 export const RESOURCE_PERMISSION_OPTIONS = [
   { value: "all", label: "全部" },
@@ -54,41 +39,10 @@ export const MANAGEMENT_SCOPE_OPTIONS = [
   { value: "private", label: "仅自己" },
 ] as const;
 
-/** 创建/编辑密级选项 */
-export const SECRECY_LEVEL_FORM_OPTIONS = [
-  { value: "public", label: "公开" },
-  { value: "confidential", label: "保密" },
-  { value: "secret", label: "秘密" },
-] as const;
-
-export const RESOURCE_STATUS_FORM_OPTIONS = [
-  { value: "active", label: "正常" },
-  { value: "disabled", label: "停用" },
-] as const;
-
-/** 标签 */
-export const RESOURCE_SECRECY_LABEL: Record<string, string> = {
-  public: "公开",
-  confidential: "保密",
-  secret: "秘密",
-};
-
 export const RESOURCE_SCOPE_LABEL: Record<string, string> = {
   public: "公开",
   partial: "部分",
   private: "仅自己",
-};
-
-export const RESOURCE_STATUS_LABEL: Record<string, string> = {
-  active: "正常",
-  disabled: "停用",
-};
-
-/** 密级 badge 色调（对应 globals.css 里定义的 destructive/warning/success） */
-export const SECRECY_BADGE_TONE: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
-  public: "secondary",
-  confidential: "default",
-  secret: "destructive",
 };
 
 /** 模板类型 */

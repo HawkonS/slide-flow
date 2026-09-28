@@ -66,6 +66,7 @@ class RendererPptTaskTests(unittest.TestCase):
                 "size": 100, "slide_count": 1,
             },
             "required_fonts": ["Test Sans"], "font_hashes": ["a" * 64],
+            "font_bindings": [{"name": "Test Sans", "sha256": "a" * 64}],
             "pages": [{"index": 0, "source_ref": "oss://bucket/source.pptx", "sha256": "a" * 64, "size": 10}],
             "outputs": [{"index": 0, "output_ref": "oss://bucket/output.png"}],
         }
@@ -140,6 +141,9 @@ class RendererPptTaskTests(unittest.TestCase):
         payload = render_tasks.claim_payload(row, token)
         self.assertEqual(payload["required_fonts"], ["Test Sans"])
         self.assertEqual(payload["font_hashes"], ["a" * 64])
+        self.assertEqual(payload["font_bindings"], [
+            {"name": "Test Sans", "sha256": "a" * 64},
+        ])
 
     def test_claim_payload_carries_batch_source_metadata(self):
         self.insert_task()
@@ -162,9 +166,44 @@ class RendererPptTaskTests(unittest.TestCase):
             render_tasks.refresh_render_task_source_url(self.db, row["task_id"], "x" * 43)
 
     def test_render_font_inventory_resolves_aliases_to_synced_hashes(self):
-        required, hashes = render_tasks._render_font_inventory(self.db, ["Test Sans"])
+        required, hashes, bindings = render_tasks._render_font_inventory(self.db, ["Test Sans"])
         self.assertEqual(required, ["Test Sans"])
         self.assertEqual(hashes, ["a" * 64])
+        self.assertEqual(bindings, [{"name": "Test Sans", "sha256": "a" * 64}])
+
+    def test_render_font_inventory_binds_custom_display_alias_to_exact_hash(self):
+        self.db.execute(
+            "UPDATE fonts SET aliases=? WHERE id=1",
+            ('["Internal Sans", "Friendly Display Name"]',),
+        )
+        required, hashes, bindings = render_tasks._render_font_inventory(
+            self.db, ["Friendly Display Name"],
+        )
+        self.assertEqual(required, ["Friendly Display Name"])
+        self.assertEqual(hashes, ["a" * 64])
+        self.assertEqual(bindings, [
+            {"name": "Friendly Display Name", "sha256": "a" * 64},
+        ])
+
+    def test_parent_is_marked_rendering_in_child_transaction(self):
+        render_tasks._mark_parent_rendering(
+            self.db, 7, task_id="child", render_attempt="attempt", total=3,
+        )
+        parent = self.db.execute("SELECT * FROM tasks WHERE id=7").fetchone()
+        params = json.loads(parent["params"])
+        self.assertEqual(parent["status"], "pending")
+        self.assertEqual(parent["total"], 3)
+        self.assertEqual(params["workflow_state"], "rendering")
+        self.assertEqual(params["render_task_id"], "child")
+        self.assertEqual(params["render_attempt"], "attempt")
+
+    def test_terminal_parent_rejects_new_child_generation(self):
+        self.db.execute("UPDATE tasks SET status='cancelled' WHERE id=7")
+        self.db.commit()
+        with self.assertRaisesRegex(RuntimeError, "导入任务已结束"):
+            render_tasks._mark_parent_rendering(
+                self.db, 7, task_id="child", render_attempt="attempt", total=1,
+            )
 
     def test_retryable_failure_requeues_then_hard_failure_stops(self):
         self.insert_task()

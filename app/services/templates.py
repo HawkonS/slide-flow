@@ -13,6 +13,7 @@ from app.services.downloads.fonts import (
     _font_alias_map,
 )
 from app.services.files import asset_preview_url
+from app.services.resources import _normalise_scope_tags, _normalise_scope_user_ids
 from fastapi import HTTPException
 from pathlib import Path
 from typing import Any
@@ -140,14 +141,38 @@ def _template_group_order_values(db: sqlite3.Connection, subject: str, series: s
 
 
 def _set_template_scope_users(db: sqlite3.Connection, table: str, template_id: int, user_ids: list[int]) -> None:
+    ids = _normalise_scope_user_ids(db, user_ids)
     db.execute(f"DELETE FROM {table} WHERE template_id = ?", (template_id,))
-    for user_id in sorted(set(user_ids)):
+    for user_id in ids:
         db.execute(f"INSERT OR IGNORE INTO {table} (template_id, user_id) VALUES (?, ?)", (template_id, user_id))
 
 
 def _template_scope_user_ids(db: sqlite3.Connection, table: str, template_id: int) -> list[int]:
     rows = db.execute(f"SELECT user_id FROM {table} WHERE template_id = ? ORDER BY user_id", (template_id,)).fetchall()
     return [int(row["user_id"]) for row in rows]
+
+
+def _set_template_scope_tags(
+    db: sqlite3.Connection,
+    table: str,
+    template_id: int,
+    tag_names: list[str],
+) -> None:
+    tags = _normalise_scope_tags(db, tag_names)
+    db.execute(f"DELETE FROM {table} WHERE template_id = ?", (template_id,))
+    for tag_name in tags:
+        db.execute(
+            f"INSERT OR IGNORE INTO {table} (template_id, tag_name) VALUES (?, ?)",
+            (template_id, tag_name),
+        )
+
+
+def _template_scope_tag_names(db: sqlite3.Connection, table: str, template_id: int) -> list[str]:
+    rows = db.execute(
+        f"SELECT tag_name FROM {table} WHERE template_id = ? ORDER BY tag_name",
+        (template_id,),
+    ).fetchall()
+    return [str(row["tag_name"]) for row in rows]
 
 
 def _template_row(db: sqlite3.Connection, template_id: int) -> sqlite3.Row:
@@ -162,6 +187,24 @@ def _linked_template_user_ids(db: sqlite3.Connection, table: str, template_id: i
     return {int(row["user_id"]) for row in rows}
 
 
+def _template_scope_matches_user_tag(
+    db: sqlite3.Connection,
+    table: str,
+    template_id: int,
+    user_id: int,
+) -> bool:
+    return db.execute(
+        f"""
+        SELECT 1
+        FROM {table} scope_tags
+        JOIN user_tags ON user_tags.tag_name = scope_tags.tag_name
+        WHERE scope_tags.template_id = ? AND user_tags.user_id = ?
+        LIMIT 1
+        """,
+        (template_id, user_id),
+    ).fetchone() is not None
+
+
 def can_view_template(db: sqlite3.Connection, template: sqlite3.Row, user: sqlite3.Row) -> bool:
     if is_system_admin(user):
         return True
@@ -173,7 +216,14 @@ def can_view_template(db: sqlite3.Connection, template: sqlite3.Row, user: sqlit
     if scope == "private":
         return False
     if scope == "partial":
-        return int(user["id"]) in _linked_template_user_ids(db, "template_visibility", int(template["id"]))
+        template_id = int(template["id"])
+        user_id = int(user["id"])
+        return (
+            user_id in _linked_template_user_ids(db, "template_visibility", template_id)
+            or _template_scope_matches_user_tag(
+                db, "template_visibility_tags", template_id, user_id
+            )
+        )
     return False
 
 
@@ -191,7 +241,14 @@ def can_manage_template(db: sqlite3.Connection, template: sqlite3.Row, user: sql
     if scope == "private":
         return False
     if scope == "partial":
-        return int(user["id"]) in _linked_template_user_ids(db, "template_management", int(template["id"]))
+        template_id = int(template["id"])
+        user_id = int(user["id"])
+        return (
+            user_id in _linked_template_user_ids(db, "template_management", template_id)
+            or _template_scope_matches_user_tag(
+                db, "template_management_tags", template_id, user_id
+            )
+        )
     return False
 
 
@@ -201,12 +258,17 @@ def _serialize_template(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.
     payload = _row_to_dict(row)
     payload.pop("office_path", None)
     payload.pop("png_path", None)
+    can_manage = can_manage_template(db, row, user)
     payload.update(
         {
             "owner": _row_to_dict(owner) if owner else None,
-            "can_manage": can_manage_template(db, row, user),
-            "visible_user_ids": _template_scope_user_ids(db, "template_visibility", int(row["id"])),
-            "manage_user_ids": _template_scope_user_ids(db, "template_management", int(row["id"])),
+            "can_manage": can_manage,
+            # Permission membership is management metadata. Ordinary viewers
+            # may see the scope label, but not other granted identities/groups.
+            "visible_user_ids": _template_scope_user_ids(db, "template_visibility", int(row["id"])) if can_manage else [],
+            "manage_user_ids": _template_scope_user_ids(db, "template_management", int(row["id"])) if can_manage else [],
+            "visible_user_tags": _template_scope_tag_names(db, "template_visibility_tags", int(row["id"])) if can_manage else [],
+            "manage_user_tags": _template_scope_tag_names(db, "template_management_tags", int(row["id"])) if can_manage else [],
             "preview_url": asset_preview_url(row["png_path"], thumb=True) or (f"/api/templates/{row['id']}/preview-thumb" if row["png_path"] else None),
             "original_preview_url": asset_preview_url(row["png_path"]) or (f"/api/templates/{row['id']}/preview" if row["png_path"] else None),
             "download_url": f"/api/templates/{row['id']}/download",

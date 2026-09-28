@@ -84,6 +84,13 @@ class FakeFonts:
         return {"installed": [], "missing": names, "fonts": [{"sha256": f["sha256"], "installed": False, "conflict": False} for f in fonts]}
 
 
+class MissingAtActivationFonts(FakeFonts):
+    @contextmanager
+    def activate(self, directory, manifest):
+        raise RenderError("fonts_missing", "Required fonts are missing")
+        yield
+
+
 def converter(exe, source, output, dpi, timeout, cancel, check, memory_limit_bytes):
     output.mkdir(parents=True)
     check()
@@ -111,8 +118,9 @@ class ServiceTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def client(self, convert=converter):
-        return TestClient(create_app(self.settings, lambda settings: JobManager(settings, convert, FakeFonts())))
+    def client(self, convert=converter, fonts=None):
+        font_manager = fonts or FakeFonts()
+        return TestClient(create_app(self.settings, lambda settings: JobManager(settings, convert, font_manager)))
 
     def headers(self, key="test-idempotency-0001"):
         return {"Authorization": "Bearer " + TOKEN, "Content-Type": "application/zip", "Idempotency-Key": key}
@@ -312,6 +320,50 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(response.json()["missing"], ["Example"])
             self.assertEqual(client.post("/v1/fonts/check", json={"fonts": [{"sha256": "bad", "names": []}]}, headers=headers).status_code, 422)
+
+    def test_missing_font_fails_in_worker_instead_of_waiting_forever(self):
+        with self.client(fonts=MissingAtActivationFonts()) as client:
+            response = client.post(
+                "/v1/jobs",
+                content=bundle(mutate=lambda manifest: manifest.update(required_fonts=["Missing Sans"])),
+                headers=self.headers("missing-font-worker-0001"),
+            )
+            self.assertEqual(response.status_code, 202, response.text)
+            self.assertNotEqual(response.json()["status"], "waiting_fonts")
+            final = self.wait(client, response.json()["id"])
+            self.assertEqual(final["status"], "failed", final)
+            self.assertEqual(final["error"]["code"], "fonts_missing")
+
+    def test_font_alias_bindings_must_be_complete_unique_and_owned(self):
+        cases = [
+            lambda manifest: manifest.update(
+                required_fonts=["Display A"],
+                font_hashes=["a" * 64],
+                font_bindings=[{"name": "Unknown", "sha256": "a" * 64}],
+            ),
+            lambda manifest: manifest.update(
+                required_fonts=["Display A"],
+                font_hashes=["a" * 64],
+                font_bindings=[
+                    {"name": "Display A", "sha256": "a" * 64},
+                    {"name": "Display A", "sha256": "a" * 64},
+                ],
+            ),
+            lambda manifest: manifest.update(
+                required_fonts=["Display A", "Display B"],
+                font_hashes=["a" * 64, "b" * 64],
+                font_bindings=[{"name": "Display A", "sha256": "a" * 64}],
+            ),
+        ]
+        with self.client() as client:
+            for index, mutate in enumerate(cases):
+                with self.subTest(index=index):
+                    response = client.post(
+                        "/v1/jobs",
+                        content=bundle(mutate=mutate),
+                        headers=self.headers(f"invalid-font-binding-{index:04d}"),
+                    )
+                    self.assertEqual(response.status_code, 422, response.text)
 
     def test_pptx_external_assets_and_xml_entities_rejected(self):
         for extra in ({"ppt/_rels/presentation.xml.rels": '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship TargetMode="External" Type="image" Target="https://example.com/a.png"/></Relationships>'},

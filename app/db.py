@@ -18,7 +18,21 @@ from app.config import (
 from app.core.bootstrap import prepare_initial_admin
 from app.core.fonts import normalize_font_name
 
-DB_SCHEMA_VERSION = 20
+DB_SCHEMA_VERSION = 23
+
+
+def is_sqlite_busy_error(exc: BaseException) -> bool:
+    """Return whether SQLite rejected work because another writer is active."""
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    error_code = getattr(exc, "sqlite_errorcode", None)
+    if isinstance(error_code, int) and (error_code & 0xFF) in {
+        sqlite3.SQLITE_BUSY,
+        sqlite3.SQLITE_LOCKED,
+    }:
+        return True
+    message = str(exc).lower()
+    return "database is locked" in message or "database table is locked" in message
 
 
 def new_resource_detail_token() -> str:
@@ -287,7 +301,7 @@ def init_db() -> None:
                 owner_id INTEGER NOT NULL REFERENCES users(id),
                 subject TEXT NOT NULL DEFAULT '',
                 tags TEXT NOT NULL DEFAULT '',
-                status TEXT NOT NULL DEFAULT 'active',
+                status TEXT NOT NULL DEFAULT '',
                 visibility_scope TEXT NOT NULL CHECK(visibility_scope IN ('public', 'partial', 'private')),
                 management_scope TEXT NOT NULL CHECK(management_scope IN ('public', 'partial', 'private')),
                 secrecy_level TEXT NOT NULL,
@@ -393,6 +407,24 @@ def init_db() -> None:
                 PRIMARY KEY (template_id, user_id)
             );
 
+            CREATE TABLE IF NOT EXISTS template_visibility_tags (
+                template_id INTEGER NOT NULL REFERENCES templates(id) ON DELETE CASCADE,
+                tag_name TEXT NOT NULL REFERENCES user_tag_definitions(name) ON UPDATE CASCADE ON DELETE CASCADE,
+                PRIMARY KEY (template_id, tag_name)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_template_visibility_tags_name
+                ON template_visibility_tags(tag_name, template_id);
+
+            CREATE TABLE IF NOT EXISTS template_management_tags (
+                template_id INTEGER NOT NULL REFERENCES templates(id) ON DELETE CASCADE,
+                tag_name TEXT NOT NULL REFERENCES user_tag_definitions(name) ON UPDATE CASCADE ON DELETE CASCADE,
+                PRIMARY KEY (template_id, tag_name)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_template_management_tags_name
+                ON template_management_tags(tag_name, template_id);
+
             CREATE TABLE IF NOT EXISTS personal_remarks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 resource_id INTEGER NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
@@ -412,6 +444,25 @@ def init_db() -> None:
                 uploaded_by INTEGER NOT NULL REFERENCES users(id),
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS embedded_font_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                font_id INTEGER NOT NULL REFERENCES fonts(id) ON DELETE CASCADE,
+                source_sha256 TEXT NOT NULL,
+                face_key TEXT NOT NULL,
+                aliases TEXT NOT NULL DEFAULT '[]',
+                variant TEXT NOT NULL,
+                cache_ref TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'ready'
+                    CHECK(status IN ('queued', 'processing', 'ready', 'failed')),
+                converter_version TEXT NOT NULL,
+                error_message TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(font_id, source_sha256, face_key, converter_version)
+            );
+            CREATE INDEX IF NOT EXISTS idx_embedded_font_cache_lookup
+                ON embedded_font_cache(font_id, status, converter_version);
 
             CREATE TABLE IF NOT EXISTS renderer_font_tasks (
                 task_id TEXT PRIMARY KEY,
@@ -474,10 +525,10 @@ def init_db() -> None:
                 owner_id INTEGER NOT NULL REFERENCES users(id),
                 subject TEXT NOT NULL DEFAULT '',
                 tags TEXT NOT NULL DEFAULT '',
-                status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'disabled')),
+                status TEXT NOT NULL DEFAULT '',
                 visibility_scope TEXT NOT NULL CHECK(visibility_scope IN ('public', 'partial', 'private')),
                 management_scope TEXT NOT NULL CHECK(management_scope IN ('public', 'partial', 'private')),
-                secrecy_level TEXT NOT NULL CHECK(secrecy_level IN ('public', 'confidential', 'secret')),
+                secrecy_level TEXT NOT NULL DEFAULT '',
                 is_standard INTEGER NOT NULL DEFAULT 0 CHECK(is_standard IN (0, 1)),
                 created_at TEXT NOT NULL,
                 series_id TEXT NOT NULL DEFAULT '',
@@ -619,6 +670,8 @@ def init_db() -> None:
         )
         if schema_version < 19:
             _relax_resource_metadata_constraints(db)
+        if schema_version < 23:
+            _relax_show_metadata_constraints(db)
         # Serialize additive migrations across Gunicorn workers. Without the
         # write lock, two workers starting together could both observe a
         # missing column and one would fail with "duplicate column".
@@ -916,7 +969,7 @@ def _relax_resource_metadata_constraints(db: sqlite3.Connection) -> None:
                 owner_id INTEGER NOT NULL REFERENCES users(id),
                 subject TEXT NOT NULL DEFAULT '',
                 tags TEXT NOT NULL DEFAULT '',
-                status TEXT NOT NULL DEFAULT 'active',
+                status TEXT NOT NULL DEFAULT '',
                 visibility_scope TEXT NOT NULL CHECK(visibility_scope IN ('public', 'partial', 'private')),
                 management_scope TEXT NOT NULL CHECK(management_scope IN ('public', 'partial', 'private')),
                 secrecy_level TEXT NOT NULL,
@@ -949,6 +1002,69 @@ def _relax_resource_metadata_constraints(db: sqlite3.Connection) -> None:
         violations = db.execute("PRAGMA foreign_key_check").fetchall()
         if violations:
             raise RuntimeError("资源表迁移后外键校验失败")
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.execute("PRAGMA foreign_keys = ON")
+
+
+def _relax_show_metadata_constraints(db: sqlite3.Connection) -> None:
+    """Remove legacy show status/secrecy enums while preserving relations."""
+    schema_sql_row = db.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'shows'"
+    ).fetchone()
+    schema_sql = str(schema_sql_row[0] or "") if schema_sql_row else ""
+    if not schema_sql:
+        return
+    if "CHECK(status IN" not in schema_sql and "CHECK(secrecy_level IN" not in schema_sql:
+        return
+
+    db.execute("PRAGMA foreign_keys = OFF")
+    try:
+        db.execute("BEGIN EXCLUSIVE")
+        db.execute(
+            """
+            CREATE TABLE shows_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                owner_id INTEGER NOT NULL REFERENCES users(id),
+                subject TEXT NOT NULL DEFAULT '',
+                tags TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT '',
+                visibility_scope TEXT NOT NULL CHECK(visibility_scope IN ('public', 'partial', 'private')),
+                management_scope TEXT NOT NULL CHECK(management_scope IN ('public', 'partial', 'private')),
+                secrecy_level TEXT NOT NULL DEFAULT '',
+                is_standard INTEGER NOT NULL DEFAULT 0 CHECK(is_standard IN (0, 1)),
+                created_at TEXT NOT NULL,
+                series_id TEXT NOT NULL DEFAULT '',
+                version_no INTEGER NOT NULL DEFAULT 1,
+                change_note TEXT NOT NULL DEFAULT '',
+                updated_by INTEGER REFERENCES users(id),
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        db.execute(
+            """
+            INSERT INTO shows_new (
+                id, name, owner_id, subject, tags, status, visibility_scope,
+                management_scope, secrecy_level, is_standard, created_at, series_id,
+                version_no, change_note, updated_by, updated_at
+            )
+            SELECT id, name, owner_id, subject, tags, status, visibility_scope,
+                   management_scope, secrecy_level, is_standard, created_at, series_id,
+                   version_no, change_note, updated_by, updated_at
+            FROM shows
+            """
+        )
+        db.execute("DROP TABLE shows")
+        db.execute("ALTER TABLE shows_new RENAME TO shows")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_shows_standard ON shows(is_standard)")
+        violations = db.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise RuntimeError("放映表迁移后外键校验失败")
         db.commit()
     except Exception:
         db.rollback()
@@ -1011,21 +1127,118 @@ def _recover_interrupted_tasks(db: sqlite3.Connection) -> None:
         should_recover = marker.rowcount > 0
 
     if should_recover:
-        # Windows pull jobs are durable and intentionally survive an API
-        # restart. Their worker will either finish the active lease or let it
-        # expire and be reclaimed. Keep the user-facing parent task pending.
+        from app.core.errors import render_public_message
+
+        now = now_iso()
+        # A terminal parent owns the workflow lifecycle. Never let a stale
+        # Windows lease continue after that parent was cancelled, failed or
+        # completed.
         db.execute(
-            "UPDATE tasks SET status = 'pending', message = '等待 Windows 转换节点领取任务…',"
-            " updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
-            " WHERE status IN ('pending', 'processing')"
-            " AND task_type = 'batch_split_import'"
-            " AND json_extract(params, '$.workflow_state') = 'rendering'"
+            "UPDATE renderer_ppt_tasks SET status='cancelled', lease_token_hash=NULL,"
+            " lease_until=NULL, updated_at=?"
+            " WHERE status IN ('queued','running') AND (parent_task_id IS NULL OR parent_task_id IN ("
+            " SELECT id FROM tasks WHERE status IN ('completed','failed','cancelled')))",
+            (now,),
         )
+
+        # The SQLite child receipt is authoritative across service restarts.
+        # Session JSON is a publication cache and may lag the child by one
+        # filesystem write, so reconstruct every active parent from its newest
+        # durable render generation.
+        rows = db.execute(
+            "SELECT r.*, p.status AS parent_status, p.params AS parent_params"
+            " FROM renderer_ppt_tasks r JOIN tasks p ON p.id=r.parent_task_id"
+            " WHERE p.task_type='batch_split_import'"
+            " AND p.status IN ('uploading','pending','processing')"
+            " ORDER BY r.parent_task_id, r.created_at DESC, r.rowid DESC"
+        ).fetchall()
+        recovered_parent_ids: list[int] = []
+        seen: set[int] = set()
+        for row in rows:
+            parent_id = int(row["parent_task_id"])
+            if parent_id in seen:
+                continue
+            seen.add(parent_id)
+            recovered_parent_ids.append(parent_id)
+            # A parent can only publish its newest render generation. Cancel
+            # any older active generation left by legacy code or a partial
+            # migration so it cannot later overwrite the recovered state.
+            db.execute(
+                "UPDATE renderer_ppt_tasks SET status='cancelled', lease_token_hash=NULL,"
+                " lease_until=NULL, updated_at=? WHERE parent_task_id=? AND task_id<>?"
+                " AND status IN ('queued','running')",
+                (now, parent_id, row["task_id"]),
+            )
+            try:
+                params = json.loads(row["parent_params"] or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                params = {}
+            try:
+                source_manifest = json.loads(row["source_manifest"] or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                source_manifest = {}
+            pages = source_manifest.get("pages", [])
+            total = len(pages) if isinstance(pages, list) else 0
+            params.update({
+                "render_task_id": row["task_id"],
+                "render_attempt": row["render_attempt"],
+                "render_total": total,
+            })
+            status = str(row["status"])
+            if status in {"queued", "running"}:
+                params.update({
+                    "workflow_state": "rendering",
+                    "preview_status": "rendering",
+                    "preview_error": None,
+                    "render_stage": "queued" if status == "queued" else "rendering",
+                    "render_completed": 0,
+                })
+                db.execute(
+                    "UPDATE tasks SET status='pending', progress=0, total=?,"
+                    " message='等待 Windows 转换节点领取任务…', error_message=NULL, params=?,"
+                    " updated_at=strftime('%Y-%m-%dT%H:%M:%S','now','localtime') WHERE id=?",
+                    (total, json.dumps(params, ensure_ascii=False), parent_id),
+                )
+            elif status == "completed":
+                params.update({
+                    "workflow_state": "awaiting_confirmation",
+                    "preview_status": "ready",
+                    "preview_error": None,
+                    "render_stage": "completed",
+                    "render_completed": total,
+                })
+                db.execute(
+                    "UPDATE tasks SET status='pending', progress=?, total=?,"
+                    " message='图片已渲染，等待确认导入', error_message=NULL, params=?,"
+                    " updated_at=strftime('%Y-%m-%dT%H:%M:%S','now','localtime') WHERE id=?",
+                    (total, total, json.dumps(params, ensure_ascii=False), parent_id),
+                )
+            else:
+                message = (
+                    "该图片渲染任务已取消，请重新生成"
+                    if status == "cancelled"
+                    else render_public_message(row["error_code"])
+                )
+                params.update({
+                    "workflow_state": "awaiting_render",
+                    "preview_status": "error",
+                    "preview_error": message,
+                    "render_stage": "failed",
+                    "render_completed": 0,
+                })
+                db.execute(
+                    "UPDATE tasks SET status='pending', progress=0, total=?, message=?,"
+                    " error_message=?, params=?,"
+                    " updated_at=strftime('%Y-%m-%dT%H:%M:%S','now','localtime') WHERE id=?",
+                    (total, message, message, json.dumps(params, ensure_ascii=False), parent_id),
+                )
+
+        placeholders = ",".join("?" for _ in recovered_parent_ids)
+        exclusion = f" AND id NOT IN ({placeholders})" if placeholders else ""
         db.execute(
-            "UPDATE tasks SET status = 'failed', error_message = '服务重启，任务中断',"
-            " updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
-            " WHERE status IN ('uploading', 'pending', 'processing')"
-            " AND NOT (task_type = 'batch_split_import'"
-            " AND json_extract(params, '$.workflow_state') = 'rendering')"
+            "UPDATE tasks SET status='failed', error_message='服务重启，任务中断',"
+            " updated_at=strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
+            " WHERE status IN ('uploading','pending','processing')" + exclusion,
+            recovered_parent_ids,
         )
     db.commit()

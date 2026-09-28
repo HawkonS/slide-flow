@@ -6,9 +6,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import {
-  DEFAULT_RESOURCE_SUBJECT, RESOURCE_SECRECY_LABEL, RESOURCE_STATUS_LABEL, SECRECY_BADGE_TONE,
-} from "@/lib/constants";
+import { DEFAULT_RESOURCE_SUBJECT } from "@/lib/constants";
 import { parseTags, type Resource } from "@/lib/types";
 
 interface ResourceListViewProps {
@@ -53,7 +51,7 @@ export function ResourceListView({
         </TableHeader>
         <TableBody>
           {resources.map((resource) => {
-            const preview = resource.current?.preview_url || resource.current?.original_preview_url;
+            const preview = resource.current?.preview_url;
             const tags = parseTags(resource.tags);
             const selected = selectedIds.has(resource.id);
             return (
@@ -91,8 +89,8 @@ export function ResourceListView({
                     {tags.length === 0 && <span className="text-muted-foreground">-</span>}
                   </div>
                 </TableCell>
-                <TableCell><Badge variant={SECRECY_BADGE_TONE[resource.secrecy_level] || "outline"} className="text-[11px]">{RESOURCE_SECRECY_LABEL[resource.secrecy_level]}</Badge></TableCell>
-                <TableCell><Badge variant={resource.status === "active" ? "secondary" : "outline"} className="text-[11px]">{RESOURCE_STATUS_LABEL[resource.status]}</Badge></TableCell>
+                <TableCell><Badge variant="outline" className="text-[11px]">{resource.secrecy_level}</Badge></TableCell>
+                <TableCell><Badge variant="outline" className="text-[11px]">{resource.status}</Badge></TableCell>
                 <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{new Date(resource.updated_at).toLocaleDateString("zh-CN")}</TableCell>
                 <TableCell>
                   <DropdownMenu>

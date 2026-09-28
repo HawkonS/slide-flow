@@ -21,11 +21,11 @@ Start options:
   --ssh-port PORT         Windows SSH port (default: 22)
   --identity FILE         Private key file; otherwise use ssh-agent/config
   --known-hosts FILE      Verified known_hosts file (default: ~/.ssh/known_hosts)
-  --windows-main-port N   Windows loopback port for Mac API (default: 18088)
+  --windows-main-port N   Windows loopback port for Mac API (default: 18089)
   --local-main-port N     Mac SlideFlow port (default: slide_flow.properties)
 
 The bridge creates:
-  Windows 127.0.0.1:18088 -> Mac 127.0.0.1:8088
+  Windows 127.0.0.1:18089 -> Mac 127.0.0.1:8088
 EOF
 }
 
@@ -74,10 +74,97 @@ control() {
   ssh -S "$CONTROL_SOCKET" -p "$port" -O "$operation" "$target"
 }
 
+verify_local_api() {
+  local main_port
+  main_port="$(read_state local_main_port)" || return 1
+  curl --fail --silent --show-error --max-time 5 \
+    "http://127.0.0.1:${main_port}/api/config" >/dev/null
+}
+
+verify_remote_api() {
+  local target ssh_port windows_main_port encoded
+  target="$(read_state target)" || return 1
+  ssh_port="$(read_state ssh_port)" || return 1
+  windows_main_port="$(read_state windows_main_port)" || return 1
+  encoded=$(python3 - "$windows_main_port" <<'PY'
+import base64
+import sys
+
+port = int(sys.argv[1])
+script = f'''$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+$response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:{port}/api/config" -TimeoutSec 8
+if ([int]$response.StatusCode -ne 200) {{ throw "Unexpected SlideFlow status: $($response.StatusCode)" }}
+'''
+print(base64.b64encode(script.encode("utf-16le")).decode("ascii"))
+PY
+)
+  ssh -S "$CONTROL_SOCKET" -p "$ssh_port" -o BatchMode=yes "$target" \
+    powershell.exe -NoProfile -NonInteractive -EncodedCommand "$encoded" >/dev/null
+}
+
+restart_remote_pull_workers() {
+  local target ssh_port windows_main_port encoded
+  target="$(read_state target)" || return 1
+  ssh_port="$(read_state ssh_port)" || return 1
+  windows_main_port="$(read_state windows_main_port)" || return 1
+  encoded=$(python3 - "$windows_main_port" <<'PY'
+import base64
+import sys
+
+port = int(sys.argv[1])
+script = '''$ErrorActionPreference = 'Stop'
+$expectedUrl = 'http://127.0.0.1:__PORT__'
+$descriptions = @(
+    'SlideFlow WPS font pull protocol v1',
+    'SlideFlow WPS render pull protocol v1'
+)
+$restarted = 0
+foreach ($task in @(Get-ScheduledTask)) {
+    if ($descriptions -notcontains [string]$task.Description) { continue }
+    $actions = @($task.Actions)
+    if ($actions.Count -ne 1) { continue }
+    $match = [regex]::Match(
+        [string]$actions[0].Arguments,
+        '(?:^|\s)--config\s+(?:\"([^\"]+)\"|(\S+))'
+    )
+    if (-not $match.Success) { continue }
+    $configPath = if ($match.Groups[1].Success) { $match.Groups[1].Value } else { $match.Groups[2].Value }
+    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { continue }
+    try { $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json } catch { continue }
+    if (([string]$config.url).TrimEnd('/') -ne $expectedUrl) { continue }
+    if ($task.State -eq 'Disabled') { continue }
+    if ($task.State -eq 'Running') {
+        Stop-ScheduledTask -InputObject $task
+        for ($attempt = 0; $attempt -lt 30; $attempt++) {
+            Start-Sleep -Milliseconds 250
+            $task = Get-ScheduledTask -TaskName $task.TaskName -TaskPath $task.TaskPath
+            if ($task.State -ne 'Running') { break }
+        }
+        if ($task.State -eq 'Running') { throw ('Pull worker did not stop: ' + $task.TaskName) }
+    }
+    Start-ScheduledTask -InputObject $task
+    $restarted++
+}
+Write-Output ('Restarted ' + $restarted + ' development pull worker(s).')
+'''.replace('__PORT__', str(port))
+print(base64.b64encode(script.encode('utf-16le')).decode('ascii'))
+PY
+)
+  ssh -S "$CONTROL_SOCKET" -p "$ssh_port" -o BatchMode=yes "$target" \
+    powershell.exe -NoProfile -NonInteractive -EncodedCommand "$encoded" >/dev/null
+}
+
+cleanup_failed_start() {
+  local target="$1" ssh_port="$2"
+  ssh -S "$CONTROL_SOCKET" -p "$ssh_port" -O exit "$target" >/dev/null 2>&1 || true
+  rm -f "$CONTROL_SOCKET" "$STATE_FILE"
+}
+
 start_bridge() {
   local host="" user="" ssh_port="22" identity=""
   local known_hosts="$HOME/.ssh/known_hosts"
-  local windows_main_port="18088" main_port
+  local windows_main_port="18089" main_port
   main_port="$(local_main_port)"
 
   while (($#)); do
@@ -135,7 +222,7 @@ start_bridge() {
   command+=( "$target" )
   "${command[@]}"
 
-  python3 - "$STATE_FILE" "$target" "$ssh_port" "$windows_main_port" "$main_port" <<'PY'
+  if ! python3 - "$STATE_FILE" "$target" "$ssh_port" "$windows_main_port" "$main_port" <<'PY'
 import json, os, sys
 path, target, ssh_port, windows_main_port, main_port = sys.argv[1:]
 with open(path, "w", encoding="utf-8") as handle:
@@ -148,8 +235,16 @@ with open(path, "w", encoding="utf-8") as handle:
     handle.write("\n")
 os.chmod(path, 0o600)
 PY
+  then
+    cleanup_failed_start "$target" "$ssh_port"
+    die "could not persist SSH bridge state"
+  fi
 
-  control check >/dev/null 2>&1 || die "SSH bridge started but control check failed"
+  if ! control check >/dev/null 2>&1 || ! verify_local_api || ! verify_remote_api; then
+    cleanup_failed_start "$target" "$ssh_port"
+    die "SSH bridge started but the Windows-to-Mac API check failed"
+  fi
+  restart_remote_pull_workers || die "bridge is healthy, but development pull workers could not be restarted"
   printf 'Bridge started.\n'
   printf '  Windows main API:   http://127.0.0.1:%s\n' "$windows_main_port"
   printf 'Run: tools/windows_renderer_bridge.sh check\n'
@@ -179,11 +274,9 @@ stop_bridge() {
 
 check_bridge() {
   status_bridge >/dev/null
-  cd "$ROOT_DIR"
-  local main_port
-  main_port="$(read_state local_main_port)"
-  curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:${main_port}/api/config" >/dev/null
-  printf 'Local SlideFlow API is reachable; run Test-SlideFlowBridge.ps1 on Windows.\n'
+  verify_local_api || die "local SlideFlow API is not reachable"
+  verify_remote_api || die "Windows cannot reach the Mac SlideFlow API through the SSH bridge"
+  printf 'Bridge control socket, local API, and Windows-to-Mac API path are healthy.\n'
 }
 
 command="${1:-}"

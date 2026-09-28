@@ -176,18 +176,27 @@ def _task_key(task_id: str, kind: str, index: int, suffix: str) -> str:
     return oss_storage.key(f"_render_tasks/{task_id}/{kind}/{index:04d}", suffix)
 
 
-def _render_font_inventory(db: sqlite3.Connection, names: list[str]) -> tuple[list[str], list[str]]:
-    required = list(dict.fromkeys(
-        name.strip() for name in names
-        if isinstance(name, str) and name.strip() and not name.strip().startswith("+")
-    ))
+def _render_font_inventory(
+    db: sqlite3.Connection,
+    names: list[str],
+) -> tuple[list[str], list[str], list[dict[str, str]]]:
+    wanted: dict[str, str] = {}
+    for raw_name in names:
+        if not isinstance(raw_name, str):
+            continue
+        name = raw_name.strip()
+        if not name or name.startswith("+"):
+            continue
+        wanted.setdefault(normalize_font_name(name), name)
+    required = list(wanted.values())
     if len(required) > 128 or any(len(name) > 256 for name in required):
         raise RuntimeError("PPT 所需字体清单无效")
     if not required:
-        return [], []
-    wanted = {normalize_font_name(name): name for name in required}
+        return [], [], []
     found: set[str] = set()
     hashes: list[str] = []
+    bindings: list[dict[str, str]] = []
+    binding_keys: set[tuple[str, str]] = set()
     rows = db.execute(
         "SELECT f.aliases, t.sha256 FROM fonts f JOIN renderer_font_tasks t ON t.font_id=f.id "
         "ORDER BY f.id"
@@ -211,12 +220,19 @@ def _render_font_inventory(db: sqlite3.Connection, names: list[str]) -> tuple[li
             raise RuntimeError("标准字体同步记录损坏，请管理员重新上传字体")
         if digest not in hashes:
             hashes.append(digest)
+        for key in wanted:
+            if key not in matches or (key, digest) in binding_keys:
+                continue
+            binding_keys.add((key, digest))
+            bindings.append({"name": wanted[key], "sha256": digest})
     missing = wanted.keys() - found
     if missing:
         raise RuntimeError("标准字体清单与 PPT 不匹配：" + "、".join(wanted[key] for key in sorted(missing)))
     if len(hashes) > 64:
         raise RuntimeError("本次渲染所需标准字体文件过多")
-    return required, hashes
+    if len(bindings) > 512:
+        raise RuntimeError("本次渲染所需字体别名绑定过多")
+    return required, hashes, bindings
 
 
 def _cleanup_manifest_objects(manifest: dict[str, Any]) -> bool:
@@ -324,6 +340,48 @@ def cancel_render_tasks_for_parent(db: sqlite3.Connection, parent_task_id: int) 
         _cleanup_manifest_objects(_manifest(row, "source_manifest"))
 
 
+def _mark_parent_rendering(
+    db: sqlite3.Connection,
+    parent_task_id: int | None,
+    *,
+    task_id: str,
+    render_attempt: str,
+    total: int,
+) -> None:
+    """Publish a child render generation to its durable parent transactionally."""
+    if parent_task_id is None:
+        return
+    parent = db.execute(
+        "SELECT status, params FROM tasks WHERE id=?",
+        (parent_task_id,),
+    ).fetchone()
+    if parent is None or parent["status"] not in {"uploading", "pending", "processing"}:
+        raise RuntimeError("导入任务已结束，不能创建图片渲染任务")
+    try:
+        params = json.loads(parent["params"] or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        params = {}
+    params.update({
+        "workflow_state": "rendering",
+        "preview_status": "rendering",
+        "preview_error": None,
+        "render_stage": "queued",
+        "render_completed": 0,
+        "render_total": total,
+        "render_task_id": task_id,
+        "render_attempt": render_attempt,
+    })
+    changed = db.execute(
+        "UPDATE tasks SET status='pending', progress=0, total=?,"
+        " message='等待 Windows 转换节点领取任务…', error_message=NULL, params=?,"
+        " updated_at=strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
+        " WHERE id=? AND status IN ('uploading','pending','processing')",
+        (total, json.dumps(params, ensure_ascii=False), parent_task_id),
+    )
+    if changed.rowcount != 1:
+        raise RuntimeError("导入任务状态已变化，未创建图片渲染任务")
+
+
 def create_render_task(session: dict[str, Any]) -> sqlite3.Row:
     """Split, stage in OSS and enqueue one immutable render generation."""
     if session.get("missing_fonts"):
@@ -403,9 +461,12 @@ def create_render_task(session: dict[str, Any]) -> sqlite3.Row:
             ensure_all_font_tasks(db)
             db.commit()
             db.execute("BEGIN IMMEDIATE")
-            required_fonts, font_hashes = _render_font_inventory(db, session.get("fonts", []))
+            required_fonts, font_hashes, font_bindings = _render_font_inventory(
+                db, session.get("fonts", []),
+            )
             manifest["required_fonts"] = required_fonts
             manifest["font_hashes"] = font_hashes
+            manifest["font_bindings"] = font_bindings
             cancelled = db.execute(
                 "SELECT * FROM renderer_ppt_tasks WHERE session_id=? "
                 "AND status NOT IN ('completed','failed','cancelled')",
@@ -424,6 +485,13 @@ def create_render_task(session: dict[str, Any]) -> sqlite3.Row:
                 "VALUES (?,?,?,?,?,?,?,?)",
                 (task_id, session["session_id"], attempt, session.get("task_id"), "queued",
                  json.dumps(manifest, ensure_ascii=False, separators=(",", ":")), now_iso(), now_iso()),
+            )
+            _mark_parent_rendering(
+                db,
+                session.get("task_id") if isinstance(session.get("task_id"), int) else None,
+                task_id=task_id,
+                render_attempt=attempt,
+                total=expected,
             )
             row = db.execute("SELECT * FROM renderer_ppt_tasks WHERE task_id=?", (task_id,)).fetchone()
             # Publish the session pointer before committing the queue row while
@@ -676,6 +744,7 @@ def claim_payload(row: sqlite3.Row, lease_token: str) -> dict[str, Any]:
         "batch_size": max(1, min(50, int(manifest.get("batch_size", 1)))),
         "required_fonts": manifest.get("required_fonts", []),
         "font_hashes": manifest.get("font_hashes", []),
+        "font_bindings": manifest.get("font_bindings", []),
     }
     source = manifest.get("source")
     if isinstance(source, dict):
@@ -771,7 +840,8 @@ def _update_parent_task(
         message, progress = "图片已渲染，等待确认导入", len(_manifest(row, "source_manifest").get("pages", []))
         db.execute(
             "UPDATE tasks SET status='pending', progress=?, total=?, message=?, error_message=NULL, params=?,"
-            " updated_at=strftime('%Y-%m-%dT%H:%M:%S','now','localtime') WHERE id=? AND status<>'cancelled'",
+            " updated_at=strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
+            " WHERE id=? AND status IN ('uploading','pending','processing')",
             (progress, progress, message, json.dumps(params, ensure_ascii=False), parent),
         )
     else:
@@ -782,7 +852,8 @@ def _update_parent_task(
         })
         db.execute(
             "UPDATE tasks SET status='pending', message=?, error_message=?, params=?,"
-            " updated_at=strftime('%Y-%m-%dT%H:%M:%S','now','localtime') WHERE id=? AND status<>'cancelled'",
+            " updated_at=strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
+            " WHERE id=? AND status IN ('uploading','pending','processing')",
             (message, message, json.dumps(params, ensure_ascii=False), parent),
         )
 

@@ -23,10 +23,9 @@ import { Button } from "@/components/ui/button";
 import {
   DEFAULT_SORT_KEY,
   RESOURCE_PERMISSION_OPTIONS,
-  RESOURCE_SECRECY_OPTIONS,
-  RESOURCE_STATUS_OPTIONS,
   type SortKey,
 } from "@/lib/constants";
+import { useMetadataTagOptions } from "@/components/resource/MetadataTagSelect";
 import { cn } from "@/lib/utils";
 import {
   FilterChip,
@@ -72,12 +71,12 @@ export interface ResourcePickerProps {
 
 /* ───────────────────── 默认筛选状态 ───────────────────── */
 type RemarkState = "all" | "has" | "none";
-type StatusState = "all" | "active" | "disabled";
-type SecrecyState = "all" | "public" | "confidential" | "secret";
+type StatusState = string;
+type SecrecyState = string;
 type PermissionState = "all" | "created" | "managed" | "visible";
 
 const DEFAULT_PAGE_SIZE = 30;
-const DEFAULT_STATUS: StatusState = "active";
+const DEFAULT_STATUS: StatusState = "all";
 const DEFAULT_SUBJECT = "all";
 const DEFAULT_SECRECY: SecrecyState = "all";
 const DEFAULT_PERMISSION: PermissionState = "all";
@@ -103,6 +102,16 @@ export function ResourcePicker({
   const [sort, setSort] = React.useState<SortKey>(DEFAULT_SORT_KEY);
   const [density, setDensity] = React.useState<"compact" | "standard">("standard");
   const [page, setPage] = React.useState(1);
+  const { options: statusTags } = useMetadataTagOptions("status");
+  const { options: secrecyTags } = useMetadataTagOptions("secrecy");
+  const statusOptions = React.useMemo<ChipOption[]>(
+    () => [{ value: "all", label: "全部" }, ...statusTags],
+    [statusTags],
+  );
+  const secrecyOptions = React.useMemo<ChipOption[]>(
+    () => [{ value: "all", label: "全部" }, ...secrecyTags],
+    [secrecyTags],
+  );
 
   // 防抖搜索
   React.useEffect(() => {
@@ -324,7 +333,7 @@ export function ResourcePicker({
         </div>
         <FilterChip
           label="状态"
-          options={RESOURCE_STATUS_OPTIONS}
+          options={statusOptions}
           value={status}
           onChange={(v) => setStatus(v as StatusState)}
           baseValue={DEFAULT_STATUS}
@@ -340,7 +349,7 @@ export function ResourcePicker({
         />
         <FilterChip
           label="密级"
-          options={RESOURCE_SECRECY_OPTIONS}
+          options={secrecyOptions}
           value={secrecy}
           onChange={(v) => setSecrecy(v as SecrecyState)}
           baseValue={DEFAULT_SECRECY}

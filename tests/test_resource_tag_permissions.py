@@ -3,7 +3,10 @@
 import sqlite3
 import unittest
 
+from fastapi import HTTPException
+
 from app.core.permissions import can_manage_resource, can_view_resource
+from app.services.resources import _normalise_scope_user_ids
 from app.services.resource_queries import _resource_visibility_sql
 
 
@@ -72,6 +75,12 @@ class ResourceTagPermissionTests(unittest.TestCase):
         self.assertTrue(can_view_resource(self.db, self.resource, self.user))
         self.assertTrue(can_manage_resource(self.db, self.resource, self.user))
         self.assertEqual(self.visible_ids(manageable_only=True), [10])
+
+    def test_scope_user_validation_rejects_boolean_and_missing_users(self):
+        for value in ([True], [999]):
+            with self.subTest(value=value), self.assertRaises(HTTPException) as raised:
+                _normalise_scope_user_ids(self.db, value)
+            self.assertEqual(raised.exception.status_code, 400)
 
 
 if __name__ == "__main__":

@@ -133,6 +133,47 @@ function Get-RendererManagedTask([string]$TaskName, [string]$Description) {
     return $task
 }
 
+function Get-RendererManagedPullTasks {
+    $descriptions = @{
+        'SlideFlow WPS font pull protocol v1' = 'wps_renderer.font_sync'
+        'SlideFlow WPS render pull protocol v1' = 'wps_renderer.render_pull'
+    }
+    foreach ($task in @(Get-ScheduledTask)) {
+        if (-not $descriptions.ContainsKey([string]$task.Description)) { continue }
+        $actions = @($task.Actions)
+        if ($actions.Count -ne 1) {
+            throw "Refusing to operate on malformed renderer pull task '$($task.TaskName)'."
+        }
+        $module = [regex]::Escape([string]$descriptions[[string]$task.Description])
+        $arguments = [string]$actions[0].Arguments
+        if ($arguments -notmatch "(?:^|\s)-m\s+$module(?:\s|$)") {
+            throw "Refusing to operate on renderer pull task '$($task.TaskName)' with an unexpected command."
+        }
+        if ($arguments -notmatch '(?:^|\s)--config\s+(?:"([^"]+)"|(\S+))') {
+            throw "Renderer pull task '$($task.TaskName)' does not declare a config path."
+        }
+        $configPath = if ($Matches[1]) { $Matches[1] } else { $Matches[2] }
+        if (-not [IO.Path]::IsPathRooted($configPath)) {
+            throw "Renderer pull task '$($task.TaskName)' must use an absolute config path."
+        }
+        [pscustomobject]@{
+            Task = $task
+            Config = [IO.Path]::GetFullPath($configPath)
+        }
+    }
+}
+
+function New-RendererPullTaskTriggers([int]$RecoveryMinutes = 5) {
+    if ($RecoveryMinutes -lt 1 -or $RecoveryMinutes -gt 60) {
+        throw "Pull worker recovery interval must be between 1 and 60 minutes."
+    }
+    @(
+        New-ScheduledTaskTrigger -AtStartup
+        New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
+            -RepetitionInterval (New-TimeSpan -Minutes $RecoveryMinutes)
+    )
+}
+
 function Wait-RendererHealthy($Layout, [int]$Seconds = 30) {
     if ($Seconds -lt 1 -or $Seconds -gt 600) { throw "Health wait must be between 1 and 600 seconds." }
     $config = Read-RendererConfig $Layout

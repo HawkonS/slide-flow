@@ -17,6 +17,7 @@ from app.services.resource_import.sessions import (
     _write_resource_import_session,
 )
 from app.services.templates import (
+    _set_template_scope_tags,
     _set_template_scope_users,
     _template_group_order_values,
     _template_page_name,
@@ -27,6 +28,7 @@ from app.services.templates import (
     _validate_template_ratio,
     _validate_template_series,
 )
+from app.services.resources import _normalise_scope_tags, _normalise_scope_user_ids
 from fastapi import HTTPException
 from typing import Any
 import json
@@ -35,13 +37,6 @@ import sqlite3
 import time
 
 logger = logging.getLogger(__name__)
-
-
-def _id_list(value: Any) -> list[int]:
-    if not isinstance(value, list):
-        return []
-    return sorted({int(item) for item in value if str(item).isdigit() and int(item) > 0})
-
 
 def _commit_template_import_sync(
     session_id: str,
@@ -67,12 +62,14 @@ def _commit_template_import_sync(
     template_type = _validate_standalone_template_type(str(payload.get("template_type") or ""))
     visibility_scope = _validate_scope(str(payload.get("visibility_scope") or ""))
     management_scope = _validate_scope(str(payload.get("management_scope") or ""))
-    visible_user_ids = _id_list(payload.get("visible_user_ids"))
-    manage_user_ids = _id_list(payload.get("manage_user_ids"))
-    if visibility_scope == "partial" and not visible_user_ids:
-        raise HTTPException(400, "可见范围为部分时请至少选择一位用户")
-    if management_scope == "partial" and not manage_user_ids:
-        raise HTTPException(400, "管理范围为部分时请至少选择一位用户")
+    visible_user_ids = _normalise_scope_user_ids(db, payload.get("visible_user_ids", []))
+    manage_user_ids = _normalise_scope_user_ids(db, payload.get("manage_user_ids", []))
+    visible_user_tags = _normalise_scope_tags(db, payload.get("visible_user_tags", []))
+    manage_user_tags = _normalise_scope_tags(db, payload.get("manage_user_tags", []))
+    if visibility_scope == "partial" and not visible_user_ids and not visible_user_tags:
+        raise HTTPException(400, "可见范围为部分时请至少选择一位用户或一个用户标签")
+    if management_scope == "partial" and not manage_user_ids and not manage_user_tags:
+        raise HTTPException(400, "管理范围为部分时请至少选择一位用户或一个用户标签")
 
     source_path = _resource_import_file(session, session.get("source_path"))
     if sha256_file(source_path) != session.get("rendered_source_sha256"):
@@ -128,6 +125,8 @@ def _commit_template_import_sync(
             template_ids.append(template_id)
             _set_template_scope_users(db, "template_visibility", template_id, visible_user_ids)
             _set_template_scope_users(db, "template_management", template_id, manage_user_ids)
+            _set_template_scope_tags(db, "template_visibility_tags", template_id, visible_user_tags)
+            _set_template_scope_tags(db, "template_management_tags", template_id, manage_user_tags)
             session["commit_progress"] = index
             session["commit_message"] = f"已保存第 {index}/{slide_count} 个标准模板…"
             _write_resource_import_session(session)

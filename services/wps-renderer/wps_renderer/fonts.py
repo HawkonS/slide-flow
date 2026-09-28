@@ -163,6 +163,14 @@ class FontManager:
                 raise RenderError("fonts_missing", "A checked font disappeared or changed while queueing")
             pending = {sha:path for sha,path in installed_paths.items() if sha in wanted}
             available = {name for name, hashes in installed.items() if hashes & wanted}
+            # The main service owns user-facing aliases and freezes each alias
+            # to an exact synchronized file hash when it queues the task. The
+            # Windows inventory only knows names embedded in the font binary,
+            # so accept a custom/display alias only through that explicit,
+            # hash-bound handoff. Unbound names still fail below.
+            for binding in manifest.get("font_bindings", []):
+                if binding["sha256"] in wanted:
+                    available.add(normalized(binding["name"]))
         for entry in manifest.get("fonts", []):
             path = directory / entry["file"]
             names, faces = font_metadata(path)

@@ -13,6 +13,8 @@ param(
     [string]$WorkDir = "",
     [string]$WorkingDirectory = "",
     [string]$WorkerId = "",
+    [int]$LocalJobTimeoutSeconds = 2100,
+    [int]$PollFailureExitSeconds = 300,
     [string]$TaskName = "SlideFlow-WPS-Render-Pull"
 )
 . (Join-Path $PSScriptRoot "Renderer-Common.ps1")
@@ -41,6 +43,8 @@ if ($RendererTokenFile) {
 }
 if (-not $WorkerId) { $WorkerId = "$env:COMPUTERNAME-render-pull" }
 if ($WorkerId -notmatch '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$') { throw "WorkerId is invalid." }
+if ($LocalJobTimeoutSeconds -lt 60 -or $LocalJobTimeoutSeconds -gt 7200) { throw "LocalJobTimeoutSeconds must be between 60 and 7200." }
+if ($PollFailureExitSeconds -lt 60 -or $PollFailureExitSeconds -gt 3600) { throw "PollFailureExitSeconds must be between 60 and 3600." }
 $pullConfig = if ($ConfigFile) { Resolve-RendererPath $ConfigFile } else { Join-Path $layout.Shared "render-pull.json" }
 $pullParent = Split-Path -Parent $pullConfig
 $pullStem = [IO.Path]::GetFileNameWithoutExtension($pullConfig)
@@ -71,6 +75,8 @@ $pullSettings = @{
     wait_seconds = 25
     renew_seconds = 30
     retry_seconds = 5
+    local_job_timeout_seconds = $LocalJobTimeoutSeconds
+    poll_failure_exit_seconds = $PollFailureExitSeconds
     work_dir = $pullWorkDir
 }
 if ($rendererTokenPath) {
@@ -86,9 +92,9 @@ $pullSettings | ConvertTo-Json | Set-Content -LiteralPath $pullConfig -Encoding 
 Protect-RendererPath $pullConfig ([Security.Principal.WindowsIdentity]::GetCurrent().Name)
 $action = New-ScheduledTaskAction -Execute $Python -Argument ("-m wps_renderer.render_pull --config `"{0}`"" -f $pullConfig) -WorkingDirectory $workingDirectory
 $principal = New-ScheduledTaskPrincipal -UserId $currentIdentity -LogonType S4U -RunLevel Limited
-$trigger = New-ScheduledTaskTrigger -AtStartup
+$triggers = @(New-RendererPullTaskTriggers)
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-Register-ScheduledTask -TaskName $TaskName -Action $action -Principal $principal -Trigger $trigger -Settings $settings -Description 'SlideFlow WPS render pull protocol v1' -Force | Out-Null
+Register-ScheduledTask -TaskName $TaskName -Action $action -Principal $principal -Trigger $triggers -Settings $settings -Description 'SlideFlow WPS render pull protocol v1' -Force | Out-Null
 Enable-ScheduledTask -TaskName $TaskName | Out-Null
 Wait-RendererHealthy $layout 30 | Out-Null
 Start-ScheduledTask -TaskName $TaskName

@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [string]$InstallRoot = "C:\ProgramData\SlideFlow\WpsRenderer",
-    [string]$MainUrl = "http://127.0.0.1:18088",
+    [string]$MainUrl = "http://127.0.0.1:18089",
     [string]$RendererUrl = "http://127.0.0.1:8765",
     [string]$TokenFile = "",
     [string]$MainTokenFile = "",

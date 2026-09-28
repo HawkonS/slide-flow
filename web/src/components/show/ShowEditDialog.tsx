@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/select";
 import { TagInput } from "@/components/resource/TagInput";
 import { UserPicker } from "@/components/resource/UserPicker";
+import { useMetadataTagOptions } from "@/components/resource/MetadataTagSelect";
 import { ResourcePicker } from "@/components/show/ResourcePicker";
 import {
   DeleteScopeDialog,
@@ -29,11 +30,10 @@ import {
 } from "@/components/common/DeleteScopeDialog";
 import {
   MANAGEMENT_SCOPE_OPTIONS,
-  RESOURCE_STATUS_FORM_OPTIONS,
-  SECRECY_LEVEL_FORM_OPTIONS,
   VISIBILITY_SCOPE_OPTIONS,
 } from "@/lib/constants";
 import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { Show, parseTags, serializeTags, ShowResourceAccessible } from "@/lib/types";
 
 export interface ShowEditDialogProps {
@@ -51,8 +51,8 @@ interface FormState {
   name: string;
   subject: string;
   tagList: string[];
-  secrecy_level: "public" | "confidential" | "secret";
-  status: "active" | "disabled";
+  secrecy_level: string;
+  status: string;
   visibility_scope: ScopeValue;
   management_scope: ScopeValue;
   visible_user_ids: number[];
@@ -66,8 +66,8 @@ function defaultForm(show: Show | null): FormState {
       name: "",
       subject: "",
       tagList: [],
-      secrecy_level: "public",
-      status: "active",
+      secrecy_level: "",
+      status: "",
       visibility_scope: "public",
       management_scope: "private",
       visible_user_ids: [],
@@ -101,10 +101,23 @@ export function ShowEditDialog({
   const isCreate = show == null;
   const [form, setForm] = React.useState<FormState>(() => defaultForm(show));
   const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const { options: secrecyOptions } = useMetadataTagOptions("secrecy");
+  const { options: statusOptions } = useMetadataTagOptions("status");
 
   React.useEffect(() => {
     if (open) setForm(defaultForm(show));
   }, [open, show]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    setForm((current) => {
+      const secrecyLevel = current.secrecy_level || secrecyOptions[0]?.value || "";
+      const status = current.status || statusOptions[0]?.value || "";
+      if (secrecyLevel === current.secrecy_level && status === current.status) return current;
+      return { ...current, secrecy_level: secrecyLevel, status };
+    });
+  }, [open, secrecyOptions, statusOptions]);
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -208,7 +221,7 @@ export function ShowEditDialog({
     mutation.mutate();
   };
 
-  const ownerId = show?.owner_id;
+  const ownerId = show?.owner_id ?? user?.id;
   const [deleteScopeOpen, setDeleteScopeOpen] = React.useState(false);
 
   return (
@@ -271,7 +284,7 @@ export function ShowEditDialog({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {SECRECY_LEVEL_FORM_OPTIONS.map((opt) => (
+                  {secrecyOptions.map((opt) => (
                     <SelectItem key={opt.value} value={opt.value}>
                       {opt.label}
                     </SelectItem>
@@ -292,7 +305,7 @@ export function ShowEditDialog({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {RESOURCE_STATUS_FORM_OPTIONS.map((opt) => (
+                  {statusOptions.map((opt) => (
                     <SelectItem key={opt.value} value={opt.value}>
                       {opt.label}
                     </SelectItem>
@@ -364,7 +377,7 @@ export function ShowEditDialog({
               <UserPicker
                 value={form.visible_user_ids}
                 onChange={(ids) => setForm({ ...form, visible_user_ids: ids })}
-                excludeIds={ownerId ? [ownerId] : undefined}
+                lockedIds={ownerId ? [ownerId] : undefined}
               />
             </div>
           )}
@@ -376,7 +389,7 @@ export function ShowEditDialog({
               <UserPicker
                 value={form.manage_user_ids}
                 onChange={(ids) => setForm({ ...form, manage_user_ids: ids })}
-                excludeIds={ownerId ? [ownerId] : undefined}
+                lockedIds={ownerId ? [ownerId] : undefined}
               />
             </div>
           )}

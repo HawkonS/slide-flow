@@ -108,6 +108,32 @@ class RenderTests(unittest.TestCase):
         events = asyncio.run(scenario())
         self.assertEqual([item["type"] for item in events], ["started", "page", "page", "completed"])
 
+    def test_stream_timeout_does_not_cancel_durable_task(self):
+        async def scenario():
+            response = streaming.preview_stream(self.session["session_id"], {"id": 1})
+            events = response.body_iterator
+            started = json.loads(await anext(events))
+            timed_out = json.loads(await anext(events))
+            await events.aclose()
+            return started, timed_out
+
+        with (
+            patch.object(streaming, "ensure_render_task"),
+            patch.object(streaming, "render_task_state", return_value={"status": "running"}),
+            patch.object(streaming.settings, "render_total_timeout", 10),
+            patch.object(streaming, "time") as stream_time,
+            patch.object(streaming, "_persist_render_error") as persist_error,
+        ):
+            stream_time.monotonic.side_effect = [0, 0, 11]
+            started, timed_out = asyncio.run(scenario())
+
+        self.assertEqual(started["type"], "started")
+        self.assertEqual(timed_out["type"], "error")
+        self.assertIs(timed_out["recoverable"], True)
+        persist_error.assert_not_called()
+        current = sessions._load_resource_import_session_file(self.session["session_id"])
+        self.assertEqual(current["preview_status"], "pending")
+
     def test_get_image_never_starts_conversion(self):
         self.session.update(renderer_version="old", preview_paths=[self.session["source_path"]], preview_status="ready")
         sessions._write_resource_import_session(self.session)

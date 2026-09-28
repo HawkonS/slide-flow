@@ -10,7 +10,7 @@ class MetadataPayload(ApiPayload):
     name: str
     subject: str = ""
     tags: str = ""
-    status: str = "active"
+    status: str = ""
     visibility_scope: str
     visible_user_ids: list[int] = Field(default_factory=list)
     visible_user_tags: list[str] = Field(default_factory=list)

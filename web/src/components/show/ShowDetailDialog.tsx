@@ -43,8 +43,6 @@ import ShowOfflineCacheDialog from "@/components/show/ShowOfflineCacheDialog";
 import { ShowUpgradeDialog } from "@/components/show/ShowUpgradeDialog";
 import {
   RESOURCE_SCOPE_LABEL,
-  RESOURCE_SECRECY_LABEL,
-  RESOURCE_STATUS_LABEL,
 } from "@/lib/constants";
 import { getShowVersions } from "@/lib/api";
 import { getDirectoryHandle, readManifest } from "@/lib/offline-cache";
@@ -295,14 +293,11 @@ export function ShowDetailDialog({
               <InfoRow label="主体" value={show.subject || "—"} />
               <InfoRow
                 label="密级"
-                value={
-                  RESOURCE_SECRECY_LABEL[show.secrecy_level] ||
-                  show.secrecy_level
-                }
+                value={show.secrecy_level}
               />
               <InfoRow
                 label="状态"
-                value={RESOURCE_STATUS_LABEL[show.status] || show.status}
+                value={show.status}
               />
               <InfoRow
                 label="标签"

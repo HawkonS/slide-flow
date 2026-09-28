@@ -1,10 +1,11 @@
-import { Component, Suspense, lazy, type ErrorInfo, type ReactNode } from "react";
-import { createBrowserRouter, Navigate, RouterProvider } from "react-router-dom";
+import { Suspense, lazy, useEffect } from "react";
+import { createBrowserRouter, Navigate, RouterProvider, useRouteError } from "react-router-dom";
 import { Loader2 } from "lucide-react";
 
 import { AppShell } from "@/components/layout/AppShell";
 import { PlaceholderPage } from "@/components/common/PlaceholderPage";
 import { RequireAdmin, RequireAuth, RequireSystemAdmin } from "@/lib/auth";
+import { getChunkErrorMessage, isChunkLoadError, reloadAfterChunkError } from "@/lib/chunk-recovery";
 
 // 路由级代码分割：各页面按需加载，登录页与主应用不再打入同一 bundle
 const LoginPage = lazy(() => import("@/pages/auth/LoginPage").then((m) => ({ default: m.LoginPage })));
@@ -39,21 +40,72 @@ function PageLoader() {
   );
 }
 
+function RouteErrorPage() {
+  const error = useRouteError();
+  const chunkLoadFailed = isChunkLoadError(error);
+  const message = getChunkErrorMessage(error);
+
+  useEffect(() => {
+    if (chunkLoadFailed) reloadAfterChunkError(error);
+  }, [chunkLoadFailed, error]);
+
+  return (
+    <div className="flex h-screen w-full items-center justify-center bg-background p-6">
+      <div className="w-full max-w-md space-y-4 text-center">
+        {chunkLoadFailed && <Loader2 className="mx-auto h-8 w-8 animate-spin text-primary" />}
+        <h1 className="text-xl font-semibold">
+          {chunkLoadFailed ? "正在加载新版本" : "页面加载失败"}
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          {chunkLoadFailed
+            ? "检测到页面资源已更新；若未自动恢复，请手动刷新。"
+            : "页面运行时发生错误，请刷新后重试。"}
+        </p>
+        {!chunkLoadFailed && message && (
+          <p className="break-words rounded-md bg-muted p-3 text-left text-xs text-muted-foreground">
+            {message}
+          </p>
+        )}
+        <div className="flex justify-center gap-2">
+          <button
+            type="button"
+            className="rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground"
+            onClick={() => window.location.reload()}
+          >
+            刷新页面
+          </button>
+          {!chunkLoadFailed && (
+            <button
+              type="button"
+              className="rounded-md border px-4 py-2 text-sm"
+              onClick={() => window.location.assign("/")}
+            >
+              返回首页
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export const router = createBrowserRouter([
-  { path: "/setup", element: <SetupPage /> },
-  { path: "/login", element: <LoginPage /> },
-  { path: "/share/resources/:token", element: <ResourceSharePage /> },
+  { path: "/setup", element: <SetupPage />, errorElement: <RouteErrorPage /> },
+  { path: "/login", element: <LoginPage />, errorElement: <RouteErrorPage /> },
+  { path: "/share/resources/:token", element: <ResourceSharePage />, errorElement: <RouteErrorPage /> },
   {
     path: "/shows/:id/fullscreen",
+    errorElement: <RouteErrorPage />,
     element: (
       <RequireAuth>
         <FullscreenPage />
       </RequireAuth>
     ),
   },
-  { path: "/shows/:id/display", element: <DisplayPage /> },
+  { path: "/shows/:id/display", element: <DisplayPage />, errorElement: <RouteErrorPage /> },
   {
     path: "/shows/:id/present",
+    errorElement: <RouteErrorPage />,
     element: (
       <RequireAuth>
         <PresenterPage />
@@ -61,6 +113,7 @@ export const router = createBrowserRouter([
     ),
   },
   {
+    errorElement: <RouteErrorPage />,
     element: (
       <RequireAuth>
         <AppShell />
@@ -144,44 +197,10 @@ export const router = createBrowserRouter([
   },
 ]);
 
-// 懒加载失败兜底：后端启动时会重建 app/static/dist，会话期间若服务升级，
-// 旧 hash chunk 将 404 导致 import() reject，此时刷新页面以获取新的 index.html
-class ChunkErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
-  state = { failed: false };
-
-  componentDidCatch(error: Error, info: ErrorInfo) {
-    const message = error?.message || "";
-    const isChunkLoadFailed =
-      error instanceof TypeError ||
-      /Failed to fetch dynamically imported module/i.test(message) ||
-      /Loading chunk/i.test(message) ||
-      /Importing a module/i.test(message);
-    console.error("[ChunkErrorBoundary] 懒加载失败，即将刷新页面", error, info);
-    if (isChunkLoadFailed) {
-      this.setState({ failed: true });
-      window.location.reload();
-    }
-  }
-
-  render() {
-    if (this.state.failed) {
-      // 刷新前的短暂占位，避免白屏闪烁
-      return (
-        <div className="flex h-screen w-full items-center justify-center text-sm text-muted-foreground">
-          检测到版本更新，正在刷新页面…
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-
 export function AppRouter() {
   return (
-    <ChunkErrorBoundary>
-      <Suspense fallback={<PageLoader />}>
-        <RouterProvider router={router} />
-      </Suspense>
-    </ChunkErrorBoundary>
+    <Suspense fallback={<PageLoader />}>
+      <RouterProvider router={router} />
+    </Suspense>
   );
 }

@@ -104,6 +104,8 @@ export interface TemplateItem {
   owner?: { id: number; name: string | null; username: string } | null;
   visible_user_ids?: number[];
   manage_user_ids?: number[];
+  visible_user_tags?: string[];
+  manage_user_tags?: string[];
   updated_at: string;
   created_at: string;
 }

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from app.config import settings
 from app.core.oss import is_oss_ref
-from app.core.permissions import can_manage_resource, is_system_admin, require_user
+from app.core.permissions import can_view_resource, is_system_admin, require_user
 from app.db import now_iso
 from app.routers.dependencies import db_dep, db_read_dep
 from app.schemas.resources import ShareLinkPayload
@@ -74,7 +74,7 @@ def _share_row(db: sqlite3.Connection, token: str) -> sqlite3.Row:
     if row is None:
         raise _share_not_found()
     now = now_iso()
-    if row["revoked_at"] or row["expires_at"] <= now or row["status"] != "active":
+    if row["revoked_at"] or row["expires_at"] <= now:
         raise _share_not_found()
     return row
 
@@ -112,10 +112,8 @@ def create_share_link(
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
     row = _resource_row(db, resource_id)
-    if not can_manage_resource(db, row, user):
-        raise HTTPException(403, "无管理权限，不能创建分享链接")
-    if row["status"] != "active":
-        raise HTTPException(400, "已停用素材不能创建分享链接")
+    if not can_view_resource(db, row, user):
+        raise HTTPException(403, "无权查看该素材")
     token = secrets.token_urlsafe(32)
     created_at = now_iso()
     expires_at = (datetime.utcnow() + timedelta(days=payload.expires_in_days)).isoformat(timespec="seconds") + "Z"
@@ -151,17 +149,21 @@ def list_share_links(
     db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     row = _resource_row(db, resource_id)
-    if not can_manage_resource(db, row, user):
-        raise HTTPException(403, "无管理权限")
+    if not can_view_resource(db, row, user):
+        raise HTTPException(403, "无权查看该素材")
+    owner_clause = "" if is_system_admin(user) else " AND created_by = :share_creator"
+    params: dict[str, Any] = {"resource_id": resource_id}
+    if not is_system_admin(user):
+        params["share_creator"] = int(user["id"])
     rows = db.execute(
-        """
+        f"""
         SELECT id, token_ciphertext, created_by, expires_at, revoked_at, created_at
         FROM resource_share_tokens
-        WHERE resource_id = ?
+        WHERE resource_id = :resource_id{owner_clause}
         ORDER BY created_at DESC, id DESC
         LIMIT 20
         """,
-        (resource_id,),
+        params,
     ).fetchall()
     items = []
     for item in rows:
@@ -172,21 +174,14 @@ def list_share_links(
     return {"items": items}
 
 
-def _managed_resource_clause(user: sqlite3.Row) -> tuple[str, dict[str, Any]]:
+def _share_owner_clause(user: sqlite3.Row) -> tuple[str, dict[str, Any]]:
     if is_system_admin(user):
         return "1=1", {}
-    return (
-        "(r.owner_id = :manage_uid"
-        " OR r.management_scope = 'public'"
-        " OR (r.management_scope = 'partial' AND EXISTS ("
-        "SELECT 1 FROM resource_management rm "
-        "WHERE rm.resource_id = r.id AND rm.user_id = :manage_uid))"
-        " OR (r.management_scope = 'partial' AND EXISTS ("
-        "SELECT 1 FROM resource_management_tags rmt "
-        "JOIN user_tags ut ON ut.tag_name = rmt.tag_name "
-        "WHERE rmt.resource_id = r.id AND ut.user_id = :manage_uid)))",
-        {"manage_uid": int(user["id"])},
-    )
+    return "st.created_by = :share_uid", {"share_uid": int(user["id"])}
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _share_status(row: sqlite3.Row, current_time: str) -> str:
@@ -194,8 +189,6 @@ def _share_status(row: sqlite3.Row, current_time: str) -> str:
         return "revoked"
     if row["expires_at"] <= current_time:
         return "expired"
-    if row["resource_status"] != "active":
-        return "disabled"
     return "active"
 
 
@@ -208,25 +201,24 @@ def list_managed_share_links(
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
-    if status not in {"all", "active", "expired", "revoked", "disabled"}:
+    if status not in {"all", "active", "expired", "revoked"}:
         raise HTTPException(400, "分享状态筛选不正确")
 
     current_time = now_iso()
-    manage_clause, params = _managed_resource_clause(user)
-    where_parts = [manage_clause]
+    owner_clause, params = _share_owner_clause(user)
+    where_parts = [owner_clause]
     query = search.strip().lower()
     if query:
         where_parts.append(
-            "(LOWER(r.name) LIKE :share_search "
-            "OR LOWER(COALESCE(u.name, '')) LIKE :share_search "
-            "OR LOWER(COALESCE(u.username, '')) LIKE :share_search)"
+            "(LOWER(r.name) LIKE :share_search ESCAPE '\\' "
+            "OR LOWER(COALESCE(u.name, '')) LIKE :share_search ESCAPE '\\' "
+            "OR LOWER(COALESCE(u.username, '')) LIKE :share_search ESCAPE '\\')"
         )
-        params["share_search"] = f"%{query}%"
+        params["share_search"] = f"%{_escape_like(query)}%"
     status_clauses = {
-        "active": "st.revoked_at IS NULL AND st.expires_at > :share_now AND r.status = 'active'",
+        "active": "st.revoked_at IS NULL AND st.expires_at > :share_now",
         "expired": "st.revoked_at IS NULL AND st.expires_at <= :share_now",
         "revoked": "st.revoked_at IS NOT NULL",
-        "disabled": "st.revoked_at IS NULL AND st.expires_at > :share_now AND r.status <> 'active'",
     }
     params["share_now"] = current_time
     if status != "all":
@@ -267,17 +259,15 @@ def list_managed_share_links(
         f"""
         SELECT COUNT(*) AS total,
                SUM(CASE WHEN st.revoked_at IS NULL AND st.expires_at > :stats_now
-                         AND r.status = 'active' THEN 1 ELSE 0 END) AS active,
+                         THEN 1 ELSE 0 END) AS active,
                SUM(CASE WHEN st.revoked_at IS NULL AND st.expires_at <= :stats_now
                          THEN 1 ELSE 0 END) AS expired,
-               SUM(CASE WHEN st.revoked_at IS NOT NULL THEN 1 ELSE 0 END) AS revoked,
-               SUM(CASE WHEN st.revoked_at IS NULL AND st.expires_at > :stats_now
-                         AND r.status <> 'active' THEN 1 ELSE 0 END) AS disabled
+               SUM(CASE WHEN st.revoked_at IS NOT NULL THEN 1 ELSE 0 END) AS revoked
         FROM resource_share_tokens st
         JOIN resources r ON r.id = st.resource_id
-        WHERE {manage_clause}
+        WHERE {owner_clause}
         """,
-        {**_managed_resource_clause(user)[1], "stats_now": current_time},
+        {**_share_owner_clause(user)[1], "stats_now": current_time},
     ).fetchone()
 
     items = []
@@ -316,7 +306,6 @@ def list_managed_share_links(
             "active": int(stats_row["active"] or 0),
             "expired": int(stats_row["expired"] or 0),
             "revoked": int(stats_row["revoked"] or 0),
-            "disabled": int(stats_row["disabled"] or 0),
         },
     }
 
@@ -329,15 +318,21 @@ def revoke_share_link(
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, bool]:
     row = _resource_row(db, resource_id)
-    if not can_manage_resource(db, row, user):
-        raise HTTPException(403, "无管理权限")
+    if not can_view_resource(db, row, user):
+        raise HTTPException(403, "无权查看该素材")
+    creator_clause = "" if is_system_admin(user) else " AND created_by = ?"
+    values: tuple[Any, ...] = (
+        (now_iso(), link_id, resource_id)
+        if is_system_admin(user)
+        else (now_iso(), link_id, resource_id, int(user["id"]))
+    )
     cursor = db.execute(
-        """
+        f"""
         UPDATE resource_share_tokens
         SET revoked_at = COALESCE(revoked_at, ?)
-        WHERE id = ? AND resource_id = ?
+        WHERE id = ? AND resource_id = ?{creator_clause}
         """,
-        (now_iso(), link_id, resource_id),
+        values,
     )
     if cursor.rowcount == 0:
         raise HTTPException(404, "分享链接不存在")

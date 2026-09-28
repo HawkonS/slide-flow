@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from app.config import settings
 from app.core.errors import storage_public_message
+from app.core.permissions import can_manage_resource
 from app.core.ppt import split_pptx_to_single_pages
 from app.core.sanitize import sanitize_html
 from app.core.storage import copy_into
@@ -33,8 +34,10 @@ from app.services.resource_import.remote_fonts import sha256_file
 from app.services.resource_import.rendering import RESOURCE_IMPORT_RENDERER_VERSION
 from app.services.resources import (
     _insert_version,
+    _resource_row,
     _set_scope_tags,
     _set_scope_users,
+    _version_row,
 )
 from fastapi import HTTPException
 from pathlib import Path
@@ -47,6 +50,124 @@ import time
 import uuid
 
 logger = logging.getLogger(__name__)
+
+
+def _commit_resource_iteration_sync(
+    session_id: str,
+    resource_id: int,
+    payload: dict[str, Any],
+    user: sqlite3.Row,
+    db: sqlite3.Connection,
+    session: dict[str, Any],
+) -> dict[str, Any]:
+    """Commit one reviewed import page as the next version of a resource."""
+    if session.get("import_target") == "templates":
+        raise HTTPException(400, "模板导入任务不能用于素材迭代")
+    resource = _resource_row(db, resource_id)
+    if not can_manage_resource(db, resource, user):
+        raise HTTPException(403, "无管理权限")
+    if int(session.get("slide_count") or 0) != 1:
+        raise HTTPException(400, "版本迭代只接收单页 PPTX")
+    if session.get("mode") != "ppt":
+        raise HTTPException(400, "版本迭代的预览图必须由平台生成")
+    if session.get("missing_fonts"):
+        raise HTTPException(400, "请先替换所有不在标准字体库中的字体")
+    preview_paths = list(session.get("preview_paths") or [])
+    split_paths = list(session.get("split_paths") or [])
+    if session.get("preview_status") != "ready" or len(preview_paths) != 1:
+        raise HTTPException(400, "请先生成并确认预览图")
+    if session.get("renderer_version") != RESOURCE_IMPORT_RENDERER_VERSION or len(split_paths) != 1:
+        raise HTTPException(400, "预览版本已过期，请重新渲染")
+
+    source_path = _resource_import_file(session, session.get("source_path"))
+    ppt_path = _resource_import_file(session, split_paths[0])
+    png_path = _resource_import_file(session, preview_paths[0])
+    if sha256_file(source_path) != session.get("rendered_source_sha256"):
+        raise HTTPException(409, "PPT 源文件与确认预览不一致，请重新渲染")
+    split_hashes = list(session.get("split_hashes") or [])
+    preview_hashes = list(session.get("preview_hashes") or [])
+    if len(split_hashes) != 1 or sha256_file(ppt_path) != split_hashes[0]:
+        raise HTTPException(409, "单页 PPT 完整性校验失败，请重新渲染")
+    if len(preview_hashes) != 1 or sha256_file(png_path) != preview_hashes[0]:
+        raise HTTPException(409, "高清图片完整性校验失败，请重新渲染")
+
+    change_note = str(payload.get("change_note") or "").strip()
+    if not change_note:
+        raise HTTPException(400, "请填写版本说明")
+    if len(change_note) > 500:
+        raise HTTPException(400, "版本说明不能超过 500 个字符")
+    inherit_personal = payload.get("inherit_personal_remarks", True)
+    if not isinstance(inherit_personal, bool):
+        raise HTTPException(400, "个人备注继承选项不正确")
+
+    latest = _version_row(db, resource_id)
+    version_no = int(resource["current_version"]) + 1
+    uploaded_refs: list[str] = []
+    try:
+        ppt_ref = persist_asset(ppt_path, "resources/ppt")
+        uploaded_refs.append(ppt_ref)
+        png_ref = persist_asset(png_path, "resources/png")
+        uploaded_refs.append(png_ref)
+        version = _insert_version(
+            db,
+            resource_id=resource_id,
+            version_no=version_no,
+            ppt_path=ppt_path,
+            png_path=png_path,
+            ppt_ref=ppt_ref,
+            png_ref=png_ref,
+            detected_fonts=[str(value) for value in session.get("fonts", []) if str(value).strip()],
+            common_remark_html=str(payload.get("common_remark_html") or ""),
+            change_note=change_note,
+            created_by=int(user["id"]),
+        )
+        if inherit_personal:
+            old_remarks = db.execute(
+                "SELECT user_id, content_html FROM personal_remarks WHERE resource_id = ? AND version_id = ?",
+                (resource_id, int(latest["id"])),
+            ).fetchall()
+            for remark in old_remarks:
+                db.execute(
+                    """
+                    INSERT INTO personal_remarks (resource_id, version_id, user_id, content_html, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        resource_id,
+                        int(version["id"]),
+                        int(remark["user_id"]),
+                        sanitize_html(remark["content_html"] or ""),
+                        now_iso(),
+                    ),
+                )
+        db.execute(
+            "UPDATE resources SET current_version = ?, updated_by = ?, updated_at = ? WHERE id = ?",
+            (version_no, int(user["id"]), now_iso(), resource_id),
+        )
+        result = {"resource_id": resource_id, "version_no": version_no, "created": 1}
+        db.execute(
+            "INSERT INTO resource_import_commits (session_id, owner_id, result_json, created_at) VALUES (?, ?, ?, ?)",
+            (session_id, int(user["id"]), json.dumps(result, ensure_ascii=False), now_iso()),
+        )
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        _delete_resource_files(uploaded_refs, [])
+        raise
+    except Exception as exc:
+        logger.exception("Resource iteration commit failed session_id=%s resource_id=%s", session_id, resource_id)
+        db.rollback()
+        _delete_resource_files(uploaded_refs, [])
+        storage_message = storage_public_message(exc)
+        if storage_message:
+            raise HTTPException(503, storage_message) from exc
+        raise HTTPException(400, "版本保存失败，预览仍保留，可稍后重试") from exc
+
+    try:
+        _cleanup_resource_import_session(session_id, session)
+    except Exception:
+        logger.exception("Committed iteration session awaiting expiry cleanup: %s", session_id)
+    return result
 
 
 def _commit_resource_import_sync(

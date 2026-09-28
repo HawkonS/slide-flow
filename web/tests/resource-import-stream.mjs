@@ -120,7 +120,11 @@ test("completion requires exact slide count and ready status", () => {
 test("malformed events are rejected while heartbeat and bounded messages are accepted", () => {
   for (const event of [null, [], "page", {}, { type: "unknown" }]) assert.throws(() => parse(event));
   assert.equal(parse({ type: "heartbeat" }).type, "heartbeat");
-  assert.equal(parse({ type: "error", message: "x".repeat(3000) }).message.length, 2000);
+  const terminalError = parse({ type: "error", message: "x".repeat(3000) });
+  assert.equal(terminalError.message.length, 2000);
+  assert.equal(terminalError.recoverable, false, "errors fail closed unless the server explicitly marks them recoverable");
+  assert.equal(parse({ type: "error", message: "stream deadline", recoverable: true }).recoverable, true);
+  assert.equal(parse({ type: "error", message: "not boolean", recoverable: "true" }).recoverable, false);
 });
 
 test("Headers input is preserved without duplicated case-insensitive Accept", async (t) => {

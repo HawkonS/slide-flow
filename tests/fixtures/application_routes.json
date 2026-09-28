@@ -812,6 +812,14 @@
     ]
   },
   {
+    "path": "/api/resources/{resource_id}/versions/from-import/{session_id}",
+    "name": "commit_resource_iteration",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
     "path": "/api/resources/{resource_id}/versions/rollback",
     "name": "rollback_resource_version",
     "kind": "http",

@@ -10,7 +10,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { api } from "@/lib/api";
-import { RESOURCE_STATUS_LABEL, RESOURCE_SECRECY_LABEL } from "@/lib/constants";
 
 export type MetadataTagDomain = "subject" | "secrecy" | "status";
 
@@ -39,8 +38,7 @@ export function useMetadataTagOptions(domain: MetadataTagDomain) {
 }
 
 function fallbackLabel(domain: MetadataTagDomain, value: string): string {
-  if (domain === "secrecy") return RESOURCE_SECRECY_LABEL[value] || value;
-  if (domain === "status") return RESOURCE_STATUS_LABEL[value] || value;
+  void domain;
   return value;
 }
 

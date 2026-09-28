@@ -24,8 +24,9 @@ if ($task.State -ne 'Running') {
     Write-Host "Renderer task '$TaskName' is already running."
 }
 Wait-RendererHealthy $layout 30 | Out-Null
-$fontTask = Get-RendererManagedTask "SlideFlow-WPS-Font-Sync" 'SlideFlow WPS font pull protocol v1'
-if ($fontTask -and $fontTask.State -ne 'Running') { Start-ScheduledTask -TaskName "SlideFlow-WPS-Font-Sync" }
-$pullTask = Get-RendererManagedTask "SlideFlow-WPS-Render-Pull" 'SlideFlow WPS render pull protocol v1'
-if ($pullTask -and $pullTask.State -ne 'Running') { Start-ScheduledTask -TaskName "SlideFlow-WPS-Render-Pull" }
+foreach ($worker in @(Get-RendererManagedPullTasks)) {
+    if ($worker.Task.State -ne 'Running' -and $worker.Task.State -ne 'Disabled') {
+        Start-ScheduledTask -InputObject $worker.Task
+    }
+}
 Write-Host "Renderer is healthy; registered pull workers are running."

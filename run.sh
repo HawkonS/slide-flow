@@ -368,7 +368,11 @@ REUSE_BACKEND="false"
 port_is_listening() {
   if command -v lsof &>/dev/null; then
     local pids
-    pids="$(lsof -ti "tcp:${PORT}" 2>/dev/null || true)"
+    # Only a LISTEN socket owns the local server port. lsof -iTCP without a
+    # state filter also returns stale TIME_WAIT connections after stop.sh has
+    # terminated the server, causing run.sh to report a false port conflict
+    # until the kernel reaps those connections.
+    pids="$(lsof -tiTCP:"${PORT}" -sTCP:LISTEN 2>/dev/null || true)"
     [ -n "$pids" ]
     return
   fi

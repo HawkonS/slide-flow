@@ -10,7 +10,7 @@ import { forgetPendingImport, readPendingImport } from "@/lib/resourceImportLife
 /** 单页素材统一导入页面：关闭后返回资源列表。 */
 export function ResourceImportPage() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const taskIdParam = Number(searchParams.get("task_id"));
   const taskId = Number.isInteger(taskIdParam) && taskIdParam > 0 ? taskIdParam : undefined;
   const queryClient = useQueryClient();
@@ -69,6 +69,11 @@ export function ResourceImportPage() {
     <ResourceImportWizard
       ownerId={user?.id}
       taskId={taskId}
+      onTaskCreated={(createdTaskId) => {
+        const next = new URLSearchParams(searchParams);
+        next.set("task_id", String(createdTaskId));
+        setSearchParams(next, { replace: true });
+      }}
       onSuccess={() => { void queryClient.invalidateQueries({ queryKey: ["resources"] }); }}
       onOpenChange={(open) => {
         if (!open) {

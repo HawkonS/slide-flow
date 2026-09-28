@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Check, Loader2, Search, Tags, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -21,6 +21,8 @@ export interface UserPickerProps {
   /** 已授权的用户标签；成员变化时权限会自动跟随 */
   tagValue?: string[];
   onTagChange?: (tags: string[]) => void;
+  /** 始终选中且不可取消的用户，例如素材或放映的所有者 */
+  lockedIds?: number[];
 }
 
 interface UserOptionsResponse {
@@ -54,6 +56,7 @@ export function UserPicker({
   allowTagSelection = false,
   tagValue = [],
   onTagChange,
+  lockedIds = [],
 }: UserPickerProps) {
   const [searchInput, setSearchInput] = React.useState("");
   const [search, setSearch] = React.useState("");
@@ -63,12 +66,25 @@ export function UserPicker({
     return () => window.clearTimeout(timer);
   }, [searchInput]);
 
+  const selectedIds = React.useMemo(
+    () => Array.from(new Set([...lockedIds, ...value])),
+    [lockedIds, value],
+  );
+  const lockedIdSet = React.useMemo(() => new Set(lockedIds), [lockedIds]);
+
+  React.useEffect(() => {
+    const alreadyNormalized =
+      selectedIds.length === value.length &&
+      selectedIds.every((id, index) => id === value[index]);
+    if (!alreadyNormalized) onChange(selectedIds);
+  }, [onChange, selectedIds, value]);
+
   const { data, isLoading, isError, error } = useQuery({
-    queryKey: ["users", "options", search, value],
+    queryKey: ["users", "options", search, selectedIds],
     queryFn: async () => {
       const selectedChunks: number[][] = [];
-      for (let index = 0; index < value.length; index += 100) {
-        selectedChunks.push(value.slice(index, index + 100));
+      for (let index = 0; index < selectedIds.length; index += 100) {
+        selectedChunks.push(selectedIds.slice(index, index + 100));
       }
       const responses = await Promise.all([
         api<UserOptionsResponse>("/api/users/options", {
@@ -83,6 +99,11 @@ export function UserPicker({
       responses.forEach((response) => response.users.forEach((user) => byId.set(user.id, user)));
       return { users: Array.from(byId.values()), searchUsers };
     },
+    // Selecting a user changes the query key because selected users are also
+    // fetched to keep them visible outside the current search result. Retain
+    // the rendered list while that background request completes so each click
+    // does not replace the picker with a short loading state and move the page.
+    placeholderData: keepPreviousData,
     staleTime: 60_000,
   });
 
@@ -101,10 +122,10 @@ export function UserPicker({
     const all = data?.users ?? [];
     if (!excludeIds?.length) return all;
     const set = new Set(excludeIds);
-    return all.filter((u) => !set.has(u.id));
-  }, [data, excludeIds]);
+    return all.filter((u) => !set.has(u.id) || lockedIdSet.has(u.id));
+  }, [data, excludeIds, lockedIdSet]);
 
-  const valueSet = React.useMemo(() => new Set(value), [value]);
+  const valueSet = React.useMemo(() => new Set(selectedIds), [selectedIds]);
   const excludedSet = React.useMemo(() => new Set(excludeIds ?? []), [excludeIds]);
   const currentResultIds = React.useMemo(() => {
     return (data?.searchUsers ?? []).map((user) => user.id).filter((id) => !excludedSet.has(id));
@@ -117,10 +138,11 @@ export function UserPicker({
   const tagDetailsByName = new Map(allUserTags.map((tag) => [tag.name, tag]));
 
   const toggle = (id: number) => {
+    if (lockedIdSet.has(id)) return;
     if (valueSet.has(id)) {
-      onChange(value.filter((x) => x !== id));
+      onChange(selectedIds.filter((x) => x !== id));
     } else {
-      onChange([...value, id]);
+      onChange([...selectedIds, id]);
     }
   };
 
@@ -129,10 +151,10 @@ export function UserPicker({
   const toggleCurrentResults = () => {
     const currentIds = new Set(currentResultIds);
     if (allCurrentSelected) {
-      onChange(value.filter((id) => !currentIds.has(id)));
+      onChange(selectedIds.filter((id) => !currentIds.has(id) || lockedIdSet.has(id)));
       return;
     }
-    onChange(Array.from(new Set([...value, ...currentResultIds])));
+    onChange(Array.from(new Set([...selectedIds, ...currentResultIds])));
   };
 
   const addSelectedTag = () => {
@@ -211,7 +233,7 @@ export function UserPicker({
       {showBulk && (
         <div className="flex items-center justify-between border-b px-3 py-1.5 text-xs text-muted-foreground">
           <span>
-            已选 <span className="font-medium text-foreground">{value.length}</span> 位用户
+            已选 <span className="font-medium text-foreground">{selectedIds.length}</span> 位用户
             {allowTagSelection ? `、${tagValue.length} 个标签` : ""}，当前结果 {currentResultIds.length} 人
           </span>
           <div className="flex items-center gap-3">
@@ -242,16 +264,20 @@ export function UserPicker({
           <div className="grid gap-1 sm:grid-cols-2">
             {users.map((u) => {
               const checked = valueSet.has(u.id);
+              const locked = lockedIdSet.has(u.id);
               const label = u.name || u.username;
               return (
                 <button
                   key={u.id}
                   type="button"
                   onClick={() => toggle(u.id)}
+                  disabled={locked}
+                  title={locked ? "所有者始终拥有权限，不能取消" : undefined}
                   className={cn(
                     "flex items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm transition",
-                    "hover:bg-accent",
+                    locked ? "cursor-not-allowed" : "hover:bg-accent",
                     checked && "bg-primary/5 text-primary",
+                    "disabled:opacity-100",
                   )}
                 >
                   {u.avatar_url ? (
@@ -278,6 +304,11 @@ export function UserPicker({
                       <span className="ml-1 text-xs text-muted-foreground">@{u.username}</span>
                     )}
                   </span>
+                  {locked && (
+                    <span className="shrink-0 rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                      所有者
+                    </span>
+                  )}
                 </button>
               );
             })}

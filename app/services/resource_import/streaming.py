@@ -15,7 +15,7 @@ from app.core.errors import RENDERER_TIMEOUT_MESSAGE
 from app.core.oss import StorageConfigurationError, StorageUnavailableError
 from app.db import get_db
 from app.services.resource_import.previews import _preview_set_is_current
-from app.services.resource_import.render_tasks import cancel_render_tasks, ensure_render_task, render_task_state
+from app.services.resource_import.render_tasks import ensure_render_task, render_task_state
 from app.services.resource_import.sessions import (
     _load_resource_import_session_file,
     _resource_import_operation,
@@ -103,13 +103,14 @@ def preview_stream(session_id, user):
                 yield encode({"type": "error", "message": state.get("message") or current.get("preview_error") or RENDERER_GENERIC_MESSAGE})
                 return
             if time.monotonic() >= deadline:
-                db = get_db()
-                try:
-                    cancel_render_tasks(db, session_id)
-                finally:
-                    db.close()
-                _persist_render_error(current, RENDERER_TIMEOUT_MESSAGE)
-                yield encode({"type": "error", "message": RENDERER_TIMEOUT_MESSAGE})
+                # This deadline belongs to one browser stream, not to the
+                # durable Windows job. The worker may still be rendering or
+                # waiting behind another environment on the shared renderer.
+                yield encode({
+                    "type": "error",
+                    "message": RENDERER_TIMEOUT_MESSAGE,
+                    "recoverable": True,
+                })
                 return
             if time.monotonic() - last_heartbeat >= 5:
                 message = "等待 Windows 转换节点领取任务" if state["status"] in {"pending", "queued"} else "Windows 正在转换 PPT 为 PNG"

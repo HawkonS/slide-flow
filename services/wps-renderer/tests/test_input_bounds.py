@@ -64,6 +64,46 @@ class InputBoundsTests(unittest.TestCase):
             manager.installed(force=True)
             self.assertEqual(scan.call_count, 2)
 
+    def test_font_activation_accepts_hash_bound_display_alias(self):
+        manager = FontManager()
+        sha = "a" * 64
+        installed_path = Path("C:/Windows/Fonts/internal.ttf")
+        staged_path = Path("C:/staged")
+        manager._paths = {sha: installed_path}
+        manager._faces = {"internal sans": {sha}}
+        manifest = {
+            "required_fonts": ["Friendly Display Name"],
+            "font_hashes": [sha],
+            "font_bindings": [{"name": "Friendly Display Name", "sha256": sha}],
+            "fonts": [],
+        }
+        with patch("wps_renderer.fonts.os.name", "nt"), patch.object(
+            manager, "installed", return_value={"internal sans": {sha}},
+        ), patch("wps_renderer.fonts.ctypes.WinDLL", create=True) as win_dll:
+            win_dll.return_value.AddFontResourceExW.return_value = 1
+            win_dll.return_value.RemoveFontResourceExW.return_value = 1
+            with manager.activate(staged_path, manifest):
+                pass
+
+    def test_font_activation_rejects_unbound_display_alias(self):
+        manager = FontManager()
+        sha = "a" * 64
+        staged_path = Path("C:/staged")
+        manager._paths = {sha: Path("C:/Windows/Fonts/internal.ttf")}
+        manager._faces = {"internal sans": {sha}}
+        manifest = {
+            "required_fonts": ["Unbound Display Name"],
+            "font_hashes": [sha],
+            "fonts": [],
+        }
+        with patch("wps_renderer.fonts.os.name", "nt"), patch.object(
+            manager, "installed", return_value={"internal sans": {sha}},
+        ):
+            with self.assertRaises(RenderError) as raised:
+                with manager.activate(staged_path, manifest):
+                    pass
+        self.assertEqual(raised.exception.code, "fonts_missing")
+
     def test_relationship_cannot_hide_network_target_as_internal(self):
         for target in ("https://example.test/image.png", "file:///C:/secret.txt", "//server/share/file", "%5c%5cserver%5cshare", "../../../../secret"):
             with self.subTest(target=target):

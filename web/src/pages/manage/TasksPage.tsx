@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   AlertCircle,
   CheckCircle2,
@@ -114,6 +114,7 @@ interface TaskResult {
   total?: number;
   created?: number;
   resource_ids?: number[];
+  resource_detail_tokens?: Record<string, string>;
   template_ids?: number[];
   message?: string;
   expired?: boolean;
@@ -517,6 +518,7 @@ function TaskDetail({ task }: { task: Task }) {
   const params = task.params || {};
   const result = task.result_data || {};
   const resourceIds = Array.isArray(result.resource_ids) ? result.resource_ids : [];
+  const resourceDetailTokens = result.resource_detail_tokens || {};
 
   return (
     <div className="grid grid-cols-1 gap-4 p-5 md:grid-cols-2 lg:grid-cols-3">
@@ -622,14 +624,25 @@ function TaskDetail({ task }: { task: Task }) {
                   生成的资源 ID
                 </div>
                 <div className="flex max-h-24 flex-wrap gap-1 overflow-y-auto">
-                  {resourceIds.map((id) => (
-                    <span
-                      key={id}
-                      className="inline-flex items-center rounded-md border bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
-                    >
-                      #{id}
-                    </span>
-                  ))}
+                  {resourceIds.map((id) => {
+                    const detailToken = resourceDetailTokens[String(id)];
+                    const className = "inline-flex items-center rounded-md border bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground";
+                    return detailToken ? (
+                      <Link
+                        key={id}
+                        to={`/resources/${encodeURIComponent(detailToken)}`}
+                        onClick={(event) => event.stopPropagation()}
+                        className={`${className} text-primary hover:border-primary/50 hover:underline`}
+                        title={`打开资源 #${id} 的单页详情`}
+                      >
+                        #{id}
+                      </Link>
+                    ) : (
+                      <span key={id} className={className}>
+                        #{id}
+                      </span>
+                    );
+                  })}
                 </div>
               </div>
             )}

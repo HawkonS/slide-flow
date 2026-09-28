@@ -206,6 +206,15 @@ def cleanup_materialized(paths: list[Path | None]) -> None:
             path.unlink(missing_ok=True)
 
 
+def defer_materialized_cleanup(path: Path | None) -> None:
+    """Keep one scoped OSS temp file alive until a response background task runs."""
+    if path is None:
+        return
+    scope = _MATERIALIZED_SCOPE.get()
+    if scope is not None:
+        scope.discard(path)
+
+
 def materialized_paths() -> tuple[Path, ...]:
     """Return currently materialized OSS files for request/task cleanup."""
     return tuple(_MATERIALIZED_REFS)

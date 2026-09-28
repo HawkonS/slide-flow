@@ -43,11 +43,23 @@ from app.services.files import (
 from app.services.resource_queries import (
     _parse_csv,
 )
+from app.services.resource_import.limits import (
+    RESOURCE_IMPORT_MAX_IMAGE_BYTES,
+    RESOURCE_IMPORT_MAX_PPT_BYTES,
+)
+from app.services.resource_import.validation import (
+    _validate_import_image,
+    _validate_import_ppt_package,
+)
 from app.services.resources import (
     _delete_latest_resource_version,
     _insert_version,
+    _normalise_scope_tags,
+    _normalise_scope_user_ids,
     _resource_row,
     _resource_row_by_detail_token,
+    _scope_tag_names,
+    _scope_user_ids,
     _serialize_resource,
     _set_scope_tags,
     _set_scope_users,
@@ -113,12 +125,20 @@ async def create_resource(
     try:
         with tempfile.TemporaryDirectory(prefix="slide-flow-resource-") as temp_name:
             work_dir = Path(temp_name)
-            ppt_path = await save_upload(ppt_file, work_dir, "v1_", stage_oss=True)
+            ppt_path = await save_upload(
+                ppt_file, work_dir, "v1_", stage_oss=True,
+                max_bytes=RESOURCE_IMPORT_MAX_PPT_BYTES,
+            )
+            _validate_import_ppt_package(ppt_path)
             if await asyncio.to_thread(slide_count, ppt_path) > 1:
                 raise HTTPException(400, "资源导入只接收单页 PPTX，多页文件请使用「拆分导入」")
             detected_fonts = await asyncio.to_thread(detect_ppt_fonts, ppt_path)
-            png_path = await save_upload(png_file, work_dir, "preview_", stage_oss=True) if png_file else None
+            png_path = await save_upload(
+                png_file, work_dir, "preview_", stage_oss=True,
+                max_bytes=RESOURCE_IMPORT_MAX_IMAGE_BYTES,
+            ) if png_file else None
             if png_path is not None:
+                _validate_import_image(png_path)
                 png_path = _compress_hd_image(png_path)
             ppt_ref = persist_asset(ppt_path, "resources/ppt")
             uploaded_refs.append(ppt_ref)
@@ -255,6 +275,8 @@ async def create_resource_version(
     mode = mode_aliases.get(mode, mode)
     if mode not in {"iterate", "replace"}:
         raise HTTPException(400, "版本模式不正确")
+    if mode == "iterate":
+        raise HTTPException(400, "请通过版本迭代流程上传单页 PPT，并确认平台生成的预览图")
     latest = _version_row(db, resource_id)
     oss_storage.ensure_configured()
     has_ppt = bool(ppt_file is not None and ppt_file.filename)
@@ -277,7 +299,11 @@ async def create_resource_version(
                 if has_ppt:
                     assert ppt_file is not None
                     _validate_ppt_upload(ppt_file)
-                    new_ppt = await save_upload(ppt_file, work_dir, f"v{latest['version_no']}_replace_", stage_oss=True)
+                    new_ppt = await save_upload(
+                        ppt_file, work_dir, f"v{latest['version_no']}_replace_",
+                        stage_oss=True, max_bytes=RESOURCE_IMPORT_MAX_PPT_BYTES,
+                    )
+                    _validate_import_ppt_package(new_ppt)
                     if slide_count(new_ppt) > 1:
                         raise HTTPException(400, "重传只接收单页 PPTX")
                     old_paths.append(latest["ppt_path"])
@@ -290,7 +316,11 @@ async def create_resource_version(
                     assert png_file is not None
                     _validate_png_upload(png_file)
                     old_paths.append(latest["png_path"])
-                    png_path = await save_upload(png_file, work_dir, "preview_replace_", stage_oss=True)
+                    png_path = await save_upload(
+                        png_file, work_dir, "preview_replace_", stage_oss=True,
+                        max_bytes=RESOURCE_IMPORT_MAX_IMAGE_BYTES,
+                    )
+                    _validate_import_image(png_path)
                     png_path = _compress_hd_image(png_path)
                     png_ref = persist_asset(png_path, "resources/png")
                     uploaded_refs.append(png_ref)
@@ -406,12 +436,20 @@ def batch_update_resources(
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict:
     """批量编辑资源元数据。"""
-    resource_ids = body.get("resource_ids", [])
-    fields = body.get("fields", {})
+    resource_ids_raw = body.get("resource_ids", [])
+    fields_raw = body.get("fields", {})
+    if not isinstance(resource_ids_raw, list) or any(type(value) is not int for value in resource_ids_raw):
+        raise HTTPException(400, "resource_ids 必须是整数数组")
+    resource_ids = list(dict.fromkeys(value for value in resource_ids_raw if value > 0))
     if not resource_ids:
         raise HTTPException(400, "resource_ids 不能为空")
-    if not fields:
+    if len(resource_ids) > 1000:
+        raise HTTPException(400, "一次最多批量编辑 1000 个资源")
+    if not isinstance(fields_raw, dict):
+        raise HTTPException(400, "fields 必须是对象")
+    if not fields_raw:
         raise HTTPException(400, "fields 不能为空")
+    fields = dict(fields_raw)
 
     # 允许更新的字段白名单
     allowed_scalar = {
@@ -429,12 +467,60 @@ def batch_update_resources(
     if invalid:
         raise HTTPException(400, f"不支持的字段: {', '.join(sorted(invalid))}")
 
+    # Validate the complete request before mutating any row. This keeps batch
+    # updates atomic and prevents creating a `partial` scope with no grants.
+    for key, validator in allowed_scalar.items():
+        if key not in fields:
+            continue
+        if key == "subject":
+            fields[key] = _validate_resource_subject(fields[key])
+        elif validator is not None:
+            fields[key] = validator(fields[key])
+    for key in ("visible_user_ids", "manage_user_ids"):
+        if key in fields:
+            fields[key] = _normalise_scope_user_ids(db, fields[key])
+    for key in ("visible_user_tags", "manage_user_tags"):
+        if key in fields:
+            fields[key] = _normalise_scope_tags(db, fields[key])
+    if "tags" in fields:
+        tags_field = fields["tags"]
+        if not isinstance(tags_field, dict):
+            raise HTTPException(400, "tags 必须是包含 mode 和 values 的对象")
+        mode = tags_field.get("mode")
+        values = tags_field.get("values")
+        if mode not in {"replace", "append", "remove"}:
+            raise HTTPException(400, f"不支持的 tags mode: {mode}")
+        if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+            raise HTTPException(400, "tags.values 必须是字符串数组")
+        fields["tags"] = {
+            "mode": mode,
+            "values": list(dict.fromkeys(value.strip() for value in values if value.strip())),
+        }
+
     # 预先检查权限并收集资源行
     rows: dict[int, sqlite3.Row] = {}
     for rid in resource_ids:
         row = _resource_row(db, rid)
         if not can_manage_resource(db, row, user):
             raise HTTPException(403, f"资源 {rid} 无管理权限")
+        visibility_scope = fields.get("visibility_scope", row["visibility_scope"])
+        visible_ids = fields.get(
+            "visible_user_ids", _scope_user_ids(db, "resource_visibility", rid)
+        )
+        visible_tags = fields.get(
+            "visible_user_tags", _scope_tag_names(db, "resource_visibility_tags", rid)
+        )
+        management_scope = fields.get("management_scope", row["management_scope"])
+        manage_ids = fields.get(
+            "manage_user_ids", _scope_user_ids(db, "resource_management", rid)
+        )
+        manage_tags = fields.get(
+            "manage_user_tags", _scope_tag_names(db, "resource_management_tags", rid)
+        )
+        if visibility_scope == "partial" and not visible_ids and not visible_tags:
+            raise HTTPException(400, f"资源 {rid} 的可见范围为部分时请至少选择一位用户或一个用户标签")
+        if management_scope == "partial" and not manage_ids and not manage_tags:
+            raise HTTPException(400, f"资源 {rid} 的管理范围为部分时请至少选择一位用户或一个用户标签")
         rows[rid] = row
 
     updated = 0
@@ -444,25 +530,14 @@ def batch_update_resources(
         for key, validator in allowed_scalar.items():
             if key in fields:
                 value = fields[key]
-                if key == "subject":
-                    value = _validate_resource_subject(value)
-                elif validator is not None:
-                    value = validator(value)
                 set_clauses.append(f"{key} = ?")
                 set_values.append(value)
 
         # 处理 tags 字段：支持 replace/append/remove 三种模式
         if "tags" in fields:
             tags_field = fields["tags"]
-            if not isinstance(tags_field, dict):
-                raise HTTPException(400, "tags 必须是包含 mode 和 values 的对象")
             mode = tags_field.get("mode")
             values = tags_field.get("values")
-            if mode not in {"replace", "append", "remove"}:
-                raise HTTPException(400, f"不支持的 tags mode: {mode}")
-            if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
-                raise HTTPException(400, "tags.values 必须是字符串数组")
-            values = list(dict.fromkeys(value.strip() for value in values if value.strip()))
             if mode == "replace":
                 tag_value = ",".join(values)
             elif mode == "append":

@@ -20,7 +20,6 @@ import {
 import { RichTextEditor } from "@/components/resource/RichTextEditor";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
-import { SECRECY_BADGE_TONE, RESOURCE_SECRECY_LABEL } from "@/lib/constants";
 import {
   Resource,
   Show,
@@ -335,10 +334,10 @@ export function ShowResourcePrepDialog({
                             {r.name}
                           </span>
                           <Badge
-                            variant={SECRECY_BADGE_TONE[r.secrecy_level] || "outline"}
+                            variant="outline"
                             className="mt-0.5 text-[10px] px-1 py-0"
                           >
-                            {RESOURCE_SECRECY_LABEL[r.secrecy_level] || r.secrecy_level}
+                            {r.secrecy_level || "未设置"}
                           </Badge>
                         </span>
                         {canManageShow && (
@@ -415,10 +414,10 @@ export function ShowResourcePrepDialog({
                         </span>
                         <span className="absolute right-1 top-1">
                           <Badge
-                            variant={SECRECY_BADGE_TONE[r.secrecy_level] || "outline"}
+                            variant="outline"
                             className="text-[9px] px-1 py-0 shadow-sm"
                           >
-                            {RESOURCE_SECRECY_LABEL[r.secrecy_level] || r.secrecy_level}
+                            {r.secrecy_level || "未设置"}
                           </Badge>
                         </span>
                         {canManageShow && (

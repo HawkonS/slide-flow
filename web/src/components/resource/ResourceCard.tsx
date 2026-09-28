@@ -51,12 +51,7 @@ export function ResourceCard({
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const version = resource.current;
-  const preview = version?.preview_url || version?.original_preview_url || null;
-  const retinaPreview = version?.original_preview_url || preview;
-  const previewSrcSet =
-    preview && retinaPreview && preview !== retinaPreview
-      ? `${preview} 1x, ${retinaPreview} 2x`
-      : undefined;
+  const preview = version?.preview_url || null;
   const canManage = resource.can_manage;
 
   const [addOpen, setAddOpen] = React.useState(false);
@@ -154,7 +149,6 @@ export function ResourceCard({
         {preview ? (
           <img
             src={preview}
-            srcSet={previewSrcSet}
             alt={resource.name}
             loading="lazy"
             decoding="async"

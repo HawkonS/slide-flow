@@ -600,8 +600,6 @@ def admin_update_metadata_tag(
     row = _load_definition(db, table, tag_id)
     if db.execute(f"SELECT id FROM {table} WHERE name = ? AND id != ?", (new_name, tag_id)).fetchone():
         raise HTTPException(409, "标签名称已存在")
-    if domain == "status" and row["name"] in {"active", "disabled"} and new_name != row["name"]:
-        raise HTTPException(400, "系统状态标签的内部值不能重命名")
     category, label = _METADATA_FLAT_CATEGORIES[domain], new_name
     old_name = str(row["name"])
     db.execute(
@@ -650,9 +648,7 @@ def admin_delete_metadata_tag(
     if config is None:
         raise HTTPException(404, "标签类型不存在")
     table, _ = config
-    row = _load_definition(db, table, tag_id)
-    if domain == "status" and row["name"] in {"active", "disabled"}:
-        raise HTTPException(400, "系统状态标签不能删除")
+    _load_definition(db, table, tag_id)
     db.execute(f"DELETE FROM {table} WHERE id = ?", (tag_id,))
     db.commit()
     return {"ok": True}

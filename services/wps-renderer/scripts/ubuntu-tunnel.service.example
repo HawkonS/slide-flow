@@ -9,7 +9,7 @@ User=slideflow
 # Development/private deployment helper when Windows cannot reach the main
 # API directly. It exposes the main API only on Windows loopback; WPS port
 # 8765 remains local to Windows and is never forwarded or publicly opened.
-ExecStart=/usr/bin/ssh -NT -i /etc/slideflow/wps-ssh-key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/slideflow/wps-known-hosts -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -R 127.0.0.1:18088:127.0.0.1:8088 -p SSH_PORT renderer@WINDOWS_HOST
+ExecStart=/usr/bin/ssh -NT -i /etc/slideflow/wps-ssh-key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/slideflow/wps-known-hosts -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -R 127.0.0.1:18089:127.0.0.1:8088 -p SSH_PORT renderer@WINDOWS_HOST
 Restart=always
 RestartSec=5
 NoNewPrivileges=true

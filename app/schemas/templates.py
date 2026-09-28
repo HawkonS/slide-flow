@@ -22,8 +22,10 @@ class TemplatePayload(ApiPayload):
     template_type: str
     visibility_scope: str
     visible_user_ids: list[int] = []
+    visible_user_tags: list[str] = []
     management_scope: str
     manage_user_ids: list[int] = []
+    manage_user_tags: list[str] = []
 
 
 class TemplateSeriesOrderPayload(ApiPayload):

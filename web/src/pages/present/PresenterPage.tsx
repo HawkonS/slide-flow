@@ -32,7 +32,6 @@ import { toast } from "sonner";
 
 import { api, fetchUserPreferences, updateUserPreferences } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { SECRECY_BADGE_TONE, RESOURCE_SECRECY_LABEL } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 import { isOfflineMode, loadOfflineShowData, type OfflineSlideData } from "@/lib/offline-playback";
 import { Badge } from "@/components/ui/badge";
@@ -49,7 +48,7 @@ import {
   type DrawingMode,
   type DrawingCanvasRef,
 } from "@/components/present/DrawingCanvas";
-import { Show, ShowResource, ShowResourceAccessible, SecrecyLevel } from "@/lib/types";
+import { Show, ShowResource, ShowResourceAccessible } from "@/lib/types";
 
 // ─── Types ────────────────────────────────────────────────────────────
 
@@ -380,7 +379,7 @@ export function PresenterPage() {
         name: r.name,
         accessible: true as const,
         hidden: false,
-        secrecy_level: "public" as SecrecyLevel,
+        secrecy_level: "",
         preview_url: offlineData.thumbUrls[idx] || offlineData.slideUrls[idx] || "",
         original_preview_url: null,
         version_no: 1,
@@ -1348,10 +1347,10 @@ export function PresenterPage() {
                         {r.name}
                       </span>
                       <Badge
-                        variant={SECRECY_BADGE_TONE[r.secrecy_level] || "outline"}
+                        variant="outline"
                         className="shrink-0 text-[10px] px-1 py-0 leading-tight"
                       >
-                        {RESOURCE_SECRECY_LABEL[r.secrecy_level] || r.secrecy_level}
+                        {r.secrecy_level || "未设置"}
                       </Badge>
                     </button>
                   );
@@ -1393,10 +1392,10 @@ export function PresenterPage() {
                         </div>
                         <div className="absolute left-1 top-1">
                           <Badge
-                            variant={SECRECY_BADGE_TONE[r.secrecy_level] || "outline"}
+                            variant="outline"
                             className="text-[9px] px-1 py-0 leading-tight shadow-sm"
                           >
-                            {RESOURCE_SECRECY_LABEL[r.secrecy_level] || r.secrecy_level}
+                            {r.secrecy_level || "未设置"}
                           </Badge>
                         </div>
                         {active && (

@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.db import get_db
+from app.db import get_db, is_sqlite_busy_error
 from app.services.resource_import.font_tasks import (
     FONT_LEASE_SECONDS,
     claim_font_delete_task,
@@ -49,45 +49,51 @@ def _font_lease_error(exc: Exception) -> HTTPException:
 def claim(request: Request, _: None = Depends(_renderer_auth)):
     db = get_db()
     try:
-        ensure_all_font_tasks(db)
-        db.commit()
-        claimed = claim_font_task(db)
-        if claimed is None:
-            if request.query_params.get("delete_tasks") != "1":
+        try:
+            ensure_all_font_tasks(db)
+            db.commit()
+            claimed = claim_font_task(db)
+            if claimed is None:
+                if request.query_params.get("delete_tasks") != "1":
+                    return {"task": None}
+                deletion = claim_font_delete_task(db)
+                if deletion is None:
+                    return {"task": None}
+                row, lease_token = deletion
+                return {"task": {
+                    "action": "delete",
+                    "task_id": row["task_id"],
+                    "lease_token": lease_token,
+                    "lease_seconds": FONT_LEASE_SECONDS,
+                    "sha256": row["sha256"],
+                    "file_name": row["file_name"],
+                    "attempts": int(row["attempts"]),
+                }}
+            row, lease_token = claimed
+            path = _uploaded_font_abs(row["file_path"])
+            if path is None or not path.is_file():
+                try:
+                    update_font_task(db, row["task_id"], lease_token, "failed", "font_file_missing")
+                except Exception:
+                    pass
                 return {"task": None}
-            deletion = claim_font_delete_task(db)
-            if deletion is None:
-                return {"task": None}
-            row, lease_token = deletion
             return {"task": {
-                "action": "delete",
+                "action": "install",
                 "task_id": row["task_id"],
                 "lease_token": lease_token,
                 "lease_seconds": FONT_LEASE_SECONDS,
+                "font_id": int(row["font_id"]),
                 "sha256": row["sha256"],
+                "size": path.stat().st_size,
                 "file_name": row["file_name"],
+                "download_url": f"/api/renderer/font-tasks/{row['task_id']}/file",
                 "attempts": int(row["attempts"]),
             }}
-        row, lease_token = claimed
-        path = _uploaded_font_abs(row["file_path"])
-        if path is None or not path.is_file():
-            try:
-                update_font_task(db, row["task_id"], lease_token, "failed", "font_file_missing")
-            except Exception:
-                pass
+        except sqlite3.OperationalError as exc:
+            if not is_sqlite_busy_error(exc):
+                raise
+            db.rollback()
             return {"task": None}
-        return {"task": {
-            "action": "install",
-            "task_id": row["task_id"],
-            "lease_token": lease_token,
-            "lease_seconds": FONT_LEASE_SECONDS,
-            "font_id": int(row["font_id"]),
-            "sha256": row["sha256"],
-            "size": path.stat().st_size,
-            "file_name": row["file_name"],
-            "download_url": f"/api/renderer/font-tasks/{row['task_id']}/file",
-            "attempts": int(row["attempts"]),
-        }}
     finally:
         db.close()
 

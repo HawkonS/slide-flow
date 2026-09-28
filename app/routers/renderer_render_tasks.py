@@ -9,7 +9,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app.db import get_db
+from app.db import get_db, is_sqlite_busy_error
 from app.core.errors import storage_public_message
 from app.core.oss import StorageConfigurationError, StorageUnavailableError
 from app.routers.renderer_font_tasks import _renderer_auth
@@ -74,17 +74,28 @@ async def claim(
     deadline = time.monotonic() + wait_seconds
     db = get_db()
     try:
-        touch_renderer_worker(db, worker_id, state="polling")
-        db.commit()
+        try:
+            touch_renderer_worker(db, worker_id, state="polling")
+            db.commit()
+        except sqlite3.OperationalError as exc:
+            if not is_sqlite_busy_error(exc):
+                raise
+            db.rollback()
     finally:
         db.close()
     while True:
+        claimed = None
         db = get_db()
         try:
-            claimed = claim_render_task(db, worker_id)
-            if claimed is not None:
-                touch_renderer_worker(db, worker_id, state="running", task_id=str(claimed[0]["task_id"]))
-                db.commit()
+            try:
+                claimed = claim_render_task(db, worker_id)
+                if claimed is not None:
+                    touch_renderer_worker(db, worker_id, state="running", task_id=str(claimed[0]["task_id"]))
+                    db.commit()
+            except sqlite3.OperationalError as exc:
+                if not is_sqlite_busy_error(exc):
+                    raise
+                db.rollback()
         finally:
             db.close()
         if claimed is not None:

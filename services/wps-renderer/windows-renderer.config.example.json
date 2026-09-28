@@ -4,6 +4,8 @@
   "wpscli": "C:\\Users\\YOUR_ACCOUNT\\AppData\\Local\\Kingsoft\\WPS Office\\YOUR_VERSION\\clitool\\wpscli.exe",
   "main_url": "http://127.0.0.1:18088",
   "renderer_port": 8765,
+  "local_job_timeout_seconds": 2100,
+  "poll_failure_exit_seconds": 300,
   "worker_id": "",
   "version": "",
   "git": "git"

@@ -11,6 +11,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
+. (Join-Path $PSScriptRoot "Renderer-Common.ps1")
 
 function Assert-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -18,12 +19,34 @@ function Assert-Administrator {
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw "Run Upgrade.ps1 from an elevated PowerShell window." }
 }
 
+function Test-IgnoredPackageMetadata([string]$Name) {
+    return $Name -eq ".DS_Store" -or $Name.StartsWith("._", [StringComparison]::Ordinal)
+}
+
+function Copy-ComponentEntry([string]$From, [string]$To) {
+    $source = Get-Item -LiteralPath $From -Force
+    if ($source.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw "Refusing to copy a reparse point in source: $($source.FullName)"
+    }
+    if ($source.PSIsContainer) {
+        New-Item -ItemType Directory -Path $To -Force | Out-Null
+        Get-ChildItem -LiteralPath $source.FullName -Force | ForEach-Object {
+            if (-not (Test-IgnoredPackageMetadata $_.Name)) {
+                Copy-ComponentEntry $_.FullName (Join-Path $To $_.Name)
+            }
+        }
+        return
+    }
+    Copy-Item -LiteralPath $source.FullName -Destination $To -Force
+}
+
 function Copy-Component([string]$From, [string]$To) {
     New-Item -ItemType Directory -Path $To -Force | Out-Null
     $excluded = @(".venv", ".git", "data", "logs", "cache", "releases", "shared", "current", "config.json", "token.txt")
-    Get-ChildItem -LiteralPath $From -Force | Where-Object { $excluded -notcontains $_.Name } | ForEach-Object {
-        if ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Refusing to copy a reparse point in source: $($_.FullName)" }
-        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $To $_.Name) -Recurse -Force
+    Get-ChildItem -LiteralPath $From -Force | ForEach-Object {
+        if ($excluded -notcontains $_.Name -and -not (Test-IgnoredPackageMetadata $_.Name)) {
+            Copy-ComponentEntry $_.FullName (Join-Path $To $_.Name)
+        }
     }
 }
 
@@ -57,37 +80,43 @@ function Get-OwnedTask([string]$Name, [string]$Description) {
     return $task
 }
 
-function Stop-PullWorkers([bool]$StopFont, [bool]$StopRender, [string]$SharedPath) {
-    if ($StopFont) {
-        $fontTask = Get-OwnedTask "SlideFlow-WPS-Font-Sync" 'SlideFlow WPS font pull protocol v1'
-        if ($fontTask -and $fontTask.State -eq 'Running') { Stop-ScheduledTask -TaskName "SlideFlow-WPS-Font-Sync" }
+function Stop-PullWorkers([object[]]$Workers) {
+    foreach ($worker in $Workers) {
+        $task = Get-ScheduledTask -TaskName $worker.Name -TaskPath $worker.Path -ErrorAction SilentlyContinue
+        if ($task -and $task.State -eq 'Running') { Stop-ScheduledTask -InputObject $task }
     }
-    if ($StopRender) {
-        $pullTask = Get-OwnedTask "SlideFlow-WPS-Render-Pull" 'SlideFlow WPS render pull protocol v1'
-        if ($pullTask -and $pullTask.State -eq 'Running') { Stop-ScheduledTask -TaskName "SlideFlow-WPS-Render-Pull" }
-    }
-    if ($StopFont -and -not (Wait-RendererProcessExit (Join-Path $SharedPath "font-sync.json") 45)) {
-        throw "Font pull worker did not stop; release switch was aborted."
-    }
-    if ($StopRender -and -not (Wait-RendererProcessExit (Join-Path $SharedPath "render-pull.json") 45)) {
-        throw "Render pull worker did not stop; release switch was aborted."
+    foreach ($worker in $Workers) {
+        if (-not (Wait-RendererProcessExit $worker.Config 45)) {
+            throw "Pull worker '$($worker.Name)' did not stop; release switch was aborted."
+        }
     }
 }
 
-function Start-PullWorkers([bool]$StartFont, [bool]$StartRender) {
-    if ($StartFont) {
-        $fontTask = Get-OwnedTask "SlideFlow-WPS-Font-Sync" 'SlideFlow WPS font pull protocol v1'
-        if ($fontTask) {
-            Enable-ScheduledTask -TaskName "SlideFlow-WPS-Font-Sync" | Out-Null
-            if ($fontTask.State -ne 'Running') { Start-ScheduledTask -TaskName "SlideFlow-WPS-Font-Sync" }
-        }
+function Restore-PullWorkers([object[]]$Workers) {
+    foreach ($worker in $Workers) {
+        $task = Get-ScheduledTask -TaskName $worker.Name -TaskPath $worker.Path -ErrorAction SilentlyContinue
+        if (-not $task) { throw "Pull worker '$($worker.Name)' disappeared during upgrade." }
+        if ($worker.WasEnabled) { Enable-ScheduledTask -InputObject $task | Out-Null }
+        if ($worker.WasRunning) { Start-ScheduledTask -InputObject $task }
     }
-    if ($StartRender) {
-        $pullTask = Get-OwnedTask "SlideFlow-WPS-Render-Pull" 'SlideFlow WPS render pull protocol v1'
-        if ($pullTask) {
-            Enable-ScheduledTask -TaskName "SlideFlow-WPS-Render-Pull" | Out-Null
-            if ($pullTask.State -ne 'Running') { Start-ScheduledTask -TaskName "SlideFlow-WPS-Render-Pull" }
-        }
+}
+
+function Set-PullWorkersCurrentRelease([object[]]$Workers, [string]$CurrentPath) {
+    $python = Join-Path $CurrentPath ".venv\Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
+        throw "Pull worker Python does not exist in the current release."
+    }
+    foreach ($worker in $Workers) {
+        $task = Get-ScheduledTask -TaskName $worker.Name -TaskPath $worker.Path -ErrorAction SilentlyContinue
+        if (-not $task) { throw "Pull worker '$($worker.Name)' disappeared during upgrade." }
+        $actions = @($task.Actions)
+        if ($actions.Count -ne 1) { throw "Pull worker '$($worker.Name)' has an unexpected action count." }
+        $action = New-ScheduledTaskAction `
+            -Execute $python `
+            -Argument ([string]$actions[0].Arguments) `
+            -WorkingDirectory $CurrentPath
+        $triggers = @(New-RendererPullTaskTriggers)
+        Set-ScheduledTask -TaskName $worker.Name -TaskPath $worker.Path -Action $action -Trigger $triggers | Out-Null
     }
 }
 
@@ -123,8 +152,7 @@ $newRelease = $null
 $baseUri = $null
 $healthUri = $null
 $token = ""
-$fontShouldRun = $false
-$renderShouldRun = $false
+$pullWorkerStates = @()
 $maintenanceStarted = $false
 try {
     if (-not (Test-Path -LiteralPath $sourceRoot -PathType Container)) { throw "Source directory does not exist." }
@@ -152,17 +180,25 @@ try {
 
     $rendererTask = Get-OwnedTask $TaskName 'SlideFlow WPS Renderer protocol v1'
     if (-not $rendererTask) { throw "Renderer scheduled task is not registered." }
-    $fontTask = Get-OwnedTask "SlideFlow-WPS-Font-Sync" 'SlideFlow WPS font pull protocol v1'
-    $pullTask = Get-OwnedTask "SlideFlow-WPS-Render-Pull" 'SlideFlow WPS render pull protocol v1'
-    $fontShouldRun = [bool]($fontTask -and $fontTask.State -ne 'Disabled')
-    $renderShouldRun = [bool]($pullTask -and $pullTask.State -ne 'Disabled')
+    $pullWorkerStates = @(Get-RendererManagedPullTasks | ForEach-Object {
+        [pscustomobject]@{
+            Name = [string]$_.Task.TaskName
+            Path = [string]$_.Task.TaskPath
+            Config = [string]$_.Config
+            WasEnabled = [bool]($_.Task.State -ne 'Disabled')
+            WasRunning = [bool]($_.Task.State -eq 'Running')
+        }
+    })
     $maintenanceStarted = $true
     # Stop pull workers before draining the local renderer. Otherwise a pull
     # worker can keep claiming main-server leases while maintenance rejects
     # local submissions, consuming all retry attempts during the upgrade.
-    if ($fontShouldRun) { Disable-ScheduledTask -TaskName "SlideFlow-WPS-Font-Sync" | Out-Null }
-    if ($renderShouldRun) { Disable-ScheduledTask -TaskName "SlideFlow-WPS-Render-Pull" | Out-Null }
-    Stop-PullWorkers $fontShouldRun $renderShouldRun $shared
+    foreach ($worker in $pullWorkerStates) {
+        if ($worker.WasEnabled) {
+            Disable-ScheduledTask -TaskName $worker.Name -TaskPath $worker.Path | Out-Null
+        }
+    }
+    Stop-PullWorkers $pullWorkerStates
 
     Invoke-Renderer "Post" "$baseUri/v1/admin/drain" $token | Out-Null
     $drained = $true
@@ -199,7 +235,11 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Could not register the upgraded scheduled task." }
 
     if (-not (Wait-RendererHealthy $healthUri $token 30)) { throw "New renderer failed its health check." }
-    Start-PullWorkers $fontShouldRun $renderShouldRun
+    # Every environment keeps its own URL, token and config arguments, but all
+    # workers import code from the atomically switched release. This prevents
+    # a development worker from surviving an upgrade on a stale dev-code copy.
+    Set-PullWorkersCurrentRelease $pullWorkerStates $current
+    Restore-PullWorkers $pullWorkerStates
     if (Test-Path -LiteralPath $retiring) { Remove-Item -LiteralPath $retiring -Recurse -Force }
     @{ version = $Version; upgraded_at = [DateTime]::UtcNow.ToString("o"); task = $TaskName } |
         ConvertTo-Json | Set-Content -LiteralPath (Join-Path $InstallRoot "version.json") -Encoding UTF8
@@ -207,7 +247,7 @@ try {
 } catch {
     Write-Warning $_.Exception.Message
     if ($maintenanceStarted) {
-        try { Stop-PullWorkers $fontShouldRun $renderShouldRun $shared } catch { Write-Warning $_.Exception.Message }
+        try { Stop-PullWorkers $pullWorkerStates } catch { Write-Warning $_.Exception.Message }
         try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue } catch { }
         Wait-RendererProcessExit $configPath 30 | Out-Null
     }
@@ -218,7 +258,8 @@ try {
             if (Test-Path -LiteralPath $retiring) { Move-Item -LiteralPath $retiring -Destination $previous }
             & (Join-Path $current "scripts\Register.ps1") -InstallRoot $InstallRoot -Config $configPath -Python (Join-Path $current ".venv\Scripts\pythonw.exe") -TaskName $TaskName -Start
             if (-not (Wait-RendererHealthy $healthUri $token 30)) { throw "Restored renderer failed its health check." }
-            Start-PullWorkers $fontShouldRun $renderShouldRun
+            Set-PullWorkersCurrentRelease $pullWorkerStates $current
+            Restore-PullWorkers $pullWorkerStates
             Write-Warning "The previous renderer release was restored."
         } catch { throw "Automatic rollback failed: $($_.Exception.Message)" }
     } elseif ($maintenanceStarted -and -not $switched -and $newRelease -and (Test-Path -LiteralPath $newRelease)) {
@@ -227,14 +268,16 @@ try {
         try {
             & (Join-Path $current "scripts\Register.ps1") -InstallRoot $InstallRoot -Config $configPath -Python (Join-Path $current ".venv\Scripts\pythonw.exe") -TaskName $TaskName -Start
             if (-not (Wait-RendererHealthy $healthUri $token 30)) { throw "Current renderer failed its health check after staging rollback." }
-            Start-PullWorkers $fontShouldRun $renderShouldRun
+            Set-PullWorkersCurrentRelease $pullWorkerStates $current
+            Restore-PullWorkers $pullWorkerStates
             Write-Warning "The current renderer release was restarted after the failed staging step."
         } catch { throw "Could not restart the current renderer release: $($_.Exception.Message)" }
     } elseif ($maintenanceStarted -and -not $switched -and (Test-Path -LiteralPath $current -PathType Container)) {
         try {
             & (Join-Path $current "scripts\Register.ps1") -InstallRoot $InstallRoot -Config $configPath -Python (Join-Path $current ".venv\Scripts\pythonw.exe") -TaskName $TaskName -Start
             if (-not (Wait-RendererHealthy $healthUri $token 30)) { throw "Current renderer failed its health check after upgrade failure." }
-            Start-PullWorkers $fontShouldRun $renderShouldRun
+            Set-PullWorkersCurrentRelease $pullWorkerStates $current
+            Restore-PullWorkers $pullWorkerStates
             Write-Warning "The current renderer release was restarted after the failed upgrade."
         } catch { throw "Could not restart the current renderer release: $($_.Exception.Message)" }
     }

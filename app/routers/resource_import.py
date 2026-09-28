@@ -21,6 +21,7 @@ from app.services.files import (
     _compress_hd_image,
 )
 from app.services.resource_import.commit import (
+    _commit_resource_iteration_sync,
     _commit_resource_import_sync,
 )
 from app.services.template_import import _commit_template_import_sync
@@ -434,6 +435,27 @@ async def commit_resource_import(
             _commit_template_import_sync, session_id, payload, user, db, session,
         )
     return await _run_resource_import_job(_commit_resource_import_sync, session_id, payload, user, db, session)
+
+
+@router.post("/api/resources/{resource_id}/versions/from-import/{session_id}")
+async def commit_resource_iteration(
+    resource_id: int,
+    session_id: str,
+    payload: dict[str, Any] = Body(...),
+    user: sqlite3.Row = Depends(require_user),
+    db: sqlite3.Connection = Depends(db_dep),
+    session: dict[str, Any] = Depends(_resource_import_locked_session),
+    _: None = Depends(_require_resource_import_origin),
+) -> dict[str, Any]:
+    return await _run_resource_import_job(
+        _commit_resource_iteration_sync,
+        session_id,
+        resource_id,
+        payload,
+        user,
+        db,
+        session,
+    )
 
 
 @router.delete("/api/resource-import/{session_id}")

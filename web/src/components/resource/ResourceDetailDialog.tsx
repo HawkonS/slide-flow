@@ -24,11 +24,10 @@ import { RichTextEditor } from "@/components/resource/RichTextEditor";
 import {
   DEFAULT_RESOURCE_SUBJECT,
   RESOURCE_SCOPE_LABEL,
-  RESOURCE_SECRECY_LABEL,
-  RESOURCE_STATUS_LABEL,
 } from "@/lib/constants";
 import { api } from "@/lib/api";
 import { parseTags, Resource, ResourceVersion } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 export interface ResourceDetailDialogProps {
   open: boolean;
@@ -69,7 +68,7 @@ export function ResourceDetailDialog({
 
   if (!resource) return null;
   const version = resolveVersion(resource, selectedVersionId);
-  const preview = version?.original_preview_url || version?.preview_url;
+  const preview = version?.preview_url;
   const tags = parseTags(resource.tags);
   const hasMultipleVersions = (resource.versions?.length ?? 0) > 1;
 
@@ -108,11 +107,11 @@ export function ResourceDetailDialog({
               />
               <InfoRow
                 label="状态"
-                value={RESOURCE_STATUS_LABEL[resource.status] || resource.status}
+                value={resource.status}
               />
               <InfoRow
                 label="密级"
-                value={RESOURCE_SECRECY_LABEL[resource.secrecy_level] || resource.secrecy_level}
+                value={resource.secrecy_level}
               />
               <InfoRow
                 label="可见范围"
@@ -225,22 +224,104 @@ function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-/** 通用备注：详情页只读展示；编辑入口在「编辑信息」对话框内 */
-export function CommonRemarkView({ html }: { html: string }) {
+/** 通用备注：默认只读查看；有管理权限时可切换到编辑模式 */
+export function CommonRemarkView({
+  html,
+  className,
+  resourceId,
+  versionId,
+  canManage = false,
+}: {
+  html: string;
+  className?: string;
+  resourceId?: number;
+  versionId?: number | null;
+  canManage?: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const [mode, setMode] = React.useState<"view" | "edit">("view");
+  const [draft, setDraft] = React.useState(html);
+  const [applyScope, setApplyScope] = React.useState<"selected" | "all">("selected");
+  const hasRemark = remarkHasContent(html);
+  const dirty = draft !== html;
+
+  React.useEffect(() => {
+    setDraft(html);
+    setMode("view");
+  }, [html, resourceId, versionId]);
+
+  const save = useMutation({
+    mutationFn: async () => {
+      if (!resourceId || versionId == null) throw new Error("请选择要编辑的版本");
+      return api(`/api/resources/${resourceId}/common-remark`, {
+        method: "POST",
+        json: { content_html: draft, apply_scope: applyScope, version_id: versionId },
+      });
+    },
+    onSuccess: () => {
+      toast.success("通用备注已保存");
+      setMode("view");
+      void queryClient.invalidateQueries({ queryKey: ["resource-detail"] });
+      void queryClient.invalidateQueries({ queryKey: ["resource", resourceId] });
+      void queryClient.invalidateQueries({ queryKey: ["resources"] });
+    },
+    onError: (error: Error) => toast.error(error.message || "保存失败"),
+  });
+
   return (
-    <section className="flex min-h-0 flex-col overflow-hidden rounded-md border">
-      <header className="flex items-center justify-between border-b bg-muted/40 px-3 py-2 text-sm font-medium">
-        <span>通用备注</span>
-        <span className="text-xs font-normal text-muted-foreground">所有可见用户可见</span>
+    <section className={cn("flex min-h-0 flex-col overflow-hidden rounded-lg border", className)}>
+      <header className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/40 px-3 py-2 pr-14">
+        <div className="flex items-center gap-2 text-sm font-medium">
+          <span>通用备注</span>
+          <RemarkStatus hasRemark={hasRemark} />
+          <span className="hidden text-xs font-normal text-muted-foreground sm:inline">所有可见用户可见</span>
+          {mode === "edit" && dirty && <span className="text-[10px] font-normal text-amber-600">未保存</span>}
+        </div>
+        <RemarkModeSwitch
+          mode={mode}
+          dirty={dirty}
+          canEdit={canManage}
+          onView={() => setMode("view")}
+          onEdit={() => { setDraft(html); setApplyScope("selected"); setMode("edit"); }}
+        />
       </header>
-      <div className="min-h-0 flex-1 overflow-auto px-3 py-2">
-        {html ? (
-          <div
-            className="prose prose-sm max-w-none text-sm text-foreground"
-            dangerouslySetInnerHTML={{ __html: html }}
-          />
+      <div className="min-h-0 flex-1 overflow-hidden">
+        {mode === "edit" ? (
+          <div className="flex h-full min-h-[160px] flex-col">
+            <div className="min-h-0 flex-1">
+              <RichTextEditor
+                value={draft}
+                onChange={setDraft}
+                placeholder="所有可见用户都能查看的备注，支持加粗 / 列表等格式"
+                minHeight={120}
+                bordered={false}
+                className="h-full"
+              />
+            </div>
+            <RemarkEditorFooter
+              dirty={dirty}
+              pending={save.isPending}
+              onCancel={() => { setDraft(html); setMode("view"); }}
+              onSave={() => save.mutate()}
+              saveDisabled={!resourceId || versionId == null}
+              leading={<div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span>应用到</span>
+                <Select value={applyScope} onValueChange={(value: "selected" | "all") => setApplyScope(value)}>
+                  <SelectTrigger className="h-7 w-[132px] text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="selected">当前版本</SelectItem>
+                    <SelectItem value="all">所有版本</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>}
+            />
+          </div>
+        ) : hasRemark ? (
+          <div className="h-full overflow-auto px-3 py-2">
+            <div className="prose prose-sm max-w-none text-sm text-foreground" dangerouslySetInnerHTML={{ __html: html }} />
+          </div>
         ) : (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+          <div className="flex h-full min-h-24 items-center justify-center text-sm text-muted-foreground">
             暂无通用备注
           </div>
         )}
@@ -249,18 +330,21 @@ export function CommonRemarkView({ html }: { html: string }) {
   );
 }
 
-/** 个人备注：常驻编辑态，富文本编辑器 + 保存按钮；内部高度固定、内容超出滚动 */
+/** 个人备注：默认只读查看，按需切换到富文本编辑状态 */
 export function PersonalRemarkEditor({
   resourceId,
   versionId,
   open,
+  className,
 }: {
   resourceId: number;
   versionId: number | null;
   open: boolean;
+  className?: string;
 }) {
   const queryClient = useQueryClient();
   const [draft, setDraft] = React.useState("");
+  const [mode, setMode] = React.useState<"view" | "edit">("view");
 
   const { data, isLoading } = useQuery({
     queryKey: ["resource", resourceId, "personal-remark", versionId],
@@ -278,6 +362,7 @@ export function PersonalRemarkEditor({
   // 服务端内容返回 / 资源或版本切换时，重置草稿
   React.useEffect(() => {
     setDraft(serverHtml);
+    setMode("view");
   }, [serverHtml, resourceId, versionId]);
 
   const mutation = useMutation({
@@ -288,6 +373,7 @@ export function PersonalRemarkEditor({
       }),
     onSuccess: () => {
       toast.success("个人备注已保存");
+      setMode("view");
       queryClient.invalidateQueries({
         queryKey: ["resource", resourceId, "personal-remark", versionId],
       });
@@ -304,47 +390,152 @@ export function PersonalRemarkEditor({
   });
 
   const dirty = draft !== serverHtml;
+  const hasRemark = remarkHasContent(serverHtml);
 
   return (
-    <section className="flex min-h-0 flex-col overflow-hidden rounded-md border">
-      <header className="flex items-center justify-between border-b bg-muted/40 px-3 py-2 text-sm font-medium">
-        <span className="flex items-center gap-2">
-          个人备注
-          {dirty && (
-            <span className="text-[10px] font-normal text-amber-600">未保存</span>
-          )}
-        </span>
-        <Button
-          size="sm"
-          variant={dirty ? "default" : "outline"}
-          className="h-7 px-2"
-          onClick={() => mutation.mutate()}
-          disabled={mutation.isPending || isLoading || !dirty}
-        >
-          {mutation.isPending ? (
-            <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Save className="mr-1 h-3.5 w-3.5" />
-          )}
-          保存
-        </Button>
+    <section className={cn("flex min-h-0 flex-col overflow-hidden rounded-lg border", className)}>
+      <header className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/40 px-3 py-2 pr-14">
+        <div className="flex items-center gap-2 text-sm font-medium">
+          <span>个人备注</span>
+          <RemarkStatus hasRemark={hasRemark} pending={isLoading} />
+          <span className="hidden text-xs font-normal text-muted-foreground sm:inline">仅自己可见</span>
+          {mode === "edit" && dirty && <span className="text-[10px] font-normal text-amber-600">未保存</span>}
+        </div>
+        <RemarkModeSwitch
+          mode={mode}
+          dirty={dirty}
+          canEdit
+          editDisabled={isLoading || versionId == null}
+          onView={() => setMode("view")}
+          onEdit={() => { setDraft(serverHtml); setMode("edit"); }}
+        />
       </header>
       <div className="min-h-0 flex-1 overflow-hidden">
         {isLoading ? (
           <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" /> 加载中…
           </div>
+        ) : mode === "edit" ? (
+          <div className="flex h-full min-h-[160px] flex-col">
+            <div className="min-h-0 flex-1">
+              <RichTextEditor
+                value={draft}
+                onChange={setDraft}
+                placeholder="仅自己可见的笔记，支持加粗 / 列表等格式"
+                minHeight={120}
+                bordered={false}
+                className="h-full"
+              />
+            </div>
+            <RemarkEditorFooter
+              dirty={dirty}
+              pending={mutation.isPending}
+              onCancel={() => { setDraft(serverHtml); setMode("view"); }}
+              onSave={() => mutation.mutate()}
+            />
+          </div>
+        ) : hasRemark ? (
+          <div className="h-full overflow-auto px-3 py-2">
+            <div className="prose prose-sm max-w-none text-sm text-foreground" dangerouslySetInnerHTML={{ __html: serverHtml }} />
+          </div>
         ) : (
-          <RichTextEditor
-            value={draft}
-            onChange={setDraft}
-            placeholder="仅自己可见的笔记，支持加粗 / 列表等格式"
-            minHeight={120}
-            bordered={false}
-            className="h-full"
-          />
+          <div className="flex h-full min-h-24 items-center justify-center text-sm text-muted-foreground">暂无个人备注</div>
         )}
       </div>
     </section>
+  );
+}
+
+function remarkHasContent(html: string) {
+  return html.replace(/<[^>]*>/g, "").replace(/&nbsp;|&#160;|&#xA0;|\s/gi, "").length > 0;
+}
+
+function RemarkModeSwitch({
+  mode,
+  dirty,
+  canEdit,
+  editDisabled = false,
+  onView,
+  onEdit,
+}: {
+  mode: "view" | "edit";
+  dirty: boolean;
+  canEdit: boolean;
+  editDisabled?: boolean;
+  onView: () => void;
+  onEdit: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-1">
+      <Button
+        size="sm"
+        variant={mode === "view" ? "secondary" : "ghost"}
+        className="h-7 px-2 text-xs"
+        onClick={onView}
+        disabled={mode === "edit" && dirty}
+      >
+        查看
+      </Button>
+      {canEdit && (
+        <Button
+          size="sm"
+          variant={mode === "edit" ? "secondary" : "ghost"}
+          className="h-7 gap-1 px-2 text-xs"
+          onClick={onEdit}
+          disabled={editDisabled || mode === "edit"}
+        >
+          <Pencil className="h-3 w-3" />编辑
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function RemarkEditorFooter({
+  dirty,
+  pending,
+  onCancel,
+  onSave,
+  saveDisabled = false,
+  leading,
+}: {
+  dirty: boolean;
+  pending: boolean;
+  onCancel: () => void;
+  onSave: () => void;
+  saveDisabled?: boolean;
+  leading?: React.ReactNode;
+}) {
+  return (
+    <div className="flex shrink-0 flex-wrap items-center gap-2 border-t px-3 py-2">
+      {leading}
+      <div className="ml-auto flex items-center gap-1.5">
+        <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={onCancel}>取消</Button>
+        <Button
+          size="sm"
+          variant={dirty ? "default" : "outline"}
+          className="h-7 gap-1 px-2.5 text-xs"
+          onClick={onSave}
+          disabled={pending || !dirty || saveDisabled}
+        >
+          {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+          保存
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function RemarkStatus({ hasRemark, pending = false }: { hasRemark: boolean; pending?: boolean }) {
+  if (pending) {
+    return <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">加载中</span>;
+  }
+  return (
+    <span className={cn(
+      "rounded-full px-2 py-0.5 text-[10px] font-medium",
+      hasRemark ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300" : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400",
+    )}>
+      {hasRemark ? "有备注" : "无备注"}
+    </span>
   );
 }

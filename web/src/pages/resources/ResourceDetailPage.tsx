@@ -1,10 +1,9 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft,
   ArrowRight,
-  CalendarDays,
   Clipboard,
   Copy,
   Download,
@@ -18,7 +17,6 @@ import {
   RefreshCw,
   ShieldCheck,
   Trash2,
-  UserRound,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -29,14 +27,18 @@ import { ResourceNewVersionDialog } from "@/components/resource/ResourceNewVersi
 import { ResourcePreviewDialog } from "@/components/resource/ResourcePreviewDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   DEFAULT_RESOURCE_SUBJECT,
   RESOURCE_SCOPE_LABEL,
-  RESOURCE_SECRECY_LABEL,
-  RESOURCE_STATUS_LABEL,
-  SECRECY_BADGE_TONE,
 } from "@/lib/constants";
 import { ApiError, api } from "@/lib/api";
 import { parseTags, type Resource, type ResourceVersion } from "@/lib/types";
@@ -47,6 +49,15 @@ interface ShareLinkItem {
   expires_at: string;
   revoked_at: string | null;
   created_at: string;
+}
+
+interface PersonalRemarkResponse {
+  content_html: string;
+  version_id: number;
+}
+
+interface ResourceListResponse {
+  items: Resource[];
 }
 
 function formatDate(value: string | null | undefined) {
@@ -78,14 +89,53 @@ function ScopeLine({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ShareLinksPanel({ resource }: { resource: Resource }) {
+function RecommendedResourceCard({ resource }: { resource: Resource }) {
+  const tags = parseTags(resource.tags);
+  return (
+    <Link
+      to={`/resources/${resource.detail_token}`}
+      className="group overflow-hidden rounded-lg border bg-card shadow-sm transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md"
+    >
+      <div className="relative aspect-video overflow-hidden bg-slate-100">
+        {resource.current?.preview_url ? (
+          <img
+            src={resource.current.preview_url}
+            alt={resource.name}
+            loading="lazy"
+            decoding="async"
+            className="absolute inset-0 h-full w-full object-contain transition-transform duration-200 group-hover:scale-[1.015]"
+          />
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">暂无预览</div>
+        )}
+      </div>
+      <div className="p-3">
+        <div className="truncate text-sm font-medium" title={resource.name}>{resource.name}</div>
+        <div className="mt-2 flex min-h-5 items-center gap-1 overflow-hidden">
+          {tags.length > 0 ? (
+            <>
+              {tags.slice(0, 2).map((tag) => (
+                <span key={tag} className="max-w-24 truncate rounded-md bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{tag}</span>
+              ))}
+              {tags.length > 2 && <span className="text-[10px] text-muted-foreground">+{tags.length - 2}</span>}
+            </>
+          ) : (
+            <span className="truncate text-[11px] text-muted-foreground">{resource.subject || "未分类"}</span>
+          )}
+        </div>
+      </div>
+    </Link>
+  );
+}
+
+function ShareLinksPanel({ resource, open }: { resource: Resource; open: boolean }) {
   const queryClient = useQueryClient();
   const [days, setDays] = React.useState("7");
   const [createdLink, setCreatedLink] = React.useState<string | null>(null);
   const { data, isLoading } = useQuery({
     queryKey: ["resource", resource.id, "share-links"],
     queryFn: () => api<{ items: ShareLinkItem[] }>(`/api/resources/${resource.id}/share-links`),
-    enabled: resource.can_manage,
+    enabled: open,
   });
   const create = useMutation({
     mutationFn: () => api<{ share_path: string; expires_at: string }>(`/api/resources/${resource.id}/share-links`, {
@@ -110,13 +160,12 @@ function ShareLinksPanel({ resource }: { resource: Resource }) {
   });
 
   return (
-    <section className="border-b pb-5 pt-5">
+    <section className="border-t pt-5">
       <div className="flex items-start justify-between gap-3">
         <div>
           <h2 className="flex items-center gap-2 text-sm font-semibold"><Link2 className="h-4 w-4 text-foreground/70" />分享链接</h2>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">仅管理者可创建。链接只展示预览和元数据，不授予 PPT 下载权限；可随时撤销。</p>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">链接只展示预览和元数据，不授予 PPT 下载权限；你创建的链接可随时撤销。</p>
         </div>
-        <ShieldCheck className="h-5 w-5 shrink-0 text-emerald-600" />
       </div>
       <div className="mt-4 flex flex-col gap-2 sm:flex-row">
         <Select value={days} onValueChange={setDays}>
@@ -152,6 +201,71 @@ function ShareLinksPanel({ resource }: { resource: Resource }) {
   );
 }
 
+function ResourceLinksDialog({
+  open,
+  onOpenChange,
+  resource,
+  publicUrl,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  resource: Resource;
+  publicUrl: string;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[min(720px,calc(100vh-2rem))] max-w-xl overflow-y-auto p-0">
+        <DialogHeader className="border-b px-6 py-5 pr-12">
+          <DialogTitle className="flex items-center gap-2 text-base">
+            <Link2 className="h-4 w-4 text-muted-foreground" />
+            链接与分享
+          </DialogTitle>
+          <DialogDescription>
+            复制素材页面地址，或创建临时分享链接发给他人。临时链接只能预览，不能下载 PPT。
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-6 px-6 py-5">
+          <section>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold">页面地址</h2>
+                <p className="mt-1 text-xs text-muted-foreground">当前素材详情页</p>
+              </div>
+              <Clipboard className="h-4 w-4 text-muted-foreground" />
+            </div>
+            <div className="mt-3 flex min-w-0 gap-2">
+              <Input readOnly value={publicUrl} className="h-9 min-w-0 bg-muted/30 text-xs" aria-label="素材页面地址" />
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-9 w-9 shrink-0"
+                title="复制页面地址"
+                aria-label="复制页面地址"
+                onClick={() => void copyText(publicUrl)}
+              >
+                <Copy className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-9 w-9 shrink-0"
+                title="打开页面地址"
+                aria-label="打开页面地址"
+                onClick={() => window.open(publicUrl, "_blank", "noopener,noreferrer")}
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          </section>
+
+          <ShareLinksPanel resource={resource} open={open} />
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function ResourceDetailPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -173,14 +287,108 @@ export function ResourceDetailPage() {
   const [newVersionOpen, setNewVersionOpen] = React.useState(false);
   const [downloadCtx, setDownloadCtx] = React.useState<{ resource: Resource; version: ResourceVersion } | null>(null);
   const [previewResource, setPreviewResource] = React.useState<Resource | null>(null);
+  const [linksOpen, setLinksOpen] = React.useState(false);
+  const [commonRemarkOpen, setCommonRemarkOpen] = React.useState(false);
+  const [personalRemarkOpen, setPersonalRemarkOpen] = React.useState(false);
 
   React.useEffect(() => {
     if (resource) setSelectedVersionId(resource.current?.id ?? null);
   }, [resource?.id, resource?.current?.id]);
 
   const version = resource ? resolveVersion(resource, selectedVersionId) : null;
+  const versionOptions = resource
+    ? (resource.versions?.length ? resource.versions : [resource.current])
+    : [];
+  const personalRemarkQuery = useQuery({
+    queryKey: ["resource", resource?.id, "personal-remark", version?.id],
+    queryFn: async () => api<PersonalRemarkResponse>(
+      `/api/resources/${resource!.id}/personal-remark`,
+      version?.id ? { params: { version_id: version.id } } : undefined,
+    ),
+    enabled: resource != null && version?.id != null,
+    staleTime: 30_000,
+  });
+  const commonRemarkPreview = remarkPreviewText(version?.common_remark_html || "");
+  const personalRemarkPreview = remarkPreviewText(personalRemarkQuery.data?.content_html || "");
+  // 列表使用缩略图；进入单页详情后直接展示当前版本高清预览。
   const currentPreview = version?.original_preview_url || version?.preview_url;
   const tags = resource ? parseTags(resource.tags) : [];
+  const recommendationsQuery = useQuery({
+    queryKey: ["resource-recommendations", resource?.id, tags.join(","), resource?.subject],
+    queryFn: async () => {
+      const currentResource = resource!;
+      const currentTags = new Set(tags);
+      const selected: Resource[] = [];
+      const seen = new Set<number>([currentResource.id]);
+      const appendItems = (items: Resource[]) => {
+        for (const item of items) {
+          if (seen.has(item.id)) continue;
+          selected.push(item);
+          seen.add(item.id);
+          if (selected.length === 5) break;
+        }
+      };
+      const loadResources = async (params: Record<string, string | number>) => {
+        try {
+          const response = await api<ResourceListResponse>("/api/resources", { params });
+          return response.items;
+        } catch {
+          // 某一层推荐失败时继续走下一层，避免整个推荐区被隐藏。
+          return [];
+        }
+      };
+
+      if (tags.length > 0) {
+        const related = await loadResources({
+          page: 1,
+          page_size: 100,
+          tags: tags.join(","),
+          tags_mode: "any",
+          sort: "updated_desc",
+        });
+        const ranked = related
+          .filter((item) => item.id !== currentResource.id)
+          .map((item) => ({
+            item,
+            tagMatches: parseTags(item.tags).filter((tag) => currentTags.has(tag)).length,
+            sameSubject: Boolean(currentResource.subject && item.subject === currentResource.subject),
+          }))
+          .sort((a, b) =>
+            b.tagMatches - a.tagMatches
+            || Number(b.sameSubject) - Number(a.sameSubject)
+            || Date.parse(b.item.updated_at) - Date.parse(a.item.updated_at),
+          )
+          .map(({ item }) => item);
+        appendItems(ranked);
+      }
+
+      // 很多历史素材没有标签：先用相同主体补足，比直接随机推荐更相关。
+      if (selected.length < 5 && currentResource.subject) {
+        const sameSubject = await loadResources({
+          page: 1,
+          page_size: 50,
+          subject: currentResource.subject,
+          sort: "updated_desc",
+        });
+        appendItems(sameSubject);
+      }
+
+      if (selected.length < 5) {
+        const fallback = await loadResources({
+          page: 1,
+          page_size: 100,
+          sort: "updated_desc",
+        });
+        appendItems(fallback);
+      }
+
+      return selected;
+    },
+    enabled: resource != null,
+    staleTime: 60_000,
+  });
+  const secrecyLabel = resource?.secrecy_level || "";
+  const statusLabel = resource?.status || "";
   const publicUrl = window.location.href;
   const closeAndRefresh = React.useCallback((open: boolean, setOpen: (value: boolean) => void) => {
     setOpen(open);
@@ -198,13 +406,13 @@ export function ResourceDetailPage() {
   }
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-[1480px] flex-col overflow-auto pb-8">
-      <header className="flex shrink-0 flex-wrap items-start justify-between gap-4 border-b px-1 pb-5 pt-1 sm:px-2">
-        <div className="flex min-w-0 items-start gap-3">
+    <div className="mx-auto min-h-full w-full max-w-[1600px] pb-8">
+      <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b px-1 py-2 sm:px-2">
+        <div className="flex min-w-0 items-center gap-2.5">
           <Button
-            variant="outline"
+            variant="ghost"
             size="icon"
-            className="mt-1 h-9 w-9 shrink-0"
+            className="h-9 w-9 shrink-0"
             title="返回素材库"
             aria-label="返回素材库"
             onClick={() => navigate("/resources")}
@@ -212,161 +420,166 @@ export function ResourceDetailPage() {
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div className="min-w-0">
-            <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
-              <span>单页素材</span>
-              <span aria-hidden="true">/</span>
-              <span>详情</span>
-            </div>
-            <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-2">
-              <h1 className="max-w-full truncate text-2xl font-semibold tracking-tight sm:text-[28px]">{resource.name}</h1>
-              <Badge variant={SECRECY_BADGE_TONE[resource.secrecy_level] || "outline"}>
-                {RESOURCE_SECRECY_LABEL[resource.secrecy_level]}
-              </Badge>
-              <Badge variant={resource.status === "active" ? "secondary" : "outline"}>
-                {RESOURCE_STATUS_LABEL[resource.status]}
-              </Badge>
-            </div>
-            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-              <span>v{version?.version_no ?? "-"}</span>
-              <span aria-hidden="true">·</span>
-              <span>最后修改 {formatDate(resource.updated_at)}</span>
-              {tags.length > 0 && (
-                <span className="flex flex-wrap items-center gap-1.5">
-                  {tags.map((tag) => <Badge key={tag} variant="outline" className="h-5 px-1.5 text-[10px] font-normal">{tag}</Badge>)}
-                </span>
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <h1 className="max-w-full truncate text-xl font-semibold tracking-tight sm:text-2xl">{resource.name}</h1>
+              {secrecyLabel && (
+                <Badge variant="outline" className="h-5 px-1.5 text-[10px]">
+                  {secrecyLabel}
+                </Badge>
+              )}
+              {statusLabel && (
+                <Badge variant={resource.status === "active" ? "secondary" : "outline"} className="h-5 px-1.5 text-[10px]">
+                  {statusLabel}
+                </Badge>
               )}
             </div>
           </div>
         </div>
-        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
-          <Button variant="outline" size="sm" className="gap-1.5" onClick={() => void copyText(publicUrl)}>
-            <Clipboard className="h-4 w-4" />复制页面 URL
+        <div className="flex w-full flex-wrap items-center gap-1.5 sm:w-auto">
+          <Button variant="outline" size="sm" className="h-8 gap-1.5 border-border/70 px-2.5 text-muted-foreground shadow-none hover:text-foreground" onClick={() => setLinksOpen(true)}>
+            <Link2 className="h-4 w-4" />链接与分享
           </Button>
           {resource.can_manage && (
-            <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setEditOpen(true)}>
+            <Button variant="outline" size="sm" className="h-8 gap-1.5 border-border/70 px-2.5 text-muted-foreground shadow-none hover:text-foreground" onClick={() => setNewVersionOpen(true)}>
+              <RefreshCw className="h-4 w-4" />迭代
+            </Button>
+          )}
+          {resource.can_manage && (
+            <Button variant="outline" size="sm" className="h-8 gap-1.5 border-border/70 px-3 text-muted-foreground shadow-none hover:text-foreground" onClick={() => setEditOpen(true)}>
               <Pencil className="h-4 w-4" />编辑
             </Button>
           )}
           {resource.can_manage && (
-            <Button size="sm" className="gap-1.5" onClick={() => setDownloadCtx({ resource, version: version! })} disabled={!version}>
+            <Button size="sm" className="h-8 gap-1.5 px-3 shadow-sm" onClick={() => setDownloadCtx({ resource, version: version! })} disabled={!version}>
               <Download className="h-4 w-4" />下载
             </Button>
           )}
+          {!resource.can_manage && <Badge variant="soft" className="h-8 px-2.5">只读访问</Badge>}
         </div>
       </header>
 
-      <main className="min-w-0 pt-5">
-        <div className="grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
-          <section className="flex min-h-[430px] min-w-0 flex-col overflow-hidden rounded-xl border bg-[#101827] shadow-sm xl:h-[calc(100vh-235px)] xl:max-h-[640px] xl:min-h-[430px]">
-            <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 px-4 py-3 text-xs text-slate-300 sm:px-5">
-              <div className="flex items-center gap-2">
-                <Eye className="h-4 w-4 text-slate-400" />
-                <span className="font-medium text-slate-100">预览</span>
-                <span className="text-slate-500">当前版本 v{version?.version_no ?? "-"}</span>
+      <main className="min-w-0 pb-16 pt-5">
+        <div className="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,1fr)_340px]">
+          <section className="min-w-0 overflow-hidden rounded-xl border bg-card shadow-sm">
+            <div className="flex min-h-10 flex-wrap items-center justify-between gap-2 border-b px-3 py-2 sm:px-4">
+              <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                <Eye className="h-4 w-4" />
+                <span className="font-medium text-foreground">预览</span>
+                {tags.map((tag) => (
+                  <Badge key={tag} variant="outline" className="h-5 px-1.5 text-[10px] font-normal">
+                    {tag}
+                  </Badge>
+                ))}
               </div>
-              <Button variant="ghost" size="sm" className="h-8 gap-1.5 px-2 text-slate-300 hover:bg-white/10 hover:text-white" onClick={() => setPreviewResource(resource)}>
+              <Button variant="ghost" size="sm" className="h-7 gap-1.5 px-2 text-xs" title="放大预览当前版本" onClick={() => setPreviewResource(version ? { ...resource, current: version } : resource)}>
                 <Maximize className="h-3.5 w-3.5" />放大查看
               </Button>
             </div>
-            <div className="relative flex min-h-0 flex-1 items-center justify-center bg-[#0b1220] p-4 sm:p-8">
-              <div className="pointer-events-none absolute inset-4 border border-white/5 sm:inset-8" />
+            <div className="relative aspect-video w-full overflow-hidden bg-slate-100">
               {currentPreview ? (
-                <img src={currentPreview} alt={resource.name} decoding="async" className="relative max-h-full max-w-full object-contain" />
+                <img src={currentPreview} alt={resource.name} decoding="async" className="absolute inset-0 h-full w-full object-contain" />
               ) : (
-                <div className="text-sm text-slate-400">暂无预览图</div>
+                <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">暂无预览图</div>
               )}
-            </div>
-            <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-white/10 bg-[#101827] px-4 py-3 sm:px-5">
-              <div className="min-w-0 text-xs text-slate-400">
-                <span className="text-slate-200">版本切换</span>
-              </div>
-              <Select value={String(version?.id ?? "")} onValueChange={(value) => setSelectedVersionId(Number(value))} disabled={(resource.versions?.length ?? 0) < 2}>
-                <SelectTrigger className="h-8 w-full border-white/10 bg-white/5 text-xs text-slate-100 hover:bg-white/10 sm:w-[190px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {(resource.versions ?? []).map((item) => (
-                    <SelectItem key={item.id} value={String(item.id)}>
-                      v{item.version_no}{item.id === resource.current.id ? "（当前）" : ""}{item.change_note ? ` · ${item.change_note}` : ""}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
             </div>
           </section>
 
-          <aside className="min-w-0 divide-y rounded-xl border bg-card px-5">
-            <section className="py-5 first:pt-5">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-sm font-semibold">素材信息</h2>
-                </div>
-                <span className="font-mono text-[11px] text-muted-foreground">#{resource.id}</span>
+          <aside className="flex min-w-0 flex-col gap-3">
+            <section className="rounded-lg border bg-card p-3 shadow-sm">
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-sm font-semibold">版本</h2>
+                <span className="rounded-full bg-muted px-2 py-1 text-[10px] font-medium text-muted-foreground">
+                  共 {versionOptions.length} 个版本
+                </span>
               </div>
-              <dl className="mt-5 grid grid-cols-2 gap-x-5 gap-y-4">
+              <Select value={String(version?.id ?? "")} onValueChange={(value) => setSelectedVersionId(Number(value))}>
+                <SelectTrigger className="mt-3 h-10 w-full border-border/70 bg-muted/30 px-3 text-sm font-medium hover:bg-muted/60" aria-label="切换版本">
+                  <SelectValue placeholder="选择版本" />
+                </SelectTrigger>
+                <SelectContent>
+                      {versionOptions.map((item) => (
+                        <SelectItem key={item.id} value={String(item.id)}>
+                          v{item.version_no}{item.id === resource.current.id ? "（当前）" : ""}{item.change_note ? ` · ${item.change_note}` : ""}
+                        </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </section>
+
+            <section className="rounded-lg border bg-card p-3 shadow-sm">
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-xs font-semibold">素材信息</h2>
+                <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                  {resource.can_manage ? "可管理" : "只读"}
+                </span>
+              </div>
+              <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-2.5">
                 <ScopeLine label="主体" value={resource.subject || DEFAULT_RESOURCE_SUBJECT || "未设置"} />
                 <ScopeLine label="所有者" value={resource.owner?.name || resource.owner?.username || "-"} />
                 <ScopeLine label="可见范围" value={RESOURCE_SCOPE_LABEL[resource.visibility_scope] || resource.visibility_scope} />
                 <ScopeLine label="管理范围" value={RESOURCE_SCOPE_LABEL[resource.management_scope] || resource.management_scope} />
               </dl>
-              <div className="mt-5 flex items-start gap-2.5 rounded-md bg-emerald-50 px-3 py-2.5 text-xs leading-relaxed text-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300">
-                <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
-                <span>查看权限与下载权限分离，下载仅对管理者开放。</span>
-              </div>
+              <div className="mt-2 text-[10px] text-muted-foreground">更新于 {formatDate(resource.updated_at)}</div>
             </section>
 
-            <section className="py-5">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h2 className="text-sm font-semibold">版本信息</h2>
-                  <p className="mt-1 text-xs text-muted-foreground">当前版本 v{version?.version_no ?? "-"}</p>
-                </div>
-                {resource.can_manage && (
-                  <Button variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs" onClick={() => setNewVersionOpen(true)}>
-                    <RefreshCw className="h-3.5 w-3.5" />迭代
-                  </Button>
-                )}
-              </div>
-              <dl className="mt-4 grid grid-cols-2 gap-4">
-                <div className="flex items-center gap-2">
-                  <CalendarDays className="h-4 w-4 text-muted-foreground" />
-                  <div className="min-w-0"><dt className="text-[11px] text-muted-foreground">创建时间</dt><dd className="mt-0.5 truncate text-xs font-medium">{formatDate(version?.created_at)}</dd></div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <UserRound className="h-4 w-4 text-muted-foreground" />
-                  <div className="min-w-0"><dt className="text-[11px] text-muted-foreground">最后修改</dt><dd className="mt-0.5 truncate text-xs font-medium">{formatDate(resource.updated_at)}</dd></div>
-                </div>
-              </dl>
-              <div className="mt-4 border-l-2 border-border pl-3 text-xs leading-relaxed text-muted-foreground">
-                <span className="font-medium text-foreground">版本说明：</span>{version?.change_note || "暂无说明"}
-              </div>
-            </section>
+            <button type="button" onClick={() => setCommonRemarkOpen(true)} className="group relative flex min-h-[96px] w-full flex-1 flex-col items-start rounded-lg border bg-card p-3 text-left shadow-sm transition hover:border-primary/40 hover:bg-muted/30">
+              <span className="flex w-full items-center justify-between gap-2">
+                <span className="text-sm font-medium">通用备注</span>
+                <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                    {resource.can_manage ? "可维护" : "仅查看"}
+                </span>
+              </span>
+              <span className="mt-2 line-clamp-3 w-full flex-1 pr-7 text-xs leading-5 text-muted-foreground">
+                {commonRemarkPreview || "暂无通用备注"}
+              </span>
+              <ArrowRight className="absolute bottom-3 right-3 h-4 w-4 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+            </button>
 
-            <section className="py-5">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <h2 className="flex items-center gap-2 text-sm font-semibold"><Clipboard className="h-4 w-4 text-muted-foreground" />页面地址</h2>
-                </div>
-                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="复制页面 URL" aria-label="复制页面 URL" onClick={() => void copyText(publicUrl)}><Copy className="h-3.5 w-3.5" /></Button>
-              </div>
-              <Input readOnly value={publicUrl} className="mt-3 h-9 min-w-0 bg-muted/30 text-xs" aria-label="素材页面地址" />
-            </section>
+            <button type="button" onClick={() => setPersonalRemarkOpen(true)} className="group relative flex min-h-[96px] w-full flex-1 flex-col items-start rounded-lg border bg-card p-3 text-left shadow-sm transition hover:border-primary/40 hover:bg-muted/30">
+              <span className="flex w-full items-center justify-between gap-2">
+                <span className="text-sm font-medium">个人备注</span>
+                <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                  可维护
+                </span>
+              </span>
+              <span className="mt-2 line-clamp-3 w-full flex-1 pr-7 text-xs leading-5 text-muted-foreground">
+                {personalRemarkQuery.isLoading ? "正在加载个人备注…" : personalRemarkPreview || "暂无个人备注"}
+              </span>
+              <ArrowRight className="absolute bottom-3 right-3 h-4 w-4 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+            </button>
 
-            {resource.can_manage && <ShareLinksPanel resource={resource} />}
           </aside>
         </div>
 
-        <section className="mt-7 border-t pt-6">
-          <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+        <section className="mt-8 border-t pt-6">
+          <div className="mb-4 flex flex-wrap items-end justify-between gap-2">
             <div>
-              <h2 className="text-base font-semibold">备注</h2>
+              <h2 className="text-base font-semibold">猜你想要</h2>
             </div>
-            <span className="text-[11px] text-muted-foreground">v{version?.version_no ?? "-"}</span>
+            {!recommendationsQuery.isLoading && (recommendationsQuery.data?.length ?? 0) > 0 && (
+              <span className="text-xs text-muted-foreground">{recommendationsQuery.data?.length ?? 0} 个推荐</span>
+            )}
           </div>
-          <div className="grid gap-5 lg:grid-cols-2">
-            <CommonRemarkView html={version?.common_remark_html || ""} />
-            <PersonalRemarkEditor resourceId={resource.id} versionId={version?.id ?? null} open />
-          </div>
+          {recommendationsQuery.isLoading ? (
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+              {Array.from({ length: 5 }).map((_, index) => (
+                <div key={index} className="overflow-hidden rounded-lg border bg-card">
+                  <div className="aspect-video animate-pulse bg-muted" />
+                  <div className="space-y-2 p-3"><div className="h-4 animate-pulse rounded bg-muted" /><div className="h-3 w-2/3 animate-pulse rounded bg-muted" /></div>
+                </div>
+              ))}
+            </div>
+          ) : (recommendationsQuery.data?.length ?? 0) > 0 ? (
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+              {recommendationsQuery.data?.map((item) => (
+                <RecommendedResourceCard key={item.id} resource={item} />
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-lg border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
+              暂时没有其他可见素材
+            </div>
+          )}
         </section>
       </main>
 
@@ -374,6 +587,30 @@ export function ResourceDetailPage() {
       <ResourceNewVersionDialog open={newVersionOpen} onOpenChange={(open) => closeAndRefresh(open, setNewVersionOpen)} resource={resource} />
       <ResourceDownloadDialog open={downloadCtx != null} onOpenChange={(open) => { if (!open) setDownloadCtx(null); }} resource={downloadCtx?.resource ?? null} version={downloadCtx?.version ?? null} />
       <ResourcePreviewDialog open={previewResource != null} onOpenChange={(open) => { if (!open) setPreviewResource(null); }} resource={previewResource} />
+      <ResourceLinksDialog open={linksOpen} onOpenChange={setLinksOpen} resource={resource} publicUrl={publicUrl} />
+      <Dialog open={commonRemarkOpen} onOpenChange={setCommonRemarkOpen}>
+        <DialogContent className="max-h-[90vh] max-w-2xl overflow-hidden p-0">
+          <DialogHeader className="sr-only"><DialogTitle>通用备注</DialogTitle><DialogDescription>查看或编辑当前版本的通用备注</DialogDescription></DialogHeader>
+          <CommonRemarkView
+            html={version?.common_remark_html || ""}
+            resourceId={resource.id}
+            versionId={version?.id ?? null}
+            canManage={resource.can_manage}
+            className="h-[min(560px,75vh)] rounded-none border-0 bg-card"
+          />
+        </DialogContent>
+      </Dialog>
+      <Dialog open={personalRemarkOpen} onOpenChange={setPersonalRemarkOpen}>
+        <DialogContent className="max-h-[90vh] max-w-2xl overflow-hidden p-0">
+          <DialogHeader className="sr-only"><DialogTitle>个人备注</DialogTitle><DialogDescription>查看或编辑仅自己可见的备注</DialogDescription></DialogHeader>
+          <PersonalRemarkEditor
+            resourceId={resource.id}
+            versionId={version?.id ?? null}
+            open={personalRemarkOpen}
+            className="h-[min(560px,75vh)] rounded-none border-0 bg-card"
+          />
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -401,7 +638,7 @@ export function ResourceSharePage() {
     retry: false,
   });
   if (isLoading) return <div className="flex min-h-screen items-center justify-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin" />验证分享链接…</div>;
-  if (!data) return <div className="flex min-h-screen items-center justify-center p-6"><div className="w-full max-w-md rounded-xl border bg-card p-8 text-center shadow-sm"><FileKey2 className="mx-auto h-8 w-8 text-muted-foreground" /><h1 className="mt-4 text-lg font-semibold">分享链接无效或已过期</h1><p className="mt-2 text-sm text-muted-foreground">链接可能已被撤销、素材已停用，或超过有效期。</p></div></div>;
+  if (!data) return <div className="flex min-h-screen items-center justify-center p-6"><div className="w-full max-w-md rounded-xl border bg-card p-8 text-center shadow-sm"><FileKey2 className="mx-auto h-8 w-8 text-muted-foreground" /><h1 className="mt-4 text-lg font-semibold">分享链接无效或已过期</h1><p className="mt-2 text-sm text-muted-foreground">链接可能已被撤销或超过有效期。</p></div></div>;
   const resource = data.resource;
   const tags = parseTags(resource.tags);
   return (
@@ -416,8 +653,8 @@ export function ResourceSharePage() {
             <div>
               <h1 className="text-2xl font-semibold tracking-tight">{resource.name}</h1>
               <div className="mt-2 flex flex-wrap gap-1.5">
-                <Badge variant={SECRECY_BADGE_TONE[resource.secrecy_level] || "outline"}>
-                  {RESOURCE_SECRECY_LABEL[resource.secrecy_level] || resource.secrecy_level}
+                <Badge variant="outline">
+                  {resource.secrecy_level}
                 </Badge>
                 {tags.map((tag) => (
                   <Badge key={tag} variant="outline" className="font-normal">{tag}</Badge>
@@ -475,3 +712,22 @@ export function ResourceSharePage() {
 }
 
 export default ResourceDetailPage;
+
+function hasRemarkHtml(html: string) {
+  return html.replace(/<[^>]*>/g, "").replace(/&nbsp;|&#160;|&#xA0;|\s/gi, "").length > 0;
+}
+
+function remarkPreviewText(html: string) {
+  return html
+    .replace(/<br\s*\/?\s*>/gi, " " )
+    .replace(/<\/(p|div|li|h[1-6])>/gi, " " )
+    .replace(/<[^>]*>/g, " " )
+    .replace(/&nbsp;|&#160;|&#xA0;/gi, " " )
+    .replace(/&amp;/gi, "&" )
+    .replace(/&lt;/gi, "<" )
+    .replace(/&gt;/gi, ">" )
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'" )
+    .replace(/\s+/g, " " )
+    .trim();
+}

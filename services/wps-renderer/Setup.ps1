@@ -55,6 +55,8 @@ $python = Optional-String $settings "python" "python"
 $wpsCli = Required-String $settings "wpscli"
 $mainUrl = Required-String $settings "main_url"
 $port = Optional-Int $settings "renderer_port" 8765
+$localJobTimeoutSeconds = Optional-Int $settings "local_job_timeout_seconds" 2100
+$pollFailureExitSeconds = Optional-Int $settings "poll_failure_exit_seconds" 300
 $workerId = Optional-String $settings "worker_id"
 $version = Optional-String $settings "version"
 
@@ -84,6 +86,8 @@ $pullArgs = @{
 if ($workerId) { $pullArgs.WorkerId = $workerId }
 & $fontScript @pullArgs
 if ($LASTEXITCODE -ne 0) { throw "Font sync registration failed." }
+$pullArgs.LocalJobTimeoutSeconds = $localJobTimeoutSeconds
+$pullArgs.PollFailureExitSeconds = $pollFailureExitSeconds
 & $renderScript @pullArgs
 if ($LASTEXITCODE -ne 0) { throw "Render pull registration failed." }
 

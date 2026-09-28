@@ -36,6 +36,7 @@ import {
   VISIBILITY_SCOPE_OPTIONS,
 } from "@/lib/constants";
 import { api, apiUpload } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { parseTags, Resource, serializeTags } from "@/lib/types";
 
 export interface ResourceEditDialogProps {
@@ -116,6 +117,7 @@ export function ResourceEditDialog({
   const isCreate = resource == null;
   const [form, setForm] = React.useState<FormState>(() => defaultForm(resource));
   const queryClient = useQueryClient();
+  const { user } = useAuth();
 
   React.useEffect(() => {
     if (open) setForm(defaultForm(resource));
@@ -290,7 +292,7 @@ export function ResourceEditDialog({
     mutation.mutate();
   };
 
-  const ownerId = resource?.owner_id;
+  const ownerId = resource?.owner_id ?? user?.id;
   const [deleteScopeOpen, setDeleteScopeOpen] = React.useState(false);
 
   return (
@@ -440,7 +442,7 @@ export function ResourceEditDialog({
                 tagValue={form.visible_user_tags}
                 onTagChange={(tags) => setForm({ ...form, visible_user_tags: tags })}
                 allowTagSelection
-                excludeIds={ownerId ? [ownerId] : undefined}
+                lockedIds={ownerId ? [ownerId] : undefined}
               />
             </div>
           )}
@@ -453,7 +455,7 @@ export function ResourceEditDialog({
                 tagValue={form.manage_user_tags}
                 onTagChange={(tags) => setForm({ ...form, manage_user_tags: tags })}
                 allowTagSelection
-                excludeIds={ownerId ? [ownerId] : undefined}
+                lockedIds={ownerId ? [ownerId] : undefined}
               />
             </div>
           )}
