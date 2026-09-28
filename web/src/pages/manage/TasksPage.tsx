@@ -4,11 +4,10 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   AlertCircle,
   CheckCircle2,
-  ChevronDown,
-  ChevronRight,
   CircleDashed,
   Clock,
   Download,
+  Eye,
   FileText,
   Hash,
   Info,
@@ -33,6 +32,7 @@ import {
   DialogContent,
   DialogFooter,
   DialogHeader,
+  DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
@@ -344,8 +344,7 @@ function ownerDisplay(owner: TaskOwner | null, fallbackId: number): string {
 
 interface TaskRowProps {
   task: Task;
-  expanded: boolean;
-  onToggle: () => void;
+  onOpenDetails: () => void;
   onCancel: (task: Task) => void;
   canManage: boolean;
   showOwner: boolean;
@@ -354,7 +353,7 @@ interface TaskRowProps {
   onSelectToggle: () => void;
 }
 
-function TaskRow({ task, expanded, onToggle, onCancel, canManage, showOwner, isAdmin, isSelected, onSelectToggle }: TaskRowProps) {
+function TaskRow({ task, onOpenDetails, onCancel, canManage, showOwner, isAdmin, isSelected, onSelectToggle }: TaskRowProps) {
   const navigate = useNavigate();
   const status = task.status as TaskStatus;
   const isActive = ACTIVE_STATUSES.includes(status);
@@ -370,10 +369,9 @@ function TaskRow({ task, expanded, onToggle, onCancel, canManage, showOwner, isA
       <TableRow
         className={cn(
           "cursor-pointer transition-colors",
-          expanded && "bg-muted/40",
-          (isCompleted || isCancelled) && !expanded && "opacity-80",
+          (isCompleted || isCancelled) && "opacity-80",
         )}
-        onClick={onToggle}
+        onClick={onOpenDetails}
       >
         {isAdmin && (
           <TableCell onClick={(e) => e.stopPropagation()}>
@@ -458,204 +456,206 @@ function TaskRow({ task, expanded, onToggle, onCancel, canManage, showOwner, isA
           </span>
         </TableCell>
 
-        <TableCell className="w-20">
-          {task.params.session_id && !isCompleted && !isCancelled ? (
+        <TableCell className="w-28">
+          <div className="flex items-center gap-1">
+            {task.params.session_id && !isCompleted && !isCancelled ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 gap-1 text-xs"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  navigate(importTaskPath(task));
+                }}
+              >
+                <Upload className="h-3.5 w-3.5" />
+                继续
+              </Button>
+            ) : canManage && isActive ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 gap-1 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onCancel(task);
+                }}
+              >
+                <OctagonX className="h-3.5 w-3.5" />
+                停止
+              </Button>
+            ) : null}
             <Button
-              variant="outline"
-              size="sm"
-              className="h-7 gap-1 text-xs"
-              onClick={(e) => {
-                e.stopPropagation();
-                navigate(importTaskPath(task));
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              aria-label={`查看任务 #${task.id} 详情`}
+              title="查看详情"
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpenDetails();
               }}
             >
-              <Upload className="h-3.5 w-3.5" />
-              继续
+              <Eye className="h-3.5 w-3.5" />
             </Button>
-          ) : canManage && isActive ? (
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 gap-1 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
-              onClick={(e) => {
-                e.stopPropagation();
-                onCancel(task);
-              }}
-            >
-              <OctagonX className="h-3.5 w-3.5" />
-              停止
-            </Button>
-          ) : (
-            <span className="text-[11px] text-muted-foreground">-</span>
-          )}
-        </TableCell>
-
-        <TableCell className="w-8 pr-0">
-          {expanded ? (
-            <ChevronDown className="h-4 w-4 text-muted-foreground" />
-          ) : (
-            <ChevronRight className="h-4 w-4 text-muted-foreground" />
-          )}
+          </div>
         </TableCell>
       </TableRow>
-
-      {/* 详情展开行 */}
-      {expanded && (
-        <TableRow className="hover:bg-transparent">
-          <TableCell colSpan={(showOwner ? 9 : 8) + (isAdmin ? 1 : 0)} className="bg-muted/20 p-0">
-            <TaskDetail task={task} />
-          </TableCell>
-        </TableRow>
-      )}
     </>
   );
 }
 
-/* ---------- Task Detail Panel ---------- */
+/* ---------- Task Detail Dialog ---------- */
 
-function TaskDetail({ task }: { task: Task }) {
+function TaskDetail({ task, onClose }: { task: Task; onClose: () => void }) {
   const navigate = useNavigate();
   const params = task.params || {};
   const result = task.result_data || {};
   const resourceIds = Array.isArray(result.resource_ids) ? result.resource_ids : [];
   const resourceDetailTokens = result.resource_detail_tokens || {};
+  const status = task.status as TaskStatus;
+  const isActive = ACTIVE_STATUSES.includes(status);
+  const taskTitle = params.series || params.name_prefix || TASK_TYPE_LABEL[task.task_type] || task.task_type;
+  const percent = task.total > 0
+    ? Math.min(100, Math.round((task.progress / task.total) * 100))
+    : Math.min(100, Math.max(0, Number(task.upload_progress) || 0));
+  const progressTone = status === "failed"
+    ? "bg-destructive"
+    : status === "cancelled"
+      ? "bg-muted-foreground/60"
+      : status === "completed"
+        ? "bg-emerald-500"
+        : "bg-primary";
+
+  const continueImport = () => {
+    onClose();
+    navigate(importTaskPath(task));
+  };
 
   return (
-    <div className="grid grid-cols-1 gap-4 p-5 md:grid-cols-2 lg:grid-cols-3">
-      {/* 基础信息 */}
-      <DetailCard icon={<Info className="h-3.5 w-3.5" />} title="基础信息">
-        <InfoRow label="任务 ID" value={`#${task.id}`} mono />
-        <InfoRow
-          label="类型"
-          value={TASK_TYPE_LABEL[task.task_type] || task.task_type}
-        />
-        <InfoRow
-          label="提交人"
-          value={ownerDisplay(task.owner, task.owner_id)}
-        />
-        <InfoRow label="提交时间" value={formatDateTime(task.created_at)} />
-        <InfoRow label="更新时间" value={formatDateTime(task.updated_at)} />
-        {task.completed_at && (
-          <InfoRow label="完成时间" value={formatDateTime(task.completed_at)} />
-        )}
-        <InfoRow
-          label="耗时"
-          value={formatDuration(task.created_at, task.completed_at)}
-        />
-      </DetailCard>
-
-      {/* 提交参数 */}
-      <DetailCard icon={<FileText className="h-3.5 w-3.5" />} title="提交参数">
-        {params.import_target === "templates" && <InfoRow label="导入目标" value="标准模板" />}
-        {params.series && <InfoRow label="系列" value={params.series} />}
-        {params.name_prefix && params.import_target !== "templates" && <InfoRow label="名称前缀" value={params.name_prefix} />}
-        {params.file_name && <InfoRow label="PPT 文件" value={params.file_name} />}
-        {params.workflow_state && <InfoRow label="处理阶段" value={params.workflow_state === "font_check" ? "字体检测" : params.workflow_state === "rendering" ? "图片渲染" : params.workflow_state === "awaiting_confirmation" ? "等待确认导入" : params.workflow_state === "completed" ? "已完成" : params.workflow_state} />}
-        {typeof params.slide_count === "number" && <InfoRow label="页数" value={`${params.slide_count} 页`} />}
-        {typeof params.render_completed === "number" && typeof params.render_total === "number" && <InfoRow label="渲染进度" value={`${params.render_completed} / ${params.render_total} 页`} />}
-        {params.subject && <InfoRow label="分类" value={params.subject} />}
-        {params.tags && <InfoRow label="标签" value={params.tags} />}
-        {params.visibility_scope && (
-          <InfoRow
-            label="可见范围"
-            value={SCOPE_LABEL[params.visibility_scope] || params.visibility_scope}
-          />
-        )}
-        {params.management_scope && (
-          <InfoRow
-            label="管理范围"
-            value={SCOPE_LABEL[params.management_scope] || params.management_scope}
-          />
-        )}
-        {params.secrecy_level && (
-          <InfoRow label="密级" value={params.secrecy_level} />
-        )}
-        {typeof params.image_count === "number" && (
-          <InfoRow label="预览图片" value={`${params.image_count} 张`} />
-        )}
-        {params.remark_html && (
-          <div className="mt-2 space-y-1">
-            <div className="text-[11px] font-medium text-muted-foreground">备注</div>
-            <div
-              className="rounded-md border bg-background p-2 text-xs leading-relaxed"
-              dangerouslySetInnerHTML={{ __html: params.remark_html }}
-            />
+    <DialogContent className="flex max-h-[min(760px,calc(100vh-2rem))] max-w-3xl flex-col gap-0 overflow-hidden p-0">
+      <DialogHeader className="border-b bg-muted/20 px-6 py-5 pr-12 text-left">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex min-w-0 items-start gap-3">
+            <div className={cn(
+              "flex h-10 w-10 shrink-0 items-center justify-center rounded-lg",
+              status === "failed" ? "bg-destructive/10 text-destructive" : status === "completed" ? "bg-emerald-500/10 text-emerald-600" : status === "cancelled" ? "bg-muted text-muted-foreground" : "bg-primary/10 text-primary",
+            )}>
+              {statusIcon(status)}
+            </div>
+            <div className="min-w-0">
+              <DialogTitle className="truncate text-base">{taskTitle}</DialogTitle>
+              <DialogDescription className="mt-1 truncate text-xs">
+                上传任务 #{task.id} · {formatDateTime(task.created_at)}
+              </DialogDescription>
+            </div>
           </div>
-        )}
-      </DetailCard>
+          <Badge variant={STATUS_BADGE_VARIANT[status] || "outline"} className="shrink-0 gap-1 text-[11px]">
+            {statusIcon(status)}
+            {STATUS_LABEL[status] || status}
+          </Badge>
+        </div>
+      </DialogHeader>
 
-      {params.session_id && task.status !== "completed" && task.status !== "cancelled" && (
-        <div className="flex items-end">
-          <Button type="button" className="gap-1.5" onClick={() => navigate(importTaskPath(task))}>
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+        <div className="space-y-5">
+          {(task.total > 0 || task.upload_progress > 0 || task.message) && (
+            <section className="rounded-lg border bg-background p-4">
+              <div className="flex items-center justify-between gap-3 text-xs">
+                <span className="font-medium">处理进度</span>
+                <span className="tabular-nums text-muted-foreground">{percent}%</span>
+              </div>
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted">
+                <div className={cn("h-full rounded-full transition-[width] duration-500", progressTone)} style={{ width: `${percent}%` }} />
+              </div>
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                <span>{task.total > 0 ? `${task.progress} / ${task.total} 页` : "上传处理中"}</span>
+                {task.message && <span className="max-w-full truncate">{task.message}</span>}
+              </div>
+            </section>
+          )}
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <DetailCard icon={<Info className="h-3.5 w-3.5" />} title="任务信息">
+              <InfoRow label="任务 ID" value={`#${task.id}`} mono />
+              <InfoRow label="类型" value={TASK_TYPE_LABEL[task.task_type] || task.task_type} />
+              <InfoRow label="提交人" value={ownerDisplay(task.owner, task.owner_id)} />
+              <InfoRow label="更新时间" value={formatDateTime(task.updated_at)} />
+              {task.completed_at && <InfoRow label="完成时间" value={formatDateTime(task.completed_at)} />}
+              <InfoRow label="耗时" value={formatDuration(task.created_at, task.completed_at)} />
+            </DetailCard>
+
+            <DetailCard icon={<FileText className="h-3.5 w-3.5" />} title="提交参数">
+              {params.import_target === "templates" && <InfoRow label="导入目标" value="标准模板" />}
+              {params.series && <InfoRow label="系列" value={params.series} />}
+              {params.name_prefix && params.import_target !== "templates" && <InfoRow label="名称前缀" value={params.name_prefix} />}
+              {params.file_name && <InfoRow label="PPT 文件" value={params.file_name} />}
+              {params.workflow_state && <InfoRow label="处理阶段" value={params.workflow_state === "font_check" ? "字体检测" : params.workflow_state === "rendering" ? "图片渲染" : params.workflow_state === "awaiting_confirmation" ? "等待确认导入" : params.workflow_state === "completed" ? "已完成" : params.workflow_state} />}
+              {typeof params.slide_count === "number" && <InfoRow label="页数" value={`${params.slide_count} 页`} />}
+              {typeof params.render_completed === "number" && typeof params.render_total === "number" && <InfoRow label="渲染进度" value={`${params.render_completed} / ${params.render_total} 页`} />}
+              {params.subject && <InfoRow label="分类" value={params.subject} />}
+              {params.tags && <InfoRow label="标签" value={params.tags} />}
+              {params.visibility_scope && <InfoRow label="可见范围" value={SCOPE_LABEL[params.visibility_scope] || params.visibility_scope} />}
+              {params.management_scope && <InfoRow label="管理范围" value={SCOPE_LABEL[params.management_scope] || params.management_scope} />}
+              {params.secrecy_level && <InfoRow label="密级" value={params.secrecy_level} />}
+              {typeof params.image_count === "number" && <InfoRow label="预览图片" value={`${params.image_count} 张`} />}
+              {params.remark_html && (
+                <div className="mt-3 space-y-1">
+                  <div className="text-[11px] font-medium text-muted-foreground">备注</div>
+                  <div className="rounded-md border bg-background p-2 text-xs leading-relaxed" dangerouslySetInnerHTML={{ __html: params.remark_html }} />
+                </div>
+              )}
+            </DetailCard>
+          </div>
+
+          <DetailCard
+            icon={status === "failed" ? <AlertCircle className="h-3.5 w-3.5 text-destructive" /> : <Hash className="h-3.5 w-3.5" />}
+            title={status === "failed" ? "失败原因" : "执行结果"}
+          >
+            {status === "failed" && task.error_message ? (
+              <div className="whitespace-pre-wrap break-all rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs leading-relaxed text-destructive">{task.error_message}</div>
+            ) : status === "completed" ? (
+              <>
+                <InfoRow label="总页数" value={String(result.total ?? task.total ?? 0)} />
+                <InfoRow label="成功创建" value={String(result.created ?? 0)} highlight />
+                {resourceIds.length > 0 && (
+                  <div className="mt-3 space-y-2">
+                    <div className="text-[11px] font-medium text-muted-foreground">生成的资源 ID</div>
+                    <div className="flex max-h-28 flex-wrap gap-1.5 overflow-y-auto">
+                      {resourceIds.map((id) => {
+                        const detailToken = resourceDetailTokens[String(id)];
+                        const className = "inline-flex items-center rounded-md border bg-background px-2 py-1 font-mono text-[10px] text-muted-foreground";
+                        return detailToken ? (
+                          <Link key={id} to={`/resources/${encodeURIComponent(detailToken)}`} onClick={onClose} className={`${className} text-primary hover:border-primary/50 hover:underline`} title={`打开资源 #${id} 的单页详情`}>#{id}</Link>
+                        ) : (
+                          <span key={id} className={className}>#{id}</span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : status === "cancelled" ? (
+              <div className="text-xs text-muted-foreground">任务已被取消</div>
+            ) : isActive ? (
+              <div className="text-xs text-muted-foreground">任务正在处理，完成后会显示生成的资源。</div>
+            ) : (
+              <div className="text-xs text-muted-foreground">暂无结果</div>
+            )}
+          </DetailCard>
+        </div>
+      </div>
+
+      <DialogFooter className="border-t bg-muted/20 px-6 py-4">
+        <Button type="button" variant="outline" onClick={onClose}>关闭</Button>
+        {isActive && params.session_id && (
+          <Button type="button" className="gap-1.5" onClick={continueImport}>
             <Upload className="h-3.5 w-3.5" />继续维护导入
           </Button>
-        </div>
-      )}
-
-      {/* 执行结果 / 错误 */}
-      <DetailCard
-        icon={
-          task.status === "failed" ? (
-            <AlertCircle className="h-3.5 w-3.5 text-destructive" />
-          ) : (
-            <Hash className="h-3.5 w-3.5" />
-          )
-        }
-        title={task.status === "failed" ? "失败原因" : "执行结果"}
-      >
-        {task.status === "failed" && task.error_message ? (
-          <div className="whitespace-pre-wrap break-all rounded-md border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
-            {task.error_message}
-          </div>
-        ) : task.status === "completed" ? (
-          <>
-            <InfoRow
-              label="总页数"
-              value={String(result.total ?? task.total ?? 0)}
-            />
-            <InfoRow
-              label="成功创建"
-              value={String(result.created ?? 0)}
-              highlight
-            />
-            {resourceIds.length > 0 && (
-              <div className="mt-2 space-y-1">
-                <div className="text-[11px] font-medium text-muted-foreground">
-                  生成的资源 ID
-                </div>
-                <div className="flex max-h-24 flex-wrap gap-1 overflow-y-auto">
-                  {resourceIds.map((id) => {
-                    const detailToken = resourceDetailTokens[String(id)];
-                    const className = "inline-flex items-center rounded-md border bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground";
-                    return detailToken ? (
-                      <Link
-                        key={id}
-                        to={`/resources/${encodeURIComponent(detailToken)}`}
-                        onClick={(event) => event.stopPropagation()}
-                        className={`${className} text-primary hover:border-primary/50 hover:underline`}
-                        title={`打开资源 #${id} 的单页详情`}
-                      >
-                        #{id}
-                      </Link>
-                    ) : (
-                      <span key={id} className={className}>
-                        #{id}
-                      </span>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </>
-        ) : task.status === "cancelled" ? (
-          <div className="text-xs text-muted-foreground">任务已被取消</div>
-        ) : task.message ? (
-          <InfoRow label="当前状态" value={task.message} />
-        ) : (
-          <div className="text-xs text-muted-foreground">暂无结果</div>
         )}
-      </DetailCard>
-    </div>
+      </DialogFooter>
+    </DialogContent>
   );
 }
 
@@ -865,8 +865,8 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
   const { user } = useAuth();
 
   const [cancelTarget, setCancelTarget] = React.useState<Task | null>(null);
+  const [detailTask, setDetailTask] = React.useState<Task | null>(null);
   const [filter, setFilter] = React.useState<"all" | TaskStatus>("all");
-  const [expandedId, setExpandedId] = React.useState<number | null>(null);
   const [selected, setSelected] = React.useState<Set<number>>(new Set());
   // 用户维度筛选："all" = 所有用户；"self" = 仅自己；其他为某个用户 id 的字符串形式
   const [ownerFilter, setOwnerFilter] = React.useState<string>("all");
@@ -978,10 +978,6 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
     onError: (err: Error) => toast.error(err.message || "批量删除失败"),
   });
 
-  const toggleExpand = (id: number) => {
-    setExpandedId((prev) => (prev === id ? null : id));
-  };
-
   // 管理员视角展示提交人列
   const showOwner = canManage;
 
@@ -1064,8 +1060,7 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
                   {showOwner && <TableHead className="w-32">提交人</TableHead>}
                   <TableHead className="w-28">提交时间</TableHead>
                   <TableHead className="w-20">耗时</TableHead>
-                  <TableHead className="w-20">操作</TableHead>
-                  <TableHead className="w-8" />
+                  <TableHead className="w-28">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -1073,8 +1068,7 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
                   <TaskRow
                     key={task.id}
                     task={task}
-                    expanded={expandedId === task.id}
-                    onToggle={() => toggleExpand(task.id)}
+                    onOpenDetails={() => setDetailTask(task)}
                     onCancel={setCancelTarget}
                     canManage={canManage}
                     showOwner={showOwner}
@@ -1099,6 +1093,15 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
           onChange={setPage}
         />
       )}
+
+      <Dialog
+        open={!!detailTask}
+        onOpenChange={(open) => {
+          if (!open) setDetailTask(null);
+        }}
+      >
+        {detailTask && <TaskDetail task={detailTask} onClose={() => setDetailTask(null)} />}
+      </Dialog>
 
       {/* 停止确认对话框 */}
       <Dialog
