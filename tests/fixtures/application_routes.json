@@ -468,14 +468,6 @@
     ]
   },
   {
-    "path": "/api/secrecy-tags",
-    "name": "list_secrecy_tags",
-    "kind": "http",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
     "path": "/api/status-tags",
     "name": "list_status_tags",
     "kind": "http",
@@ -566,6 +558,46 @@
   {
     "path": "/api/admin/{domain}-tags/{tag_id}/default-filter",
     "name": "admin_update_metadata_default_filter",
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ]
+  },
+  {
+    "path": "/api/admin/tags/batch",
+    "name": "admin_batch_update_tags",
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ]
+  },
+  {
+    "path": "/api/admin/tags/categories/rename",
+    "name": "admin_rename_resource_category",
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ]
+  },
+  {
+    "path": "/api/admin/user-tags/categories/rename",
+    "name": "admin_rename_user_category",
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ]
+  },
+  {
+    "path": "/api/admin/user-tags/batch",
+    "name": "admin_batch_update_user_tags",
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ]
+  },
+  {
+    "path": "/api/admin/{domain}-tags/batch",
+    "name": "admin_batch_update_metadata_tags",
     "kind": "http",
     "methods": [
       "PUT"
@@ -684,6 +716,14 @@
     ]
   },
   {
+    "path": "/api/resources/{resource_id}/versions/from-import/{session_id}",
+    "name": "commit_resource_iteration",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
     "path": "/api/resource-import/{session_id}",
     "name": "cancel_resource_import",
     "kind": "http",
@@ -713,6 +753,22 @@
     "kind": "http",
     "methods": [
       "GET"
+    ]
+  },
+  {
+    "path": "/api/resource-share-links/ids",
+    "name": "list_managed_share_link_ids",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/resource-share-links/bulk-revoke",
+    "name": "bulk_revoke_share_links",
+    "kind": "http",
+    "methods": [
+      "POST"
     ]
   },
   {
@@ -806,14 +862,6 @@
   {
     "path": "/api/resources/{resource_id}/versions",
     "name": "create_resource_version",
-    "kind": "http",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "path": "/api/resources/{resource_id}/versions/from-import/{session_id}",
-    "name": "commit_resource_iteration",
     "kind": "http",
     "methods": [
       "POST"
@@ -1194,6 +1242,22 @@
     ]
   },
   {
+    "path": "/api/shows/{show_id}/offline-manifest",
+    "name": "get_show_offline_manifest",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/shows/{show_id}/offline-assets/{resource_id}/{asset_kind}",
+    "name": "get_show_offline_asset",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
     "path": "/api/shows/{show_id}/offline-version",
     "name": "get_show_offline_version",
     "kind": "http",
@@ -1338,6 +1402,14 @@
     ]
   },
   {
+    "path": "/api/renderer/render-tasks/{task_id}/progress",
+    "name": "progress",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
     "path": "/api/renderer/render-tasks/{task_id}/complete",
     "name": "complete",
     "kind": "http",
@@ -1382,6 +1454,24 @@
     "name": "static",
     "kind": "mount",
     "methods": []
+  },
+  {
+    "path": "/sw.js",
+    "name": "service_worker",
+    "kind": "http",
+    "methods": [
+      "GET",
+      "HEAD"
+    ]
+  },
+  {
+    "path": "/manifest.webmanifest",
+    "name": "web_manifest",
+    "kind": "http",
+    "methods": [
+      "GET",
+      "HEAD"
+    ]
   },
   {
     "path": "/{full_path:path}",

@@ -25,7 +25,6 @@ from app.services.common import (
     _reject_removed_query_params,
     _validate_resource_status,
     _validate_scope,
-    _validate_secrecy,
 )
 from app.services.resource_queries import (
     _PICK_SORT_KEYS,
@@ -38,10 +37,14 @@ from app.services.resources import (
 from app.services.shows import (
     _serialize_show,
     _serialize_show_lite,
+    _set_show_scope_tags,
     _set_show_scope_users,
     _show_row,
+    _show_scope_tag_names,
     _show_scope_user_ids,
 )
+from app.services.resources import _normalise_scope_tags
+from app.services.tagging import entity_tag_names, set_entity_tags, tag_relation_join
 from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import HTTPException
@@ -65,7 +68,6 @@ def list_shows(
     tags_mode: str = Query("any"),
     subject: str = Query(""),
     status: str = Query("all"),
-    secrecy: str = Query("all"),
     permission: str = Query("all"),
     sort: str = Query("updated_desc"),
     standard_only: bool = Query(False),
@@ -81,11 +83,16 @@ def list_shows(
     if system_admin:
         vis_cond = "1=1"
     else:
+        visibility_tag_join = tag_relation_join(db, "show_visibility_tags", "svt", "ut")
         vis_cond = (
             "(s.owner_id = :vis_uid"
             " OR s.visibility_scope = 'public'"
             " OR (s.visibility_scope = 'partial' AND s.id IN"
-            " (SELECT show_id FROM show_visibility WHERE user_id = :vis_uid)))"
+            " (SELECT show_id FROM show_visibility WHERE user_id = :vis_uid))"
+            " OR (s.visibility_scope = 'partial' AND EXISTS ("
+            " SELECT 1 FROM show_visibility_tags svt"
+            f" JOIN user_tags ut ON {visibility_tag_join}"
+            " WHERE svt.show_id = s.id AND ut.user_id = :vis_uid)))"
         )
 
     # ── series_id 查询：返回完整数据（用于版本切换） ──
@@ -128,19 +135,21 @@ def list_shows(
     if subject and subject != "all":
         where_parts.append("COALESCE(subject, '') = :fl_subject")
         params["fl_subject"] = subject
-    if secrecy and secrecy != "all":
-        where_parts.append("COALESCE(secrecy_level, '') = :fl_secrecy")
-        params["fl_secrecy"] = secrecy
     if permission == "created":
         where_parts.append("owner_id = :perm_uid")
         params["perm_uid"] = uid
     elif permission == "managed":
         if not system_admin:
+            management_tag_join = tag_relation_join(db, "show_management_tags", "smt", "ut")
             where_parts.append(
                 "(owner_id = :m_uid"
                 " OR management_scope = 'public'"
                 " OR (management_scope = 'partial' AND id IN"
-                " (SELECT show_id FROM show_management WHERE user_id = :m_uid)))"
+                " (SELECT show_id FROM show_management WHERE user_id = :m_uid))"
+                " OR (management_scope = 'partial' AND EXISTS ("
+                " SELECT 1 FROM show_management_tags smt"
+                f" JOIN user_tags ut ON {management_tag_join}"
+                " WHERE smt.show_id = id AND ut.user_id = :m_uid)))"
             )
             params["m_uid"] = uid
     q = search.strip()
@@ -155,15 +164,23 @@ def list_shows(
         mode = (tags_mode or "any").lower()
         if mode == "all":
             for i, t in enumerate(tag_list):
-                clause, tp = _csv_tag_sql_match("tags", t, f"stg{i}")
-                where_parts.append(clause)
-                params.update(tp)
+                param_name = f"stg{i}"
+                where_parts.append(
+                    "EXISTS (SELECT 1 FROM show_tags st "
+                    "JOIN tags tag_def ON tag_def.id = st.tag_id "
+                    f"WHERE st.show_id = id AND tag_def.name = :{param_name})"
+                )
+                params[param_name] = t
         else:
             or_parts = []
             for i, t in enumerate(tag_list):
-                clause, tp = _csv_tag_sql_match("tags", t, f"stg{i}")
-                or_parts.append(clause)
-                params.update(tp)
+                param_name = f"stg{i}"
+                or_parts.append(
+                    "EXISTS (SELECT 1 FROM show_tags st "
+                    "JOIN tags tag_def ON tag_def.id = st.tag_id "
+                    f"WHERE st.show_id = id AND tag_def.name = :{param_name})"
+                )
+                params[param_name] = t
             where_parts.append(f"({' OR '.join(or_parts)})")
 
     filter_sql = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
@@ -224,22 +241,38 @@ def create_show(
 ) -> dict[str, Any]:
     visibility_scope = _validate_scope(payload.visibility_scope)
     management_scope = _validate_scope(payload.management_scope)
-    secrecy_level = _validate_secrecy(payload.secrecy_level)
     status = _validate_resource_status(payload.status)
+    visible_user_tags = _normalise_scope_tags(db, payload.visible_user_tags)
+    manage_user_tags = _normalise_scope_tags(db, payload.manage_user_tags)
+    if visibility_scope == "partial" and not payload.visible_user_ids and not visible_user_tags:
+        raise HTTPException(400, "可见范围为部分时请至少选择一位用户或一个用户标签")
+    if management_scope == "partial" and not payload.manage_user_ids and not manage_user_tags:
+        raise HTTPException(400, "管理范围为部分时请至少选择一位用户或一个用户标签")
     for rid in payload.resource_ids:
         _resource_row(db, rid)
     ts = now_iso()
     series_id = uuid.uuid4().hex[:10]
     db.execute(
         """
-        INSERT INTO shows (name, owner_id, subject, tags, status, visibility_scope, management_scope, secrecy_level, is_standard, series_id, version_no, change_note, updated_by, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO shows (name, owner_id, subject, tags, status, visibility_scope, management_scope, is_standard, series_id, version_no, change_note, updated_by, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (payload.name, user["id"], payload.subject, payload.tags, status, visibility_scope, management_scope, secrecy_level, 0, series_id, 1, payload.change_note, user["id"], ts, ts),
+        (payload.name, user["id"], payload.subject, payload.tags, status, visibility_scope, management_scope, 0, series_id, 1, payload.change_note, user["id"], ts, ts),
     )
     show_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+    set_entity_tags(
+        db,
+        relation_table="show_tags",
+        entity_column="show_id",
+        entity_id=show_id,
+        names=payload.tags,
+        cache_table="shows",
+        created_by=int(user["id"]),
+    )
     _set_show_scope_users(db, "show_visibility", show_id, payload.visible_user_ids)
+    _set_show_scope_tags(db, show_id, visible_user_tags)
     _set_show_scope_users(db, "show_management", show_id, payload.manage_user_ids)
+    _set_show_scope_tags(db, show_id, manage_user_tags, "show_management_tags")
     for index, rid in enumerate(payload.resource_ids):
         res_row = db.execute("SELECT current_version FROM resources WHERE id = ?", (rid,)).fetchone()
         version_no = int(res_row["current_version"]) if res_row else 1
@@ -276,18 +309,34 @@ def update_show(
         raise HTTPException(403, "无管理权限")
     visibility_scope = _validate_scope(payload.visibility_scope)
     management_scope = _validate_scope(payload.management_scope)
-    secrecy_level = _validate_secrecy(payload.secrecy_level)
     status = _validate_resource_status(payload.status)
+    visible_user_tags = _normalise_scope_tags(db, payload.visible_user_tags)
+    manage_user_tags = _normalise_scope_tags(db, payload.manage_user_tags)
+    if visibility_scope == "partial" and not payload.visible_user_ids and not visible_user_tags:
+        raise HTTPException(400, "可见范围为部分时请至少选择一位用户或一个用户标签")
+    if management_scope == "partial" and not payload.manage_user_ids and not manage_user_tags:
+        raise HTTPException(400, "管理范围为部分时请至少选择一位用户或一个用户标签")
     db.execute(
         """
         UPDATE shows
-        SET name = ?, subject = ?, tags = ?, status = ?, visibility_scope = ?, management_scope = ?, secrecy_level = ?, updated_by = ?, updated_at = ?
+        SET name = ?, subject = ?, tags = ?, status = ?, visibility_scope = ?, management_scope = ?, updated_by = ?, updated_at = ?
         WHERE id = ?
         """,
-        (payload.name, payload.subject, payload.tags, status, visibility_scope, management_scope, secrecy_level, user["id"], now_iso(), show_id),
+        (payload.name, payload.subject, payload.tags, status, visibility_scope, management_scope, user["id"], now_iso(), show_id),
+    )
+    set_entity_tags(
+        db,
+        relation_table="show_tags",
+        entity_column="show_id",
+        entity_id=show_id,
+        names=payload.tags,
+        cache_table="shows",
+        created_by=int(user["id"]),
     )
     _set_show_scope_users(db, "show_visibility", show_id, payload.visible_user_ids)
+    _set_show_scope_tags(db, show_id, visible_user_tags)
     _set_show_scope_users(db, "show_management", show_id, payload.manage_user_ids)
+    _set_show_scope_tags(db, show_id, manage_user_tags, "show_management_tags")
     db.commit()
     return {"show": _serialize_show(db, _show_row(db, show_id), user)}
 
@@ -456,16 +505,34 @@ def duplicate_show(
     new_series_id = uuid.uuid4().hex[:10]
     db.execute(
         """
-        INSERT INTO shows (name, owner_id, subject, tags, status, visibility_scope, management_scope, secrecy_level, is_standard, series_id, version_no, change_note, updated_by, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO shows (name, owner_id, subject, tags, status, visibility_scope, management_scope, is_standard, series_id, version_no, change_note, updated_by, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (payload.name, user["id"], row["subject"], row["tags"], row["status"], row["visibility_scope"], row["management_scope"], row["secrecy_level"], 0, new_series_id, 1, "", user["id"], ts, ts),
+        (payload.name, user["id"], row["subject"], row["tags"], row["status"], row["visibility_scope"], row["management_scope"], 0, new_series_id, 1, "", user["id"], ts, ts),
     )
     new_show_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+    set_entity_tags(
+        db,
+        relation_table="show_tags",
+        entity_column="show_id",
+        entity_id=new_show_id,
+        names=entity_tag_names(
+            db,
+            relation_table="show_tags",
+            entity_column="show_id",
+            entity_id=int(show_id),
+            fallback=row["tags"] or "",
+        ),
+        cache_table="shows",
+        created_by=int(user["id"]),
+    )
     visible_ids = _show_scope_user_ids(db, "show_visibility", show_id)
     manage_ids = _show_scope_user_ids(db, "show_management", show_id)
+    manage_tags = _show_scope_tag_names(db, show_id, "show_management_tags")
     _set_show_scope_users(db, "show_visibility", new_show_id, visible_ids)
+    _set_show_scope_tags(db, new_show_id, _show_scope_tag_names(db, show_id))
     _set_show_scope_users(db, "show_management", new_show_id, manage_ids)
+    _set_show_scope_tags(db, new_show_id, manage_tags, "show_management_tags")
     resource_rows = db.execute(
         "SELECT resource_id, version_no, sort_order, is_hidden FROM show_resources WHERE show_id = ? ORDER BY sort_order",
         (show_id,),

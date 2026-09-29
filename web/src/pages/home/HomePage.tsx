@@ -11,7 +11,6 @@ import {
 
 import { ResourceCard } from "@/components/resource/ResourceCard";
 import { ShowCard } from "@/components/show/ShowCard";
-import { ShowDetailDialog } from "@/components/show/ShowDetailDialog";
 import { OfflineCacheBanner } from "@/components/home/OfflineCacheBanner";
 import { StatCard } from "@/components/home/StatCard";
 import { api } from "@/lib/api";
@@ -49,8 +48,6 @@ export function HomePage() {
 
   const pinnedShows = pins?.shows ?? [];
   const pinnedResources = pins?.resources ?? [];
-
-  const [detailShow, setDetailShow] = React.useState<Show | null>(null);
 
   const greeting = user?.name || user?.username || "你好";
 
@@ -130,7 +127,7 @@ export function HomePage() {
         ) : (
           <div className="grid content-start" style={gridStyle}>
             {pinnedShows.map((s) => (
-              <ShowCard key={s.id} show={s} onOpen={(x) => setDetailShow(x)} />
+              <ShowCard key={s.id} show={s} onOpen={(x) => navigate(`/shows/${x.id}`)} />
             ))}
           </div>
         )}
@@ -166,14 +163,6 @@ export function HomePage() {
         )}
       </section>
 
-      {/* 放映详情弹窗 */}
-      <ShowDetailDialog
-        open={detailShow != null}
-        onOpenChange={(open) => {
-          if (!open) setDetailShow(null);
-        }}
-        show={detailShow}
-      />
     </div>
   );
 }

@@ -4,7 +4,6 @@ import { create } from "zustand";
 export interface ManageResourceFiltersState {
   query: string;
   subject: string;            // "all" = 全部
-  secrecy: string;
   status: string;
   ownership: "all" | "created" | "managed";
   /** 通用备注状态 */
@@ -17,7 +16,6 @@ export interface ManageResourceFiltersState {
 
   setQuery: (value: string) => void;
   setSubject: (value: string) => void;
-  setSecrecy: (value: string) => void;
   setStatus: (value: string) => void;
   setOwnership: (value: "all" | "created" | "managed") => void;
   setRemarkCommon: (value: "all" | "has" | "none") => void;
@@ -30,7 +28,6 @@ export interface ManageResourceFiltersState {
     default_filters?: {
       resource_tags?: string[];
       subject?: string;
-      secrecy?: string;
       status?: string;
     };
   }) => void;
@@ -40,7 +37,6 @@ export interface ManageResourceFiltersState {
 // 保存配置默认值，用于 reset 时恢复
 let _defaultStatus = "all";
 let _defaultSubject: string = "all";
-let _defaultSecrecy = "all";
 let _defaultTags: string[] = [];
 // URL 状态已恢复时跳过 initDefaults 覆写
 let _urlRestored = false;
@@ -49,7 +45,6 @@ export const markManageResourceFiltersUrlRestored = () => { _urlRestored = true;
 export const useManageResourceFilters = create<ManageResourceFiltersState>((set) => ({
   query: "",
   subject: "all",
-  secrecy: "all",
   status: "all",
   ownership: "all" as const,
   remarkCommon: "all",
@@ -58,7 +53,6 @@ export const useManageResourceFilters = create<ManageResourceFiltersState>((set)
   tagsMode: "all",
   setQuery: (value) => set({ query: value }),
   setSubject: (value) => set({ subject: value }),
-  setSecrecy: (value) => set({ secrecy: value }),
   setStatus: (value) => set({ status: value }),
   setOwnership: (value) => set({ ownership: value }),
   setRemarkCommon: (value) => set({ remarkCommon: value }),
@@ -74,11 +68,9 @@ export const useManageResourceFilters = create<ManageResourceFiltersState>((set)
     const defaults = config.default_filters;
     const status = defaults?.status || "all";
     const subject = defaults?.subject || "all";
-    const secrecy = defaults?.secrecy || "all";
     const tags = Array.from(new Set(defaults?.resource_tags ?? []));
     _defaultStatus = status;
     _defaultSubject = subject;
-    _defaultSecrecy = secrecy;
     _defaultTags = tags;
     // URL 状态已恢复时跳过，避免配置默认值覆写用户保存的筛选
     if (_urlRestored) return;
@@ -86,18 +78,16 @@ export const useManageResourceFilters = create<ManageResourceFiltersState>((set)
     set((s) => (
       s.status === status
       && s.subject === subject
-      && s.secrecy === secrecy
       && s.tags.length === tags.length
       && s.tags.every((tag, index) => tag === tags[index])
         ? {}
-        : { status, subject, secrecy, tags }
+        : { status, subject, tags }
     ));
   },
   reset: () =>
     set({
       query: "",
       subject: _defaultSubject,
-      secrecy: _defaultSecrecy,
       status: _defaultStatus,
       ownership: "all" as const,
       remarkCommon: "all",

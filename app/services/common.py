@@ -84,15 +84,6 @@ def _validate_required_scope(scope: str | None, label: str) -> str:
     return _validate_scope(value)
 
 
-def _validate_secrecy(level: str) -> str:
-    value = (level or "").strip()
-    if not value:
-        raise HTTPException(400, "请选择密级")
-    if len(value) > 64:
-        raise HTTPException(400, "密级标签不正确")
-    return value
-
-
 def _validate_resource_status(status: str | None) -> str:
     value = (status or "").strip()
     if not value:

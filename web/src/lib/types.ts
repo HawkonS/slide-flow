@@ -12,6 +12,7 @@ export const isSystemAdminRole = (role?: UserRole | string | null): boolean =>
 
 export interface CurrentUser {
   id: number;
+  session_version?: number;
   username: string;
   name: string | null;
   role: UserRole;
@@ -31,7 +32,6 @@ export interface UserOption {
 }
 
 export type VisibilityScope = "public" | "partial" | "private";
-export type SecrecyLevel = string;
 export type ResourceStatus = string;
 
 export interface ResourceVersion {
@@ -60,7 +60,6 @@ export interface Resource {
   status: ResourceStatus;
   visibility_scope: VisibilityScope;
   management_scope: VisibilityScope;
-  secrecy_level: SecrecyLevel;
   current_version: number;
   created_at: string;
   updated_at: string;
@@ -69,8 +68,8 @@ export interface Resource {
   updated_by?: { id: number; username: string; name: string | null } | null;
   can_manage: boolean;
   visible_user_ids?: number[];
-  manage_user_ids?: number[];
   visible_user_tags?: string[];
+  manage_user_ids?: number[];
   manage_user_tags?: string[];
   current: ResourceVersion;
   /** 仅在详情接口返回，列表接口不包含 */
@@ -104,8 +103,8 @@ export interface TemplateItem {
   owner?: { id: number; name: string | null; username: string } | null;
   visible_user_ids?: number[];
   manage_user_ids?: number[];
-  visible_user_tags?: string[];
   manage_user_tags?: string[];
+  visible_user_tags?: string[];
   updated_at: string;
   created_at: string;
 }
@@ -167,7 +166,6 @@ export interface ShowResourceAccessible {
   id: number;
   accessible: true;
   name: string;
-  secrecy_level: SecrecyLevel;
   hidden: boolean;
   version_no: number;
   latest_version_no: number;
@@ -180,7 +178,6 @@ export interface ShowResourceInaccessible {
   id: number;
   accessible: false;
   name: string;
-  secrecy_level: SecrecyLevel;
   hidden: boolean;
   managers: { id: number; name: string | null; username: string }[];
 }
@@ -198,11 +195,12 @@ export interface Show {
   status: ResourceStatus;
   visibility_scope: VisibilityScope;
   management_scope: VisibilityScope;
-  secrecy_level: SecrecyLevel;
   is_standard: boolean;
   can_manage: boolean;
   visible_user_ids?: number[];
+  visible_user_tags?: string[];
   manage_user_ids?: number[];
+  manage_user_tags?: string[];
   /** 列表接口仅返回前2个资源预览 */
   resources: ShowResource[];
   /** 列表接口附带的完整资源 ID 列表（用于判断某资源是否已在该放映中） */

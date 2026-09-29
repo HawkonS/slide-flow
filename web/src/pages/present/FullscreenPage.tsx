@@ -12,21 +12,15 @@ import {
 } from "lucide-react";
 
 import { DrawingCanvas, type DrawingCanvasRef, type DrawingMode } from "@/components/present/DrawingCanvas";
-import { usePresentChannel } from "@/lib/present-channel";
-import { api } from "@/lib/api";
+import { usePresentChannel, usePlaybackSessionId } from "@/lib/present-channel";
 import { cn } from "@/lib/utils";
 import type { Show, ShowResource, ShowResourceAccessible } from "@/lib/types";
-import { isOfflineMode, loadOfflineShowData, type OfflineSlideData } from "@/lib/offline-playback";
+import { useShowPlayback } from "@/lib/use-show-playback";
 
 /* ---------- helpers ---------- */
 
 function isAccessible(r: ShowResource): r is ShowResourceAccessible {
   return r.accessible === true;
-}
-
-/** Build the image URL for a resource slide using the session token */
-function slideImageUrl(resourceId: number, sessionToken: string): string {
-  return `/api/slides/${resourceId}/image?session_token=${encodeURIComponent(sessionToken)}`;
 }
 
 /* ---------- component ---------- */
@@ -35,36 +29,11 @@ export function FullscreenPage() {
   const { id } = useParams<{ id: string }>();
   const showId = Number(id);
 
-  // ── Offline mode ──
-  const offline = useMemo(() => isOfflineMode(), []);
-  const [offlineData, setOfflineData] = useState<OfflineSlideData | null>(null);
-
-  useEffect(() => {
-    if (!offline || !showId) return;
-    let cancelled = false;
-    loadOfflineShowData(showId).then(data => {
-      if (!cancelled) setOfflineData(data);
-    });
-    return () => { cancelled = true; };
-  }, [offline, showId]);
-
-  // Cleanup blob URLs on unmount
-  useEffect(() => {
-    return () => {
-      if (offlineData) {
-        offlineData.revokeAll();
-      }
-    };
-  }, [offlineData]);
-
-  /* ---- data state ---- */
-  const [show, setShow] = useState<Show | null>(null);
-  const [sessionToken, setSessionToken] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
   /* ---- slide state ---- */
   const [currentIndex, setCurrentIndex] = useState(0);
+  const playback = useShowPlayback(showId, currentIndex, { accessibleOnly: true });
+  const { show, error, loading, thumbsReady, imageUrl: currentImageUrl } = playback;
+  const playbackSession = usePlaybackSessionId();
   const [fade, setFade] = useState(true); // true = visible
   const fadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -75,11 +44,9 @@ export function FullscreenPage() {
   const [cursorHidden, setCursorHidden] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [started, setStarted] = useState(false);
-  const [currentOfflineSlideUrl, setCurrentOfflineSlideUrl] = useState<string | null>(null);
   const [pageJumpOpen, setPageJumpOpen] = useState(false);
   const [pageJumpValue, setPageJumpValue] = useState("");
   const pageJumpInputRef = useRef<HTMLInputElement>(null);
-  const [thumbsReady, setThumbsReady] = useState(false);
 
   /* ---- refs ---- */
   const canvasRef = useRef<DrawingCanvasRef>(null);
@@ -87,175 +54,10 @@ export function FullscreenPage() {
   const toolbarTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const thumbBarTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cursorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const preloadedImagesRef = useRef<Set<number>>(new Set());
-  const preloadedThumbsRef = useRef<Set<string>>(new Set());
   const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
-  const channelRef = usePresentChannel(showId);
+  const channelRef = usePresentChannel(showId, show ? { ownerKey: playback.ownerKey, sessionId: playbackSession, packageId: playback.packageId } : undefined);
 
-  /* ---- derived ---- */
-  const accessibleResources = show ? show.resources.filter(isAccessible) : [];
-  const currentResource = accessibleResources[currentIndex] ?? null;
-  const currentImageUrl = useMemo(() => {
-    if (offline && offlineData) {
-      return currentOfflineSlideUrl;
-    }
-    return currentResource && sessionToken
-      ? slideImageUrl(currentResource.id, sessionToken)
-      : null;
-  }, [offline, offlineData, currentOfflineSlideUrl, currentResource, sessionToken]);
-
-  /* ========== Data loading ========== */
-
-  useEffect(() => {
-    if (!showId || Number.isNaN(showId)) {
-      setError("无效的放映 ID");
-      setLoading(false);
-      return;
-    }
-
-    // Offline mode: use offline data instead of API
-    if (offline) {
-      if (offlineData) {
-        // Build a pseudo Show object from offline data
-        const pseudoShow: Show = {
-          id: offlineData.showInfo.id,
-          name: offlineData.showInfo.name,
-          resources: offlineData.showInfo.resources.map((r) => ({
-            id: r.id,
-            name: r.name,
-            accessible: true as const,
-            hidden: false,
-            secrecy_level: "internal",
-            preview_url: "",
-            original_preview_url: "",
-          })),
-        } as unknown as Show;
-        setShow(pseudoShow);
-        setSessionToken("__offline__");
-        setLoading(false);
-      }
-      return;
-    }
-
-    let cancelled = false;
-
-    async function load() {
-      try {
-        const [sessionRes, showRes] = await Promise.all([
-          api<{ session_token: string; expires_in: number }>(
-            `/api/shows/${showId}/present-session`,
-            { method: "POST" },
-          ),
-          api<{ show: Show }>(`/api/shows/${showId}`),
-        ]);
-
-        if (cancelled) return;
-        setSessionToken(sessionRes.session_token);
-        setShow(showRes.show);
-      } catch (err) {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : "加载失败");
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-
-    load();
-    return () => {
-      cancelled = true;
-    };
-  }, [showId, offline, offlineData]);
-
-  /* ========== Preload next image ========== */
-
-  useEffect(() => {
-    // Offline mode: lazy load current slide + preload adjacent
-    if (offline && offlineData) {
-      let cancelled = false;
-      const existingUrl = offlineData.slideUrls[currentIndex];
-      if (existingUrl) {
-        setCurrentOfflineSlideUrl(existingUrl);
-      } else {
-        setCurrentOfflineSlideUrl(null);
-        offlineData.loadSlide(currentIndex).then(url => {
-          if (!cancelled) setCurrentOfflineSlideUrl(url);
-        });
-      }
-      // Preload adjacent slides
-      const adjacent = [currentIndex - 2, currentIndex - 1, currentIndex + 1, currentIndex + 2];
-      offlineData.preloadSlides(adjacent.filter(i => i >= 0 && i < accessibleResources.length));
-      return () => { cancelled = true; };
-    }
-
-    // Online mode: preload current + next image
-    if (!sessionToken) return;
-    const indices = [currentIndex, currentIndex + 1];
-    for (const idx of indices) {
-      const res = accessibleResources[idx];
-      if (res && !preloadedImagesRef.current.has(res.id)) {
-        const img = new Image();
-        img.src = slideImageUrl(res.id, sessionToken);
-        preloadedImagesRef.current.add(res.id);
-      }
-    }
-  }, [currentIndex, sessionToken, accessibleResources, offline, offlineData]);
-
-  /* ========== Preload all thumbnails ========== */
-
-  useEffect(() => {
-    if (!show || accessibleResources.length === 0) {
-      setThumbsReady(false);
-      return;
-    }
-
-    const thumbUrls: string[] = [];
-    for (let idx = 0; idx < accessibleResources.length; idx++) {
-      const res = accessibleResources[idx];
-      const url =
-        offline && offlineData
-          ? (offlineData.thumbUrls[idx] || offlineData.slideUrls[idx] || undefined)
-          : (res.preview_url || res.original_preview_url || (sessionToken ? slideImageUrl(res.id, sessionToken) : undefined));
-      if (url) thumbUrls.push(url);
-    }
-
-    if (thumbUrls.length === 0) {
-      setThumbsReady(true);
-      return;
-    }
-
-    const allPreloaded = thumbUrls.every((u) => preloadedThumbsRef.current.has(u));
-    if (allPreloaded) {
-      setThumbsReady(true);
-      return;
-    }
-
-    setThumbsReady(false);
-    let cancelled = false;
-
-    Promise.all(
-      thumbUrls.map((url) => {
-        if (preloadedThumbsRef.current.has(url)) return Promise.resolve();
-        return new Promise<void>((resolve) => {
-          const img = new Image();
-          img.onload = () => {
-            preloadedThumbsRef.current.add(url);
-            resolve();
-          };
-          img.onerror = () => {
-            preloadedThumbsRef.current.add(url);
-            resolve();
-          };
-          img.src = url;
-        });
-      })
-    ).then(() => {
-      if (!cancelled) setThumbsReady(true);
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [accessibleResources, offline, offlineData, sessionToken]);
+  const accessibleResources = playback.resources.filter(isAccessible);
 
   /* ========== Fullscreen state tracking ========== */
 
@@ -631,7 +433,7 @@ export function FullscreenPage() {
     );
   }
 
-  if (error || !show || !sessionToken) {
+  if (error || !show) {
     return (
       <div className="fixed inset-0 flex flex-col items-center justify-center gap-4 bg-black text-white">
         <p className="text-lg">{error || "加载失败"}</p>
@@ -688,6 +490,7 @@ export function FullscreenPage() {
           ref={slideImageRef}
           src={currentImageUrl}
           alt=""
+          onError={playback.reportImageError}
           className={cn(
             "absolute inset-0 h-full w-full object-contain transition-opacity duration-150",
             fade ? "opacity-100" : "opacity-0",
@@ -695,6 +498,8 @@ export function FullscreenPage() {
           draggable={false}
         />
       )}
+
+      {!currentImageUrl && playback.imageLoading && <div className="absolute inset-0 flex items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-white/60" /></div>}
 
       {/* Drawing canvas overlay */}
       <DrawingCanvas
@@ -867,10 +672,7 @@ export function FullscreenPage() {
           <div className="flex gap-2 overflow-x-auto px-1 py-1">
             {accessibleResources.map((res, idx) => {
               const isCurrent = idx === currentIndex;
-              // Use offline blob URL, or compressed preview_url for thumbnails, fall back to HD image
-              const thumbUrl = offline && offlineData
-                ? (offlineData.thumbUrls[idx] || offlineData.slideUrls[idx] || undefined)
-                : (res.preview_url || res.original_preview_url || (sessionToken ? slideImageUrl(res.id, sessionToken) : undefined));
+              const thumbUrl = res.preview_url || undefined;
 
               return (
                 <button
@@ -885,6 +687,7 @@ export function FullscreenPage() {
                 >
                   <img
                     src={thumbUrl}
+                    loading="lazy"
                     alt={res.name}
                     className="h-14 w-20 object-cover"
                     draggable={false}

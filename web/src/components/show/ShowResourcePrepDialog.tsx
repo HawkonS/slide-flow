@@ -333,12 +333,6 @@ export function ShowResourcePrepDialog({
                           <span className="line-clamp-2 text-xs leading-snug">
                             {r.name}
                           </span>
-                          <Badge
-                            variant="outline"
-                            className="mt-0.5 text-[10px] px-1 py-0"
-                          >
-                            {r.secrecy_level || "未设置"}
-                          </Badge>
                         </span>
                         {canManageShow && (
                           <button
@@ -411,14 +405,6 @@ export function ShowResourcePrepDialog({
                         </div>
                         <span className="absolute left-1 top-1 rounded bg-background/85 px-1 text-[10px] tabular-nums text-foreground shadow-sm">
                           {idx + 1}
-                        </span>
-                        <span className="absolute right-1 top-1">
-                          <Badge
-                            variant="outline"
-                            className="text-[9px] px-1 py-0 shadow-sm"
-                          >
-                            {r.secrecy_level || "未设置"}
-                          </Badge>
                         </span>
                         {canManageShow && (
                           <button

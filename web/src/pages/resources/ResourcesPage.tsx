@@ -32,7 +32,6 @@ import { ViewModeSwitch } from "@/components/common/ViewModeSwitch";
 interface ResourceUrlState {
   q: string;
   sub: string;
-  sec: string;
   sta: string;
   perm: string;
   rc: string;
@@ -45,7 +44,7 @@ interface ResourceUrlState {
 }
 
 const URL_DEFAULTS: ResourceUrlState = {
-  q: "", sub: "all", sec: "all", sta: "all", perm: "all",
+  q: "", sub: "all", sta: "all", perm: "all",
   rc: "all", rp: "all", tags: [], tm: "all",
   sort: DEFAULT_SORT_KEY, p: 1, view: "card",
 };
@@ -87,7 +86,6 @@ export function ResourcesPage() {
     const s = urlState;
     filters.setQuery(s.q);
     filters.setSubject(s.sub);
-    filters.setSecrecy(s.sec as "all" | "public" | "confidential" | "secret");
     filters.setStatus(s.sta as "all" | "active" | "disabled");
     filters.setPermission(s.perm as "all" | "created" | "managed" | "visible");
     filters.setRemarkCommon(s.rc as "all" | "has" | "none");
@@ -105,7 +103,7 @@ export function ResourcesPage() {
   const prevFiltersKey = React.useRef("");
   React.useEffect(() => {
     const key = JSON.stringify({
-      q: filters.query, sub: filters.subject, sec: filters.secrecy,
+      q: filters.query, sub: filters.subject,
       sta: filters.status, perm: filters.permission,
       rc: filters.remarkCommon, rp: filters.remarkPersonal,
       tags: filters.tags, tm: filters.tagsMode, sort: filters.sort,
@@ -115,14 +113,14 @@ export function ResourcesPage() {
     prevFiltersKey.current = key;
     setUrlState((prev) => ({
       ...prev,
-      q: filters.query, sub: filters.subject, sec: filters.secrecy,
+      q: filters.query, sub: filters.subject,
       sta: filters.status, perm: filters.permission,
       rc: filters.remarkCommon, rp: filters.remarkPersonal,
       tags: filters.tags, tm: filters.tagsMode, sort: filters.sort,
       p: filtersChanged ? 1 : prev.p,
     }));
   }, [
-    filters.query, filters.subject, filters.secrecy, filters.status,
+    filters.query, filters.subject, filters.status,
     filters.permission, filters.remarkCommon, filters.remarkPersonal,
     filters.tags, filters.tagsMode, filters.sort, setUrlState,
   ]);
@@ -144,7 +142,6 @@ export function ResourcesPage() {
       search: filters.query.trim() || undefined,
       subject: filters.subject !== "all" ? filters.subject : undefined,
       status: filters.status !== "all" ? filters.status : undefined,
-      secrecy: filters.secrecy !== "all" ? filters.secrecy : undefined,
       permission: filters.permission !== "all" ? filters.permission : undefined,
       remark_common: filters.remarkCommon !== "all" ? filters.remarkCommon : undefined,
       remark_personal: filters.remarkPersonal !== "all" ? filters.remarkPersonal : undefined,
@@ -348,6 +345,7 @@ export function ResourcesPage() {
     <div className="page-shell">
       <PageHeader
         title="单页素材"
+        description="按主体、标签和状态快速查找并管理单页素材。"
         count={total > 0 ? `共 ${total} 条` : "共 0 条"}
         actions={<ViewModeSwitch value={viewMode} onChange={setViewMode} />}
       />

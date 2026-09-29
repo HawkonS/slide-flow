@@ -43,7 +43,6 @@ export function ResourceListView({
             <TableHead className="min-w-48">名称</TableHead>
             <TableHead className="w-28">主体</TableHead>
             <TableHead className="w-48">标签</TableHead>
-            <TableHead className="w-20">密级</TableHead>
             <TableHead className="w-20">状态</TableHead>
             <TableHead className="w-24">更新时间</TableHead>
             <TableHead className="w-12"><span className="sr-only">操作</span></TableHead>
@@ -89,7 +88,6 @@ export function ResourceListView({
                     {tags.length === 0 && <span className="text-muted-foreground">-</span>}
                   </div>
                 </TableCell>
-                <TableCell><Badge variant="outline" className="text-[11px]">{resource.secrecy_level}</Badge></TableCell>
                 <TableCell><Badge variant="outline" className="text-[11px]">{resource.status}</Badge></TableCell>
                 <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{new Date(resource.updated_at).toLocaleDateString("zh-CN")}</TableCell>
                 <TableCell>

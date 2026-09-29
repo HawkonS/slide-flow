@@ -309,9 +309,11 @@ def logout(response: Response) -> dict[str, bool]:
 
 
 @router.get("/me")
-def me(user: sqlite3.Row = Depends(require_user)) -> dict[str, Any]:
+def me(response: Response, user: sqlite3.Row = Depends(require_user)) -> dict[str, Any]:
     """获取当前登录用户信息"""
-    return {"user": _serialize_user(user)}
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Vary"] = "Cookie"
+    return {"user": {**_serialize_user(user), "session_version": int(user["session_version"])}}
 
 
 @router.get("/auth/verify-offline")

@@ -19,6 +19,9 @@ const TemplatesPage = lazy(() => import("@/pages/templates/TemplatesPage").then(
 const TemplateImportPage = lazy(() => import("@/pages/templates/TemplateImportPage").then((m) => ({ default: m.TemplateImportPage })));
 const FontsPage = lazy(() => import("@/pages/fonts/FontsPage").then((m) => ({ default: m.FontsPage })));
 const ShowsPage = lazy(() => import("@/pages/shows/ShowsPage").then((m) => ({ default: m.ShowsPage })));
+const ShowDetailPage = lazy(() => import("@/pages/shows/ShowDetailPage").then((m) => ({ default: m.ShowDetailPage })));
+const ShowIterationPage = lazy(() => import("@/pages/shows/ShowIterationPage").then((m) => ({ default: m.ShowIterationPage })));
+const ShowCreatePage = lazy(() => import("@/pages/shows/ShowCreatePage").then((m) => ({ default: m.ShowCreatePage })));
 const StandardShowsPage = lazy(() => import("@/pages/shows/StandardShowsPage").then((m) => ({ default: m.StandardShowsPage })));
 const DisplayPage = lazy(() => import("@/pages/present/DisplayPage").then((m) => ({ default: m.DisplayPage })));
 const FullscreenPage = lazy(() => import("@/pages/present/FullscreenPage").then((m) => ({ default: m.FullscreenPage })));
@@ -102,7 +105,7 @@ export const router = createBrowserRouter([
       </RequireAuth>
     ),
   },
-  { path: "/shows/:id/display", element: <DisplayPage />, errorElement: <RouteErrorPage /> },
+  { path: "/shows/:id/display", element: <RequireAuth><DisplayPage /></RequireAuth>, errorElement: <RouteErrorPage /> },
   {
     path: "/shows/:id/present",
     errorElement: <RouteErrorPage />,
@@ -136,7 +139,10 @@ export const router = createBrowserRouter([
       },
       { path: "/fonts", element: <FontsPage /> },
       { path: "/shows", element: <StandardShowsPage /> },
+      { path: "/shows/:id/iterate", element: <ShowIterationPage /> },
+      { path: "/shows/:id", element: <ShowDetailPage /> },
       { path: "/manage/shows", element: <ShowsPage /> },
+      { path: "/manage/shows/new", element: <ShowCreatePage /> },
       { path: "/manage/resources", element: <ResourceManagePage /> },
       { path: "/manage/shares", element: <ShareManagePage /> },
       { path: "/manage/tasks", element: <TasksPage /> },

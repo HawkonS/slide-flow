@@ -1,0 +1,17 @@
+{
+  "id": "/",
+  "name": "SlideFlow",
+  "short_name": "SlideFlow",
+  "description": "统一的在线与离线放映工作台",
+  "lang": "zh-CN",
+  "start_url": "/manage/offline-cache",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#0f766e",
+  "icons": [
+    { "src": "/pwa/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/pwa/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/pwa/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

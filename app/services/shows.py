@@ -12,6 +12,8 @@ from app.services.downloads.fonts import (
     _font_alias_map,
 )
 from app.services.files import asset_preview_url
+from app.services.resources import _normalise_scope_tags, _normalise_scope_user_ids
+from app.services.tagging import entity_tag_names, tag_relation_join, table_has_column
 from fastapi import HTTPException
 from typing import Any
 import sqlite3
@@ -30,9 +32,56 @@ def _show_scope_user_ids(db: sqlite3.Connection, table: str, show_id: int) -> li
 
 
 def _set_show_scope_users(db: sqlite3.Connection, table: str, show_id: int, user_ids: list[int]) -> None:
+    ids = _normalise_scope_user_ids(db, user_ids)
     db.execute(f"DELETE FROM {table} WHERE show_id = ?", (show_id,))
-    for uid in sorted(set(user_ids)):
+    for uid in ids:
         db.execute(f"INSERT OR IGNORE INTO {table} (show_id, user_id) VALUES (?, ?)", (show_id, uid))
+
+
+def _set_show_scope_tags(
+    db: sqlite3.Connection,
+    show_id: int,
+    tag_names: list[str],
+    table: str = "show_visibility_tags",
+) -> None:
+    tags = _normalise_scope_tags(db, tag_names)
+    db.execute(f"DELETE FROM {table} WHERE show_id = ?", (show_id,))
+    definitions = {
+        str(row["name"]): int(row["id"])
+        for row in db.execute(
+            f"SELECT id, name FROM user_tag_definitions WHERE name IN ({','.join('?' for _ in tags)})",
+            tags,
+        ).fetchall()
+    } if tags else {}
+    for tag_name in tags:
+        db.execute(
+            f"INSERT OR IGNORE INTO {table} (show_id, tag_name, tag_id) VALUES (?, ?, ?)",
+            (show_id, tag_name, definitions.get(tag_name)),
+        )
+
+
+def _show_scope_tag_names(
+    db: sqlite3.Connection,
+    show_id: int,
+    table: str = "show_visibility_tags",
+) -> list[str]:
+    if table_has_column(db, table, "tag_id"):
+        rows = db.execute(
+            f"""
+            SELECT COALESCE(t.name, scope.tag_name) AS tag_name
+            FROM {table} scope
+            LEFT JOIN user_tag_definitions t ON t.id = scope.tag_id
+            WHERE scope.show_id = ?
+            ORDER BY tag_name
+            """,
+            (show_id,),
+        ).fetchall()
+    else:
+        rows = db.execute(
+            f"SELECT tag_name FROM {table} WHERE show_id = ? ORDER BY tag_name",
+            (show_id,),
+        ).fetchall()
+    return [str(row["tag_name"]) for row in rows]
 
 
 def _show_row(db: sqlite3.Connection, show_id: int) -> sqlite3.Row:
@@ -58,7 +107,6 @@ def _serialize_show_resource(db: sqlite3.Connection, resource_id: int, version_n
             "id": resource_id,
             "accessible": True,
             "name": resource["name"],
-            "secrecy_level": resource["secrecy_level"],
             "version_no": version_no,
             "latest_version_no": latest_version_no,
             "preview_url": asset_preview_url(png_path, thumb=True) or (f"/api/resources/{resource_id}/preview-thumb?version_id={version_id}" if png_path else None),
@@ -70,8 +118,9 @@ def _serialize_show_resource(db: sqlite3.Connection, resource_id: int, version_n
         managers: list[dict[str, Any]] = []
         if owner:
             managers.append({"id": owner["id"], "name": owner["name"], "username": owner["username"]})
+        manage_tag_join = tag_relation_join(db, "resource_management_tags", "rmt")
         manage_rows = db.execute(
-            """
+            f"""
             SELECT DISTINCT u.id, u.name, u.username
             FROM users u
             WHERE u.id IN (
@@ -81,7 +130,7 @@ def _serialize_show_resource(db: sqlite3.Connection, resource_id: int, version_n
                 UNION
                 SELECT ut.user_id
                 FROM resource_management_tags rmt
-                JOIN user_tags ut ON ut.tag_name = rmt.tag_name
+                JOIN user_tags ut ON {manage_tag_join}
                 WHERE rmt.resource_id = ?
             )
             ORDER BY u.name COLLATE NOCASE, u.id
@@ -96,7 +145,6 @@ def _serialize_show_resource(db: sqlite3.Connection, resource_id: int, version_n
             "id": resource_id,
             "accessible": False,
             "name": f"资源 #{resource_id}",
-            "secrecy_level": resource["secrecy_level"],
             "managers": managers,
             "hidden": bool(is_hidden),
         }
@@ -136,11 +184,18 @@ def _serialize_show(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row)
         "owner": _row_to_dict(owner) if owner else None,
         "updated_by": _row_to_dict(updated_by_user) if updated_by_user else None,
         "subject": row["subject"],
-        "tags": row["tags"],
+        "tags": ",".join(
+            entity_tag_names(
+                db,
+                relation_table="show_tags",
+                entity_column="show_id",
+                entity_id=int(row["id"]),
+                fallback=row["tags"] or "",
+            )
+        ),
         "status": row["status"],
         "visibility_scope": row["visibility_scope"],
         "management_scope": row["management_scope"],
-        "secrecy_level": row["secrecy_level"],
         "is_standard": bool(row["is_standard"]),
         "series_id": row["series_id"],
         "version_no": row["version_no"],
@@ -150,7 +205,9 @@ def _serialize_show(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row)
         "has_other_versions": version_count > 1,
         "can_manage": can_manage_show(db, row, user),
         "visible_user_ids": visible_user_ids,
+        "visible_user_tags": _show_scope_tag_names(db, int(row["id"])) if can_manage_show(db, row, user) else [],
         "manage_user_ids": manage_user_ids,
+        "manage_user_tags": _show_scope_tag_names(db, int(row["id"]), "show_management_tags") if can_manage_show(db, row, user) else [],
         "resources": resources,
         "is_pinned": _is_show_pinned(db, int(row["id"]), int(user["id"])),
         "created_at": row["created_at"],
@@ -182,9 +239,16 @@ def _serialize_show_lite(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3
         "owner_id": row["owner_id"],
         "owner": _row_to_dict(owner) if owner else None,
         "subject": row["subject"],
-        "tags": row["tags"],
+        "tags": ",".join(
+            entity_tag_names(
+                db,
+                relation_table="show_tags",
+                entity_column="show_id",
+                entity_id=int(row["id"]),
+                fallback=row["tags"] or "",
+            )
+        ),
         "status": row["status"],
-        "secrecy_level": row["secrecy_level"],
         "is_standard": bool(row["is_standard"]),
         "series_id": row["series_id"],
         "version_no": row["version_no"],
@@ -203,7 +267,7 @@ def _serialize_show_lite(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3
 def _collect_show_accessible_resources(
     db: sqlite3.Connection, show_id: int, user: sqlite3.Row
 ) -> list[dict[str, Any]]:
-    """按当前用户权限，返回放映下可见资源的当前版本信息（按 sort_order）。"""
+    """按当前用户权限，返回放映下可见资源的固定版本信息（按 sort_order）。"""
     sr_rows = db.execute(
         """
         SELECT sr.resource_id, sr.version_no, sr.is_hidden, r.name
@@ -222,7 +286,7 @@ def _collect_show_accessible_resources(
         if resource is None or not can_view_resource(db, resource, user):
             continue
         version_row = db.execute(
-            "SELECT ppt_path, font_names, missing_fonts FROM resource_versions"
+            "SELECT ppt_path, png_path, font_names, missing_fonts FROM resource_versions"
             " WHERE resource_id = ? AND version_no = ?",
             (sr["resource_id"], sr["version_no"]),
         ).fetchone()
@@ -234,6 +298,7 @@ def _collect_show_accessible_resources(
                 "name": sr["name"],
                 "version_no": sr["version_no"],
                 "ppt_path": version_row["ppt_path"],
+                "png_path": version_row["png_path"],
                 "font_names": _json_loads(version_row["font_names"], []),
                 "missing_fonts": _json_loads(version_row["missing_fonts"], []),
                 "is_hidden": bool(sr["is_hidden"]),

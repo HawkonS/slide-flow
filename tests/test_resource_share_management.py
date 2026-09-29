@@ -73,16 +73,16 @@ class ResourceShareManagementTests(unittest.TestCase):
             patcher.stop()
         self.temporary.cleanup()
 
-    def insert_user(self, username: str) -> sqlite3.Row:
+    def insert_user(self, username: str, *, role: str = "user") -> sqlite3.Row:
         timestamp = now_iso()
         user_id = int(
             self.db.execute(
                 """
                 INSERT INTO users (
                     name, username, username_key, password_hash, role, created_at, updated_at
-                ) VALUES (?, ?, ?, 'not-used', 'user', ?, ?)
+                ) VALUES (?, ?, ?, 'not-used', ?, ?, ?)
                 """,
-                (username.title(), username, username, timestamp, timestamp),
+                (username.title(), username, username, role, timestamp, timestamp),
             ).lastrowid
         )
         self.db.commit()
@@ -219,6 +219,70 @@ class ResourceShareManagementTests(unittest.TestCase):
         self.assertEqual(revoked_list.status_code, 200, revoked_list.text)
         self.assertEqual([item["id"] for item in revoked_list.json()["items"]], [alice_share["id"]])
         self.assertEqual(revoked_list.json()["stats"]["revoked"], 1)
+
+    def test_operations_admin_can_revoke_links_on_managed_resources(self):
+        operator = self.insert_user("operator", role="admin")
+        resource_id, _ = self.insert_resource(
+            owner=self.bob,
+            name="Shared material",
+            management_scope="public",
+        )
+        created = self.create_share(resource_id, user=self.bob)
+
+        self.current_user = operator
+        managed = self.client.get("/api/resource-share-links")
+        self.assertEqual(managed.status_code, 200, managed.text)
+        self.assertEqual([item["id"] for item in managed.json()["items"]], [created["id"]])
+
+        revoked = self.client.delete(
+            f"/api/resources/{resource_id}/share-links/{created['id']}"
+        )
+        self.assertEqual(revoked.status_code, 200, revoked.text)
+        self.assertIsNotNone(
+            self.db.execute(
+                "SELECT revoked_at FROM resource_share_tokens WHERE id = ?",
+                (created["id"],),
+            ).fetchone()["revoked_at"]
+        )
+
+    def test_admin_can_bulk_revoke_managed_links(self):
+        first_resource, _ = self.insert_resource(
+            owner=self.bob,
+            name="First shared material",
+            management_scope="public",
+        )
+        second_resource, _ = self.insert_resource(
+            owner=self.bob,
+            name="Second shared material",
+            management_scope="public",
+        )
+        first = self.create_share(first_resource, user=self.bob)
+        second = self.create_share(second_resource, user=self.bob)
+
+        self.current_user = self.alice
+        denied = self.client.post(
+            "/api/resource-share-links/bulk-revoke",
+            json={"link_ids": [first["id"]]},
+        )
+        self.assertEqual(denied.status_code, 403, denied.text)
+
+        self.current_user = self.admin
+        ids = self.client.get("/api/resource-share-links/ids")
+        self.assertEqual(ids.status_code, 200, ids.text)
+        self.assertIn(first["id"], ids.json()["ids"])
+        self.assertIn(second["id"], ids.json()["ids"])
+
+        response = self.client.post(
+            "/api/resource-share-links/bulk-revoke",
+            json={"link_ids": [first["id"], second["id"]]},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["revoked"], 2)
+        rows = self.db.execute(
+            "SELECT revoked_at FROM resource_share_tokens WHERE id IN (?, ?)",
+            (first["id"], second["id"]),
+        ).fetchall()
+        self.assertTrue(all(row["revoked_at"] for row in rows))
 
 
 if __name__ == "__main__":

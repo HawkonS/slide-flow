@@ -40,12 +40,13 @@ import {
 import { ShowResourcePrepDialog } from "@/components/show/ShowResourcePrepDialog";
 import { ShowDownloadDialog } from "@/components/show/ShowDownloadDialog";
 import ShowOfflineCacheDialog from "@/components/show/ShowOfflineCacheDialog";
-import { ShowUpgradeDialog } from "@/components/show/ShowUpgradeDialog";
 import {
   RESOURCE_SCOPE_LABEL,
 } from "@/lib/constants";
 import { getShowVersions } from "@/lib/api";
-import { getDirectoryHandle, readManifest } from "@/lib/offline-cache";
+import { useAuth } from "@/lib/auth";
+import { listCachedShows, type CachedShow } from "@/lib/pwa-cache";
+import { OFFLINE_SESSION_EVENT, offlineOwnerKey, readOfflineIdentity } from "@/lib/offline-session";
 import {
   parseTags,
   Show,
@@ -62,6 +63,14 @@ export interface ShowDetailDialogProps {
   onDuplicate?: (show: Show) => void;
   onIterate?: (show: Show) => void;
   onSwitchVersion?: (showId: number) => void;
+}
+
+type OfflineCacheStatus = "checking" | "none" | "ready" | "expired" | "revoked" | "unavailable";
+interface OfflineCacheSnapshot {
+  ownerKey: string;
+  showId: number | undefined;
+  status: OfflineCacheStatus;
+  entry: CachedShow | null;
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {
@@ -105,12 +114,19 @@ export function ShowDetailDialog({
   onSwitchVersion,
 }: ShowDetailDialogProps) {
   const navigate = useNavigate();
+  const auth = useAuth();
+  const ownerKey = auth.identity && auth.identity.user.id === auth.user?.id ? offlineOwnerKey(auth.identity) : "";
   const [activeIndex, setActiveIndex] = React.useState(0);
   const [prepOpen, setPrepOpen] = React.useState(false);
   const [downloadOpen, setDownloadOpen] = React.useState(false);
   const [offlineCacheOpen, setOfflineCacheOpen] = React.useState(false);
-  const [upgradeOpen, setUpgradeOpen] = React.useState(false);
-  const [isCachedOffline, setIsCachedOffline] = React.useState(false);
+  const [cacheSnapshot, setCacheSnapshot] = React.useState<OfflineCacheSnapshot>({ ownerKey: "", showId: undefined, status: "checking", entry: null });
+  const cacheScope = React.useRef({ open, showId: show?.id, ownerKey });
+  cacheScope.current = { open, showId: show?.id, ownerKey };
+  const matchingCache = cacheSnapshot.ownerKey === ownerKey && cacheSnapshot.showId === show?.id;
+  const cacheStatus = matchingCache ? cacheSnapshot.status : "checking";
+  const cachedEntry = matchingCache ? cacheSnapshot.entry : null;
+  const isCachedOffline = cacheStatus === "ready" && !!cachedEntry;
 
   const { data: versionsData } = useQuery({
     queryKey: ["shows", show?.id, "versions"],
@@ -133,24 +149,51 @@ export function ShowDetailDialog({
   }, [open, show?.id]);
 
   React.useEffect(() => {
-    if (!show) return;
+    if (!open || !show) return;
+    const showId = show.id;
     let cancelled = false;
-    async function check() {
+    let request = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    setCacheSnapshot({ ownerKey, showId, status: "checking", entry: null });
+    const check = async () => {
+      const current = ++request;
+      clearTimeout(timer);
+      const commit = (status: OfflineCacheStatus, entry: CachedShow | null = null) => {
+        const scope = cacheScope.current;
+        if (!cancelled && current === request && scope.open && scope.showId === showId && scope.ownerKey === ownerKey) {
+          setCacheSnapshot({ ownerKey, showId, status, entry });
+        }
+      };
+      const identity = readOfflineIdentity();
+      if (!identity || !ownerKey || offlineOwnerKey(identity) !== ownerKey) { commit("unavailable"); return; }
       try {
-        const handle = await getDirectoryHandle();
-        if (!handle || cancelled) return;
-        const perm = await handle.queryPermission({ mode: 'read' });
-        if (perm !== 'granted' || cancelled) return;
-        const manifest = await readManifest(handle);
-        if (!manifest || cancelled) return;
-        setIsCachedOffline(String(show!.id) in manifest.shows);
+        const entries = await listCachedShows();
+        const latest = readOfflineIdentity();
+        if (cancelled || current !== request || !latest || offlineOwnerKey(latest) !== ownerKey) return;
+        const entry = entries.find(item => item.show_id === showId);
+        if (!entry) { commit("none"); return; }
+        const expiry = Date.parse(entry.expires_at);
+        const now = Date.now();
+        const status = entry.revoked ? "revoked" : !Number.isFinite(expiry) || expiry <= now ? "expired" : "ready";
+        commit(status, entry);
+        if (status === "ready") timer = setTimeout(() => { void check(); }, Math.min(2_147_483_647, expiry - now + 10));
       } catch {
-        // 静默失败
+        commit("unavailable");
       }
-    }
-    check();
-    return () => { cancelled = true; };
-  }, [show?.id, open]);
+    };
+    const changed = () => { void check(); };
+    const visible = () => { if (!document.hidden) changed(); };
+    window.addEventListener("slideflow-pwa-change", changed);
+    window.addEventListener(OFFLINE_SESSION_EVENT, changed);
+    document.addEventListener("visibilitychange", visible);
+    changed();
+    return () => {
+      cancelled = true; request++; clearTimeout(timer);
+      window.removeEventListener("slideflow-pwa-change", changed);
+      window.removeEventListener(OFFLINE_SESSION_EVENT, changed);
+      document.removeEventListener("visibilitychange", visible);
+    };
+  }, [show?.id, open, ownerKey]);
 
   if (!show) return null;
 
@@ -172,11 +215,18 @@ export function ShowDetailDialog({
               v{show.version_no}
             </span>
             {isCachedOffline && (
-              <span className="inline-flex items-center gap-1 text-xs text-green-600 bg-green-50 px-1.5 py-0.5 rounded">
+              <span title={`当前账号在此浏览器的缓存，有效至 ${formatDate(cachedEntry?.expires_at)}`} className="inline-flex items-center gap-1 text-xs text-green-600 bg-green-50 px-1.5 py-0.5 rounded">
                 <HardDrive className="h-3 w-3" />
-                已离线缓存
+                浏览器缓存有效
               </span>
             )}
+            {(cacheStatus === "expired" || cacheStatus === "revoked") && (
+              <span className="inline-flex items-center gap-1 text-xs text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded">
+                <HardDrive className="h-3 w-3" />
+                {cacheStatus === "revoked" ? "离线授权已撤销" : "离线缓存已过期"}
+              </span>
+            )}
+            {cacheStatus === "unavailable" && <span className="text-xs text-muted-foreground">缓存状态暂不可用</span>}
           </div>
           <DialogDescription className="sr-only">放映详情</DialogDescription>
         </DialogHeader>
@@ -292,10 +342,6 @@ export function ShowDetailDialog({
             <div className="space-y-3">
               <InfoRow label="主体" value={show.subject || "—"} />
               <InfoRow
-                label="密级"
-                value={show.secrecy_level}
-              />
-              <InfoRow
                 label="状态"
                 value={show.status}
               />
@@ -344,7 +390,7 @@ export function ShowDetailDialog({
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start">
                   <DropdownMenuItem onSelect={() => {
-                    window.open(`/shows/${show.id}/fullscreen?offline=true`, '_blank', 'popup=yes,width=1920,height=1080');
+                    if (cachedEntry) window.open(`/shows/${show.id}/fullscreen?offline=true&package_id=${encodeURIComponent(cachedEntry.package_id)}`, '_blank', 'popup=yes,width=1920,height=1080');
                   }}>
                     <WifiOff className="mr-2 h-4 w-4" />
                     本地缓存放映
@@ -376,14 +422,12 @@ export function ShowDetailDialog({
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start">
                   <DropdownMenuItem onSelect={() => {
-                    window.open(`/shows/${show.id}/display?offline=true`, 'slideflow-display', 'popup=yes,width=1920,height=1080');
-                    navigate(`/shows/${show.id}/present?offline=true`);
+                    if (cachedEntry) navigate(`/shows/${show.id}/present?offline=true&package_id=${encodeURIComponent(cachedEntry.package_id)}`);
                   }}>
                     <WifiOff className="mr-2 h-4 w-4" />
                     本地缓存放映
                   </DropdownMenuItem>
                   <DropdownMenuItem onSelect={() => {
-                    window.open(`/shows/${show.id}/display`, 'slideflow-display', 'popup=yes,width=1920,height=1080');
                     navigate(`/shows/${show.id}/present`);
                   }}>
                     <Wifi className="mr-2 h-4 w-4" />
@@ -393,7 +437,6 @@ export function ShowDetailDialog({
               </DropdownMenu>
             ) : (
               <Button variant="outline" size="sm" onClick={() => {
-                window.open(`/shows/${show.id}/display`, 'slideflow-display', 'popup=yes,width=1920,height=1080');
                 navigate(`/shows/${show.id}/present`);
               }}>
                 <MonitorPlay className="mr-1 h-4 w-4" />
@@ -414,7 +457,7 @@ export function ShowDetailDialog({
             离线缓存
           </Button>
           {onIterate && show.can_manage && (
-            <Button variant="outline" size="sm" onClick={() => setUpgradeOpen(true)}>
+            <Button variant="outline" size="sm" onClick={() => navigate(`/shows/${show.id}/iterate`)}>
               <GitBranch className="mr-1 h-4 w-4" />
               版本迭代
             </Button>
@@ -430,13 +473,6 @@ export function ShowDetailDialog({
         <ShowResourcePrepDialog open={prepOpen} onOpenChange={setPrepOpen} show={show} />
         <ShowDownloadDialog open={downloadOpen} onOpenChange={setDownloadOpen} show={show} />
         <ShowOfflineCacheDialog open={offlineCacheOpen} onOpenChange={setOfflineCacheOpen} show={show} />
-        <ShowUpgradeDialog
-          open={upgradeOpen}
-          onOpenChange={setUpgradeOpen}
-          show={show}
-          onSuccess={(newShow) => onIterate?.(newShow)}
-        />
-
       </DialogContent>
     </Dialog>
   );

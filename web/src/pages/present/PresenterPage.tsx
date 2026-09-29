@@ -4,7 +4,6 @@ import {
   useQuery,
   useMutation,
   useQueryClient,
-  keepPreviousData,
 } from "@tanstack/react-query";
 import {
   Loader2,
@@ -30,17 +29,16 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { api, fetchUserPreferences, updateUserPreferences } from "@/lib/api";
-import { useAuth } from "@/lib/auth";
+import { api, updateUserPreferences } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { isOfflineMode, loadOfflineShowData, type OfflineSlideData } from "@/lib/offline-playback";
-import { Badge } from "@/components/ui/badge";
+import { useShowPlayback } from "@/lib/use-show-playback";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
 import {
   PresentChannel,
   usePresentChannel,
+  usePlaybackSessionId,
   type PresentMessage,
 } from "@/lib/present-channel";
 import {
@@ -59,9 +57,11 @@ interface PresentSessionResponse {
 interface ResourceDetailResponse {
   resource: {
     id: number;
-    current: {
+    versions: Array<{
+      id: number;
+      version_no: number;
       common_remark_html: string | null;
-    };
+    }>;
     can_manage: boolean;
   };
 }
@@ -108,11 +108,7 @@ const MIN_FONT_SIZE = 10;
 const MAX_FONT_SIZE = 28;
 
 function getRemarkFontSizesFromPrefs(prefs: Record<string, string>): Record<RemarkKey, number> {
-  // 设计说明：字号偏好采用 “API 优先 + localStorage 回退” 的混合方案。
-  //   1. 优先使用后端下发的用户偏好（跨设备一致）。
-  //   2. 后端未返回或不可用时，回退到 localStorage（本地缓存、离线可用）。
-  //   3. API 成功加载后会同步写回 localStorage（参见 prefsAppliedRef 后续逻辑），
-  //      以保证下次离线/初始渲染能快速拿到最新值。
+  // prefs already combines server values and the current owner's local values.
   const sizes = {} as Record<RemarkKey, number>;
   for (const key of Object.keys(REMARK_FONT_KEYS) as RemarkKey[]) {
     const prefKey = REMARK_FONT_KEYS[key];
@@ -122,19 +118,6 @@ function getRemarkFontSizesFromPrefs(prefs: Record<string, string>): Record<Rema
         sizes[key] = n;
         continue;
       }
-    }
-    // fallback to localStorage
-    try {
-      const v = localStorage.getItem(`presenter-font-${key}`);
-      if (v) {
-        const n = parseInt(v, 10);
-        if (n >= MIN_FONT_SIZE && n <= MAX_FONT_SIZE) {
-          sizes[key] = n;
-          continue;
-        }
-      }
-    } catch {
-      /* ignore */
     }
     sizes[key] = DEFAULT_FONT_SIZE;
   }
@@ -160,15 +143,6 @@ function getPanelRatioFromPrefs(prefs: Record<string, string>): number {
   if (prefs[PANEL_RATIO_KEY]) {
     const n = parseInt(prefs[PANEL_RATIO_KEY], 10);
     if (n >= MIN_PANEL_RATIO && n <= MAX_PANEL_RATIO) return n;
-  }
-  try {
-    const v = localStorage.getItem("presenter-panel-ratio");
-    if (v) {
-      const n = parseInt(v, 10);
-      if (n >= MIN_PANEL_RATIO && n <= MAX_PANEL_RATIO) return n;
-    }
-  } catch {
-    /* ignore */
   }
   return DEFAULT_PANEL_RATIO;
 }
@@ -221,45 +195,38 @@ const PRESET_COLORS = [
 export function PresenterPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { user } = useAuth();
   const queryClient = useQueryClient();
   const showId = id ? parseInt(id, 10) : 0;
 
-  // ── Offline mode ──
-  const offline = React.useMemo(() => isOfflineMode(), []);
-  const [offlineData, setOfflineData] = React.useState<OfflineSlideData | null>(null);
-  const [offlineLoading, setOfflineLoading] = React.useState(offline);
-
-  React.useEffect(() => {
-    if (!offline || !showId) return;
-    let cancelled = false;
-    loadOfflineShowData(showId).then(data => {
-      if (cancelled) return;
-      setOfflineData(data);
-      setOfflineLoading(false);
-    });
-    return () => { cancelled = true; };
-  }, [offline, showId]);
-
-  // Cleanup blob URLs on unmount
-  React.useEffect(() => {
-    return () => {
-      if (offlineData) {
-        offlineData.revokeAll();
-      }
-    };
-  }, [offlineData]);
+  const [currentIndex, setCurrentIndex] = React.useState(0);
+  const playback = useShowPlayback(showId, currentIndex);
+  const { show, resources, offlineData, thumbsReady } = playback;
+  const offline = playback.source === "cache";
+  const playbackSession = usePlaybackSessionId();
+  const writeAllowedRef = React.useRef(playback.canWrite);
+  writeAllowedRef.current = playback.canWrite;
+  const localPrefsKey = "slideflow-presenter-prefs:" + playback.ownerKey;
+  const [localPrefs, setLocalPrefs] = React.useState<Record<string, string>>(() => {
+    try { return JSON.parse(localStorage.getItem(localPrefsKey) || "{}"); } catch { return {}; }
+  });
 
   // ── Preferences ──
   const { data: prefsData } = useQuery({
-    queryKey: ["user-preferences"],
-    queryFn: fetchUserPreferences,
+    queryKey: ["user-preferences", playback.ownerKey],
+    queryFn: ({ signal }) => api<{ preferences: Record<string, string> }>("/api/user/preferences", { signal }),
+    enabled: playback.canWrite,
+    retry: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     staleTime: 60_000,
   });
-  const prefs = prefsData?.preferences ?? {};
+  const prefs = React.useMemo(() => ({ ...localPrefs, ...prefsData?.preferences }), [localPrefs, prefsData]);
 
   const prefsMutation = useMutation({
-    mutationFn: updateUserPreferences,
+    mutationFn: (updates: Record<string, string>) => {
+      if (!writeAllowedRef.current) return Promise.resolve({ preferences: updates });
+      return updateUserPreferences(updates);
+    },
     onError: (err: Error) => toast.error(err.message || "保存偏好失败"),
   });
 
@@ -268,20 +235,28 @@ export function PresenterPage() {
 
   const savePrefs = React.useCallback(
     (updates: Record<string, string>) => {
+      setLocalPrefs(previous => {
+        const next = { ...previous, ...updates };
+        try { localStorage.setItem(localPrefsKey, JSON.stringify(next)); } catch { /* local quota */ }
+        return next;
+      });
+      if (!writeAllowedRef.current) return;
       pendingPrefsRef.current = { ...(pendingPrefsRef.current ?? {}), ...updates };
       if (prefsDebounceRef.current) clearTimeout(prefsDebounceRef.current);
       prefsDebounceRef.current = setTimeout(() => {
-        if (pendingPrefsRef.current) {
-          prefsMutation.mutate(pendingPrefsRef.current);
-          pendingPrefsRef.current = null;
-        }
+        if (pendingPrefsRef.current && writeAllowedRef.current) prefsMutation.mutate(pendingPrefsRef.current);
+        pendingPrefsRef.current = null;
       }, 500);
     },
-    [prefsMutation],
+    [prefsMutation, localPrefsKey],
   );
+  React.useEffect(() => () => {
+    if (prefsDebounceRef.current) clearTimeout(prefsDebounceRef.current);
+    pendingPrefsRef.current = null;
+    void queryClient.cancelQueries({ queryKey: ["user-preferences", playback.ownerKey] });
+  }, [playback.canWrite, playback.ownerKey, queryClient]);
 
   // ── State ──
-  const [currentIndex, setCurrentIndex] = React.useState(0);
   const [drawingMode, setDrawingMode] = React.useState<DrawingMode>("none");
   const [penColor, setPenColor] = React.useState("#ef4444");
   const [remarkFontSizes, setRemarkFontSizes] = React.useState<Record<RemarkKey, number>>({
@@ -302,8 +277,6 @@ export function PresenterPage() {
   const [imageFit, setImageFit] = React.useState<ImageFitMode>("contain");
   const [pageJumpOpen, setPageJumpOpen] = React.useState(false);
   const [pageJumpValue, setPageJumpValue] = React.useState("");
-  const [currentOfflineSlideUrl, setCurrentOfflineSlideUrl] = React.useState<string | null>(null);
-  const [thumbsReady, setThumbsReady] = React.useState(false);
   const pageJumpInputRef = React.useRef<HTMLInputElement>(null);
 
   // Apply preferences when loaded (only once)
@@ -312,7 +285,11 @@ export function PresenterPage() {
   // 避免后端未设置时覆盖本地已有的 fallback。
   const prefsAppliedRef = React.useRef(false);
   React.useEffect(() => {
-    if (prefsData && !prefsAppliedRef.current) {
+    prefsAppliedRef.current = false;
+    try { setLocalPrefs(JSON.parse(localStorage.getItem(localPrefsKey) || "{}")); } catch { setLocalPrefs({}); }
+  }, [localPrefsKey]);
+  React.useEffect(() => {
+    if ((prefsData || offline) && !prefsAppliedRef.current) {
       prefsAppliedRef.current = true;
       const panel = getPanelRatioFromPrefs(prefs);
       const split = getPanelSplitRatioFromPrefs(prefs);
@@ -328,71 +305,24 @@ export function PresenterPage() {
       setRemarksExpanded(expanded);
       // 同步 API 成功返回的值到 localStorage。
       try {
-        localStorage.setItem("presenter-panel-ratio", String(panel));
-        for (const key of Object.keys(REMARK_FONT_KEYS) as RemarkKey[]) {
-          localStorage.setItem(`presenter-font-${key}`, String(fontSizes[key]));
-        }
+        localStorage.setItem(localPrefsKey, JSON.stringify(prefs));
       } catch {
         /* ignore quota / privacy mode errors */
       }
     }
-  }, [prefsData, prefs]);
+  }, [prefsData, prefs, offline, localPrefsKey]);
 
   const canvasRef = React.useRef<DrawingCanvasRef>(null);
   const slideImageRef = React.useRef<HTMLImageElement>(null);
   const displayWindowRef = React.useRef<Window | null>(null);
-  const channelRef = usePresentChannel(showId);
+  const channelRef = usePresentChannel(showId, show ? { ownerKey: playback.ownerKey, sessionId: playbackSession, packageId: playback.packageId } : undefined);
   const sessionStartRef = React.useRef(Date.now());
   const dragStartRef = React.useRef<{ x: number; ratio: number } | null>(null);
   const vDragStartRef = React.useRef<{ y: number; ratio: number } | null>(null);
   const rightPanelRef = React.useRef<HTMLDivElement>(null);
-  const preloadedThumbsRef = React.useRef<Set<string>>(new Set());
 
-  // ── Data loading ──
-
-  // Session token
-  const { data: sessionData } = useQuery({
-    queryKey: ["present-session", showId],
-    queryFn: () =>
-      api<PresentSessionResponse>(
-        `/api/shows/${showId}/present-session`,
-        { method: "POST" },
-      ),
-    enabled: showId > 0 && !offline,
-    staleTime: Infinity,
-  });
-  const sessionToken = sessionData?.session_token ?? "";
-
-  // Show detail
-  const { data: showData } = useQuery({
-    queryKey: ["show", showId],
-    queryFn: () => api<{ show: Show }>(`/api/shows/${showId}`),
-    enabled: showId > 0 && !offline,
-    staleTime: 30_000,
-  });
-  const show = showData?.show ?? null;
-  const resources = React.useMemo(() => {
-    if (offline && offlineData) {
-      // Build pseudo-resources from offline data for navigation/display
-      return offlineData.showInfo.resources.map((r, idx) => ({
-        id: r.id,
-        name: r.name,
-        accessible: true as const,
-        hidden: false,
-        secrecy_level: "",
-        preview_url: offlineData.thumbUrls[idx] || offlineData.slideUrls[idx] || "",
-        original_preview_url: null,
-        version_no: 1,
-        latest_version_no: 1,
-      }));
-    }
-    return show?.resources ?? [];
-  }, [offline, offlineData, show]);
-  const canManage = offline ? false : (show?.can_manage ?? false);
-
-  // Current resource
-  const currentResource =
-    resources.length > 0 ? resources[currentIndex] ?? null : null;
+  const canManage = playback.canWrite && (show?.can_manage ?? false);
+  const currentResource = resources[currentIndex] ?? null;
 
   // ── Time display ──
   const [clock, setClock] = React.useState(formatClock(new Date()));
@@ -417,104 +347,40 @@ export function PresenterPage() {
           type: "sync-state",
           resourceId: currentResource?.id ?? 0,
           index: currentIndex,
-          sessionToken: offline ? "__offline__" : sessionToken,
+          source: playback.source,
+          packageId: playback.packageId,
+          snapshot: playback.snapshot,
           imageFit,
         });
       }
     });
     return unsub;
-  }, [channelRef, currentResource, currentIndex, sessionToken, imageFit, offline]);
+  }, [channelRef, currentResource, currentIndex, imageFit, playback.source, playback.packageId, playback.snapshot, playback.ownerKey]);
 
-  // ── Open display window on mount ──
+  const displayUrl = React.useMemo(() => {
+    const params = new URLSearchParams({ playback_session: playbackSession, source: playback.source });
+    if (playback.packageId) params.set("package_id", playback.packageId);
+    if (playback.source === "cache") params.set("offline", "true");
+    return "/shows/" + showId + "/display?" + params.toString();
+  }, [showId, playbackSession, playback.source, playback.packageId]);
+  const openDisplay = React.useCallback(() => {
+    const display = window.open(displayUrl, "slideflow-display-" + playbackSession, "popup=yes,width=1920,height=1080");
+    if (display) displayWindowRef.current = display;
+    else toast.info("浏览器已拦截用户视图窗口，请点击“用户视图”重新打开");
+  }, [displayUrl, playbackSession]);
+  const openedRef = React.useRef(false);
   React.useEffect(() => {
-    if (!showId) return;
-    const displayUrl = offline
-      ? `/shows/${showId}/display?offline=true`
-      : `/shows/${showId}/display`;
-    const w = window.open(
-      displayUrl,
-      "slideflow-display",
-      "popup=yes,width=1920,height=1080",
-    );
-    if (w) displayWindowRef.current = w;
-  }, [showId, offline]);
-
-  // ── Image loading reset ──
+    if (!show || playback.loading || playback.error || openedRef.current) return;
+    openedRef.current = true;
+    openDisplay();
+  }, [show, playback.loading, playback.error, openDisplay]);
+  // Push a full source snapshot after fallback as well as on first connection.
   React.useEffect(() => {
-    setImageLoading(true);
-  }, [currentIndex]);
-
-  // ── Offline slide lazy loading ──
-  React.useEffect(() => {
-    if (!offline || !offlineData) return;
-    let cancelled = false;
-
-    // 检查是否已加载
-    const existingUrl = offlineData.slideUrls[currentIndex];
-    if (existingUrl) {
-      setCurrentOfflineSlideUrl(existingUrl);
-    } else {
-      setCurrentOfflineSlideUrl(null);
-      offlineData.loadSlide(currentIndex).then(url => {
-        if (!cancelled) setCurrentOfflineSlideUrl(url);
-      });
-    }
-
-    // 后台预加载相邻页面
-    const adjacent = [currentIndex - 2, currentIndex - 1, currentIndex + 1, currentIndex + 2];
-    offlineData.preloadSlides(adjacent.filter(i => i >= 0 && i < resources.length));
-
-    return () => { cancelled = true; };
-  }, [offline, offlineData, currentIndex, resources.length]);
-
-  // ── Preload all thumbnails ──
-  React.useEffect(() => {
-    if (resources.length === 0) {
-      setThumbsReady(false);
-      return;
-    }
-
-    const thumbUrls = resources
-      .filter((r) => isAccessible(r))
-      .map((r) => r.preview_url)
-      .filter(Boolean) as string[];
-
-    if (thumbUrls.length === 0) {
-      setThumbsReady(true);
-      return;
-    }
-
-    const allPreloaded = thumbUrls.every((u) => preloadedThumbsRef.current.has(u));
-    if (allPreloaded) {
-      setThumbsReady(true);
-      return;
-    }
-
-    setThumbsReady(false);
-    let cancelled = false;
-
-    Promise.all(
-      thumbUrls.map((url) => {
-        if (preloadedThumbsRef.current.has(url)) return Promise.resolve();
-        return new Promise<void>((resolve) => {
-          const img = new Image();
-          img.onload = () => {
-            preloadedThumbsRef.current.add(url);
-            resolve();
-          };
-          img.onerror = () => {
-            preloadedThumbsRef.current.add(url);
-            resolve();
-          };
-          img.src = url;
-        });
-      })
-    ).then(() => {
-      if (!cancelled) setThumbsReady(true);
-    });
-
-    return () => { cancelled = true; };
-  }, [resources]);
+    if (!show || !currentResource) return;
+    channelRef.current?.send({ type: "sync-state", resourceId: currentResource.id, index: currentIndex,
+      source: playback.source, packageId: playback.packageId, snapshot: playback.snapshot, imageFit });
+  }, [show, currentResource, currentIndex, playback.source, playback.packageId, playback.snapshot, imageFit, channelRef]);
+  React.useEffect(() => { setImageLoading(true); }, [currentIndex, playback.imageUrl]);
 
   // ── Slide change helper ──
   const goToSlide = React.useCallback(
@@ -765,28 +631,10 @@ export function PresenterPage() {
     [panelRatio],
   );
 
-  // ── Image URL ──
-  const currentImageUrl = React.useMemo(() => {
-    if (offline && offlineData) {
-      return currentOfflineSlideUrl;
-    }
-    return currentResource && isAccessible(currentResource) && sessionToken
-      ? `/api/slides/${currentResource.id}/image?session_token=${sessionToken}`
-      : null;
-  }, [offline, offlineData, currentOfflineSlideUrl, currentResource, sessionToken]);
-
-  // ── Next preview ──
-  const nextResource =
-    currentIndex < resources.length - 1 ? resources[currentIndex + 1] : null;
-  const nextImageUrl = React.useMemo(() => {
-    if (offline && offlineData) {
-      // 使用缩略图作为预览（小图，已预加载）
-      return offlineData.thumbUrls[currentIndex + 1] || offlineData.slideUrls[currentIndex + 1] || null;
-    }
-    return nextResource && isAccessible(nextResource) && sessionToken
-      ? `/api/slides/${nextResource.id}/image?session_token=${sessionToken}`
-      : null;
-  }, [offline, offlineData, currentIndex, nextResource, sessionToken]);
+  const currentImageUrl = playback.imageUrl;
+  const nextIndex = resources.findIndex((resource, index) => index > currentIndex && !resource.hidden && resource.accessible);
+  const nextResource = nextIndex >= 0 ? resources[nextIndex] : null;
+  const nextImageUrl = nextResource?.accessible ? nextResource.preview_url : null;
 
   // ── Render ──
 
@@ -798,13 +646,20 @@ export function PresenterPage() {
     );
   }
 
-  if (offlineLoading) {
+  if (playback.loading) {
     return (
       <div className="flex h-screen items-center justify-center bg-gray-900 text-white">
         <Loader2 className="h-8 w-8 animate-spin text-gray-400 mr-3" />
-        正在加载离线数据…
+        正在加载放映…
       </div>
     );
+  }
+
+  if (playback.error || !show) {
+    return <div className="flex h-screen flex-col items-center justify-center gap-4 bg-gray-900 text-white">
+      <p role="alert">{playback.error || "放映不可用"}</p>
+      <Button onClick={() => navigate("/shows")}>返回放映</Button>
+    </div>;
   }
 
   return (
@@ -817,13 +672,7 @@ export function PresenterPage() {
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => {
-              window.open(
-                `/shows/${showId}/display`,
-                "slideflow-display-user",
-                "popup=yes,width=1920,height=1080",
-              );
-            }}
+            onClick={openDisplay}
             className="rounded bg-gray-700 px-3 py-1.5 text-sm hover:bg-gray-600 transition flex items-center gap-1.5"
             title="打开用户视图窗口"
           >
@@ -1051,19 +900,21 @@ export function PresenterPage() {
           {/* Main display */}
           <div className="relative min-h-0 flex-1 bg-black flex items-center justify-center">
 
-            {currentImageUrl ? (
               <>
                 {/* 16:9 aspect-ratio container - centered in the left panel */}
                 <div
                   className="relative w-full h-full max-w-full max-h-full"
                   style={{ aspectRatio: "16/9" }}
                 >
-                  {imageLoading && (
+                  {!currentImageUrl && <div className="absolute inset-0 flex items-center justify-center text-gray-500">
+                    {resources.length === 0 ? "无可用资源" : currentResource && !currentResource.accessible ? "无权限查看此幻灯片" : "加载中…"}
+                  </div>}
+                  {currentImageUrl && imageLoading && (
                     <div className="absolute inset-0 flex items-center justify-center z-10">
                       <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
                     </div>
                   )}
-                  <img
+                  {currentImageUrl && <img
                     ref={slideImageRef}
                     src={currentImageUrl}
                     alt={
@@ -1074,11 +925,11 @@ export function PresenterPage() {
                     className={`absolute inset-0 w-full h-full ${imageFit === "contain" ? "object-contain" : "object-fill"}`}
                     draggable={false}
                     onLoad={() => setImageLoading(false)}
-                    onError={() => setImageLoading(false)}
-                  />
+                    onError={() => { setImageLoading(false); playback.reportImageError(); }}
+                  />}
                   <DrawingCanvas
                     ref={canvasRef}
-                    mode={drawingMode}
+                    mode={currentImageUrl ? drawingMode : "none"}
                     penColor={penColor}
                     onPenDraw={handlePenDraw}
                     onLaserMove={handleLaserMove}
@@ -1102,11 +953,6 @@ export function PresenterPage() {
                   )}
                 </div>
               </>
-            ) : (
-              <div className="flex h-full items-center justify-center text-gray-500">
-                {resources.length === 0 ? "无可用资源" : "加载中…"}
-              </div>
-            )}
           </div>
 
           {/* Toolbar */}
@@ -1326,6 +1172,7 @@ export function PresenterPage() {
                           thumbsReady ? (
                             <img
                               src={r.preview_url || ""}
+                              loading="lazy"
                               alt={r.name}
                               className="absolute inset-0 h-full w-full object-cover"
                             />
@@ -1346,12 +1193,6 @@ export function PresenterPage() {
                       <span className="min-w-0 flex-1 truncate text-xs">
                         {r.name}
                       </span>
-                      <Badge
-                        variant="outline"
-                        className="shrink-0 text-[10px] px-1 py-0 leading-tight"
-                      >
-                        {r.secrecy_level || "未设置"}
-                      </Badge>
                     </button>
                   );
                 })
@@ -1374,6 +1215,7 @@ export function PresenterPage() {
                           thumbsReady ? (
                             <img
                               src={r.preview_url || ""}
+                              loading="lazy"
                               alt={r.name}
                               className="absolute inset-0 h-full w-full object-cover"
                             />
@@ -1389,14 +1231,6 @@ export function PresenterPage() {
                         )}
                         <div className="absolute bottom-0 left-0 right-0 truncate bg-black/60 px-1 py-0.5 text-[10px] text-gray-200 opacity-0 transition group-hover:opacity-100">
                           {idx + 1}. {r.name}
-                        </div>
-                        <div className="absolute left-1 top-1">
-                          <Badge
-                            variant="outline"
-                            className="text-[9px] px-1 py-0 leading-tight shadow-sm"
-                          >
-                            {r.secrecy_level || "未设置"}
-                          </Badge>
                         </div>
                         {active && (
                           <div className="absolute right-1 top-1 rounded bg-blue-600 px-1 py-0.5 text-[9px] text-white">
@@ -1447,7 +1281,10 @@ export function PresenterPage() {
                     onChangeFontSize={(delta) =>
                       changeRemarkFontSize("common", delta)
                     }
-                    offlineHtml={offline && offlineData ? (offlineData.showInfo.resources[currentIndex]?.common_remark_html || '') : undefined}
+                    networkEnabled={playback.canWrite}
+                    ownerKey={playback.ownerKey}
+                    resourceVersion={currentResource.version_no}
+                    offlineHtml={offlineData ? (offlineData.showInfo.resources[currentIndex]?.common_remark_html || '') : !playback.canWrite ? '' : undefined}
                   />
                   <RemarkSection
                     key={`personal-${currentResource.id}`}
@@ -1457,12 +1294,15 @@ export function PresenterPage() {
                     resourceId={currentResource.id}
                     showId={showId}
                     type="personal"
-                    canManage={true}
+                    canManage={playback.canWrite}
                     fontSize={remarkFontSizes.personal}
                     onChangeFontSize={(delta) =>
                       changeRemarkFontSize("personal", delta)
                     }
-                    offlineHtml={offline && offlineData ? (offlineData.showInfo.resources[currentIndex]?.personal_remark_html || '') : undefined}
+                    networkEnabled={playback.canWrite}
+                    ownerKey={playback.ownerKey}
+                    resourceVersion={currentResource.version_no}
+                    offlineHtml={offlineData ? (offlineData.showInfo.resources[currentIndex]?.personal_remark_html || '') : !playback.canWrite ? '' : undefined}
                   />
                   <RemarkSection
                     key={`show-${showId}-${currentResource.id}`}
@@ -1477,7 +1317,10 @@ export function PresenterPage() {
                     onChangeFontSize={(delta) =>
                       changeRemarkFontSize("show", delta)
                     }
-                    offlineHtml={offline && offlineData ? (offlineData.showInfo.resources[currentIndex]?.show_remark_html || '') : undefined}
+                    networkEnabled={playback.canWrite}
+                    ownerKey={playback.ownerKey}
+                    resourceVersion={currentResource.version_no}
+                    offlineHtml={offlineData ? (offlineData.showInfo.resources[currentIndex]?.show_remark_html || '') : !playback.canWrite ? '' : undefined}
                   />
                 </>
               ) : (
@@ -1537,6 +1380,9 @@ function RemarkSection({
   fontSize,
   onChangeFontSize,
   offlineHtml,
+  networkEnabled,
+  ownerKey,
+  resourceVersion,
 }: {
   title: string;
   expanded: boolean;
@@ -1548,74 +1394,76 @@ function RemarkSection({
   fontSize: number;
   onChangeFontSize: (delta: number) => void;
   offlineHtml?: string;
+  networkEnabled: boolean;
+  ownerKey: string;
+  resourceVersion: number;
 }) {
   const queryClient = useQueryClient();
   const [editing, setEditing] = React.useState(false);
 
   // Fetch remark content
-  const queryKey =
-    type === "common"
-      ? ["resource", resourceId, "detail"]
-      : type === "personal"
-        ? ["resource", resourceId, "personal-remark"]
-        : ["shows", showId, "remarks", resourceId];
+  const queryKey = React.useMemo(() => ["playback-remark", ownerKey, showId, resourceId, resourceVersion, type],
+    [ownerKey, showId, resourceId, resourceVersion, type]);
+  React.useEffect(() => () => { void queryClient.cancelQueries({ queryKey }); }, [queryClient, queryKey, networkEnabled]);
 
-  const { data } = useQuery({
+  const { data } = useQuery<{ content_html: string; version_id?: number }>({
     queryKey,
-    queryFn: async () => {
-      if (type === "common") {
-        const res = await api<ResourceDetailResponse>(
+    queryFn: async ({ signal }) => {
+      if (type !== "show") {
+        const detail = await api<ResourceDetailResponse>(
           `/api/resources/${resourceId}`,
+          { signal },
         );
-        return { content_html: res.resource.current.common_remark_html ?? "" };
-      }
-      if (type === "personal") {
+        const version = detail.resource.versions?.find(item => item.version_no === resourceVersion);
+        if (!version || !Number.isInteger(version.id) || version.id <= 0) {
+          throw new Error("放映所用素材版本不存在，无法读取或编辑备注");
+        }
+        if (type === "common") {
+          return { content_html: version.common_remark_html ?? "", version_id: version.id };
+        }
         const res = await api<PersonalRemarkResponse>(
           `/api/resources/${resourceId}/personal-remark`,
+          { signal, params: { version_id: version.id } },
         );
-        return { content_html: res.content_html ?? "" };
+        return { content_html: res.content_html ?? "", version_id: version.id };
       }
       const res = await api<ShowRemarkResponse>(
         `/api/shows/${showId}/remarks/${resourceId}`,
+        { signal },
       );
       return { content_html: res.content_html ?? "" };
     },
-    enabled: resourceId > 0 && offlineHtml === undefined,
+    enabled: resourceId > 0 && offlineHtml === undefined && networkEnabled,
+    retry: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     staleTime: 30_000,
-    placeholderData: keepPreviousData,
   });
 
   const serverHtml = offlineHtml !== undefined ? offlineHtml : (data?.content_html ?? "");
   const [draft, setDraft] = React.useState(serverHtml);
-  const syncedRef = React.useRef(false);
 
+  // Discard edits when the playback identity, version or write access changes.
   React.useEffect(() => {
-    if (!syncedRef.current && data) {
-      setDraft(serverHtml);
-      syncedRef.current = true;
-    }
-  }, [data, serverHtml]);
-
-  // Reset sync when resource changes
-  React.useEffect(() => {
-    syncedRef.current = false;
     setDraft("");
     setEditing(false);
-  }, [resourceId]);
+  }, [resourceId, resourceVersion, ownerKey, networkEnabled]);
 
   // Save mutation
   const mutation = useMutation({
     mutationFn: async () => {
+      if (!networkEnabled || offlineHtml !== undefined) throw new Error("离线播放期间备注只读");
+      if (type !== "show" && !data?.version_id) throw new Error("素材版本尚未就绪，无法保存备注");
       if (type === "common") {
         return api(`/api/resources/${resourceId}/common-remark`, {
           method: "POST",
-          json: { content_html: draft, apply_scope: "latest" },
+          json: { content_html: draft, apply_scope: "selected", version_id: data!.version_id },
         });
       }
       if (type === "personal") {
         return api(`/api/resources/${resourceId}/personal-remark`, {
           method: "PUT",
-          json: { content_html: draft },
+          json: { content_html: draft, version_id: data!.version_id },
         });
       }
       return api(`/api/shows/${showId}/remarks/${resourceId}`, {
@@ -1667,13 +1515,14 @@ function RemarkSection({
           >
             <Plus className="h-2.5 w-2.5" />
           </button>
-          {canManage && expanded && (
+          {canManage && networkEnabled && offlineHtml === undefined && data && expanded && (
             <span
               onClick={(e) => {
                 e.stopPropagation();
                 if (editing && dirty) {
                   mutation.mutate();
                 } else {
+                  if (!editing) setDraft(serverHtml);
                   setEditing(!editing);
                 }
               }}
@@ -1691,7 +1540,7 @@ function RemarkSection({
       </button>
       {expanded && (
         <div className="px-3 pb-2">
-          {editing ? (
+          {editing && networkEnabled && offlineHtml === undefined ? (
             <textarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}

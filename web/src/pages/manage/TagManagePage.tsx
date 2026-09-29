@@ -1,9 +1,12 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Check,
   ChevronDown,
   ChevronRight,
+  ListFilter,
   Loader2,
+  MoreHorizontal,
   Pencil,
   Plus,
   Search,
@@ -16,6 +19,7 @@ import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -23,12 +27,19 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { PageHeader } from "@/components/common/PageHeader";
 
-type TagDomain = "resource" | "subject" | "secrecy" | "status" | "user";
+type TagDomain = "resource" | "subject" | "status" | "user";
 
 interface AdminTag {
   id: number;
@@ -45,20 +56,22 @@ interface AdminTagsResponse {
   tags: AdminTag[];
   resource_custom_tags?: boolean;
   user_custom_tags?: boolean;
-  secrecy_custom_tags?: boolean;
   status_custom_tags?: boolean;
 }
 
 interface TagsCustomConfig {
   resource_custom_tags: boolean;
   user_custom_tags: boolean;
-  secrecy_custom_tags: boolean;
   status_custom_tags: boolean;
 }
 
 interface TagsCreateResponse {
   created: AdminTag[];
   skipped: string[];
+}
+
+interface TagsBatchUpdateResponse {
+  updated: AdminTag[];
 }
 
 interface CategoryGroup {
@@ -79,12 +92,6 @@ const domainCopy = {
     usage: "素材使用",
     empty: "暂无主体标签，点击右上角“添加主体标签”创建",
   },
-  secrecy: {
-    label: "密级标签",
-    description: "用于维护素材导入和编辑时可选择的密级。",
-    usage: "素材使用",
-    empty: "暂无密级标签，点击右上角“添加密级标签”创建",
-  },
   status: {
     label: "状态标签",
     description: "用于维护素材导入和编辑时可选择的状态。",
@@ -104,7 +111,30 @@ function domainEndpoint(domain: TagDomain): string {
   return `/api/admin/${domain}-tags`;
 }
 
-const TAG_DOMAINS: TagDomain[] = ["resource", "subject", "secrecy", "status", "user"];
+function isFlatTagDomain(domain: TagDomain) {
+  return domain === "subject" || domain === "status";
+}
+
+function tagLabel(tag: Pick<AdminTag, "name" | "category" | "label">) {
+  return tag.label || tag.name;
+}
+
+function tagEditorValue(domain: TagDomain, tag: Pick<AdminTag, "name" | "category" | "label">) {
+  return isFlatTagDomain(domain) || !tag.category || tag.category === "未分类"
+    ? tag.name
+    : tagLabel(tag);
+}
+
+function tagNameFromEditorValue(
+  domain: TagDomain,
+  tag: Pick<AdminTag, "name" | "category" | "label">,
+  value: string,
+) {
+  if (isFlatTagDomain(domain) || !tag.category || tag.category === "未分类") return value;
+  return `${tag.category}-${value}`;
+}
+
+const TAG_DOMAINS: TagDomain[] = ["resource", "subject", "status", "user"];
 
 export default function TagManagePage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -120,17 +150,19 @@ export default function TagManagePage() {
 
   return (
     <div className="page-shell">
-      <header className="space-y-1">
-        <h1 className="page-title">标签管理</h1>
-        <p className="text-sm text-muted-foreground">
-          分类、主体、密级、状态与用户标签分别维护，互不混用。
-        </p>
-      </header>
+      <PageHeader
+        title="标签管理"
+        description="分类、主体、状态与用户标签分别维护，互不混用。"
+      />
 
       <Tabs value={domain} onValueChange={handleTabChange} className="flex min-h-0 flex-1 flex-col">
-        <TabsList className="w-fit">
+        <TabsList className="w-fit border bg-muted/40">
           {TAG_DOMAINS.map((item) => (
-            <TabsTrigger key={item} value={item} className="gap-1.5">
+            <TabsTrigger
+              key={item}
+              value={item}
+              className="gap-1.5"
+            >
               {item === "user" ? <UserRound className="h-3.5 w-3.5" /> : <Tag className="h-3.5 w-3.5" />}
               {domainCopy[item].label}
             </TabsTrigger>
@@ -158,8 +190,11 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
   const [query, setQuery] = React.useState("");
   const [collapsed, setCollapsed] = React.useState<Set<string>>(new Set());
   const [createOpen, setCreateOpen] = React.useState(false);
+  const [batchEditOpen, setBatchEditOpen] = React.useState(false);
   const [editTag, setEditTag] = React.useState<AdminTag | null>(null);
-  const isFlatDomain = domain === "subject" || domain === "secrecy" || domain === "status";
+  const [editCategory, setEditCategory] = React.useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = React.useState<Set<number>>(new Set());
+  const isFlatDomain = isFlatTagDomain(domain);
 
   const tags = data?.tags ?? [];
   const filtered = React.useMemo(() => {
@@ -187,14 +222,27 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
       tags: items.sort((a, b) => a.sort_order - b.sort_order || a.id - b.id),
     }));
   }, [domain, filtered, isFlatDomain]);
+  const filteredIds = React.useMemo(() => filtered.map((item) => item.id), [filtered]);
+  const selectedTags = React.useMemo(
+    () => tags.filter((item) => selectedIds.has(item.id)),
+    [selectedIds, tags],
+  );
+  const allFilteredSelected = filteredIds.length > 0 && filteredIds.every((id) => selectedIds.has(id));
+  const someFilteredSelected = filteredIds.some((id) => selectedIds.has(id));
+
+  React.useEffect(() => {
+    const availableIds = new Set(tags.map((item) => item.id));
+    setSelectedIds((previous) => {
+      const next = new Set([...previous].filter((id) => availableIds.has(id)));
+      return next.size === previous.size ? previous : next;
+    });
+  }, [tags]);
 
   const customConfigKey: keyof TagsCustomConfig | null = domain === "resource"
     ? "resource_custom_tags"
     : domain === "user"
       ? "user_custom_tags"
-      : domain === "secrecy"
-        ? "secrecy_custom_tags"
-        : domain === "status"
+      : domain === "status"
           ? "status_custom_tags"
           : null;
   const customAllowed = customConfigKey ? data?.[customConfigKey] : false;
@@ -232,7 +280,7 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
       }),
     onSuccess: (updated) => {
       toast.success(
-        (updated.default_filter ? "已设为默认筛选：" : "已取消默认筛选：") + updated.name,
+        (updated.default_filter ? "已设为默认筛选：" : "已取消默认筛选：") + tagLabel(updated),
       );
       qc.invalidateQueries({ queryKey });
       qc.invalidateQueries({ queryKey: ["config"] });
@@ -257,46 +305,130 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
     if (window.confirm(detail)) deleteMutation.mutate(item.id);
   };
   const invalidate = () => {
+    setSelectedIds(new Set());
     qc.invalidateQueries({ queryKey });
     qc.invalidateQueries({ queryKey: domain === "resource" || domain === "user" ? ["preset-tags", domain] : ["metadata-tags", domain] });
     if (domain === "user") qc.invalidateQueries({ queryKey: ["admin", "users"] });
   };
-  const renderTagRow = (item: AdminTag) => (
-    <li key={item.id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm transition hover:bg-accent/30">
-      <div className="flex min-w-0 items-center gap-2">
-        <span className="truncate font-medium">{domain === "subject" ? item.name : (item.label || item.name)}</span>
-        {domain !== "subject" && item.label && item.label !== item.name && (
-          <span className="truncate text-xs text-muted-foreground">{item.name}</span>
-        )}
-        <span className="shrink-0 text-xs text-muted-foreground">
-          {copy.usage} <span className="text-foreground">{item.usage_count}</span>
-        </span>
+  const toggleSelected = (id: number, checked: boolean) => {
+    setSelectedIds((previous) => {
+      const next = new Set(previous);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+  const toggleFilteredSelection = (checked: boolean) => {
+    setSelectedIds((previous) => {
+      const next = new Set(previous);
+      for (const id of filteredIds) {
+        if (checked) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+  };
+  const renderTagCard = (item: AdminTag) => (
+    <li key={item.id} className="group flex min-h-[68px] items-center gap-3 rounded-lg border bg-background px-3 py-2 transition hover:border-foreground/20 hover:bg-accent/20">
+      <Checkbox
+        checked={selectedIds.has(item.id)}
+        onCheckedChange={(checked) => toggleSelected(item.id, checked === true)}
+        aria-label={`选择${item.name}`}
+      />
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-[13px] font-medium" title={item.name}>{tagLabel(item)}</span>
+          {item.default_filter && (
+            <span className="inline-flex shrink-0 items-center gap-1 text-[11px] text-primary" title="已设为默认筛选">
+              <Check className="h-3 w-3" />默认
+            </span>
+          )}
+        </div>
+        <div className="mt-0.5 text-[11px] text-muted-foreground">
+          {item.usage_count} {copy.usage}
+        </div>
       </div>
-      <div className="flex shrink-0 items-center gap-1">
-        <label className="mr-1 flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
-          <Switch
-            checked={item.default_filter}
-            onCheckedChange={(enabled) => defaultFilterMutation.mutate({ id: item.id, enabled })}
-            disabled={defaultFilterMutation.isPending && defaultFilterMutation.variables?.id === item.id}
-            aria-label={item.name + "默认筛选"}
-          />
-          默认筛选
-        </label>
-        <Button variant="ghost" size="sm" className="h-7 px-2 text-muted-foreground hover:text-foreground" onClick={() => setEditTag(item)}>
-          <Pencil className="mr-1 h-3.5 w-3.5" /> 编辑
+      <div className="flex shrink-0 items-center gap-1 opacity-70 transition group-hover:opacity-100">
+        <Button variant="ghost" size="sm" className="h-8 px-2 text-muted-foreground hover:text-foreground" onClick={() => setEditTag(item)}>
+          <Pencil className="h-3.5 w-3.5" />编辑
         </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2 text-destructive hover:bg-destructive/10 hover:text-destructive"
-          onClick={() => handleDelete(item)}
-          disabled={deleteMutation.isPending}
-          aria-label={`删除${item.name}`}
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              aria-label={`${item.name} 更多操作`}
+              title="更多操作"
+            >
+              <MoreHorizontal className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-44">
+            <DropdownMenuItem
+              disabled={defaultFilterMutation.isPending && defaultFilterMutation.variables?.id === item.id}
+              onClick={() => defaultFilterMutation.mutate({ id: item.id, enabled: !item.default_filter })}
+            >
+              <ListFilter className="mr-2 h-3.5 w-3.5" />
+              {item.default_filter ? "取消默认筛选" : "设为默认筛选"}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              className="text-destructive focus:text-destructive"
+              onClick={() => handleDelete(item)}
+              disabled={deleteMutation.isPending}
+            >
+              <Trash2 className="mr-2 h-3.5 w-3.5" />删除标签
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </li>
+  );
+
+  const renderTagCards = (group: CategoryGroup) => (
+    <section key={group.category} className="overflow-hidden rounded-xl border bg-card">
+      <div className="flex items-center gap-3 border-b bg-muted/20 px-4 py-2.5">
+        <button
+          type="button"
+          onClick={() => toggleCategory(group.category)}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left text-[13px] transition hover:text-foreground"
+        >
+          {collapsed.has(group.category)
+            ? <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+            : <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />}
+          {domain === "user"
+            ? <UserRound className="h-4 w-4 shrink-0 text-muted-foreground" />
+            : <Tag className="h-4 w-4 shrink-0 text-muted-foreground" />}
+          <span className="truncate font-medium">{group.category}</span>
+          <Badge variant="soft" className="shrink-0">{group.tags.length}</Badge>
+        </button>
+        {group.category !== "未分类" && (domain === "resource" || domain === "user") && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 shrink-0 text-muted-foreground"
+                aria-label={`分类 ${group.category} 更多操作`}
+                title="分类操作"
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-32">
+              <DropdownMenuItem onClick={() => setEditCategory(group.category)}>
+                <Pencil className="mr-2 h-3.5 w-3.5" />编辑分类
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+      </div>
+      {!collapsed.has(group.category) && (
+        <ul className="grid gap-2 p-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+          {group.tags.map(renderTagCard)}
+        </ul>
+      )}
+    </section>
   );
 
   return (
@@ -329,7 +461,7 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-            <div className="relative min-w-0 flex-1 sm:flex-none">
+        <div className="relative min-w-0 flex-1 sm:flex-none">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <input
             value={query}
@@ -345,9 +477,36 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
         <span className="text-xs text-muted-foreground">
           {filtered.length === tags.length ? `共 ${tags.length} 个` : `筛选后 ${filtered.length} / ${tags.length} 个`}
         </span>
+        <label className="flex h-8 items-center gap-2 text-xs text-muted-foreground">
+          <Checkbox
+            checked={allFilteredSelected ? true : someFilteredSelected ? "indeterminate" : false}
+            onCheckedChange={(checked) => toggleFilteredSelection(checked === true)}
+            disabled={filteredIds.length === 0}
+            aria-label="选择当前筛选结果"
+          />
+          全选当前结果
+        </label>
+        {selectedIds.size > 0 && (
+          <span className="text-xs text-muted-foreground">已选 {selectedIds.size} 个</span>
+        )}
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 gap-1.5"
+          onClick={() => setBatchEditOpen(true)}
+          disabled={selectedIds.size === 0}
+        >
+          <Pencil className="h-3.5 w-3.5" />
+          批量修改
+        </Button>
+        {selectedIds.size > 0 && (
+          <Button variant="ghost" size="sm" className="h-8 px-2 text-muted-foreground" onClick={() => setSelectedIds(new Set())}>
+            清空选择
+          </Button>
+        )}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div className="surface min-h-0 flex-1 overflow-auto">
         {isLoading ? (
           <div className="flex items-center justify-center py-16 text-muted-foreground">
             <Loader2 className="mr-2 h-5 w-5 animate-spin" /> 加载中…
@@ -361,40 +520,87 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
             {query.trim() ? `未找到匹配的${copy.label}` : copy.empty}
           </div>
         ) : (
-          isFlatDomain ? (
-            <ul className="divide-y rounded-lg border bg-card">
-              {groups[0]?.tags.map(renderTagRow)}
-            </ul>
-          ) : (
-            <div className="space-y-3">
-              {groups.map((group) => {
-                const open = !collapsed.has(group.category);
-                return (
-                  <section key={group.category} className="overflow-hidden rounded-lg border bg-card">
-                    <button
-                      type="button"
-                      onClick={() => toggleCategory(group.category)}
-                      className="flex w-full items-center justify-between gap-2 border-b bg-muted/30 px-3 py-2 text-sm transition hover:bg-muted/60"
-                    >
-                      <span className="flex items-center gap-1.5 font-medium">
-                        {open ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
-                        {domain === "user" ? <UserRound className="h-3.5 w-3.5 text-muted-foreground" /> : <Tag className="h-3.5 w-3.5 text-muted-foreground" />}
-                        {group.category}
-                        <Badge variant="soft" className="ml-1">{group.tags.length}</Badge>
-                      </span>
-                    </button>
-                    {open && <ul className="divide-y">{group.tags.map(renderTagRow)}</ul>}
-                  </section>
-                );
-              })}
-            </div>
-          )
+          <div className="space-y-3">
+            {groups.map(renderTagCards)}
+          </div>
         )}
       </div>
 
       <CreateTagsDialog domain={domain} open={createOpen} onOpenChange={setCreateOpen} onSuccess={invalidate} />
+      <BatchEditTagsDialog
+        domain={domain}
+        tags={selectedTags}
+        open={batchEditOpen}
+        onOpenChange={setBatchEditOpen}
+        onSuccess={invalidate}
+      />
       <EditTagDialog domain={domain} tag={editTag} onOpenChange={(open) => !open && setEditTag(null)} onSuccess={invalidate} />
+      <EditCategoryDialog
+        domain={domain}
+        category={editCategory}
+        count={tags.filter((item) => item.category === editCategory).length}
+        onOpenChange={(open) => !open && setEditCategory(null)}
+        onSuccess={invalidate}
+      />
     </div>
+  );
+}
+
+function EditCategoryDialog({
+  domain, category, count, onOpenChange, onSuccess,
+}: {
+  domain: TagDomain;
+  category: string | null;
+  count: number;
+  onOpenChange: (open: boolean) => void;
+  onSuccess: () => void;
+}) {
+  const [name, setName] = React.useState("");
+  React.useEffect(() => setName(category ?? ""), [category]);
+  const mutation = useMutation({
+    mutationFn: (newCategory: string) => api<{ updated_count: number; category: string }>(
+      `${domainEndpoint(domain)}/categories/rename`,
+      { method: "PUT", json: { old_category: category, new_category: newCategory } },
+    ),
+    onSuccess: (result) => {
+      toast.success(`已将 ${result.updated_count} 个标签移至「${result.category}」`);
+      onSuccess();
+      onOpenChange(false);
+    },
+    onError: (error: Error) => toast.error(error.message || "修改分类失败"),
+  });
+  const submit = () => {
+    if (!category) return;
+    const next = name.trim();
+    if (!next) return toast.error("一级分类名称不能为空");
+    if (next === category) return onOpenChange(false);
+    mutation.mutate(next);
+  };
+
+  return (
+    <Dialog open={category !== null} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader><DialogTitle>编辑一级分类</DialogTitle></DialogHeader>
+        <div className="grid gap-3">
+          <p className="text-xs text-muted-foreground">「{category}」下的 {count} 个标签将一起更名，已有使用记录和权限不会丢失。</p>
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            onKeyDown={(event) => event.key === "Enter" && submit()}
+            aria-label="新的一级分类名称"
+            disabled={mutation.isPending}
+            className="h-9 w-full rounded-md border bg-background px-3 text-sm shadow-sm outline-none transition focus:border-primary/60 focus:ring-2 focus:ring-primary/20 disabled:opacity-60"
+          />
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={mutation.isPending}>取消</Button>
+          <Button onClick={submit} disabled={mutation.isPending || !name.trim()}>
+            {mutation.isPending && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+            保存分类
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -441,7 +647,7 @@ function CreateTagsDialog({
         <DialogHeader><DialogTitle>添加{copy.label}</DialogTitle></DialogHeader>
         <div className="grid gap-3">
           <p className="text-xs leading-relaxed text-muted-foreground">
-            {domain === "subject" || domain === "secrecy" || domain === "status"
+            {domain === "subject" || domain === "status"
               ? `每行输入一个${copy.label}名称，也可用中英文逗号批量分隔。${copy.label}是平面标签，不分级。`
               : "每行输入一个标签；可使用“分类-标签名”分组，也可用中英文逗号批量分隔。"}
           </p>
@@ -454,9 +660,7 @@ function CreateTagsDialog({
                 ? "用途-封面\n行业-金融\n风格-简约"
                 : domain === "subject"
                   ? "集团\n产品线\n品牌名称"
-                  : domain === "secrecy"
-                    ? "内部公开\n内部保密"
-                    : "草稿\n已发布\n已归档"}
+                  : "草稿\n已发布\n已归档"}
             disabled={mutation.isPending}
             className={cn(
               "min-h-[160px] w-full rounded-md border bg-background px-3 py-2 text-sm shadow-sm outline-none transition",
@@ -477,6 +681,103 @@ function CreateTagsDialog({
   );
 }
 
+function BatchEditTagsDialog({
+  domain,
+  tags,
+  open,
+  onOpenChange,
+  onSuccess,
+}: {
+  domain: TagDomain;
+  tags: AdminTag[];
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSuccess: () => void;
+}) {
+  const copy = domainCopy[domain];
+  const [names, setNames] = React.useState<Record<number, string>>({});
+
+  React.useEffect(() => {
+    if (!open) return;
+    const next: Record<number, string> = {};
+    for (const tag of tags) next[tag.id] = tagEditorValue(domain, tag);
+    setNames(next);
+  }, [domain, open, tags]);
+
+  const mutation = useMutation({
+    mutationFn: (updates: Array<{ id: number; name: string }>) =>
+      api<TagsBatchUpdateResponse>(`${domainEndpoint(domain)}/batch`, {
+        method: "PUT",
+        json: { updates },
+      }),
+    onSuccess: (result) => {
+      toast.success(`已批量更新 ${result.updated.length} 个${copy.label}`);
+      onSuccess();
+      onOpenChange(false);
+    },
+    onError: (error: Error) => toast.error(error.message || "批量修改失败"),
+  });
+
+  const submit = () => {
+    const updates = tags.map((tag) => ({
+      id: tag.id,
+      name: tagNameFromEditorValue(domain, tag, (names[tag.id] ?? "").trim()),
+    }));
+    if (updates.some((item) => !item.name)) {
+      toast.error("标签名称不能为空");
+      return;
+    }
+    if (new Set(updates.map((item) => item.name)).size !== updates.length) {
+      toast.error("批量修改后的标签名称不能重复");
+      return;
+    }
+    mutation.mutate(updates);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[85vh] max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>批量修改{copy.label}</DialogTitle>
+        </DialogHeader>
+        <div className="grid gap-3">
+          <div className="text-xs text-muted-foreground">已选 {tags.length} 个{copy.label}</div>
+          <div className="max-h-[55vh] space-y-2 overflow-y-auto pr-1">
+            {tags.map((tag) => (
+              <label key={tag.id} className="grid gap-1.5 rounded-md border bg-muted/20 p-3 sm:grid-cols-[minmax(0,1fr)_minmax(220px,1.4fr)] sm:items-center">
+                <span className="min-w-0">
+                  {!isFlatTagDomain(domain) && tag.category !== "未分类" && (
+                    <span className="block truncate text-xs text-muted-foreground" title={tag.category}>
+                      {tag.category}
+                    </span>
+                  )}
+                  <span className="block truncate text-sm text-foreground" title={tag.name}>
+                    {tagEditorValue(domain, tag)}
+                  </span>
+                </span>
+                <input
+                  value={names[tag.id] ?? ""}
+                  onChange={(event) => setNames((previous) => ({ ...previous, [tag.id]: event.target.value }))}
+                  disabled={mutation.isPending}
+                  aria-label={`${tag.name}的新名称`}
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm shadow-sm outline-none transition focus:border-primary/60 focus:ring-2 focus:ring-primary/20 disabled:opacity-60"
+                />
+              </label>
+            ))}
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={mutation.isPending}>取消</Button>
+          <Button onClick={submit} disabled={mutation.isPending || tags.length === 0}>
+            {mutation.isPending && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+            保存修改
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function EditTagDialog({
   domain,
   tag,
@@ -490,7 +791,9 @@ function EditTagDialog({
 }) {
   const copy = domainCopy[domain];
   const [name, setName] = React.useState("");
-  React.useEffect(() => setName(tag?.name ?? ""), [tag]);
+  React.useEffect(() => {
+    setName(tag ? tagEditorValue(domain, tag) : "");
+  }, [domain, tag]);
   const mutation = useMutation({
     mutationFn: (payload: { id: number; name: string }) =>
       api<AdminTag>(`${domainEndpoint(domain)}/${payload.id}`, {
@@ -508,8 +811,9 @@ function EditTagDialog({
     if (!tag) return;
     const trimmed = name.trim();
     if (!trimmed) return toast.error("标签名称不能为空");
-    if (trimmed === tag.name) return onOpenChange(false);
-    mutation.mutate({ id: tag.id, name: trimmed });
+    const nextName = tagNameFromEditorValue(domain, tag, trimmed);
+    if (nextName === tag.name) return onOpenChange(false);
+    mutation.mutate({ id: tag.id, name: nextName });
   };
 
   return (
@@ -518,7 +822,9 @@ function EditTagDialog({
         <DialogHeader><DialogTitle>编辑{copy.label}</DialogTitle></DialogHeader>
         <div className="grid gap-3">
           <p className="text-xs leading-relaxed text-muted-foreground">
-            重命名只会更新当前{copy.label}及其已使用素材，不会影响其他标签类型。
+            {tag && !isFlatTagDomain(domain) && tag.category !== "未分类"
+              ? `当前一级分类：${tag.category}。修改后仍归属于该分类。`
+              : `重命名只会更新当前${copy.label}及其已使用素材，不会影响其他标签类型。`}
           </p>
           <input
             value={name}

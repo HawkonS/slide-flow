@@ -20,6 +20,7 @@ from app.services.files import (
     asset_preview_url,
     _resource_file_abs,
 )
+from app.services.tagging import entity_tag_names, table_has_column
 from fastapi import HTTPException
 from pathlib import Path
 from typing import Any
@@ -96,18 +97,41 @@ def _set_scope_tags(
 ) -> None:
     tags = _normalise_scope_tags(db, tag_names)
     db.execute(f"DELETE FROM {table} WHERE resource_id = ?", (resource_id,))
-    for tag_name in tags:
-        db.execute(
-            f"INSERT OR IGNORE INTO {table} (resource_id, tag_name) VALUES (?, ?)",
-            (resource_id, tag_name),
-        )
+    if table_has_column(db, table, "tag_id"):
+        definitions = {
+            str(row["name"]): int(row["id"])
+            for row in db.execute(
+                f"SELECT id, name FROM user_tag_definitions "
+                f"WHERE name IN ({','.join('?' for _ in tags)})",
+                tags,
+            ).fetchall()
+        } if tags else {}
+        for tag_name in tags:
+            db.execute(
+                f"INSERT OR IGNORE INTO {table} (resource_id, tag_name, tag_id) VALUES (?, ?, ?)",
+                (resource_id, tag_name, definitions.get(tag_name)),
+            )
+    else:
+        for tag_name in tags:
+            db.execute(
+                f"INSERT OR IGNORE INTO {table} (resource_id, tag_name) VALUES (?, ?)",
+                (resource_id, tag_name),
+            )
 
 
 def _scope_tag_names(db: sqlite3.Connection, table: str, resource_id: int) -> list[str]:
-    rows = db.execute(
-        f"SELECT tag_name FROM {table} WHERE resource_id = ? ORDER BY tag_name",
-        (resource_id,),
-    ).fetchall()
+    if table_has_column(db, table, "tag_id"):
+        rows = db.execute(
+            f"SELECT COALESCE(t.name, scope.tag_name) AS tag_name "
+            f"FROM {table} scope LEFT JOIN user_tag_definitions t ON t.id = scope.tag_id "
+            f"WHERE scope.resource_id = ? ORDER BY tag_name",
+            (resource_id,),
+        ).fetchall()
+    else:
+        rows = db.execute(
+            f"SELECT tag_name FROM {table} WHERE resource_id = ? ORDER BY tag_name",
+            (resource_id,),
+        ).fetchall()
     return [str(row["tag_name"]) for row in rows]
 
 
@@ -216,9 +240,23 @@ def _serialize_resource(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.
     if current is None:
         current = _serialize_version(int(row["id"]), current_version, db)
     payload = _row_to_dict(row)
+    # Keep the legacy database column private. Secrecy is no longer resource
+    # metadata exposed by the platform.
+    payload.pop("secrecy_level", None)
     can_manage = can_manage_resource(db, row, user)
     payload.update(
         {
+            # The normalized relation is authoritative; ``resources.tags``
+            # remains only as an API/cache compatibility field.
+            "tags": ",".join(
+                entity_tag_names(
+                    db,
+                    relation_table="resource_tags",
+                    entity_column="resource_id",
+                    entity_id=int(row["id"]),
+                    fallback=row["tags"] or "",
+                )
+            ),
             "owner": _row_to_dict(owner) if owner else None,
             "updated_by": _row_to_dict(updated_by_user) if updated_by_user else None,
             "can_manage": can_manage,
@@ -244,6 +282,7 @@ def _serialize_resource_lite(db: sqlite3.Connection, row: sqlite3.Row, user: sql
     """轻量级资源序列化：仅返回列表展示所需字段，不加载版本历史"""
     owner = db.execute("SELECT id, name, username FROM users WHERE id = ?", (row["owner_id"],)).fetchone()
     payload = _row_to_dict(row)
+    payload.pop("secrecy_level", None)
     # 获取当前版本缩略图
     ver = db.execute(
         "SELECT id, png_path FROM resource_versions WHERE resource_id = ? AND version_no = ?",
@@ -260,6 +299,15 @@ def _serialize_resource_lite(db: sqlite3.Connection, row: sqlite3.Row, user: sql
         }
     payload.update(
         {
+            "tags": ",".join(
+                entity_tag_names(
+                    db,
+                    relation_table="resource_tags",
+                    entity_column="resource_id",
+                    entity_id=int(row["id"]),
+                    fallback=row["tags"] or "",
+                )
+            ),
             "owner": _row_to_dict(owner) if owner else None,
             "can_manage": can_manage_resource(db, row, user),
             "current": current,

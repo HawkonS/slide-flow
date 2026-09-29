@@ -29,6 +29,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Table,
   TableBody,
@@ -42,7 +43,9 @@ import { USER_ROLE_LABEL, USER_ROLE_OPTIONS } from "@/lib/constants";
 import { AdminUser, AdminUsersResponse, UserRole } from "@/lib/types";
 import { useUrlPage } from "@/lib/use-url-page";
 import { cn } from "@/lib/utils";
+import { PageHeader } from "@/components/common/PageHeader";
 import { TagInput } from "@/components/resource/TagInput";
+import { PageMetrics } from "@/components/common/PageMetrics";
 import { FilterChip, TagFilterChip } from "@/components/resource/filter-chips";
 import { parseTags, serializeTags } from "@/lib/types";
 import { useAuth } from "@/lib/auth";
@@ -226,6 +229,60 @@ function formatUserDateTime(value: string | null | undefined, emptyText = "-") {
   return Number.isNaN(date.getTime()) ? value : userDateTimeFormatter.format(date).split("/").join("-");
 }
 
+type LoginSort = "asc" | "desc";
+
+function LoginSortChip({ value, onChange }: { value: LoginSort; onChange: (value: LoginSort) => void }) {
+  const directionLabel = value === "asc" ? "升序" : "降序";
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "group inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-3 text-sm transition hover:border-foreground/30 hover:bg-accent",
+            "border-foreground/25 bg-primary-weak text-foreground",
+          )}
+          aria-label={`排序：最后登录时间${directionLabel}`}
+        >
+          <span className="text-muted-foreground">排序</span>
+          <span className="font-medium">最后登录时间 · {directionLabel}</span>
+          <ChevronDown className="h-3.5 w-3.5 opacity-80" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-56 p-1" align="start">
+        <div className="mb-1 border-b px-1 pb-2 pt-1">
+          <div className="mb-1 text-xs text-muted-foreground">排序方向</div>
+          <div className="grid grid-cols-2 gap-1">
+            {([
+              { value: "asc", label: "升序" },
+              { value: "desc", label: "降序" },
+            ] as const).map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                aria-pressed={value === option.value}
+                onClick={() => onChange(option.value)}
+                className={cn(
+                  "h-7 rounded-md border text-xs transition",
+                  value === option.value
+                    ? "border-foreground/25 bg-primary-weak text-foreground"
+                    : "bg-background hover:border-foreground/30 hover:bg-accent",
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center justify-between rounded-sm px-2 py-1.5 text-sm">
+          <span>最后登录时间</span>
+          <Check className="h-3.5 w-3.5" />
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 interface PublicConfigResponse {
   default_filters?: {
     user_tags?: string[];
@@ -238,6 +295,7 @@ export function AdminUsersPage() {
   const [tagFilters, setTagFilters] = React.useState<string[]>([]);
   const [tagFilterMode, setTagFilterMode] = React.useState<"any" | "all">("any");
   const [roleFilter, setRoleFilter] = React.useState<UserRole | "all">("all");
+  const [loginSort, setLoginSort] = React.useState<LoginSort>("desc");
   const defaultUserTagsApplied = React.useRef(false);
   const userTagFiltersTouched = React.useRef(false);
   const { data: publicConfig } = useQuery({
@@ -367,7 +425,7 @@ export function AdminUsersPage() {
   const [pageSize, setPageSize] = React.useState(20);
   const [page, setPage] = useUrlPage();
   const { data, isLoading, isError, error, dataUpdatedAt, isFetching } = useQuery({
-    queryKey: ["admin", "users", page, pageSize, query, tagFilters, tagFilterMode, roleFilter],
+    queryKey: ["admin", "users", page, pageSize, query, tagFilters, tagFilterMode, roleFilter, loginSort],
     queryFn: () => api<AdminUsersResponse>("/api/admin/users", {
       params: {
         page,
@@ -376,6 +434,7 @@ export function AdminUsersPage() {
         tags: tagFilters.length > 0 ? serializeTags(tagFilters) : undefined,
         tags_mode: tagFilterMode,
         role: roleFilter === "all" ? undefined : roleFilter,
+        login_sort: loginSort,
       },
     }),
     placeholderData: (previous) => previous,
@@ -446,52 +505,38 @@ export function AdminUsersPage() {
 
   return (
     <div className="page-shell">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 className="page-title">用户管理</h1>
-          </div>
-          <p className="mt-1.5 text-sm text-muted-foreground">
-            管理系统用户、角色与用户标签，支持搜索、筛选和批量管理。
-          </p>
-        </div>
-        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-9 gap-1.5"
-            disabled={importFeishuMut.isPending}
-            onClick={() => importFeishuMut.mutate()}
-          >
-            {importFeishuMut.isPending
-              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              : <CloudDownload className="h-3.5 w-3.5" />}
-            {importFeishuMut.isPending ? "正在同步…" : "从飞书同步通讯录"}
-          </Button>
-          <Button size="sm" className="h-9 gap-1.5" onClick={() => setCreateOpen(true)}>
-            <UserPlus className="h-3.5 w-3.5" />新增用户
-          </Button>
-        </div>
-      </header>
+      <PageHeader
+        title="用户管理"
+        description="管理系统用户、角色与用户标签，支持搜索、筛选和批量管理。"
+        actions={
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-9 gap-1.5"
+              disabled={importFeishuMut.isPending}
+              onClick={() => importFeishuMut.mutate()}
+            >
+              {importFeishuMut.isPending
+                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                : <CloudDownload className="h-3.5 w-3.5" />}
+              {importFeishuMut.isPending ? "正在同步…" : "从飞书同步通讯录"}
+            </Button>
+            <Button size="sm" className="h-9 gap-1.5" onClick={() => setCreateOpen(true)}>
+              <UserPlus className="h-3.5 w-3.5" />新增用户
+            </Button>
+          </>
+        }
+      />
 
-      <section className="grid grid-cols-3 divide-x rounded-md border bg-card shadow-sm" aria-label="用户统计">
-        <div className="min-w-0 px-3 py-2.5 sm:px-4">
-          <div className="truncate text-[11px] font-medium text-muted-foreground">总用户数</div>
-          <div className="mt-1 text-lg font-semibold tabular-nums">{stats.total_users}</div>
-        </div>
-        <div className="min-w-0 px-3 py-2.5 sm:px-4">
-          <div className="truncate text-[11px] font-medium text-muted-foreground">本周活跃用户</div>
-          <div className="mt-1 flex items-center gap-1.5 text-lg font-semibold tabular-nums">
-            <CalendarDays className="h-4 w-4 text-primary" />{stats.active_week}
-          </div>
-        </div>
-        <div className="min-w-0 px-3 py-2.5 sm:px-4">
-          <div className="truncate text-[11px] font-medium text-muted-foreground">今日活跃用户数</div>
-          <div className="mt-1 flex items-center gap-1.5 text-lg font-semibold tabular-nums">
-            <UserCheck className="h-4 w-4 text-muted-foreground" />{stats.active_today}
-          </div>
-        </div>
-      </section>
+      <PageMetrics
+        ariaLabel="用户统计"
+        items={[
+          { label: "用户", value: stats.total_users, icon: User },
+          { label: "本周活跃", value: stats.active_week, icon: CalendarDays, tone: "success" },
+          { label: "今日活跃", value: stats.active_today, icon: UserCheck, tone: "success" },
+        ]}
+      />
 
       {/* 筛选行 */}
       <div className="page-toolbar">
@@ -536,6 +581,13 @@ export function AdminUsersPage() {
             setTagFilters([]);
           }}
           onChangeMode={setTagFilterMode}
+        />
+        <LoginSortChip
+          value={loginSort}
+          onChange={(value) => {
+            setLoginSort(value);
+            setPage(1);
+          }}
         />
         {(tagFilters.length > 0 || roleFilter !== "all") && (
           <Button

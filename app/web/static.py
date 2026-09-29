@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import os
 import re
+from pathlib import Path
 
 router = APIRouter()
 
@@ -44,7 +45,43 @@ def _serve_spa() -> FileResponse:
             "前端尚未构建，请在 web/ 下执行 `npm install && npm run build`",
         )
     # index.html 文件名不带 hash，必须每次协商校验，避免浏览器缓存旧入口
-    return FileResponse(SPA_INDEX, headers={"Cache-Control": "no-cache"})
+    return FileResponse(SPA_INDEX, headers={
+        "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff",
+    })
+
+
+def _dist_file(relative: str, *, media_type: str | None = None, headers: dict | None = None) -> FileResponse:
+    # Missing/malformed assets must be 404, never a successful HTML response.
+    # Besides breaking module loading, an HTML fallback could poison a PWA
+    # installation. Resolve against dist itself, not the broader static tree.
+    if any(ord(c) < 0x20 for c in relative) or "\\" in relative:
+        raise HTTPException(404)
+    root = (settings.static_dir / "dist").resolve()
+    try:
+        candidate = (root / relative).resolve()
+        if not candidate.is_relative_to(root) or not candidate.is_file():
+            raise HTTPException(404)
+    except (ValueError, OSError):
+        raise HTTPException(404) from None
+    response_headers = {"Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}
+    if _HASHED_ASSET_RE.search(candidate.name):
+        response_headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    if headers:
+        response_headers.update(headers)
+    return FileResponse(candidate, media_type=media_type, headers=response_headers)
+
+
+@router.api_route("/sw.js", methods=["GET", "HEAD"], include_in_schema=False)
+def service_worker() -> FileResponse:
+    return _dist_file("sw.js", media_type="text/javascript", headers={
+        "Cache-Control": "no-cache, max-age=0, must-revalidate",
+        "Service-Worker-Allowed": "/",
+    })
+
+
+@router.api_route("/manifest.webmanifest", methods=["GET", "HEAD"], include_in_schema=False)
+def web_manifest() -> FileResponse:
+    return _dist_file("manifest.webmanifest", media_type="application/manifest+json")
 
 
 @router.get("/{full_path:path}", response_class=HTMLResponse, include_in_schema=False)
@@ -52,33 +89,18 @@ def spa_fallback(full_path: str) -> FileResponse:
     if (
         full_path.startswith("api/")
         or full_path == "api"
-        or full_path.startswith("static/")
-        or full_path.startswith("storage/")
+        or full_path == "static" or full_path.startswith("static/")
+        or full_path == "storage" or full_path.startswith("storage/")
+        or full_path == "ws" or full_path.startswith("ws/")
     ):
         raise HTTPException(404)
-    # dist/ 下的真实文件（如 dist/assets/index-xxx.js）以及 index.html
-    # 引用的 /assets/xxx.js，直接返回构建产物并附加一年期不可变缓存
-    # （文件名带 hash，内容变则文件名变）
-    candidate_rel = None
+    if any(ord(c) < 0x20 for c in full_path) or "\\" in full_path:
+        raise HTTPException(404)
+    # Keep the legacy /dist/assets alias, with the same strict dist boundary.
     if full_path.startswith("dist/"):
-        candidate_rel = full_path
-    elif full_path.startswith("assets/"):
-        candidate_rel = f"dist/{full_path}"
-    if candidate_rel:
-        # URL 解码后的控制字符（如 %00）会让底层 os.stat 抛 ValueError 返回 500，
-        # 在进入文件系统操作前直接回退 index.html
-        if any(ord(c) < 0x20 for c in candidate_rel):
-            return _serve_spa()
-        candidate = (settings.static_dir / candidate_rel).resolve()
-        dist_root = settings.static_dir.resolve()
-        if (
-            candidate.is_file()
-            and candidate.is_relative_to(dist_root)
-            and candidate_rel.rpartition("/")[0] != "dist"
-        ):
-            # 仅 hash 化产物附加一年期不可变缓存，其余保持默认
-            headers = {}
-            if _HASHED_ASSET_RE.search(os.path.basename(candidate_rel)):
-                headers["Cache-Control"] = "public, max-age=31536000, immutable"
-            return FileResponse(candidate, headers=headers)
+        return _dist_file(full_path.removeprefix("dist/"))
+    if full_path.startswith(("assets/", "pwa/")):
+        return _dist_file(full_path)
+    if full_path in {"assets", "dist", "pwa"} or (Path(full_path).suffix and full_path != "index.html"):
+        raise HTTPException(404)
     return _serve_spa()

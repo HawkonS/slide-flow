@@ -502,42 +502,52 @@ fi
 # ===========================================================
 log_info "正在检查 Python 依赖..."
 
-if ! "$PYTHON_BIN" - <<'PY' >/dev/null 2>&1
-import fastapi, uvicorn, multipart, fontTools, PIL, psutil, httpx, oss2
-PY
-then
-  log_warn "部分依赖缺失，正在安装..."
-  "${PIP_INSTALL[@]}" --upgrade pip >/dev/null 2>&1 || true
+if "$PYTHON_BIN" "$ROOT_DIR/tools/check_python_dependencies.py" requirements.txt; then
+  log_info "Python 依赖已就绪"
+else
+  DEPENDENCY_CHECK_STATUS=$?
+  if [ "$DEPENDENCY_CHECK_STATUS" -ne 1 ]; then
+    log_error "无法验证 Python 依赖声明，请检查上方错误；未执行自动安装"
+    exit 1
+  fi
+  log_warn "Python 依赖缺失或版本不符合 requirements.txt，正在安装..."
   if ! "${PIP_INSTALL[@]}" -r requirements.txt; then
     log_error "依赖安装失败，请检查网络和权限"
     exit 1
   fi
+  if ! "$PYTHON_BIN" "$ROOT_DIR/tools/check_python_dependencies.py" requirements.txt; then
+    log_error "安装后 Python 依赖仍未满足要求，停止启动"
+    exit 1
+  fi
   log_info "Python 依赖安装完成"
-else
-  log_info "Python 依赖已就绪"
 fi
 
 # 生产模式优先使用 Gunicorn 管理 worker 进程，Uvicorn Worker 原生承载
 # FastAPI、WebSocket 和 lifespan；安装失败时保留原生 Uvicorn 兜底。
 BACKEND_SERVER="uvicorn"
 if [ "$DEV_MODE" = "false" ]; then
-  if "$PYTHON_BIN" - <<'PY' >/dev/null 2>&1
-import gunicorn, uvicorn_worker
-PY
+  if "$PYTHON_BIN" "$ROOT_DIR/tools/check_python_dependencies.py" requirements.txt requirements-production.txt \
+    && "$PYTHON_BIN" -c 'import gunicorn, uvicorn_worker' >/dev/null 2>&1
   then
     BACKEND_SERVER="gunicorn"
     log_info "Gunicorn 生产运行环境已就绪"
   else
-    log_warn "未检测到 Gunicorn 生产运行环境，正在自动安装..."
-    if "${PIP_INSTALL[@]}" -r requirements-production.txt \
-      && "$PYTHON_BIN" - <<'PY' >/dev/null 2>&1
-import gunicorn, uvicorn_worker
-PY
+    PRODUCTION_CHECK_STATUS=$?
+    log_warn "Gunicorn 生产依赖未就绪，正在检查自动安装条件..."
+    # 同时约束基础依赖，避免可选生产包的解析把基础运行环境降级。
+    if [ "$PRODUCTION_CHECK_STATUS" -eq 1 ] \
+      && "${PIP_INSTALL[@]}" -r requirements.txt -r requirements-production.txt \
+      && "$PYTHON_BIN" "$ROOT_DIR/tools/check_python_dependencies.py" requirements.txt requirements-production.txt \
+      && "$PYTHON_BIN" -c 'import gunicorn, uvicorn_worker' >/dev/null 2>&1
     then
       BACKEND_SERVER="gunicorn"
       log_info "Gunicorn 生产运行环境安装完成"
     else
       log_warn "Gunicorn 自动安装失败，将使用 Uvicorn 作为兜底"
+    fi
+    if ! "$PYTHON_BIN" "$ROOT_DIR/tools/check_python_dependencies.py" requirements.txt; then
+      log_error "可选生产依赖安装后基础 Python 依赖不完整，停止启动"
+      exit 1
     fi
   fi
 fi
@@ -548,12 +558,29 @@ fi
 log_info "正在检查前端依赖..."
 
 if [ -f "web/package.json" ]; then
-  if [ ! -d "web/node_modules" ]; then
-    log_warn "前端依赖缺失，正在安装 (npm install)..."
-    (cd web && "$NPM_BIN" install)
-    log_info "前端依赖安装完成"
-  else
+  if "$NODE_BIN" "$ROOT_DIR/tools/check_frontend_dependencies.mjs" web "$NPM_BIN"; then
     log_info "前端依赖已就绪"
+  else
+    DEPENDENCY_CHECK_STATUS=$?
+    if [ "$DEPENDENCY_CHECK_STATUS" -ne 1 ]; then
+      log_error "无法验证前端依赖声明，请检查上方错误；未执行自动安装"
+      exit 1
+    fi
+    FRONTEND_INSTALL_COMMAND="install"
+    if [ -f "web/package-lock.json" ]; then
+      FRONTEND_INSTALL_COMMAND="ci"
+    fi
+    log_warn "前端依赖缺失、损坏或锁文件已更新，正在同步 (npm $FRONTEND_INSTALL_COMMAND)..."
+    # 生产构建仍需要 Vite/TypeScript 等 devDependencies，即使 NODE_ENV=production。
+    if ! (cd web && "$NPM_BIN" "$FRONTEND_INSTALL_COMMAND" --include=dev --include=optional --no-audit --no-fund); then
+      log_error "前端依赖安装失败，停止启动"
+      exit 1
+    fi
+    if ! "$NODE_BIN" "$ROOT_DIR/tools/check_frontend_dependencies.mjs" web "$NPM_BIN" --record; then
+      log_error "安装后前端依赖仍未满足锁文件或依赖声明，停止启动"
+      exit 1
+    fi
+    log_info "前端依赖安装完成"
   fi
 else
   log_error "未找到 web/package.json，前端将无法启动"

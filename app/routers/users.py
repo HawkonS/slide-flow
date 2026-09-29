@@ -52,6 +52,7 @@ from app.routers.dependencies import (
     _serialize_user,
     _serialize_user_option,
 )
+from app.services.tagging import table_has_column
 
 
 router = APIRouter()
@@ -198,9 +199,45 @@ def _validated_user_tags(
 def _sync_user_tags(db: sqlite3.Connection, user_id: int, tags_value: str) -> None:
     db.execute("DELETE FROM user_tags WHERE user_id = ?", (user_id,))
     tags = [tag for tag in tags_value.split(",") if tag]
-    db.executemany(
-        "INSERT INTO user_tags (user_id, tag_name) VALUES (?, ?)",
-        [(user_id, tag) for tag in tags],
+    if table_has_column(db, "user_tags", "tag_id"):
+        definitions = {
+            str(row["name"]): int(row["id"])
+            for row in db.execute(
+                f"SELECT id, name FROM user_tag_definitions "
+                f"WHERE name IN ({','.join('?' for _ in tags)})",
+                tags,
+            ).fetchall()
+        } if tags else {}
+        db.executemany(
+            "INSERT INTO user_tags (user_id, tag_name, tag_id) VALUES (?, ?, ?)",
+            [(user_id, tag, definitions.get(tag)) for tag in tags],
+        )
+    else:
+        db.executemany(
+            "INSERT INTO user_tags (user_id, tag_name) VALUES (?, ?)",
+            [(user_id, tag) for tag in tags],
+        )
+
+
+def _user_tag_match_sql(
+    db: sqlite3.Connection,
+    value: str,
+    *,
+    user_expr: str = "users.id",
+) -> tuple[str, list[str]]:
+    """Build an ID-first membership predicate with a legacy name fallback."""
+    if table_has_column(db, "user_tags", "tag_id"):
+        return (
+            "EXISTS (SELECT 1 FROM user_tags ut "
+            "LEFT JOIN user_tag_definitions utd ON utd.id = ut.tag_id "
+            f"WHERE ut.user_id = {user_expr} "
+            "AND (utd.name = ? OR (ut.tag_id IS NULL AND ut.tag_name = ?)))",
+            [value, value],
+        )
+    return (
+        f"EXISTS (SELECT 1 FROM user_tags ut WHERE ut.user_id = {user_expr} "
+        "AND ut.tag_name = ?)",
+        [value],
     )
 
 
@@ -240,6 +277,7 @@ def _id_chunks(values: list[int]) -> list[list[int]]:
 
 
 def _user_filter_clause(
+    db: sqlite3.Connection,
     *,
     search: str,
     tag: str,
@@ -265,25 +303,36 @@ def _user_filter_clause(
     if tag_values:
         if tags_mode.strip().lower() == "all":
             for tag_value in tag_values:
+                clause, clause_params = _user_tag_match_sql(db, tag_value)
+                where.append(clause)
+                params.extend(clause_params)
+        else:
+            if table_has_column(db, "user_tags", "tag_id"):
+                placeholders = ", ".join("?" for _ in tag_values)
                 where.append(
                     "EXISTS (SELECT 1 FROM user_tags ut "
-                    "WHERE ut.user_id = users.id AND ut.tag_name = ?)"
+                    "LEFT JOIN user_tag_definitions utd ON utd.id = ut.tag_id "
+                    "WHERE ut.user_id = users.id AND "
+                    f"(utd.name IN ({placeholders}) OR "
+                    f"(ut.tag_id IS NULL AND ut.tag_name IN ({placeholders}))))"
                 )
-                params.append(tag_value)
-        else:
-            placeholders = ", ".join("?" for _ in tag_values)
-            where.append(
-                "EXISTS (SELECT 1 FROM user_tags ut WHERE ut.user_id = users.id "
-                f"AND ut.tag_name IN ({placeholders}))"
-            )
-            params.extend(tag_values)
+                params.extend([*tag_values, *tag_values])
+            else:
+                placeholders = ", ".join("?" for _ in tag_values)
+                where.append(
+                    "EXISTS (SELECT 1 FROM user_tags ut WHERE ut.user_id = users.id "
+                    f"AND ut.tag_name IN ({placeholders}))"
+                )
+                params.extend(tag_values)
     if search_filter:
         pattern = f"%{_escape_like(search_filter)}%"
         where.append(
             "(name LIKE ? ESCAPE '\\' COLLATE NOCASE "
             "OR username LIKE ? ESCAPE '\\' COLLATE NOCASE "
-            "OR EXISTS (SELECT 1 FROM user_tags sut WHERE sut.user_id = users.id "
-            "AND sut.tag_name LIKE ? ESCAPE '\\' COLLATE NOCASE))"
+            "OR EXISTS (SELECT 1 FROM user_tags sut "
+            "LEFT JOIN user_tag_definitions sud ON sud.id = sut.tag_id "
+            "WHERE sut.user_id = users.id AND "
+            "COALESCE(sud.name, sut.tag_name) LIKE ? ESCAPE '\\' COLLATE NOCASE))"
         )
         params.extend([pattern, pattern, pattern])
     return where, params
@@ -298,6 +347,7 @@ def list_users(
     tags: str = Query("", max_length=1000),
     tags_mode: str = Query("any", max_length=8),
     role: str = Query("", max_length=32),
+    login_sort: str = Query("", max_length=8),
     _: Any = Depends(require_admin),
     db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
@@ -305,6 +355,7 @@ def list_users(
     # Keep the legacy single-tag parameter working while allowing the UI to
     # submit a comma-separated set with explicit any/all matching semantics.
     where, params = _user_filter_clause(
+        db,
         search=search,
         tag=tag,
         tags=tags,
@@ -313,13 +364,21 @@ def list_users(
     )
 
     where_sql = f" WHERE {' AND '.join(where)}" if where else ""
+    if login_sort not in {"", "asc", "desc"}:
+        raise HTTPException(400, "最后登录时间排序参数不正确")
+    order_sql = (
+        f"CASE WHEN last_login_at IS NULL THEN 1 ELSE 0 END, "
+        f"last_login_at {login_sort.upper()}, id DESC"
+        if login_sort
+        else "id DESC"
+    )
     total = int(
         db.execute(f"SELECT COUNT(*) FROM users{where_sql}", params).fetchone()[0]
     )
     offset = (page - 1) * page_size
     rows = db.execute(
         f"SELECT {USER_SELECT_COLUMNS} FROM users{where_sql} "
-        "ORDER BY id DESC LIMIT ? OFFSET ?",
+        f"ORDER BY {order_sql} LIMIT ? OFFSET ?",
         [*params, page_size, offset],
     ).fetchall()
     week_start, today_start = _activity_cutoffs()
@@ -334,21 +393,36 @@ def list_users(
         (week_start, today_start),
     ).fetchone()
 
-    available_tags = [
-        row["name"]
-        for row in db.execute(
+    if table_has_column(db, "user_tags", "tag_id"):
+        available_tag_rows = db.execute(
             """
             SELECT name FROM (
                 SELECT name, sort_order, id, 0 AS source_order FROM user_tag_definitions
                 UNION ALL
-                SELECT DISTINCT tag_name AS name, 2147483647, 2147483647, 1 FROM user_tags
+                SELECT DISTINCT COALESCE(def.name, ut.tag_name) AS name,
+                       2147483647, 2147483647, 1
+                FROM user_tags ut
+                LEFT JOIN user_tag_definitions def ON def.id = ut.tag_id
             )
             GROUP BY name
             ORDER BY MIN(source_order), MIN(sort_order), MIN(id), name
             """
         ).fetchall()
-        if row["name"]
-    ]
+    else:
+        available_tag_rows = db.execute(
+            """
+            SELECT name FROM (
+                SELECT name, sort_order, id, 0 AS source_order FROM user_tag_definitions
+                UNION ALL
+                SELECT DISTINCT tag_name AS name,
+                       2147483647, 2147483647, 1
+                FROM user_tags
+            )
+            GROUP BY name
+            ORDER BY MIN(source_order), MIN(sort_order), MIN(id), name
+            """
+        ).fetchall()
+    available_tags = [row["name"] for row in available_tag_rows if row["name"]]
 
     return {
         "users": [_serialize_user(row) for row in rows],
@@ -376,6 +450,7 @@ def list_user_selection_ids(
 ) -> dict[str, Any]:
     """Return every currently filtered user that the administrator may delete."""
     where, params = _user_filter_clause(
+        db,
         search=search,
         tag=tag,
         tags=tags,
@@ -434,16 +509,9 @@ def user_options(
     search_filter = search.strip()
     tag_filter = tag.strip()
     if tag_filter:
-        if db.execute(
-            "SELECT 1 FROM user_tag_definitions WHERE name = ?",
-            (tag_filter,),
-        ).fetchone() is None:
-            return {"users": [], "total": 0}
-        where.append(
-            "EXISTS (SELECT 1 FROM user_tags ut "
-            "WHERE ut.user_id = users.id AND ut.tag_name = ?)"
-        )
-        params.append(tag_filter)
+        clause, clause_params = _user_tag_match_sql(db, tag_filter)
+        where.append(clause)
+        params.extend(clause_params)
     if search_filter:
         pattern = f"%{_escape_like(search_filter)}%"
         where.append(

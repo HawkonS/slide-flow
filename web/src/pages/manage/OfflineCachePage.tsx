@@ -36,50 +36,66 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { useResponsiveGrid } from "@/lib/use-grid-layout";
 import { useUrlPage } from "@/lib/use-url-page";
 import { cn } from "@/lib/utils";
+import { PageHeader } from "@/components/common/PageHeader";
+import { getDirectoryHandle, readLegacyManifest, type LegacyShow } from "@/lib/offline-cache";
 import {
-  type OfflineManifest,
-  type OfflinePackageData,
-  type OfflineShowEntry,
-  cacheShowToDirectory,
-  deleteShowCache,
-  ensurePermission,
-  getDirectoryHandle,
-  isFileSystemAccessSupported,
-  isSecureContext,
-  pickDirectory,
-  readManifest,
-  saveDirectoryHandle,
-  writeManifest,
-} from "@/lib/offline-cache";
-
-/* ---------- types ---------- */
+  listCachedShows, getCachedAsset, downloadShow, deleteCachedShow, invalidateCachedShow,
+  type CachedShow, type CacheProgress,
+} from "@/lib/pwa-cache";
+import {
+  assertOfflineIdentity, offlineOwnerKey, readOfflineIdentity, OFFLINE_SESSION_EVENT,
+  type OfflineIdentity, type PwaChange,
+} from "@/lib/offline-session";
 
 interface OfflineVersionResponse {
-  // 系列中最新版本的 show_id（可能与前端请求时传入的 queried_show_id 不同）
   show_id: number;
-  // 前端请求时传入的 show_id（即缓存 manifest 中的 key）
   queried_show_id?: number;
   series_id?: string;
-  name?: string;
   version_no: number;
   updated_at: string;
   resource_versions: Record<string, number>;
+  resource_updates?: Record<string, number>;
 }
 
-type UpdateStatus = "idle" | "checking" | "done";
-
+type UpdateStatus = "idle" | "checking" | "done" | "failed";
 interface ShowUpdateInfo {
   hasUpdate: boolean;
   remoteVersion?: number;
-  // 系列中最新版本的 show_id，更新时需要用它拉取 offline-package
   latestShowId?: number;
+  resourceUpdateCount?: number;
   checking?: boolean;
+  checkError?: string;
   updating?: boolean;
-  progress?: { current: number; total: number };
+  cancelling?: boolean;
+  error?: string;
+  notice?: string;
+  progress?: CacheProgress;
+}
+
+const PHASE_LABELS: Record<CacheProgress["phase"], string> = {
+  preparing: "正在准备并校验授权", downloading: "正在下载高清图与缩略图",
+  verifying: "正在校验文件与放映版本", ready: "缓存已就绪",
+};
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const unit = Math.min(3, Math.floor(Math.log(bytes) / Math.log(1024)));
+  return (bytes / Math.pow(1024, unit)).toFixed(unit ? 1 : 0) + " " + ["B", "KB", "MB", "GB"][unit];
+}
+function progressPercent(progress: CacheProgress): number {
+  return progress.total > 0 ? Math.min(100, Math.round(progress.completed / progress.total * 100)) : 0;
+}
+function unavailableReason(entry: CachedShow, now: number): string | null {
+  if (entry.revoked) return "离线授权已撤销，请联网重新下载";
+  const expires = Date.parse(entry.expires_at);
+  return !Number.isFinite(expires) || expires <= now ? "离线授权已到期，请联网重新下载" : null;
+}
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : "操作失败，请重试";
 }
 
 /* ---------- Filter Types ---------- */
@@ -88,7 +104,6 @@ interface OfflineFilters {
   query: string;
   subject: string;
   status: string;
-  secrecy: string;
   tags: string[];
   tagsMode: "any" | "all";
 }
@@ -97,7 +112,6 @@ const DEFAULT_FILTERS: OfflineFilters = {
   query: "",
   subject: "all",
   status: "all",
-  secrecy: "all",
   tags: [],
   tagsMode: "all",
 };
@@ -108,13 +122,6 @@ const OFFLINE_STATUS_OPTIONS = [
   { value: "all", label: "全部" },
   { value: "active", label: "正常" },
   { value: "disabled", label: "停用" },
-] as const;
-
-const OFFLINE_SECRECY_OPTIONS = [
-  { value: "all", label: "全部" },
-  { value: "public", label: "公开" },
-  { value: "confidential", label: "保密" },
-  { value: "secret", label: "秘密" },
 ] as const;
 
 /* ---------- FilterChip Component ---------- */
@@ -289,49 +296,36 @@ function TagFilterChip({
 
 /* ---------- Thumbnail Hook ---------- */
 
-function useCoverThumbnail(
-  dirHandle: FileSystemDirectoryHandle | null,
-  showId: string
-): string | null {
-  const [url, setUrl] = useState<string | null>(null);
-
+function useCoverThumbnail(entry: CachedShow, now: number): string | null {
+  const [image, setImage] = useState<{ packageId: string; owner: string; url: string } | null>(null);
+  const valid = !unavailableReason(entry, now);
   useEffect(() => {
-    if (!dirHandle) return;
-    let revoked = false;
+    let disposed = false;
     let objectUrl: string | null = null;
-
-    (async () => {
-      try {
-        const showsDir = await dirHandle.getDirectoryHandle("shows");
-        const showDir = await showsDir.getDirectoryHandle(showId);
-        const fileHandle = await showDir.getFileHandle("cover_thumb.jpg");
-        const file = await fileHandle.getFile();
-        objectUrl = URL.createObjectURL(file);
-        if (!revoked) {
-          setUrl(objectUrl);
-        } else {
-          URL.revokeObjectURL(objectUrl);
-        }
-      } catch {
-        // File doesn't exist, keep null
-      }
-    })();
-
-    return () => {
-      revoked = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [dirHandle, showId]);
-
-  return url;
+    setImage(null);
+    const identity = readOfflineIdentity();
+    if (!valid || !identity || offlineOwnerKey(identity) !== entry.owner_key) return;
+    void getCachedAsset(entry.package_id, 0, "thumb").then(blob => {
+      if (disposed) return;
+      assertOfflineIdentity(identity);
+      objectUrl = URL.createObjectURL(blob);
+      setImage({ packageId: entry.package_id, owner: entry.owner_key, url: objectUrl });
+    }).catch(() => { /* Expired, revoked, or missing thumbnails use the fallback. */ });
+    return () => { disposed = true; if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [entry.package_id, entry.owner_key, valid]);
+  return valid && image?.packageId === entry.package_id && image.owner === entry.owner_key ? image.url : null;
 }
 
 /* ---------- CacheCard Component ---------- */
 
 interface CacheCardProps {
   showId: string;
-  entry: OfflineShowEntry;
-  dirHandle: FileSystemDirectoryHandle | null;
+  entry: CachedShow;
+  now: number;
+  canDownload: boolean;
+  onDownload: () => void;
+  onCancel: () => void;
+  onCheck: () => void;
   updateInfo?: ShowUpdateInfo;
   onFullscreen: () => void;
   onPresent: () => void;
@@ -341,19 +335,20 @@ interface CacheCardProps {
 function CacheCard({
   showId,
   entry,
-  dirHandle,
+  now, canDownload, onDownload, onCancel, onCheck,
   updateInfo,
   onFullscreen,
   onPresent,
   onDelete,
 }: CacheCardProps) {
-  const thumbUrl = useCoverThumbnail(dirHandle, showId);
+  const thumbUrl = useCoverThumbnail(entry, now);
   const isUpdating = updateInfo?.updating;
   const hasUpdate = updateInfo?.hasUpdate;
   const progress = updateInfo?.progress;
+  const unavailable = unavailableReason(entry, now);
 
   return (
-    <article className="group relative flex flex-col overflow-hidden rounded-lg border bg-card text-card-foreground shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
+    <article data-slot="card" data-show-id={showId} className="group relative flex flex-col overflow-hidden rounded-lg border bg-card text-card-foreground shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
       {/* 16:9 Preview area */}
       <div className="relative aspect-[16/9] w-full overflow-hidden bg-muted">
         {thumbUrl ? (
@@ -376,7 +371,7 @@ function CacheCard({
 
         {/* Update badge - if there's an update available */}
         {hasUpdate && (
-          <span className="absolute right-2 top-2 inline-flex items-center rounded bg-amber-500/90 px-1.5 py-0.5 text-[11px] font-medium text-white">
+          <span className="absolute right-10 top-2 inline-flex items-center rounded bg-amber-500/90 px-1.5 py-0.5 text-[11px] font-medium text-white">
             有更新
           </span>
         )}
@@ -387,17 +382,17 @@ function CacheCard({
             <div className="h-1 overflow-hidden rounded-full bg-white/30">
               <div
                 className="h-full rounded-full bg-white transition-all duration-300"
-                style={{ width: `${Math.round((progress.current / progress.total) * 100)}%` }}
+                style={{ width: `${progressPercent(progress)}%` }}
               />
             </div>
             <div className="mt-0.5 text-center text-[10px] text-white/80">
-              {progress.current}/{progress.total}
+              {PHASE_LABELS[progress.phase]} · {progress.completed}/{progress.total} · {formatBytes(progress.bytes)}
             </div>
           </div>
         )}
 
         {/* Top-right dropdown menu (delete) - appears on hover */}
-        {!hasUpdate && (
+        {(
           <div className="absolute right-2 top-2 opacity-0 transition group-hover:opacity-100 focus-within:opacity-100">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -411,6 +406,10 @@ function CacheCard({
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
+                <DropdownMenuItem onSelect={onCheck} disabled={!canDownload || isUpdating || updateInfo?.checking}>
+                  <RefreshCw className="mr-2 h-4 w-4" />检查更新
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={onDownload} disabled={!canDownload || isUpdating}>重新下载</DropdownMenuItem>
                 <DropdownMenuItem
                   onSelect={onDelete}
                   disabled={isUpdating}
@@ -428,6 +427,25 @@ function CacheCard({
       {/* Title area */}
       <div className="px-3 pt-2.5">
         <h3 className="line-clamp-1 text-[13px] font-medium">{entry.name}</h3>
+        <p className="mt-1 text-[11px] text-muted-foreground">{entry.resources.length} 页 · {formatBytes(entry.total_bytes)}</p>
+        <p className={cn("mt-0.5 text-[11px]", unavailable ? "text-amber-700" : "text-muted-foreground")}>
+          {unavailable || "授权有效至 " + new Date(entry.expires_at).toLocaleString("zh-CN", { hour12: false })}
+        </p>
+        {updateInfo?.checking && <p role="status" className="mt-1 text-xs text-muted-foreground">正在检查更新…</p>}
+        {updateInfo?.checkError && <p role="alert" className="mt-1 text-xs text-destructive">检查更新失败：{updateInfo.checkError}</p>}
+        {!!updateInfo?.resourceUpdateCount && <p role="status" className="mt-1 text-xs text-muted-foreground">有 {updateInfo.resourceUpdateCount} 个素材新版，需先迭代发布放映；重新下载不会升级素材。</p>}
+        {updateInfo?.error && <p role="alert" className="mt-1 text-xs text-destructive">{updateInfo.error}</p>}
+        {updateInfo?.notice && <p role="status" className="mt-1 text-xs text-muted-foreground">{updateInfo.notice}</p>}
+        {(isUpdating || hasUpdate || unavailable || updateInfo?.error || updateInfo?.notice || updateInfo?.checkError) && (
+          <div className="mt-1 flex flex-wrap gap-1">
+            {isUpdating ? <Button size="sm" variant="outline" className="h-7 text-xs" onClick={onCancel} disabled={updateInfo?.cancelling}>
+              {updateInfo?.cancelling ? "正在取消…" : "取消下载"}
+            </Button> : <Button size="sm" variant="outline" className="h-7 text-xs" onClick={onDownload} disabled={!canDownload}>
+              {updateInfo?.error || updateInfo?.notice ? "重试下载" : hasUpdate ? "下载更新" : "重新下载"}
+            </Button>}
+            {updateInfo?.checkError && <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={onCheck} disabled={!canDownload || isUpdating}>重试检查</Button>}
+          </div>
+        )}
       </div>
 
       {/* Action buttons */}
@@ -437,7 +455,7 @@ function CacheCard({
           variant="ghost"
           size="sm"
           onClick={onFullscreen}
-          disabled={isUpdating}
+          disabled={isUpdating || !!unavailable}
           className="h-7 flex-1 gap-1 px-1.5 text-[11px] font-normal"
           title="全屏放映"
         >
@@ -449,7 +467,7 @@ function CacheCard({
           variant="ghost"
           size="sm"
           onClick={onPresent}
-          disabled={isUpdating}
+          disabled={isUpdating || !!unavailable}
           className="h-7 flex-1 gap-1 px-1.5 text-[11px] font-normal"
           title="讲演视图"
         >
@@ -465,206 +483,316 @@ function CacheCard({
 
 export default function OfflineCachePage() {
   const navTitle = "离线缓存";
-  const [supported] = useState(() => isFileSystemAccessSupported());
-  const [dirHandle, setDirHandle] = useState<FileSystemDirectoryHandle | null>(null);
-  const [manifest, setManifest] = useState<OfflineManifest | null>(null);
+  const auth = useAuth();
+  const ownerKey = auth.identity ? offlineOwnerKey(auth.identity) : "";
+  const [supported] = useState(() => window.isSecureContext && "serviceWorker" in navigator && "indexedDB" in window && "caches" in window);
+  const [online, setOnline] = useState(navigator.onLine);
+  const [cacheState, setCacheState] = useState<{ owner: string; entries: CachedShow[] }>({ owner: "", entries: [] });
   const [loading, setLoading] = useState(true);
+  const [listError, setListError] = useState<string | null>(null);
+  const [storage, setStorage] = useState<StorageEstimate | null>(null);
+  const [now, setNow] = useState(Date.now);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle");
   const [showUpdates, setShowUpdates] = useState<Record<string, ShowUpdateInfo>>({});
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
   const [updatesDialogOpen, setUpdatesDialogOpen] = useState(false);
   const [filters, setFilters] = useState<OfflineFilters>(DEFAULT_FILTERS);
+  const [legacyHandle, setLegacyHandle] = useState<FileSystemDirectoryHandle | null>(null);
+  const [legacyShows, setLegacyShows] = useState<LegacyShow[]>([]);
+  const [legacyOwner, setLegacyOwner] = useState("");
+  const [legacyNeedsPermission, setLegacyNeedsPermission] = useState(false);
+  const [legacyNotice, setLegacyNotice] = useState<string | null>(null);
+  const mounted = React.useRef(false);
+  const ownerRef = React.useRef(ownerKey);
+  ownerRef.current = ownerKey;
+  const listRequest = React.useRef(0);
+  const legacyRequest = React.useRef(0);
+  const batchRequest = React.useRef(0);
+  const bulkRequest = React.useRef(0);
+  const allChecking = React.useRef(false);
+  const checks = React.useRef(new Map<string, AbortController>());
+  const downloads = React.useRef(new Map<string, AbortController>());
+  const invalidPackages = React.useRef(new Map<string, "revoked" | "deleted">());
+  const cachedShows = useMemo(() => cacheState.owner === ownerKey ? cacheState.entries : [], [cacheState, ownerKey]);
+  const entriesRef = React.useRef(cachedShows);
+  entriesRef.current = cachedShows;
+  const canDownload = online && !auth.offline && !!ownerKey;
+  const networkRef = React.useRef(canDownload);
+  networkRef.current = canDownload;
 
-  // Load saved directory handle on mount
-  useEffect(() => {
-    if (!supported) {
-      setLoading(false);
-      return;
-    }
-    (async () => {
-      try {
-        const handle = await getDirectoryHandle();
-        if (handle) {
-          setDirHandle(handle);
-          const granted = await ensurePermission(handle);
-          if (granted) {
-            const m = await readManifest(handle);
-            setManifest(m);
-          }
-        }
-      } catch (err) {
-        console.error("Failed to load directory handle:", err);
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, [supported]);
+  const isCurrent = useCallback((identity: OfflineIdentity | null): identity is OfflineIdentity => {
+    if (!mounted.current || !identity || ownerRef.current !== offlineOwnerKey(identity)) return false;
+    try { assertOfflineIdentity(identity); return true; } catch { return false; }
+  }, []);
+  const abortWork = useCallback(() => {
+    for (const controller of checks.current.values()) controller.abort();
+    for (const controller of downloads.current.values()) controller.abort();
+    checks.current.clear(); downloads.current.clear();
+    batchRequest.current++; bulkRequest.current++; allChecking.current = false;
+  }, []);
+  const refreshCaches = useCallback(async () => {
+    const identity = readOfflineIdentity();
+    const request = ++listRequest.current;
+    if (!isCurrent(identity)) { if (mounted.current) setLoading(false); return; }
+    try {
+      const [entries, estimate] = await Promise.all([
+        listCachedShows(),
+        navigator.storage?.estimate ? navigator.storage.estimate().catch(() => undefined) : Promise.resolve(undefined),
+      ]);
+      if (!isCurrent(identity) || request !== listRequest.current) return;
+      setCacheState({ owner: offlineOwnerKey(identity), entries: entries
+        .filter(entry => invalidPackages.current.get(entry.package_id) !== "deleted")
+        .map(entry => ({ ...entry, revoked: entry.revoked || invalidPackages.current.get(entry.package_id) === "revoked" })) });
+      setStorage(estimate ?? null); setListError(null); setNow(Date.now());
+    } catch (error) {
+      if (isCurrent(identity) && request === listRequest.current) setListError(errorText(error));
+    } finally { if (isCurrent(identity) && request === listRequest.current) setLoading(false); }
+  }, [isCurrent]);
 
-  // Pick / change directory
+  const loadLegacyDirectory = useCallback(async (handle: FileSystemDirectoryHandle, requestPermission = false) => {
+    const identity = readOfflineIdentity();
+    const request = ++legacyRequest.current;
+    const active = () => isCurrent(identity) && request === legacyRequest.current;
+    if (!active()) return;
+    setLegacyOwner(offlineOwnerKey(identity!)); setLegacyHandle(handle); setLegacyShows([]); setLegacyNotice(null);
+    try {
+      let granted = typeof handle.queryPermission !== "function" || await handle.queryPermission({ mode: "read" }) === "granted";
+      if (!granted && requestPermission) granted = await handle.requestPermission({ mode: "read" }) === "granted";
+      if (!active()) return;
+      setLegacyNeedsPermission(!granted);
+      if (!granted) { setLegacyNotice("读取旧目录需要只读授权。"); return; }
+      const entries = await readLegacyManifest(handle);
+      if (!active()) return;
+      setLegacyShows(entries);
+      if (!entries.length) setLegacyNotice("旧目录中没有可迁移的放映清单。");
+    } catch (error) { if (active()) setLegacyNotice(errorText(error)); }
+  }, [isCurrent]);
   const handlePickDirectory = useCallback(async () => {
     try {
-      const handle = await pickDirectory();
-      if (!handle) return;
-      await saveDirectoryHandle(handle);
-      setDirHandle(handle);
-      const granted = await ensurePermission(handle);
-      if (granted) {
-        const m = await readManifest(handle);
-        setManifest(m);
-      } else {
-        toast.error("未获得文件夹读写权限");
+      const identity = readOfflineIdentity();
+      if (!isCurrent(identity)) return;
+      const handle = await window.showDirectoryPicker({ mode: "read" });
+      if (isCurrent(identity)) await loadLegacyDirectory(handle, true);
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError")) toast.error("读取旧目录失败：" + errorText(error));
+    }
+  }, [isCurrent, loadLegacyDirectory]);
+
+  useEffect(() => {
+    mounted.current = true;
+    abortWork(); invalidPackages.current.clear();
+    setCacheState({ owner: ownerKey, entries: [] }); setShowUpdates({}); setUpdateStatus("idle");
+    setDeleteConfirm(null); setDeleting(null); setUpdatesDialogOpen(false); setListError(null); setLoading(supported);
+    setLegacyHandle(null); setLegacyShows([]); setLegacyOwner(""); setLegacyNotice(null); setLegacyNeedsPermission(false);
+    if (supported && ownerKey) {
+      void refreshCaches();
+      const identity = readOfflineIdentity();
+      const request = legacyRequest.current;
+      void getDirectoryHandle().then(handle => {
+        if (handle && isCurrent(identity) && request === legacyRequest.current) void loadLegacyDirectory(handle);
+      }).catch(() => { /* The old directory is optional. */ });
+    } else setLoading(false);
+    const sessionChanged = () => {
+      const identity = readOfflineIdentity();
+      if (!identity || offlineOwnerKey(identity) !== ownerRef.current) {
+        abortWork(); listRequest.current++; legacyRequest.current++;
+        setCacheState({ owner: "", entries: [] }); setShowUpdates({}); setLegacyShows([]); setLegacyOwner("");
+        setUpdateStatus("idle"); setDeleteConfirm(null); setUpdatesDialogOpen(false);
+      } else void refreshCaches();
+    };
+    const cacheChanged = (event: Event) => {
+      const detail = (event as CustomEvent<PwaChange & { showId?: number }>).detail;
+      if (detail?.ownerKey && detail.ownerKey !== ownerRef.current) return;
+      if (detail?.ownerKey === ownerRef.current && detail.showId && detail.reason) {
+        for (const entry of entriesRef.current) if (entry.show_id === detail.showId) invalidPackages.current.set(entry.package_id, detail.reason);
+        setCacheState(previous => ({ ...previous, entries: previous.entries
+          .filter(entry => invalidPackages.current.get(entry.package_id) !== "deleted")
+          .map(entry => ({ ...entry, revoked: entry.revoked || invalidPackages.current.get(entry.package_id) === "revoked" })) }));
       }
-    } catch (err) {
-      toast.error("选择文件夹失败: " + (err instanceof Error ? err.message : "未知错误"));
-    }
-  }, []);
+      setUpdateStatus(previous => previous === "checking" ? previous : "idle");
+      void refreshCaches();
+    };
+    const connectionChanged = () => { setOnline(navigator.onLine); setUpdateStatus("idle"); };
+    const clockChanged = () => setNow(Date.now());
+    window.addEventListener(OFFLINE_SESSION_EVENT, sessionChanged);
+    window.addEventListener("slideflow-pwa-change", cacheChanged);
+    window.addEventListener("online", connectionChanged); window.addEventListener("offline", connectionChanged);
+    window.addEventListener("focus", clockChanged);
+    return () => {
+      mounted.current = false; listRequest.current++; legacyRequest.current++; abortWork();
+      window.removeEventListener(OFFLINE_SESSION_EVENT, sessionChanged);
+      window.removeEventListener("slideflow-pwa-change", cacheChanged);
+      window.removeEventListener("online", connectionChanged); window.removeEventListener("offline", connectionChanged);
+      window.removeEventListener("focus", clockChanged);
+    };
+  }, [ownerKey, auth.epoch, supported, abortWork, isCurrent, refreshCaches, loadLegacyDirectory]);
+  useEffect(() => {
+    const nextExpiry = Math.min(...cachedShows.map(entry => Date.parse(entry.expires_at)).filter(expiry => expiry > now));
+    if (!Number.isFinite(nextExpiry)) return;
+    const timer = window.setTimeout(() => setNow(Date.now()), Math.min(2_147_483_647, Math.max(1, nextExpiry - Date.now() + 10)));
+    return () => window.clearTimeout(timer);
+  }, [cachedShows, now]);
 
-  // Refresh manifest from disk
-  const refreshManifest = useCallback(async () => {
-    if (!dirHandle) return;
+  const checkShowUpdate = useCallback(async (showId: string): Promise<"update" | "current" | "failed" | "resource-hint" | "stale"> => {
+    const identity = readOfflineIdentity();
+    const entry = entriesRef.current.find(item => String(item.show_id) === showId);
+    if (!isCurrent(identity) || !entry || !networkRef.current || !navigator.onLine) return "stale";
+    if (!allChecking.current) setUpdateStatus("idle");
+    checks.current.get(showId)?.abort();
+    const controller = new AbortController();
+    checks.current.set(showId, controller);
+    const active = () => isCurrent(identity) && checks.current.get(showId) === controller;
+    const timer = window.setTimeout(() => controller.abort(new DOMException("检查更新超时，请重试", "TimeoutError")), 30_000);
+    setShowUpdates(previous => ({ ...previous, [showId]: { ...previous[showId], hasUpdate: previous[showId]?.hasUpdate ?? false, checking: true, checkError: undefined } }));
     try {
-      const granted = await ensurePermission(dirHandle);
-      if (!granted) {
-        toast.error("未获得文件夹读写权限");
-        return;
+      const data = await api<OfflineVersionResponse>("/api/shows/" + showId + "/offline-version", { signal: controller.signal, cache: "no-store" });
+      if (!active()) return "stale";
+      if (entriesRef.current.find(item => item.show_id === entry.show_id)?.package_id !== entry.package_id) throw new Error("缓存已变化，请重新检查");
+      if (!data || !Number.isSafeInteger(data.show_id) || data.show_id < 1 || !Number.isSafeInteger(data.version_no) || data.version_no < 1
+          || !data.resource_versions || typeof data.resource_versions !== "object" || Array.isArray(data.resource_versions)
+          || Object.entries(data.resource_versions).some(([id, version]) => !Number.isSafeInteger(Number(id)) || Number(id) < 1 || !Number.isSafeInteger(version) || version < 1)
+          || (data.resource_updates !== undefined && (!data.resource_updates || typeof data.resource_updates !== "object" || Array.isArray(data.resource_updates)
+            || Object.entries(data.resource_updates).some(([id, version]) => !Number.isSafeInteger(Number(id)) || Number(id) < 1
+              || !Number.isSafeInteger(version) || typeof data.resource_versions[id] !== "number" || version <= data.resource_versions[id])))
+          || (data.queried_show_id !== undefined && data.queried_show_id !== entry.show_id)
+          || (data.series_id !== undefined && data.series_id !== entry.series_id)) throw new Error("服务器返回的版本信息无效");
+      const versions = new Map(entry.resources.map(resource => [String(resource.id), resource.version_no]));
+      const resourceChanged = Object.keys(data.resource_versions).length !== versions.size
+        || Object.entries(data.resource_versions).some(([id, version]) => versions.get(id) !== version);
+      const hasUpdate = data.show_id !== entry.show_id || data.version_no !== entry.version_no
+        || data.updated_at !== entry.updated_at || resourceChanged || !!unavailableReason(entry, Date.now());
+      const resourceUpdateCount = Object.keys(data.resource_updates ?? {}).length;
+      setShowUpdates(previous => ({ ...previous, [showId]: { ...previous[showId], hasUpdate, remoteVersion: data.version_no, latestShowId: data.show_id, resourceUpdateCount, checking: false, checkError: undefined } }));
+      return hasUpdate ? "update" : resourceUpdateCount ? "resource-hint" : "current";
+    } catch (failure) {
+      if (!active()) return "stale";
+      let error = failure;
+      if (failure instanceof ApiError && [403, 404, 410].includes(failure.status)) {
+        try { await invalidateCachedShow(entry.show_id, identity); }
+        catch (invalidationError) { error = invalidationError; }
       }
-      const m = await readManifest(dirHandle);
-      setManifest(m);
-    } catch (err) {
-      console.error("refresh manifest error:", err);
+      if (!active()) return "stale";
+      const message = controller.signal.aborted ? errorText(controller.signal.reason) : errorText(error);
+      setShowUpdates(previous => ({ ...previous, [showId]: { ...previous[showId], hasUpdate: previous[showId]?.hasUpdate ?? false, checking: false, checkError: message } }));
+      return "failed";
+    } finally {
+      window.clearTimeout(timer);
+      if (checks.current.get(showId) === controller) checks.current.delete(showId);
     }
-  }, [dirHandle]);
+  }, [isCurrent]);
 
-  // Check single show for update
-  const checkShowUpdate = useCallback(async (showId: string) => {
-    setShowUpdates((prev) => ({
-      ...prev,
-      [showId]: { ...prev[showId], hasUpdate: prev[showId]?.hasUpdate ?? false, checking: true },
-    }));
-    try {
-      const data = await api<OfflineVersionResponse>(`/api/shows/${showId}/offline-version`);
-      const entry = manifest?.shows[showId];
-      const hasUpdate = entry ? data.version_no > entry.version_no : false;
-      setShowUpdates((prev) => ({
-        ...prev,
-        [showId]: {
-          hasUpdate,
-          remoteVersion: data.version_no,
-          latestShowId: data.show_id,
-          checking: false,
-        },
-      }));
-      return hasUpdate;
-    } catch (err) {
-      toast.error(`检查更新失败 (ID:${showId}): ` + (err instanceof Error ? err.message : "未知错误"));
-      setShowUpdates((prev) => ({
-        ...prev,
-        [showId]: { ...prev[showId], hasUpdate: false, checking: false },
-      }));
-      return false;
-    }
-  }, [manifest]);
-
-  // Check all shows for updates
   const checkAllUpdates = useCallback(async () => {
-    if (!manifest || !manifest.shows) return;
-    const showIds = Object.keys(manifest.shows);
-    if (showIds.length === 0) return;
-
-    setUpdateStatus("checking");
-    let updatesFound = 0;
-    for (const showId of showIds) {
-      const hasUpdate = await checkShowUpdate(showId);
-      if (hasUpdate) updatesFound++;
-    }
-    setUpdateStatus("done");
-    if (updatesFound === 0) {
-      toast.success("全部已是最新版本");
-    } else {
-      // 发现更新时，弹出对话框让用户自行决定是否缓存新版
-      setUpdatesDialogOpen(true);
-    }
-  }, [manifest, checkShowUpdate]);
-
-  // Update a single show (downloads latest as a separate cache entry, keeps the old one)
-  const updateShow = useCallback(async (showId: string, entry: OfflineShowEntry) => {
-    if (!dirHandle) return;
-    setShowUpdates((prev) => ({
-      ...prev,
-      [showId]: { ...prev[showId], hasUpdate: prev[showId]?.hasUpdate ?? false, updating: true, progress: undefined },
-    }));
+    const identity = readOfflineIdentity();
+    if (!isCurrent(identity) || !networkRef.current || allChecking.current || downloads.current.size) return;
+    const entries = [...entriesRef.current];
+    if (!entries.length) return;
+    const request = ++batchRequest.current;
+    allChecking.current = true; setUpdateStatus("checking");
+    let updates = 0;
+    let resourceHints = 0;
+    let failures = 0;
     try {
-      const granted = await ensurePermission(dirHandle);
-      if (!granted) {
-        toast.error("未获得文件夹读写权限");
-        return;
+      for (const entry of entries) {
+        if (!isCurrent(identity) || request !== batchRequest.current) return;
+        const result = await checkShowUpdate(String(entry.show_id));
+        if (result === "update") updates++;
+        else if (result === "resource-hint") resourceHints++;
+        else if (result !== "current") failures++;
       }
-      // 系列里最新版本的 show_id 可能与缓存的 showId 不同，
-      // 优先使用检查更新时得到的 latestShowId 去拉取离线包。
-      const latestShowId = showUpdates[showId]?.latestShowId ?? Number(showId);
-      const packageData = await api<OfflinePackageData>(
-        `/api/shows/${latestShowId}/offline-package`,
-        { params: { auth_mode: entry.auth_mode } },
-      );
-      await cacheShowToDirectory(dirHandle, packageData, window.location.origin, (current, total) => {
-        setShowUpdates((prev) => ({
-          ...prev,
-          [showId]: { ...prev[showId], hasUpdate: false, updating: true, progress: { current, total } },
-        }));
-      });
-      // 新版本作为独立条目缓存：旧条目保持不动，由用户自行决定是否删除
-      const m = await readManifest(dirHandle);
-      setManifest(m);
-      setShowUpdates((prev) => {
-        const next = { ...prev };
-        // 旧条目：标记已无更新（最新版本已被独立缓存）
-        next[showId] = { hasUpdate: false, updating: false };
-        // 新条目：刚下载完成，亦无更新
-        if (String(latestShowId) !== showId) {
-          next[String(latestShowId)] = { hasUpdate: false, updating: false };
-        }
-        return next;
-      });
-      if (String(latestShowId) !== showId) {
-        toast.success(`已下载「${packageData.name}」新版本 v${packageData.version_no}，旧版本仍保留`);
-      } else {
-        toast.success(`「${packageData.name}」更新成功`);
-      }
-    } catch (err) {
-      toast.error(`更新失败: ` + (err instanceof Error ? err.message : "未知错误"));
-      setShowUpdates((prev) => ({
-        ...prev,
-        [showId]: { ...prev[showId], updating: false },
-      }));
-    }
-  }, [dirHandle, showUpdates]);
+      if (!isCurrent(identity) || request !== batchRequest.current) return;
+      setUpdateStatus(failures ? "failed" : "done");
+      if (failures) toast.error("部分缓存检查更新失败，请重试；已有完整缓存仍保留");
+      else if (!updates && resourceHints) toast.info("放映缓存已同步；素材新版需先迭代发布放映");
+      else if (!updates) toast.success("全部已是最新版本");
+      if (updates) setUpdatesDialogOpen(true);
+    } finally { if (request === batchRequest.current) allChecking.current = false; }
+  }, [checkShowUpdate, isCurrent]);
 
-  // Delete a cached show
+  const downloadItem = useCallback(async (key: string, showId: number) => {
+    const identity = readOfflineIdentity();
+    if (!isCurrent(identity) || !networkRef.current || !navigator.onLine || downloads.current.has(key)) return;
+    checks.current.get(key)?.abort(); checks.current.delete(key);
+    const controller = new AbortController();
+    downloads.current.set(key, controller);
+    const active = () => isCurrent(identity) && downloads.current.get(key) === controller;
+    setUpdateStatus("idle");
+    setShowUpdates(previous => ({ ...previous, [key]: { ...previous[key], hasUpdate: previous[key]?.hasUpdate ?? false,
+      checking: false, checkError: undefined, updating: true, cancelling: false, error: undefined, notice: undefined,
+      progress: { phase: "preparing", completed: 0, total: 0, bytes: 0 } } }));
+    try {
+      const entry = await downloadShow(showId, { signal: controller.signal, onProgress: progress => {
+        if (active()) setShowUpdates(previous => ({ ...previous, [key]: { ...previous[key], progress } }));
+      } });
+      if (!active()) return;
+      setShowUpdates(previous => ({ ...previous, [key]: { ...previous[key], hasUpdate: false, updating: false, cancelling: false, error: undefined, notice: undefined } }));
+      await refreshCaches();
+      if (active()) toast.success("「" + entry.name + "」缓存完成" + (key !== String(showId) && !key.startsWith("legacy:") ? "，旧版本仍保留" : ""));
+    } catch (failure) {
+      if (!active()) return;
+      let error = failure;
+      // The cache core already handles 403/404; explicit expiry denial is also definitive.
+      if (failure instanceof ApiError && failure.status === 410) {
+        try { await invalidateCachedShow(showId, identity); }
+        catch (invalidationError) { error = invalidationError; }
+      }
+      if (!active()) return;
+      const cancelled = controller.signal.aborted || (failure instanceof DOMException && failure.name === "AbortError");
+      setShowUpdates(previous => ({ ...previous, [key]: { ...previous[key], updating: false, cancelling: false,
+        notice: cancelled ? "本次下载已取消，原完整缓存仍保留。" : undefined,
+        error: cancelled ? undefined : errorText(error) } }));
+      await refreshCaches();
+    } finally { if (downloads.current.get(key) === controller) downloads.current.delete(key); }
+  }, [isCurrent, refreshCaches]);
+  const cancelDownload = useCallback((key: string) => {
+    const controller = downloads.current.get(key);
+    if (!controller) return;
+    bulkRequest.current++;
+    setShowUpdates(previous => ({ ...previous, [key]: { ...previous[key], cancelling: true } }));
+    controller.abort();
+  }, []);
+  const updateShow = useCallback((showId: string, entry: CachedShow) =>
+    downloadItem(showId, showUpdates[showId]?.latestShowId ?? entry.show_id), [downloadItem, showUpdates]);
+
   const handleDelete = useCallback(async (showId: string) => {
-    if (!dirHandle || !manifest) return;
+    const identity = readOfflineIdentity();
+    if (!isCurrent(identity) || deleting || downloads.current.has(showId)) return;
+    setDeleting(showId);
+    checks.current.get(showId)?.abort(); checks.current.delete(showId);
     try {
-      const granted = await ensurePermission(dirHandle);
-      if (!granted) {
-        toast.error("未获得文件夹读写权限");
-        return;
-      }
-      await deleteShowCache(dirHandle, Number(showId));
-      const newManifest = { ...manifest, shows: { ...manifest.shows } };
-      delete newManifest.shows[showId];
-      newManifest.generated_at = new Date().toISOString();
-      await writeManifest(dirHandle, newManifest);
-      setManifest(newManifest);
-      setDeleteConfirm(null);
-      toast.success("缓存已删除");
-    } catch (err) {
-      toast.error("删除失败: " + (err instanceof Error ? err.message : "未知错误"));
-    }
-  }, [dirHandle, manifest]);
+      await deleteCachedShow(Number(showId));
+      if (!isCurrent(identity)) return;
+      setDeleteConfirm(null); setUpdateStatus("idle");
+      setShowUpdates(previous => { const next = { ...previous }; delete next[showId]; return next; });
+      await refreshCaches();
+      if (isCurrent(identity)) toast.success("缓存已删除");
+    } catch (error) { if (isCurrent(identity)) toast.error("删除失败：" + errorText(error)); }
+    finally { if (isCurrent(identity)) setDeleting(null); }
+  }, [deleting, isCurrent, refreshCaches]);
 
-  // Derived data: all shows as entries
-  const shows = useMemo(() => {
-    return manifest?.shows ? Object.entries(manifest.shows) : [];
-  }, [manifest]);
+  const startPlayback = useCallback((entry: CachedShow, presenter: boolean) => {
+    const identity = readOfflineIdentity();
+    if (!isCurrent(identity) || entry.owner_key !== offlineOwnerKey(identity)
+        || entriesRef.current.find(item => item.show_id === entry.show_id)?.package_id !== entry.package_id) return;
+    const reason = unavailableReason(entry, Date.now());
+    if (reason) { toast.error(reason); return; }
+    const params = new URLSearchParams({ offline: "true", package_id: entry.package_id, source: "cache" });
+    if (!presenter) {
+      window.open("/shows/" + entry.show_id + "/fullscreen?" + params.toString(), "_blank", "popup=yes,width=1920,height=1080");
+      return;
+    }
+    const session = crypto.randomUUID();
+    params.set("playback_session", session);
+    // Keep this synchronous with the click so the paired display retains user activation.
+    window.open("/shows/" + entry.show_id + "/display?" + params.toString(), "slideflow-display-" + session, "popup=yes,width=1920,height=1080");
+    window.location.href = "/shows/" + entry.show_id + "/present?" + params.toString();
+  }, [isCurrent]);
+
+  const shows = useMemo<Array<[string, CachedShow]>>(() => cachedShows.map(entry => [String(entry.show_id), entry]), [cachedShows]);
+  const entriesMap = useMemo(() => Object.fromEntries(shows), [shows]);
+  const cachedBytes = cachedShows.reduce((sum, entry) => sum + entry.total_bytes, 0);
+  const pendingLegacy = legacyOwner === ownerKey ? legacyShows.filter(entry => !entriesMap[String(entry.show_id)]) : [];
+  const anyDownloading = Object.values(showUpdates).some(info => info.updating);
 
   // Extract subjects and tags from manifest data
   const { subjects, tags } = useMemo(() => {
@@ -711,12 +839,6 @@ export default function OfflineCachePage() {
         if (entryStatus !== filters.status) return false;
       }
 
-      // Secrecy filter
-      if (filters.secrecy !== "all") {
-        const entrySecrecy = entry.secrecy_level || "public";
-        if (entrySecrecy !== filters.secrecy) return false;
-      }
-
       // Search query
       if (q) {
         const hay = [entry.name, entry.subject || "", entry.owner_name || ""]
@@ -731,13 +853,17 @@ export default function OfflineCachePage() {
 
   // Pagination: dynamic grid sizing
   const contentRef = React.useRef<HTMLDivElement>(null);
-  const { pageSize, gridStyle } = useResponsiveGrid(contentRef, { titleHeight: 88 });
+  const { pageSize, gridStyle } = useResponsiveGrid(contentRef, { titleHeight: 132 });
 
   const [page, setPage] = useUrlPage();
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   useEffect(() => {
-    if (page > totalPages) setPage(1);
-  }, [page, totalPages]);
+    if (!loading && page > totalPages) setPage(1);
+  }, [page, totalPages, loading, setPage]);
+  const previousFilters = React.useRef(filters);
+  useEffect(() => {
+    if (previousFilters.current !== filters) { previousFilters.current = filters; setPage(1); }
+  }, [filters, setPage]);
   const pageStart = (page - 1) * pageSize;
   const pageItems = filtered.slice(pageStart, pageStart + pageSize);
 
@@ -746,7 +872,6 @@ export default function OfflineCachePage() {
     filters.query.trim() !== "" ||
     filters.status !== "all" ||
     filters.subject !== "all" ||
-    filters.secrecy !== "all" ||
     filters.tags.length > 0;
 
   const resetFilters = () => setFilters(DEFAULT_FILTERS);
@@ -757,92 +882,35 @@ export default function OfflineCachePage() {
     }));
   };
 
-  // Browser not supported
   if (!supported) {
-    const insecure = !isSecureContext();
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4 p-6">
         <AlertTriangle className="h-12 w-12 text-yellow-500" />
-        {insecure ? (
-          <>
-            <h1 className="text-xl font-semibold">需要安全连接</h1>
-            <div className="max-w-md text-center text-sm text-muted-foreground space-y-2">
-              <p>离线缓存功能需要通过 HTTPS 或 localhost 访问站点才能使用。当前为非安全连接，请通过以下方式访问：</p>
-              <ul className="list-disc list-inside text-left space-y-1">
-                <li>https://your-domain.com</li>
-                <li>http://localhost:端口号</li>
-                <li>http://127.0.0.1:端口号</li>
-              </ul>
-            </div>
-          </>
-        ) : (
-          <>
-            <h1 className="text-xl font-semibold">浏览器不兼容</h1>
-            <p className="max-w-md text-center text-sm text-muted-foreground">
-              您的浏览器不支持 File System Access API，请使用 Chrome 86+ 或 Edge 86+ 浏览器访问此功能。
-            </p>
-          </>
-        )}
-      </div>
-    );
-  }
-
-  // Loading state
-  if (loading) {
-    return (
-      <div className="flex h-full items-center justify-center p-6">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
-
-  // No directory selected - guide user
-  if (!dirHandle) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-6 p-6">
-        <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-muted">
-          <FolderOpen className="h-8 w-8 text-muted-foreground" />
-        </div>
-        <div className="space-y-2 text-center">
-          <h1 className="text-xl font-semibold">选择缓存文件夹</h1>
-          <p className="max-w-sm text-sm text-muted-foreground">
-            请选择一个本地文件夹用于存储离线缓存数据。选择后，您可以管理已缓存的标准放映。
-          </p>
-        </div>
-        <Button onClick={handlePickDirectory} className="gap-2">
-          <FolderOpen className="h-4 w-4" />
-          选择文件夹
-        </Button>
+        <h1 className="text-xl font-semibold">{window.isSecureContext ? "浏览器不支持离线应用" : "需要安全连接"}</h1>
+        <p className="max-w-md text-center text-sm text-muted-foreground">
+          {window.isSecureContext ? "请使用支持 Service Worker、IndexedDB 和 Cache Storage 的浏览器，并允许本地存储。" : "离线缓存需要通过 HTTPS 或本机 localhost 访问本站。"}
+        </p>
       </div>
     );
   }
 
   const updatesAvailableCount = Object.values(showUpdates).filter((s) => s.hasUpdate).length;
+  const resourceHintsCount = Object.values(showUpdates).filter((s) => !!s.resourceUpdateCount).length;
 
   return (
     <div className="page-shell">
-      {/* Page header */}
-      <header className="flex items-center justify-between gap-4">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <div className="flex items-center gap-1.5">
-            <h1 className="page-title">{navTitle}</h1>
-            <span className="page-count">
-              {filtered.length === shows.length
-                ? `共 ${shows.length} 条`
-                : `筛选后 ${filtered.length} / ${shows.length} 条`}
-            </span>
-          </div>
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <FolderOpen className="h-3.5 w-3.5" />
-            <span
-              className="max-w-[420px] truncate font-medium text-foreground"
-              title={dirHandle.name}
-            >
-              {dirHandle.name}
-            </span>
-          </div>
-        </div>
-      </header>
+      <PageHeader
+        title={navTitle}
+        titleExtra={<span className="text-xs text-muted-foreground">当前浏览器 · {auth.user?.name || auth.user?.username || "当前账号"}</span>}
+        count={filtered.length === shows.length ? "共 " + shows.length + " 条" : "筛选后 " + filtered.length + " / " + shows.length + " 条"}
+        description={"当前账号缓存 " + formatBytes(cachedBytes) + (storage?.quota !== undefined
+          ? " · 此站点可用空间约 " + formatBytes(Math.max(0, storage.quota - (storage.usage || 0)))
+          : " · 浏览器暂未提供容量估计") + "。缓存受授权有效期限制，退出账号后不可使用。"}
+      />
+      {!canDownload && <p role="status" className="text-xs text-amber-700">{!online ? "当前设备已离线，可播放仍在有效期内的完整缓存；连接网络后可检查、更新和迁移。" : "当前为离线登录状态，请联网重新验证登录后下载或检查更新。"}</p>}
+      {listError && <div role="alert" className="flex items-center justify-between gap-3 rounded-md border border-destructive/30 p-3 text-sm text-destructive">
+        <span>读取缓存失败：{listError}</span><Button variant="outline" size="sm" onClick={() => void refreshCaches()}>重新读取</Button>
+      </div>}
 
       {/* Filters bar */}
       <div className="flex flex-wrap items-center gap-2">
@@ -874,12 +942,6 @@ export default function OfflineCachePage() {
             onChange={(v) => setFilters((f) => ({ ...f, subject: v }))}
           />
         )}
-        <FilterChip
-          label="密级"
-          options={OFFLINE_SECRECY_OPTIONS}
-          value={filters.secrecy}
-          onChange={(v) => setFilters((f) => ({ ...f, secrecy: v }))}
-        />
         {tags.length > 0 && (
           <TagFilterChip
             label="标签"
@@ -906,83 +968,70 @@ export default function OfflineCachePage() {
         )}
 
         {/* Right actions */}
-        <div className="ml-auto flex items-center gap-2">
-          {updateStatus === "checking" && (
-            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              正在检查...
-            </span>
-          )}
-          {updateStatus === "done" && updatesAvailableCount > 0 && (
-            <span className="flex items-center gap-1.5 text-xs text-amber-600">
-              {updatesAvailableCount} 个有更新
-            </span>
-          )}
-          {updateStatus === "done" && updatesAvailableCount === 0 && (
-            <span className="flex items-center gap-1.5 text-xs text-emerald-600">
-              <CheckCircle2 className="h-3.5 w-3.5" />
-              全部最新
-            </span>
-          )}
-          {shows.length > 0 && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={checkAllUpdates}
-              disabled={updateStatus === "checking"}
-              className="h-8 gap-1.5 px-3 text-sm"
-            >
-              <RefreshCw className={cn("h-3.5 w-3.5", updateStatus === "checking" && "animate-spin")} />
-              检查全部更新
-            </Button>
-          )}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handlePickDirectory}
-            className="h-8 gap-1.5 px-3 text-sm"
-          >
-            <FolderOpen className="h-3.5 w-3.5" />
-            更换文件夹
-          </Button>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {updateStatus === "checking" && <span role="status" className="flex items-center gap-1.5 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />正在检查…</span>}
+          {updateStatus === "failed" && <span role="alert" className="text-xs text-destructive">检查更新失败，请重试</span>}
+          {updateStatus === "done" && updatesAvailableCount > 0 && <button type="button" className="text-xs text-amber-700" onClick={() => setUpdatesDialogOpen(true)}>{updatesAvailableCount} 个需要更新</button>}
+          {updateStatus === "done" && updatesAvailableCount === 0 && <span role="status" className="flex items-center gap-1.5 text-xs text-emerald-600"><CheckCircle2 className="h-3.5 w-3.5" />{resourceHintsCount ? "放映缓存已同步 · 素材需迭代" : "全部最新"}</span>}
+          {shows.length > 0 && <Button variant="outline" size="sm" onClick={() => void checkAllUpdates()} disabled={!canDownload || updateStatus === "checking" || anyDownloading} className="h-8 gap-1.5 px-3 text-sm">
+            <RefreshCw className={cn("h-3.5 w-3.5", updateStatus === "checking" && "animate-spin")} />检查全部更新
+          </Button>}
+          {typeof window.showDirectoryPicker === "function" && <Button variant="outline" size="sm" onClick={() => void handlePickDirectory()} className="h-8 gap-1.5 px-3 text-sm">
+            <FolderOpen className="h-3.5 w-3.5" />迁移旧目录
+          </Button>}
         </div>
       </div>
 
       {/* Content area */}
       <div ref={contentRef} className="min-h-0 flex-1 overflow-auto">
-        {filtered.length === 0 ? (
-          <div className="rounded-md border border-dashed py-16 text-center text-sm text-muted-foreground">
-            {shows.length === 0 ? "暂无缓存仓库" : "没有匹配的缓存项"}
-          </div>
-        ) : (
-          <div className="grid content-start" style={gridStyle}>
-            {pageItems.map(([showId, entry]) => (
-              <CacheCard
-                key={showId}
+        {legacyOwner === ownerKey && (pendingLegacy.length > 0 || legacyNotice || legacyNeedsPermission) && (
+          <section className="mb-4 space-y-3 rounded-lg border bg-muted/20 p-3" aria-label="旧目录迁移">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-sm font-medium">旧目录迁移{legacyHandle ? " · " + legacyHandle.name : ""}</h2>
+              {legacyNeedsPermission && legacyHandle && <Button size="sm" variant="outline" onClick={() => void loadLegacyDirectory(legacyHandle, true)}>允许只读访问</Button>}
+            </div>
+            <p className="text-xs text-muted-foreground">旧目录仅提供放映名称与编号。联网重新验证权限后下载完整缓存；不会运行旧脚本或导入旧图片。</p>
+            {legacyNotice && <p role="status" className="text-xs text-amber-700">{legacyNotice}</p>}
+            {pendingLegacy.map(entry => {
+              const key = "legacy:" + entry.show_id;
+              const info = showUpdates[key];
+              return <div key={key} className="flex items-center justify-between gap-3 rounded-md border bg-background p-3">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">{entry.name}</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">旧目录 v{entry.version_no} · 重新下载后才可播放</p>
+                  {info?.progress && info.updating && <p role="status" className="mt-1 text-xs text-muted-foreground">{PHASE_LABELS[info.progress.phase]} · {info.progress.completed}/{info.progress.total} · {formatBytes(info.progress.bytes)}</p>}
+                  {info?.error && <p role="alert" className="mt-1 text-xs text-destructive">{info.error}</p>}
+                  {info?.notice && <p role="status" className="mt-1 text-xs text-muted-foreground">{info.notice}</p>}
+                </div>
+                {info?.updating ? <Button variant="outline" size="sm" disabled={info.cancelling} onClick={() => cancelDownload(key)}>{info.cancelling ? "正在取消…" : "取消下载"}</Button>
+                  : <Button variant="outline" size="sm" disabled={!canDownload} onClick={() => void downloadItem(key, entry.show_id)}>{info?.error ? "重试下载" : "重新下载"}</Button>}
+              </div>;
+            })}
+          </section>
+        )}
+        {loading ? <div role="status" className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin" />正在读取缓存…</div>
+          : filtered.length === 0 ? (
+            <div className="rounded-md border border-dashed py-16 text-center text-sm text-muted-foreground">
+              {shows.length === 0 ? "暂无离线缓存。联网后可从放映详情下载到此浏览器。" : "没有匹配的缓存项"}
+            </div>
+          ) : (
+            <div className="grid content-start" style={gridStyle}>
+              {pageItems.map(([showId, entry]) => <CacheCard
+                key={entry.package_id}
                 showId={showId}
                 entry={entry}
-                dirHandle={dirHandle}
+                now={now}
+                canDownload={canDownload}
                 updateInfo={showUpdates[showId]}
-                onFullscreen={() => {
-                  window.open(
-                    `/shows/${entry.id}/fullscreen?offline=true`,
-                    "_blank",
-                    "popup=yes,width=1920,height=1080"
-                  );
-                }}
-                onPresent={() => {
-                  window.open(
-                    `/shows/${entry.id}/display?offline=true`,
-                    "slideflow-display",
-                    "popup=yes,width=1920,height=1080"
-                  );
-                  window.location.href = `/shows/${entry.id}/present?offline=true`;
-                }}
+                onFullscreen={() => startPlayback(entry, false)}
+                onPresent={() => startPlayback(entry, true)}
+                onDownload={() => void updateShow(showId, entry)}
+                onCancel={() => cancelDownload(showId)}
+                onCheck={() => void checkShowUpdate(showId)}
                 onDelete={() => setDeleteConfirm(showId)}
-              />
-            ))}
-          </div>
-        )}
+              />)}
+            </div>
+          )}
       </div>
 
       {/* Pagination */}
@@ -1024,17 +1073,18 @@ export default function OfflineCachePage() {
               <div className="space-y-2">
                 <h3 className="text-lg font-semibold">确认删除</h3>
                 <p className="text-sm text-muted-foreground">
-                  确定要删除「{manifest?.shows[deleteConfirm]?.name}」的离线缓存吗？此操作不可撤销。
+                  确定要删除「{entriesMap[deleteConfirm]?.name}」的离线缓存吗？此操作不可撤销。
                 </p>
               </div>
               <div className="flex justify-end gap-2">
-                <Button variant="outline" size="sm" onClick={() => setDeleteConfirm(null)}>
+                <Button variant="outline" size="sm" disabled={!!deleting} onClick={() => setDeleteConfirm(null)}>
                   取消
                 </Button>
                 <Button
                   variant="destructive"
                   size="sm"
-                  onClick={() => handleDelete(deleteConfirm)}
+                  disabled={!!deleting}
+                  onClick={() => void handleDelete(deleteConfirm)}
                 >
                   确认删除
                 </Button>
@@ -1053,16 +1103,16 @@ export default function OfflineCachePage() {
               发现可用更新
             </DialogTitle>
             <DialogDescription>
-              以下已缓存的放映库存在新版本，您可以选择是否将新版本缓存到本地。
+              下载已发布的放映版本，或重新获取当前版本的有效授权。同一放映固定引用的素材版本不会因重新下载而自动升级为未发布的素材修订。
             </DialogDescription>
           </DialogHeader>
           {(() => {
             const updatableEntries = Object.entries(showUpdates)
-              .filter(([sid, info]) => info.hasUpdate && manifest?.shows[sid])
+              .filter(([sid, info]) => info.hasUpdate && entriesMap[sid])
               .map(([sid, info]) => ({
                 showId: sid,
                 info,
-                entry: manifest!.shows[sid],
+                entry: entriesMap[sid],
               }));
             if (updatableEntries.length === 0) {
               return (
@@ -1085,7 +1135,7 @@ export default function OfflineCachePage() {
                         <div className="mt-0.5 text-xs text-muted-foreground">
                           本地 v{entry.version_no}
                           <span className="mx-1.5 text-muted-foreground/60">→</span>
-                          <span className="text-amber-600">新版 v{info.remoteVersion}</span>
+                          <span className="text-amber-600">目标 v{info.remoteVersion}</span>
                         </div>
                         {info.updating && info.progress && (
                           <div className="mt-1.5 flex items-center gap-2">
@@ -1093,32 +1143,23 @@ export default function OfflineCachePage() {
                               <div
                                 className="h-full rounded-full bg-primary transition-all duration-300"
                                 style={{
-                                  width: `${Math.round((info.progress.current / info.progress.total) * 100)}%`,
+                                  width: `${progressPercent(info.progress)}%`,
                                 }}
                               />
                             </div>
                             <span className="text-[10px] text-muted-foreground">
-                              {info.progress.current}/{info.progress.total}
+                              {info.progress.completed}/{info.progress.total} · {formatBytes(info.progress.bytes)}
                             </span>
                           </div>
                         )}
                       </div>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={info.updating}
-                        onClick={() => updateShow(showId, entry)}
-                        className="shrink-0"
-                      >
-                        {info.updating ? (
-                          <>
-                            <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                            更新中
-                          </>
-                        ) : (
-                          "更新此项"
-                        )}
-                      </Button>
+                      {info.error && <p role="alert" className="text-xs text-destructive">{info.error}</p>}
+                      {info.notice && <p role="status" className="text-xs text-muted-foreground">{info.notice}</p>}
+                      {info.updating ? <Button size="sm" variant="outline" disabled={info.cancelling} onClick={() => cancelDownload(showId)} className="shrink-0">
+                        {info.cancelling ? "正在取消…" : "取消下载"}
+                      </Button> : <Button size="sm" variant="outline" disabled={!canDownload} onClick={() => void updateShow(showId, entry)} className="shrink-0">
+                        {info.error || info.notice ? "重试下载" : "更新此项"}
+                      </Button>}
                     </div>
                   ))}
                 </div>
@@ -1131,9 +1172,11 @@ export default function OfflineCachePage() {
                     关闭
                   </Button>
                   <Button
-                    disabled={anyUpdating}
+                    disabled={anyUpdating || !canDownload}
                     onClick={async () => {
+                      const request = ++bulkRequest.current;
                       for (const { showId, entry } of updatableEntries) {
+                        if (request !== bulkRequest.current || !networkRef.current) break;
                         await updateShow(showId, entry);
                       }
                     }}

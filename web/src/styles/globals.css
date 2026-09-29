@@ -139,11 +139,11 @@
   }
 
   .page-header {
-    @apply flex flex-wrap items-start justify-between gap-4;
+    @apply flex min-h-14 flex-wrap items-start justify-between gap-4;
   }
 
   .page-title {
-    @apply text-xl font-semibold tracking-tight;
+    @apply text-xl font-semibold leading-7 tracking-tight;
   }
 
   .page-count {

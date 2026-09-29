@@ -15,7 +15,7 @@ type SetupStatus = { required: boolean; automatic?: boolean };
 
 export function SetupPage() {
   const navigate = useNavigate();
-  const { setUser } = useAuth();
+  const { beginLogin, completeLogin } = useAuth();
   const siteName = useSiteConfig((s) => s.siteName);
   const logoSvgPath = useSiteConfig((s) => s.logoSvgPath);
   const [checking, setChecking] = useState(true);
@@ -54,6 +54,7 @@ export function SetupPage() {
       return;
     }
     setSubmitting(true);
+    const loginEpoch = beginLogin();
     try {
       const result = await api<{ user: CurrentUser }>("/api/auth/setup", {
         method: "POST",
@@ -64,7 +65,7 @@ export function SetupPage() {
           password,
         },
       });
-      setUser(result.user);
+      await completeLogin(result.user, loginEpoch);
       toast.success("系统管理员初始化完成");
       navigate("/home", { replace: true });
     } catch (error) {

@@ -128,7 +128,6 @@ def api_config(
         "default_filters": {
             "resource_tags": _default_filter_names(db, "tags", multiple=True),
             "subject": _default_filter_names(db, "subject_tag_definitions", multiple=False),
-            "secrecy": _default_filter_names(db, "secrecy_tag_definitions", multiple=False),
             "status": _default_filter_names(db, "status_tag_definitions", multiple=False),
             "user_tags": _default_filter_names(db, "user_tag_definitions", multiple=True),
         },

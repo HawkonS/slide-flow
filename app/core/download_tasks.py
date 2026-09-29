@@ -23,8 +23,11 @@ from pathlib import Path
 from typing import Any
 
 from PIL import Image
+from fastapi import HTTPException
 
 from app.config import settings
+from app.core.permissions import can_view_show
+from app.core.storage import safe_filename
 from app.core.ppt import (
     _build_watermark_tile,
     add_watermark_to_image,
@@ -38,9 +41,12 @@ from app.core.ppt import (
 from app.db import get_db
 from app.core.task_events import append_task_event
 from app.services.downloads.cache import _get_cached_download, _save_to_cache, _show_download_cache_key
+from app.services.downloads.access import _download_task_owner
+from app.services.downloads.embed_fonts import FontEmbeddingError, embed_fonts_in_pptx
 from app.services.downloads.fonts import _build_fonts_bundle, _write_fonts_into_zip
 from app.services.downloads.tracking import _compose_watermark_text
 from app.services.files import materialization_scope, _resource_file_abs
+from app.services.shows import _collect_show_accessible_resources, _show_row
 
 
 logger = logging.getLogger(__name__)
@@ -123,55 +129,6 @@ def _safe_abs(stored_path: str | None) -> Path | None:
     return _resource_file_abs(stored_path)
 
 
-def _collect_resources(db: sqlite3.Connection, show_id: int) -> list[dict[str, Any]]:
-    """收集放映组下所有资源版本信息（按 sort_order）。
-
-    异步任务在创建前已通过 ``can_view_show`` 验证 owner 权限，
-    资源级权限校验由调用方在创建任务前完成（与同步 API 一致：
-    创建任务时已检查 ``can_view_show``）。这里仅做存在性过滤。
-    """
-    sr_rows = db.execute(
-        """
-        SELECT sr.resource_id, sr.version_no, sr.is_hidden, r.name
-        FROM show_resources sr
-        JOIN resources r ON r.id = sr.resource_id
-        WHERE sr.show_id = ?
-        ORDER BY sr.sort_order
-        """,
-        (show_id,),
-    ).fetchall()
-    items: list[dict[str, Any]] = []
-    for sr in sr_rows:
-        version_row = db.execute(
-            "SELECT ppt_path, png_path, font_names, missing_fonts FROM resource_versions"
-            " WHERE resource_id = ? AND version_no = ?",
-            (sr["resource_id"], sr["version_no"]),
-        ).fetchone()
-        if not version_row:
-            continue
-        try:
-            font_names = json.loads(version_row["font_names"] or "[]")
-        except (ValueError, TypeError):
-            font_names = []
-        try:
-            missing = json.loads(version_row["missing_fonts"] or "[]")
-        except (ValueError, TypeError):
-            missing = []
-        items.append(
-            {
-                "resource_id": sr["resource_id"],
-                "name": sr["name"],
-                "version_no": sr["version_no"],
-                "ppt_path": version_row["ppt_path"],
-                "png_path": version_row["png_path"],
-                "font_names": font_names,
-                "missing_fonts": missing,
-                "is_hidden": bool(sr["is_hidden"]),
-            }
-        )
-    return items
-
-
 def _output_path(task_id: int, ext: str) -> Path:
     """生成任务最终产物的固定路径（重复执行会覆盖）。"""
     _DOWNLOAD_TASKS_DIR.mkdir(parents=True, exist_ok=True)
@@ -205,9 +162,8 @@ def _generate_pdf(
         # 使用动态画布尺寸构建水印 tile，确保各页水印位置一致
         tile = _build_watermark_tile(canvas_w, canvas_h, wm_text)
 
-        def _wm_pdf_item(item: dict[str, Any]) -> Image.Image | None:
-            png = _safe_abs(item.get("png_path"))
-            if not png or not png.exists():
+        def _wm_pdf_item(png: Path) -> Image.Image | None:
+            if not png.exists():
                 return None
             img = Image.open(png).convert("RGB")
             img = fit_image_to_canvas(img, canvas_w, canvas_h)
@@ -218,9 +174,11 @@ def _generate_pdf(
                 return img
 
         try:
-            workers = min(4, len(items))
+            workers = min(4, len(valid_paths))
             with ThreadPoolExecutor(max_workers=workers) as pool:
-                results = list(pool.map(_wm_pdf_item, items))
+                # Materialize in the parent scope: thread-pool workers do not
+                # inherit the ContextVar that owns temporary OSS downloads.
+                results = list(pool.map(_wm_pdf_item, valid_paths))
             images = [img for img in results if img is not None]
         finally:
             if tile is not None:
@@ -229,17 +187,14 @@ def _generate_pdf(
             watermark_ok = False
         for i, img in enumerate(images):
             if progress_callback:
-                progress_callback(10 + int(80 * (i + 1) / len(items)), f"处理图片 {i + 1}/{len(items)}")
+                progress_callback(10 + int(80 * (i + 1) / len(valid_paths)), f"处理图片 {i + 1}/{len(valid_paths)}")
     else:
-        for item in items:
-            png = _safe_abs(item.get("png_path"))
-            if not png or not png.exists():
-                continue
+        for png in valid_paths:
             img = Image.open(png).convert("RGB")
             img = fit_image_to_canvas(img, canvas_w, canvas_h)
             images.append(img)
             if progress_callback:
-                progress_callback(10 + int(80 * len(images) / len(items)), f"处理图片 {len(images)}/{len(items)}")
+                progress_callback(10 + int(80 * len(images) / len(valid_paths)), f"处理图片 {len(images)}/{len(valid_paths)}")
     if not images:
         raise RuntimeError("没有可下载的预览图")
     first = images[0]
@@ -375,7 +330,7 @@ def _generate_pptx_pages(
             parent_name = page_path.parent.name
             res_idx = dir_to_item_idx.get(parent_name, 0)
             resource_name = items[res_idx]["name"] if res_idx < len(items) else "slide"
-            safe_name = resource_name.replace("/", "_").replace("\\", "_")
+            safe_name = safe_filename(resource_name)
             # 从 page_path.stem 提取页号（split_pptx_to_single_pages 输出形如 slide_N.pptx）
             page_suffix = page_path.stem.split("_")[-1] if "_" in page_path.stem else page_path.stem
             arc_name = f"{i:03d}_{safe_name}_page{page_suffix}.pptx"
@@ -420,6 +375,7 @@ def _generate_pptx(
     items: list[dict[str, Any]],
     wm_text: str,
     with_fonts: bool,
+    embed_fonts: bool,
     out_path: Path,
     *,
     progress_callback: "Callable[[int, int], None] | None" = None,
@@ -451,6 +407,14 @@ def _generate_pptx(
                 watermark_ok = False
         if progress_callback:
             progress_callback(70, "生成文件...")
+        if embed_fonts:
+            agg = _aggregate_fonts(items)
+            try:
+                content = embed_fonts_in_pptx(merged_path, db, agg["font_names"])
+            except FontEmbeddingError as exc:
+                raise RuntimeError(str(exc)) from exc
+            out_path.write_bytes(content)
+            return out_path, f"{show_name}_embedded_fonts.pptx", watermark_ok
         if not with_fonts:
             shutil.move(str(merged_path), str(out_path))
             return out_path, f"{show_name}.pptx", watermark_ok
@@ -458,7 +422,7 @@ def _generate_pptx(
         agg = _aggregate_fonts(items)
         fonts, _ = _build_fonts_bundle(db, agg["font_names"])
         with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.write(merged_path, arcname=f"{show_name}.pptx")
+            zf.write(merged_path, arcname=f"{safe_filename(show_name)}.pptx")
             _write_fonts_into_zip(zf, fonts, agg["missing_fonts"])
         return out_path, f"{show_name}_with_fonts.zip", watermark_ok
     finally:
@@ -482,7 +446,7 @@ def _generate_zip(
         ppt_path = _safe_abs(item.get("ppt_path"))
         if not ppt_path or not ppt_path.exists():
             continue
-        arcname = f"{item['name']}_v{item['version_no']}.pptx"
+        arcname = f"{safe_filename(item['name'])}_v{item['version_no']}.pptx"
         valid_items.append((item, ppt_path, arcname))
     if not valid_items:
         raise RuntimeError("没有可下载的内容")
@@ -554,6 +518,7 @@ def _generate_download_file_sync(
     user_watermark = params.get("user_watermark", "") or ""
     track_code = params.get("track_code", "")
     with_fonts = bool(params.get("with_fonts", False))
+    embed_fonts = bool(params.get("embed_fonts", False))
 
     # 是否需要嵌入水印（用户传入了水印 → 嵌入；否则纯净版本可缓存）
     wm_text = ""
@@ -565,15 +530,25 @@ def _generate_download_file_sync(
     materialization.__enter__()
     try:
         db.execute("PRAGMA busy_timeout = 30000")
-        show_row = db.execute("SELECT id, name FROM shows WHERE id = ?", (show_id,)).fetchone()
-        if show_row is None:
-            raise RuntimeError("放映组不存在")
+        task = db.execute("SELECT * FROM tasks WHERE id = ? AND task_type = 'download'", (task_id,)).fetchone()
+        if task is None:
+            raise HTTPException(404, "下载任务不存在")
+        user = _download_task_owner(db, task)
+        show_row = _show_row(db, show_id)
+        if not can_view_show(db, show_row, user):
+            raise HTTPException(403, "无可见权限")
         show_name = show_row["name"]
+        items = _collect_show_accessible_resources(db, show_id, user)
+        if not items:
+            raise HTTPException(404, "放映组没有可下载的资源")
+        resource_refs = [[int(item["resource_id"]), int(item["version_no"])] for item in items]
 
         # 计算缓存键 / 扩展名
         cache_key_type = download_type
         if download_type == "pptx" and with_fonts:
             cache_key_type = "pptx_fonts"
+        elif download_type == "pptx" and embed_fonts:
+            cache_key_type = "pptx_embedded"
         elif download_type == "zip" and with_fonts:
             cache_key_type = "zip_fonts"
         ext_map = {
@@ -588,13 +563,13 @@ def _generate_download_file_sync(
         # 无水印时尝试缓存命中
         cache_key = ""
         if not wm_text:
-            cache_key = _show_download_cache_key(show_id, cache_key_type, db)
+            cache_key = _show_download_cache_key(show_id, cache_key_type, items)
             cached = _get_cached_download(cache_key, ext)
             if cached and cached.exists():
                 # 复制到任务输出目录，避免后续清理误删缓存文件
                 out_path = _output_path(task_id, ext)
                 shutil.copy2(cached, out_path)
-                file_name = _suggest_filename(show_name, download_type, with_fonts)
+                file_name = _suggest_filename(show_name, download_type, with_fonts, embed_fonts)
                 if progress_callback:
                     progress_callback(90, "缓存命中")
                 return {
@@ -602,12 +577,8 @@ def _generate_download_file_sync(
                     "file_name": file_name,
                     "file_size": out_path.stat().st_size,
                     "watermark_applied": False,
+                    "resource_refs": resource_refs,
                 }
-
-        # 收集资源
-        items = _collect_resources(db, show_id)
-        if not items:
-            raise RuntimeError("放映组没有可下载的资源")
 
         out_path = _output_path(task_id, ext)
         if out_path.exists():
@@ -620,7 +591,7 @@ def _generate_download_file_sync(
         elif download_type == "pptx_pages":
             out_path, file_name, watermark_applied = _generate_pptx_pages(db, show_id, show_name, items, wm_text, out_path, progress_callback=progress_callback)
         elif download_type == "pptx":
-            out_path, file_name, watermark_applied = _generate_pptx(db, show_id, show_name, items, wm_text, with_fonts, out_path, progress_callback=progress_callback)
+            out_path, file_name, watermark_applied = _generate_pptx(db, show_id, show_name, items, wm_text, with_fonts, embed_fonts, out_path, progress_callback=progress_callback)
         elif download_type == "zip":
             out_path, file_name, watermark_applied = _generate_zip(db, show_id, show_name, items, wm_text, with_fonts, out_path, progress_callback=progress_callback)
         else:
@@ -638,6 +609,7 @@ def _generate_download_file_sync(
             "file_name": file_name,
             "file_size": out_path.stat().st_size,
             "watermark_applied": watermark_applied,
+            "resource_refs": resource_refs,
         }
     finally:
         try:
@@ -647,7 +619,7 @@ def _generate_download_file_sync(
         materialization.__exit__(None, None, None)
 
 
-def _suggest_filename(show_name: str, download_type: str, with_fonts: bool) -> str:
+def _suggest_filename(show_name: str, download_type: str, with_fonts: bool, embed_fonts: bool = False) -> str:
     if download_type == "pdf":
         return f"{show_name}.pdf"
     if download_type == "pptx_images":
@@ -655,6 +627,8 @@ def _suggest_filename(show_name: str, download_type: str, with_fonts: bool) -> s
     if download_type == "pptx_pages":
         return f"{show_name}_逐页.zip"
     if download_type == "pptx":
+        if embed_fonts:
+            return f"{show_name}_embedded_fonts.pptx"
         return f"{show_name}_with_fonts.zip" if with_fonts else f"{show_name}.pptx"
     if download_type == "zip":
         return f"{show_name}_with_fonts.zip" if with_fonts else f"{show_name}.zip"

@@ -11,12 +11,12 @@ from app.services.common import (
 )
 from app.services.resource_queries import (
     _build_resource_query_sql,
-    _parse_csv,
 )
 from app.services.resources import (
     _serialize_resource_lite,
 )
 from app.services.files import asset_preview_url
+from app.services.tagging import entity_tag_names
 from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import Query
@@ -25,6 +25,27 @@ from typing import Any
 import sqlite3
 
 router = APIRouter()
+
+
+def _resource_facets(
+    db: sqlite3.Connection,
+    where_clause: str,
+    params: dict[str, Any],
+) -> tuple[list[str], list[str]]:
+    """Read filter facets from normalized tag relations, not the legacy cache."""
+    rows = db.execute(
+        f"""
+        SELECT t.name AS tag_name, r.subject
+        FROM resources r
+        LEFT JOIN resource_tags rt ON rt.resource_id = r.id
+        LEFT JOIN tags t ON t.id = rt.tag_id
+        WHERE {where_clause}
+        """,
+        params,
+    ).fetchall()
+    all_tags = sorted({str(row["tag_name"]) for row in rows if row["tag_name"]})
+    all_subjects = sorted({str(row["subject"]) for row in rows if row["subject"]})
+    return all_tags, all_subjects
 
 
 @router.get("/api/resources")
@@ -37,7 +58,6 @@ def list_resources(
     tags_mode: str = Query("any"),
     subject: str = Query(""),
     status: str = Query("all"),
-    secrecy: str = Query("all"),
     permission: str = Query("all"),
     remark_common: str = Query("all"),
     remark_personal: str = Query("all"),
@@ -51,23 +71,12 @@ def list_resources(
     where_clause, order_sql, params = _build_resource_query_sql(
         user, manageable_only=manageable_only,
         search=search, tags=tags, tags_mode=tags_mode,
-        subject=subject, status=status, secrecy=secrecy,
+        subject=subject, status=status,
         permission=permission, remark_common=remark_common,
         remark_personal=remark_personal, sort=sort,
+        db=db,
     )
-    # 收集可见资源的标签/主体（用于前端筛选下拉）
-    facet_rows = db.execute(
-        f"SELECT r.tags, r.subject FROM resources r WHERE {where_clause}",
-        params,
-    ).fetchall()
-    all_tags_set: set[str] = set()
-    all_subjects_set: set[str] = set()
-    for fr in facet_rows:
-        all_tags_set.update(_parse_csv(fr["tags"] or ""))
-        if fr["subject"]:
-            all_subjects_set.add(fr["subject"])
-    all_tags = sorted(all_tags_set)
-    all_subjects = sorted(all_subjects_set)
+    all_tags, all_subjects = _resource_facets(db, where_clause, params)
     # 总数
     total: int = db.execute(
         f"SELECT COUNT(*) FROM resources r WHERE {where_clause}",
@@ -98,7 +107,6 @@ def list_resource_ids(
     tags_mode: str = Query("any"),
     subject: str = Query(""),
     status: str = Query("all"),
-    secrecy: str = Query("all"),
     permission: str = Query("all"),
     remark_common: str = Query("all"),
     remark_personal: str = Query("all"),
@@ -115,9 +123,10 @@ def list_resource_ids(
     where_clause, _, params = _build_resource_query_sql(
         user, manageable_only=manageable_only,
         search=search, tags=tags, tags_mode=tags_mode,
-        subject=subject, status=status, secrecy=secrecy,
+        subject=subject, status=status,
         permission=permission, remark_common=remark_common,
         remark_personal=remark_personal, sort=sort,
+        db=db,
     )
     rows = db.execute(
         f"SELECT r.id FROM resources r WHERE {where_clause}", params,
@@ -134,8 +143,7 @@ def pick_resources(
     tags: str = Query(""),
     tags_mode: str = Query("any"),
     subject: str = Query(""),
-    status: str = Query("active"),
-    secrecy: str = Query("all"),
+    status: str = Query("all"),
     permission: str = Query("all"),
     remark_common: str = Query("all"),
     remark_personal: str = Query("all"),
@@ -147,22 +155,12 @@ def pick_resources(
     _reject_removed_query_params(request, "tag", "resource_type")
     where_clause, order_sql, params = _build_resource_query_sql(
         user, search=search, tags=tags, tags_mode=tags_mode,
-        subject=subject, status=status, secrecy=secrecy,
+        subject=subject, status=status,
         permission=permission, remark_common=remark_common,
         remark_personal=remark_personal, sort=sort,
+        db=db,
     )
-    # 收集可见资源的标签/主体（用于前端筛选下拉）
-    facet_rows = db.execute(
-        f"SELECT r.tags, r.subject FROM resources r WHERE {where_clause}", params,
-    ).fetchall()
-    all_tags_set: set[str] = set()
-    all_subjects_set: set[str] = set()
-    for fr in facet_rows:
-        all_tags_set.update(_parse_csv(fr["tags"] or ""))
-        if fr["subject"]:
-            all_subjects_set.add(fr["subject"])
-    all_tags = sorted(all_tags_set)
-    all_subjects = sorted(all_subjects_set)
+    all_tags, all_subjects = _resource_facets(db, where_clause, params)
     # 总数
     total: int = db.execute(
         f"SELECT COUNT(*) FROM resources r WHERE {where_clause}", params,
@@ -186,7 +184,15 @@ def pick_resources(
         items.append({
             "id": int(row["id"]),
             "name": row["name"],
-            "tags": row["tags"],
+            "tags": ",".join(
+                entity_tag_names(
+                    db,
+                    relation_table="resource_tags",
+                    entity_column="resource_id",
+                    entity_id=int(row["id"]),
+                    fallback=row["tags"] or "",
+                )
+            ),
             "subject": row["subject"] or "",
             "updated_at": row["updated_at"],
             "created_at": row["created_at"],
@@ -209,8 +215,7 @@ def pick_resources_all_ids(
     tags: str = Query(""),
     tags_mode: str = Query("any"),
     subject: str = Query(""),
-    status: str = Query("active"),
-    secrecy: str = Query("all"),
+    status: str = Query("all"),
     permission: str = Query("all"),
     remark_common: str = Query("all"),
     remark_personal: str = Query("all"),
@@ -222,9 +227,10 @@ def pick_resources_all_ids(
     _reject_removed_query_params(request, "tag", "resource_type")
     where_clause, _, params = _build_resource_query_sql(
         user, search=search, tags=tags, tags_mode=tags_mode,
-        subject=subject, status=status, secrecy=secrecy,
+        subject=subject, status=status,
         permission=permission, remark_common=remark_common,
         remark_personal=remark_personal, sort=sort,
+        db=db,
     )
     rows = db.execute(
         f"SELECT r.id FROM resources r WHERE {where_clause}", params,

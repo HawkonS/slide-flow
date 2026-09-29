@@ -5,7 +5,6 @@ import { DEFAULT_SORT_KEY, type SortKey } from "@/lib/constants";
 export interface ShowFiltersState {
   query: string;
   subject: string;            // "all" = 全部
-  secrecy: string;
   status: string;
   permission: "all" | "created" | "managed" | "visible";
   tags: string[];             // 选中的标签
@@ -16,7 +15,6 @@ export interface ShowFiltersState {
 
   setQuery: (value: string) => void;
   setSubject: (value: string) => void;
-  setSecrecy: (value: string) => void;
   setStatus: (value: string) => void;
   setPermission: (value: "all" | "created" | "managed" | "visible") => void;
   setTags: (value: string[]) => void;
@@ -29,7 +27,6 @@ export interface ShowFiltersState {
 export const useShowFilters = create<ShowFiltersState>((set) => ({
   query: "",
   subject: "all",
-  secrecy: "all",
   status: "all",
   permission: "all",
   tags: [],
@@ -37,7 +34,6 @@ export const useShowFilters = create<ShowFiltersState>((set) => ({
   sort: DEFAULT_SORT_KEY,
   setQuery: (value) => set({ query: value }),
   setSubject: (value) => set({ subject: value }),
-  setSecrecy: (value) => set({ secrecy: value }),
   setStatus: (value) => set({ status: value }),
   setPermission: (value) => set({ permission: value }),
   setTags: (value) => set({ tags: value }),
@@ -52,7 +48,6 @@ export const useShowFilters = create<ShowFiltersState>((set) => ({
     set({
       query: "",
       subject: "all",
-      secrecy: "all",
       status: "all",
       permission: "all",
       tags: [],

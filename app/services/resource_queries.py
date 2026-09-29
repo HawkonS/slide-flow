@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.core.permissions import is_system_admin
+from app.services.tagging import tag_relation_join
 from typing import Any
 import sqlite3
 
@@ -25,6 +26,7 @@ def _resource_visibility_sql(
     user: sqlite3.Row,
     alias: str = "r",
     manageable_only: bool = False,
+    db: sqlite3.Connection | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """构建资源可见性 + 可管理性 SQL WHERE 片段。
 
@@ -33,6 +35,16 @@ def _resource_visibility_sql(
     """
     uid = int(user["id"])
     params: dict[str, Any] = {"vis_uid": uid}
+    visibility_tag_join = (
+        tag_relation_join(db, "resource_visibility_tags", "rvt")
+        if db is not None
+        else "ut.tag_name = rvt.tag_name"
+    )
+    management_tag_join = (
+        tag_relation_join(db, "resource_management_tags", "rmt")
+        if db is not None
+        else "ut.tag_name = rmt.tag_name"
+    )
 
     if is_system_admin(user):
         cond = "1=1"
@@ -44,7 +56,7 @@ def _resource_visibility_sql(
             f" (SELECT resource_id FROM resource_visibility WHERE user_id = :vis_uid))"
             f" OR ({alias}.visibility_scope = 'partial' AND {alias}.id IN"
             f" (SELECT rvt.resource_id FROM resource_visibility_tags rvt"
-            f" JOIN user_tags ut ON ut.tag_name = rvt.tag_name"
+            f" JOIN user_tags ut ON {visibility_tag_join}"
             f" WHERE ut.user_id = :vis_uid)))"
         )
 
@@ -58,7 +70,7 @@ def _resource_visibility_sql(
                 f" (SELECT resource_id FROM resource_management WHERE user_id = :mgmt_uid))"
                 f" OR ({alias}.management_scope = 'partial' AND {alias}.id IN"
                 f" (SELECT rmt.resource_id FROM resource_management_tags rmt"
-                f" JOIN user_tags ut ON ut.tag_name = rmt.tag_name"
+                f" JOIN user_tags ut ON {management_tag_join}"
                 f" WHERE ut.user_id = :mgmt_uid)))"
             )
 
@@ -87,18 +99,23 @@ def _build_resource_query_sql(
     tags_mode: str = "any",
     subject: str = "",
     status: str = "all",
-    secrecy: str = "all",
     permission: str = "all",
     remark_common: str = "all",
     remark_personal: str = "all",
     sort: str = "updated_desc",
+    db: sqlite3.Connection | None = None,
 ) -> tuple[str, str, dict[str, Any]]:
     """构建资源列表 SQL WHERE 条件 + 排序。
 
     返回 (where_clause, order_sql, params_dict)。
     调用方自行拼接 SELECT / COUNT 语句。
     """
-    vis_cond, params = _resource_visibility_sql(user, "r", manageable_only)
+    vis_cond, params = _resource_visibility_sql(user, "r", manageable_only, db=db)
+    management_tag_join = (
+        tag_relation_join(db, "resource_management_tags", "rmt")
+        if db is not None
+        else "ut.tag_name = rmt.tag_name"
+    )
 
     where_parts = [vis_cond]
 
@@ -109,10 +126,6 @@ def _build_resource_query_sql(
     if subject and subject != "all":
         where_parts.append("COALESCE(r.subject, '') = :fl_subject")
         params["fl_subject"] = subject
-    if secrecy and secrecy != "all":
-        where_parts.append("COALESCE(r.secrecy_level, '') = :fl_secrecy")
-        params["fl_secrecy"] = secrecy
-
     # permission 筛选
     if permission == "created":
         where_parts.append("r.owner_id = :perm_uid")
@@ -127,7 +140,7 @@ def _build_resource_query_sql(
                 " (SELECT resource_id FROM resource_management WHERE user_id = :m_uid))"
                 " OR (r.management_scope = 'partial' AND r.id IN"
                 " (SELECT rmt.resource_id FROM resource_management_tags rmt"
-                " JOIN user_tags ut ON ut.tag_name = rmt.tag_name"
+                f" JOIN user_tags ut ON {management_tag_join}"
                 " WHERE ut.user_id = :m_uid)))"
             )
             params["m_uid"] = m_uid
@@ -141,21 +154,29 @@ def _build_resource_query_sql(
         )
         params["fl_q"] = f"%{q.lower()}%"
 
-    # 标签筛选
+    # 标签筛选：使用规范化关联表，避免对 CSV 文本做 LIKE 扫描。
     tag_list = _parse_csv(tags)
     if tag_list:
         mode = (tags_mode or "any").lower()
         if mode == "all":
             for i, t in enumerate(tag_list):
-                clause, tp = _csv_tag_sql_match("r.tags", t, f"tg{i}")
-                where_parts.append(clause)
-                params.update(tp)
+                param_name = f"tg{i}"
+                where_parts.append(
+                    "EXISTS (SELECT 1 FROM resource_tags rt "
+                    "JOIN tags tag_def ON tag_def.id = rt.tag_id "
+                    f"WHERE rt.resource_id = r.id AND tag_def.name = :{param_name})"
+                )
+                params[param_name] = t
         else:
             or_parts = []
             for i, t in enumerate(tag_list):
-                clause, tp = _csv_tag_sql_match("r.tags", t, f"tg{i}")
-                or_parts.append(clause)
-                params.update(tp)
+                param_name = f"tg{i}"
+                or_parts.append(
+                    "EXISTS (SELECT 1 FROM resource_tags rt "
+                    "JOIN tags tag_def ON tag_def.id = rt.tag_id "
+                    f"WHERE rt.resource_id = r.id AND tag_def.name = :{param_name})"
+                )
+                params[param_name] = t
             where_parts.append(f"({' OR '.join(or_parts)})")
 
     # 通用备注筛选
@@ -195,12 +216,18 @@ def _build_resource_query_sql(
     # 排序
     sort_key = sort if sort in _PICK_SORT_KEYS else "updated_desc"
     if sort_key.startswith("name"):
-        order = "LOWER(COALESCE(r.name, ''))"
-        order += " DESC" if sort_key.endswith("_desc") else " ASC"
+        name_order = "DESC" if sort_key.endswith("_desc") else "ASC"
+        order = f"LOWER(COALESCE(r.name, '')) {name_order}, r.id ASC"
     elif sort_key.startswith("created"):
-        order = "COALESCE(r.created_at, '') DESC, r.id DESC" if sort_key.endswith("_desc") else "COALESCE(r.created_at, '') ASC, r.id ASC"
+        # Pages from one import batch share a timestamp. Keep their
+        # auto-increment order so the PPT page order remains visible.
+        time_order = "DESC" if sort_key.endswith("_desc") else "ASC"
+        order = f"COALESCE(julianday(r.created_at), -1) {time_order}, r.id ASC"
     else:
-        order = "COALESCE(r.updated_at, '') DESC, r.id DESC" if sort_key.endswith("_desc") else "COALESCE(r.updated_at, '') ASC, r.id ASC"
+        # Pages from one import batch share a timestamp. Keep their
+        # auto-increment order so the PPT page order remains visible.
+        time_order = "DESC" if sort_key.endswith("_desc") else "ASC"
+        order = f"COALESCE(julianday(r.updated_at), -1) {time_order}, r.id ASC"
 
     return where_clause, order, params
 

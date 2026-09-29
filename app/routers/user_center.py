@@ -19,6 +19,7 @@ from app.core.permissions import (
 from app.db import now_iso
 from app.routers.dependencies import db_dep, db_read_dep
 from app.services.files import asset_preview_url
+from app.services.tagging import tag_relation_join
 
 
 router = APIRouter()
@@ -67,7 +68,6 @@ def _serialize_resource(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.
         "subject": row["subject"],
         "tags": row["tags"],
         "status": row["status"],
-        "secrecy_level": row["secrecy_level"],
         "visibility_scope": row["visibility_scope"],
         "management_scope": row["management_scope"],
         "owner_id": row["owner_id"],
@@ -117,7 +117,6 @@ def _serialize_show(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row)
             version_id = version_row["id"] if version_row else None
             png_path = version_row["png_path"] if version_row else None
             
-            # 获取资源的密级
             resource_row = db.execute(
                 "SELECT * FROM resources WHERE id = ?",
                 (resource_id,),
@@ -131,7 +130,6 @@ def _serialize_show(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row)
                 "name": sr["resource_name"],
                 "version_no": version_no,
                 "is_hidden": bool(sr["is_hidden"]),
-                "secrecy_level": resource_row["secrecy_level"] if resource_row else "public",
                 "accessible": resource_accessible,
                 "preview_url": asset_preview_url(png_path, thumb=True) or (f"/api/resources/{resource_id}/preview-thumb?version_id={version_id}" if png_path else None),
                 "original_preview_url": asset_preview_url(png_path) or (f"/api/resources/{resource_id}/preview?version_id={version_id}" if png_path else None),
@@ -143,7 +141,6 @@ def _serialize_show(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row)
         "subject": row["subject"],
         "tags": row["tags"],
         "status": row["status"],
-        "secrecy_level": row["secrecy_level"],
         "is_standard": bool(row["is_standard"]),
         "visibility_scope": row["visibility_scope"],
         "management_scope": row["management_scope"],
@@ -313,10 +310,11 @@ def my_home_stats(
         tag_clause = ""
         params: list[int] = [user_id, user_id]
         if tag_table:
+            tag_join = tag_relation_join(db, tag_table, "vt")
             tag_clause = f"""
                 OR (t.visibility_scope = 'partial' AND EXISTS (
                     SELECT 1 FROM {tag_table} vt
-                    JOIN user_tags ut ON ut.tag_name = vt.tag_name
+                    JOIN user_tags ut ON {tag_join}
                     WHERE vt.{vis_fk} = t.id AND ut.user_id = ?
                 ))
             """
@@ -350,7 +348,12 @@ def my_home_stats(
     )
     resources_mine = _mine_count("resources")
 
-    shows_total = _visible_count("shows", "show_visibility", "show_id")
+    shows_total = _visible_count(
+        "shows",
+        "show_visibility",
+        "show_id",
+        tag_table="show_visibility_tags",
+    )
     shows_mine = _mine_count("shows")
 
     templates_total = int(db.execute("SELECT COUNT(*) FROM templates").fetchone()[0])

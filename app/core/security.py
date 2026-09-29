@@ -141,9 +141,9 @@ def verify_present_token(token: str, secret_key: str) -> dict | None:
 def read_session_claims(token: str | None, secret_key: str) -> tuple[int, int] | None:
     if not token or "." not in token:
         return None
-    payload_b64, signature_b64 = token.split(".", 1)
-    expected = hmac.new(secret_key.encode("utf-8"), payload_b64.encode("ascii"), hashlib.sha256).digest()
     try:
+        payload_b64, signature_b64 = token.split(".", 1)
+        expected = hmac.new(secret_key.encode("utf-8"), payload_b64.encode("ascii"), hashlib.sha256).digest()
         actual = _unb64(signature_b64)
         if not hmac.compare_digest(actual, expected):
             return None
@@ -169,3 +169,14 @@ def read_session_claims(token: str | None, secret_key: str) -> tuple[int, int] |
 def read_session_token(token: str | None, secret_key: str) -> int | None:
     claims = read_session_claims(token, secret_key)
     return claims[0] if claims else None
+
+
+def read_session_expiry(token: str | None, secret_key: str) -> int | None:
+    """Return the expiry only after verifying the existing session signature."""
+    if read_session_claims(token, secret_key) is None or token is None:
+        return None
+    try:
+        payload = _unb64(token.split(".", 1)[0]).decode("utf-8")
+        return int(payload.rsplit(":", 1)[1])
+    except (ValueError, UnicodeError):
+        return None

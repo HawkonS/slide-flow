@@ -10,6 +10,11 @@ export class ApiError extends Error {
   }
 }
 
+/** Only fetch transport failures receive this type; JSON/application errors do not. */
+export class ApiTransportError extends TypeError {
+  constructor(message: string) { super(message); this.name = "ApiTransportError"; }
+}
+
 export function parseRetryAfter(value: string | null, now = Date.now()): number | undefined {
   if (!value?.trim()) return undefined;
   const seconds = Number(value);
@@ -24,8 +29,12 @@ export interface FetchOptions extends RequestInit {
 }
 
 let unauthorizedHandler: (() => void) | null = null;
+let sessionGeneration = 0;
+
+export function advanceApiSession(): void { sessionGeneration++; }
 
 export function setUnauthorizedHandler(fn: (() => void) | null) {
+  advanceApiSession();
   unauthorizedHandler = fn;
 }
 
@@ -45,6 +54,8 @@ export async function api<T = unknown>(
   path: string,
   options: FetchOptions = {},
 ): Promise<T> {
+  const requestGeneration = sessionGeneration;
+  const requestUnauthorizedHandler = unauthorizedHandler;
   const { json, params, raw, headers, ...init } = options;
 
   const finalHeaders = new Headers(headers);
@@ -56,12 +67,18 @@ export async function api<T = unknown>(
     finalHeaders.set("Content-Type", "application/json");
   }
 
-  const res = await fetch(buildUrl(path, params), {
-    ...init,
-    body,
-    credentials: "include",
-    headers: finalHeaders,
-  });
+  let res: Response;
+  try {
+    res = await fetch(buildUrl(path, params), {
+      ...init, body, credentials: "include", headers: finalHeaders,
+    });
+  } catch (error) {
+    if (error instanceof TypeError || (error instanceof DOMException &&
+        (error.name === "NetworkError" || error.name === "TimeoutError"))) {
+      throw new ApiTransportError(error.message);
+    }
+    throw error;
+  }
 
   if (!res.ok) {
     let data: unknown = null;
@@ -76,8 +93,9 @@ export async function api<T = unknown>(
     } catch {
       // ignore
     }
-    if (res.status === 401 && !path.startsWith("/api/auth/")) {
-      unauthorizedHandler?.();
+    if (res.status === 401 && !path.startsWith("/api/auth/")
+        && requestGeneration === sessionGeneration && requestUnauthorizedHandler === unauthorizedHandler) {
+      requestUnauthorizedHandler?.();
     }
     throw new ApiError(res.status, detail, data, parseRetryAfter(res.headers.get("Retry-After")));
   }

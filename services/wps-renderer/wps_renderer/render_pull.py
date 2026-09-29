@@ -18,8 +18,10 @@ import urllib.parse
 import urllib.request
 import uuid
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import Callable
 
 from PIL import Image
 
@@ -102,6 +104,12 @@ class RenderPull:
         )
         self.poll_failure_exit_seconds = max(
             60, min(3600, int(config.get("poll_failure_exit_seconds", 300)))
+        )
+        # Publishing a rendered batch is network bound (signed URL requests
+        # and OSS PUTs). Keep the default small enough for older Windows
+        # machines while avoiding one round trip per page in the critical path.
+        self.publish_concurrency = max(
+            1, min(8, int(config.get("publish_concurrency", 4)))
         )
         self.work_dir = Path(config.get("work_dir") or tempfile.gettempdir()) / "slideflow-render-pull"
         self.work_dir.mkdir(parents=True, exist_ok=True)
@@ -420,9 +428,12 @@ class RenderPull:
         self, pages: list[dict], source_meta: dict, source: Path, dpi: int,
         stop: threading.Event, required_fonts: list[str], font_hashes: list[str],
         font_bindings: list[dict[str, str]],
+        on_batch: Callable[[list[dict], dict[int, Path]], None] | None = None,
     ) -> dict[int, Path]:
+        if stop.is_set():
+            raise LeaseLost("render lease was lost")
         try:
-            return self._submit_local_batch(
+            images = self._submit_local_batch(
                 pages, source_meta, source, dpi, stop,
                 required_fonts, font_hashes, font_bindings,
             )
@@ -436,18 +447,26 @@ class RenderPull:
             middle = len(pages) // 2
             left = self._render_batch_with_fallback(
                 pages[:middle], source_meta, source, dpi, stop,
-                required_fonts, font_hashes, font_bindings,
+                required_fonts, font_hashes, font_bindings, on_batch,
             )
             right = self._render_batch_with_fallback(
                 pages[middle:], source_meta, source, dpi, stop,
-                required_fonts, font_hashes, font_bindings,
+                required_fonts, font_hashes, font_bindings, on_batch,
             )
             return {**left, **right}
+        if stop.is_set():
+            raise LeaseLost("render lease was lost")
+        # Only local conversion errors may bisect a batch. An upload or result
+        # acknowledgement failure must never repeat an already successful WPS
+        # conversion, including when a successful left subtree was published.
+        if on_batch is not None:
+            on_batch(pages, images)
+        return images
 
     def _output_url(self, task_id: str, lease_token: str, index: int) -> str:
         signed = self._main(
             "POST", f"/api/renderer/render-tasks/{task_id}/urls",
-            {"lease_token": lease_token, "page_index": index},
+            {"lease_token": lease_token, "page_index": index, "include_source": False},
         ).get("page")
         if not isinstance(signed, dict) or signed.get("index") != index:
             raise ValueError("could not obtain signed page URLs")
@@ -455,6 +474,40 @@ class RenderPull:
         if not isinstance(url, str):
             raise ValueError("could not obtain signed output URL")
         return url
+
+    def _report_progress(
+        self, task_id: str, lease_token: str, pages: list[dict],
+        total: int, stop: threading.Event,
+    ) -> None:
+        # Retry the exact receipt after a lost response. The server owns
+        # idempotency; conversion and OSS upload are outside this retry loop.
+        for attempt in range(3):
+            if stop.is_set():
+                raise LeaseLost("render lease was lost")
+            try:
+                result = self._main(
+                    "POST", f"/api/renderer/render-tasks/{task_id}/progress",
+                    {"lease_token": lease_token, "pages": pages}, timeout=300,
+                )
+                count = result.get("preview_count")
+                if (result.get("ok") is not True or type(count) is not int
+                        or type(result.get("total")) is not int
+                        or result["total"] != total or not len(pages) <= count <= total):
+                    raise ValueError("invalid incremental result acknowledgement")
+                if stop.is_set():
+                    raise LeaseLost("render lease was lost")
+                return
+            except urllib.error.HTTPError as exc:
+                if exc.code in {404, 409}:
+                    stop.set()
+                    raise LeaseLost("render result lease was rejected") from exc
+                if _failure_code(exc) != "network_error" or attempt == 2:
+                    raise
+            except (urllib.error.URLError, TimeoutError, socket.timeout, ConnectionError):
+                if attempt == 2:
+                    raise
+            if stop.wait(min(5, self.retry_seconds) * (attempt + 1)):
+                raise LeaseLost("render lease was lost")
 
     def _renew_loop(
         self, task_id: str, lease_token: str, lease_seconds: int,
@@ -489,9 +542,12 @@ class RenderPull:
         font_hashes = task.get("font_hashes", [])
         font_bindings = task.get("font_bindings", [])
         requested_batch = task.get("batch_size", 1)
+        incremental = task.get("incremental_results") is True
+        first_batch = task.get("first_batch_size", 4) if incremental else requested_batch
         if (not isinstance(pages, list) or not 1 <= len(pages) <= 500 or type(dpi) is not int
                 or not 72 <= dpi <= 300 or type(lease_seconds) is not int or not 60 <= lease_seconds <= 3600
                 or type(requested_batch) is not int or not 1 <= requested_batch <= 50
+                or type(first_batch) is not int or not 1 <= first_batch <= 50
                 or not isinstance(required_fonts, list) or len(required_fonts) > 128
                 or any(not isinstance(name, str) or not name.strip() or len(name) > 256 for name in required_fonts)
                 or len(set(required_fonts)) != len(required_fonts)
@@ -540,7 +596,56 @@ class RenderPull:
         )
         renewer.start()
         directory = Path(tempfile.mkdtemp(prefix=f"{task_id}-", dir=self.work_dir))
-        results = []
+        results: dict[int, dict] = {}
+
+        def publish_batch(batch: list[dict], images: dict[int, Path]) -> None:
+            batch_indexes = [page["index"] for page in batch]
+            if (len(set(batch_indexes)) != len(batch_indexes)
+                    or not set(batch_indexes).issubset(indexes)
+                    or set(images) != set(batch_indexes)):
+                raise ValueError("invalid rendered batch indexes")
+            pending = []
+            for index in batch_indexes:
+                if lost.is_set():
+                    raise LeaseLost("render lease was lost")
+                image = images[index]
+                meta = {"index": index, "size": image.stat().st_size,
+                        "sha256": _sha256_file(image)}
+                previous = results.get(index)
+                if previous is not None:
+                    if previous != meta:
+                        raise ValueError("conflicting rendered page result")
+                    continue
+                pending.append(meta)
+            if not pending:
+                return
+
+            def signed_output(meta: dict) -> tuple[int, str]:
+                if lost.is_set():
+                    raise LeaseLost("render lease was lost")
+                index = meta["index"]
+                return index, self._output_url(task_id, lease_token, index)
+
+            # URL signing and object uploads are independent for pages in one
+            # batch. Run them concurrently so the first incremental receipt is
+            # gated by the slowest page instead of the sum of all pages.
+            workers = min(self.publish_concurrency, len(pending))
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="render-url") as pool:
+                output_urls = dict(pool.map(signed_output, pending))
+
+            def upload(meta: dict) -> None:
+                if lost.is_set():
+                    raise LeaseLost("render lease was lost")
+                index = meta["index"]
+                self._upload(output_urls[index], images[index], lost)
+
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="render-upload") as pool:
+                list(pool.map(upload, pending))
+            if pending and incremental:
+                self._report_progress(task_id, lease_token, pending, len(pages), lost)
+            for meta in pending:
+                results[meta["index"]] = meta
+
         LOG.info("render task %s started with %s page(s)", task_id, len(pages))
         try:
             if batch_size > 1 and source_meta is not None:
@@ -558,20 +663,20 @@ class RenderPull:
                     signed_source["download_url"], source, source_meta["size"],
                     source_meta["sha256"], source_limit,
                 )
-                for offset in range(0, len(pages), batch_size):
+                offset = 0
+                while offset < len(pages):
                     if lost.is_set():
                         raise LeaseLost("render lease was lost")
-                    chunk = pages[offset:offset + batch_size]
+                    chunk_size = min(first_batch, batch_size) if offset == 0 else batch_size
+                    chunk = pages[offset:offset + chunk_size]
                     images = self._render_batch_with_fallback(
                         chunk, source_meta, source, dpi, lost,
                         required_fonts, font_hashes, font_bindings,
+                        publish_batch if incremental else None,
                     )
-                    for page in chunk:
-                        index = page["index"]
-                        image = images[index]
-                        self._upload(self._output_url(task_id, lease_token, index), image, lost)
-                        results.append({"index": index, "size": image.stat().st_size,
-                                        "sha256": _sha256_file(image)})
+                    if not incremental:
+                        publish_batch(chunk, images)
+                    offset += len(chunk)
             else:
                 for page in pages:
                     if lost.is_set():
@@ -589,12 +694,12 @@ class RenderPull:
                         page, source, dpi, lost,
                         required_fonts, font_hashes, font_bindings,
                     )
-                    self._upload(self._output_url(task_id, lease_token, index), image, lost)
-                    results.append({"index": index, "size": image.stat().st_size,
-                                    "sha256": _sha256_file(image)})
+                    publish_batch([page], {index: image})
             if lost.is_set():
                 raise LeaseLost("render lease was lost")
-            self._main("POST", f"/api/renderer/render-tasks/{task_id}/complete", {"lease_token": lease_token, "pages": results}, timeout=300)
+            if set(results) != indexes:
+                raise ValueError("incomplete rendered page results")
+            self._main("POST", f"/api/renderer/render-tasks/{task_id}/complete", {"lease_token": lease_token, "pages": [results[page["index"]] for page in pages]}, timeout=300)
             LOG.info("render task %s completed with %s page(s)", task_id, len(results))
         except LeaseLost:
             LOG.warning("render task %s stopped after its lease was lost", task_id)

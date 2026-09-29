@@ -18,7 +18,7 @@ from app.config import (
 from app.core.bootstrap import prepare_initial_admin
 from app.core.fonts import normalize_font_name
 
-DB_SCHEMA_VERSION = 23
+DB_SCHEMA_VERSION = 26
 
 
 def is_sqlite_busy_error(exc: BaseException) -> bool:
@@ -40,8 +40,8 @@ def new_resource_detail_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-def now_iso() -> str:
-    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+def now_iso(timespec: str = "seconds") -> str:
+    return datetime.utcnow().isoformat(timespec=timespec) + "Z"
 
 
 def known_font_aliases(db: sqlite3.Connection) -> set[str]:
@@ -223,6 +223,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS user_tags (
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 tag_name TEXT NOT NULL,
+                tag_id INTEGER REFERENCES user_tag_definitions(id) ON DELETE CASCADE,
                 PRIMARY KEY (user_id, tag_name)
             );
 
@@ -241,17 +242,6 @@ def init_db() -> None:
             );
 
             CREATE TABLE IF NOT EXISTS subject_tag_definitions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                category TEXT NOT NULL DEFAULT '未分类',
-                label TEXT NOT NULL,
-                sort_order INTEGER NOT NULL DEFAULT 0,
-                is_default_filter INTEGER NOT NULL DEFAULT 0,
-                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
-                created_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS secrecy_tag_definitions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
                 category TEXT NOT NULL DEFAULT '未分类',
@@ -311,6 +301,16 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS resource_tags (
+                resource_id INTEGER NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+                tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+                position INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (resource_id, tag_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_resource_tags_tag_resource
+                ON resource_tags(tag_id, resource_id);
+
             CREATE TABLE IF NOT EXISTS resource_visibility (
                 resource_id INTEGER NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -326,6 +326,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS resource_visibility_tags (
                 resource_id INTEGER NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
                 tag_name TEXT NOT NULL REFERENCES user_tag_definitions(name) ON UPDATE CASCADE ON DELETE CASCADE,
+                tag_id INTEGER REFERENCES user_tag_definitions(id) ON DELETE CASCADE,
                 PRIMARY KEY (resource_id, tag_name)
             );
 
@@ -335,6 +336,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS resource_management_tags (
                 resource_id INTEGER NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
                 tag_name TEXT NOT NULL REFERENCES user_tag_definitions(name) ON UPDATE CASCADE ON DELETE CASCADE,
+                tag_id INTEGER REFERENCES user_tag_definitions(id) ON DELETE CASCADE,
                 PRIMARY KEY (resource_id, tag_name)
             );
 
@@ -410,6 +412,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS template_visibility_tags (
                 template_id INTEGER NOT NULL REFERENCES templates(id) ON DELETE CASCADE,
                 tag_name TEXT NOT NULL REFERENCES user_tag_definitions(name) ON UPDATE CASCADE ON DELETE CASCADE,
+                tag_id INTEGER REFERENCES user_tag_definitions(id) ON DELETE CASCADE,
                 PRIMARY KEY (template_id, tag_name)
             );
 
@@ -419,6 +422,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS template_management_tags (
                 template_id INTEGER NOT NULL REFERENCES templates(id) ON DELETE CASCADE,
                 tag_name TEXT NOT NULL REFERENCES user_tag_definitions(name) ON UPDATE CASCADE ON DELETE CASCADE,
+                tag_id INTEGER REFERENCES user_tag_definitions(id) ON DELETE CASCADE,
                 PRIMARY KEY (template_id, tag_name)
             );
 
@@ -538,6 +542,16 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS show_tags (
+                show_id INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
+                tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+                position INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (show_id, tag_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_show_tags_tag_show
+                ON show_tags(tag_id, show_id);
+
             CREATE TABLE IF NOT EXISTS show_visibility (
                 show_id INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -549,6 +563,26 @@ def init_db() -> None:
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 PRIMARY KEY (show_id, user_id)
             );
+
+            CREATE TABLE IF NOT EXISTS show_visibility_tags (
+                show_id INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
+                tag_name TEXT NOT NULL REFERENCES user_tag_definitions(name) ON UPDATE CASCADE ON DELETE CASCADE,
+                tag_id INTEGER REFERENCES user_tag_definitions(id) ON DELETE CASCADE,
+                PRIMARY KEY (show_id, tag_name)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_show_visibility_tags_name
+                ON show_visibility_tags(tag_name, show_id);
+
+            CREATE TABLE IF NOT EXISTS show_management_tags (
+                show_id INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
+                tag_name TEXT NOT NULL REFERENCES user_tag_definitions(name) ON UPDATE CASCADE ON DELETE CASCADE,
+                tag_id INTEGER REFERENCES user_tag_definitions(id) ON DELETE CASCADE,
+                PRIMARY KEY (show_id, tag_name)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_show_management_tags_name
+                ON show_management_tags(tag_name, show_id);
 
             CREATE TABLE IF NOT EXISTS show_resources (
                 show_id INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
@@ -677,6 +711,15 @@ def init_db() -> None:
         # missing column and one would fail with "duplicate column".
         db.execute("BEGIN IMMEDIATE")
         try:
+            # A different worker may have migrated while this process waited
+            # for the writer lock. Never replay an older migration or reset
+            # a newer application's schema version using the initial read.
+            schema_version = int(db.execute("PRAGMA user_version").fetchone()[0])
+            if schema_version > DB_SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"数据库 schema 版本过高（当前 {schema_version}，应用支持到 {DB_SCHEMA_VERSION}）。"
+                    "请先升级应用，避免旧版本覆盖新数据。"
+                )
             _migrate_schema(db, schema_version)
             db.execute(f"PRAGMA user_version = {DB_SCHEMA_VERSION}")
             db.commit()
@@ -702,15 +745,21 @@ def _migrate_schema(db: sqlite3.Connection, schema_version: int) -> None:
     }
     if "detail_token" not in resource_columns:
         db.execute("ALTER TABLE resources ADD COLUMN detail_token TEXT NOT NULL DEFAULT ''")
-    existing_tokens = {
-        str(row["detail_token"])
-        for row in db.execute(
-            "SELECT detail_token FROM resources WHERE detail_token <> ''"
-        ).fetchall()
-    }
     missing_token_rows = db.execute(
         "SELECT id FROM resources WHERE detail_token = '' OR detail_token IS NULL ORDER BY id"
     ).fetchall()
+    # Most startups have nothing to backfill. Avoid materializing every
+    # resource token in each worker merely to enter an empty migration loop.
+    existing_tokens = (
+        {
+            str(row["detail_token"])
+            for row in db.execute(
+                "SELECT detail_token FROM resources WHERE detail_token <> ''"
+            ).fetchall()
+        }
+        if missing_token_rows
+        else set()
+    )
     for row in missing_token_rows:
         token = new_resource_detail_token()
         while token in existing_tokens:
@@ -759,7 +808,6 @@ def _migrate_schema(db: sqlite3.Connection, schema_version: int) -> None:
     tag_definition_tables = (
         "tags",
         "subject_tag_definitions",
-        "secrecy_tag_definitions",
         "status_tag_definitions",
         "user_tag_definitions",
     )
@@ -772,7 +820,17 @@ def _migrate_schema(db: sqlite3.Connection, schema_version: int) -> None:
                 f"ALTER TABLE {table} ADD COLUMN is_default_filter INTEGER NOT NULL DEFAULT 0"
             )
 
+    # Secrecy metadata was retired in schema version 24. Keep the legacy
+    # columns for old readers and migrations, but remove all stored values and
+    # definitions so the platform cannot expose or reuse them. Run this
+    # idempotently on every startup so a database already marked as version 24
+    # cannot retain values written by an older process.
+    _retire_secrecy_metadata(db)
+
     _maintain_resource_metadata_tags(db)
+    if schema_version < 25:
+        _migrate_normalized_content_tags(db)
+    _migrate_normalized_user_tags(db)
     font_task_columns = {
         row["name"]
         for row in db.execute("PRAGMA table_info(renderer_font_tasks)").fetchall()
@@ -1076,11 +1134,16 @@ def _relax_show_metadata_constraints(db: sqlite3.Connection) -> None:
 def _maintain_resource_metadata_tags(db: sqlite3.Connection) -> None:
     """Keep metadata choices explicitly administrator-maintained.
 
-    Older releases generated subject, secrecy and status definitions from
-    built-in defaults or historical resource values. Remove only those known
-    generated rows, then keep every remaining metadata definition flat;
-    resource data itself remains unchanged.
+    Older releases generated subject and status definitions from built-in
+    defaults or historical resource values. Remove only those known generated
+    rows, then keep every remaining metadata definition flat.
     """
+    legacy_secrecy_table = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'secrecy_tag_definitions'"
+    ).fetchone()
+    if legacy_secrecy_table is not None:
+        db.execute("DELETE FROM secrecy_tag_definitions")
+
     db.execute(
         "DELETE FROM subject_tag_definitions "
         "WHERE created_by IS NULL AND is_default_filter = 0"
@@ -1088,10 +1151,7 @@ def _maintain_resource_metadata_tags(db: sqlite3.Connection) -> None:
     db.execute(
         "UPDATE subject_tag_definitions SET category = '主体', label = name"
     )
-    for table, category in (
-        ("secrecy_tag_definitions", "密级"),
-        ("status_tag_definitions", "状态"),
-    ):
+    for table, category in (("status_tag_definitions", "状态"),):
         db.execute(
             f"DELETE FROM {table} "
             "WHERE created_by IS NULL AND is_default_filter = 0 "
@@ -1101,6 +1161,92 @@ def _maintain_resource_metadata_tags(db: sqlite3.Connection) -> None:
             f"UPDATE {table} SET category = ?, label = name",
             (category,),
         )
+
+
+def _migrate_normalized_content_tags(db: sqlite3.Connection) -> None:
+    """Backfill resource/show tag relations from legacy CSV columns."""
+    from app.services.tagging import migrate_entity_tags
+
+    migrate_entity_tags(
+        db,
+        entity_table="resources",
+        relation_table="resource_tags",
+        entity_column="resource_id",
+    )
+    migrate_entity_tags(
+        db,
+        entity_table="shows",
+        relation_table="show_tags",
+        entity_column="show_id",
+    )
+
+
+def _migrate_normalized_user_tags(db: sqlite3.Connection) -> None:
+    """Add and backfill IDs for user labels and scope grants."""
+    relation_specs = (
+        ("user_tags", "tag_id", "tag_name", "user_tag_definitions"),
+        ("resource_visibility_tags", "tag_id", "tag_name", "user_tag_definitions"),
+        ("resource_management_tags", "tag_id", "tag_name", "user_tag_definitions"),
+        ("show_visibility_tags", "tag_id", "tag_name", "user_tag_definitions"),
+        ("show_management_tags", "tag_id", "tag_name", "user_tag_definitions"),
+        ("template_visibility_tags", "tag_id", "tag_name", "user_tag_definitions"),
+        ("template_management_tags", "tag_id", "tag_name", "user_tag_definitions"),
+    )
+    for table, id_column, name_column, definition_table in relation_specs:
+        table_exists = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+        if table_exists is None:
+            continue
+        columns = {
+            str(row["name"]) for row in db.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if id_column not in columns:
+            db.execute(
+                f"ALTER TABLE {table} ADD COLUMN {id_column} INTEGER"
+            )
+        db.execute(
+            f"UPDATE {table} SET {id_column} = ("
+            f"SELECT id FROM {definition_table} d "
+            f"WHERE d.name = {table}.{name_column}"
+            f") WHERE {id_column} IS NULL"
+        )
+        entity_column = "user_id" if table == "user_tags" else (
+            "template_id" if table.startswith("template_") else
+            "show_id" if table.startswith("show_") else "resource_id"
+        )
+        db.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{table}_{'id_user' if table == 'user_tags' else 'id'} "
+            f"ON {table}({id_column}, {entity_column})"
+        )
+
+
+def _retire_secrecy_metadata(db: sqlite3.Connection) -> None:
+    """Clear retired secrecy metadata while preserving legacy schema columns.
+
+    Existing deployments may still have secrecy columns or the old definition
+    table. The columns remain intentionally so older migrations and readers can
+    open the database, but the current platform must never retain or write the
+    retired values.
+    """
+    table_names = {
+        str(row["name"])
+        for row in db.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+    if "secrecy_tag_definitions" in table_names:
+        db.execute("DELETE FROM secrecy_tag_definitions")
+
+    for table in ("resources", "shows"):
+        if table not in table_names:
+            continue
+        columns = {
+            str(row["name"]) for row in db.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if "secrecy_level" in columns:
+            db.execute(f"UPDATE {table} SET secrecy_level = '' WHERE secrecy_level <> ''")
 
 
 def _recover_interrupted_tasks(db: sqlite3.Connection) -> None:
@@ -1186,18 +1332,26 @@ def _recover_interrupted_tasks(db: sqlite3.Connection) -> None:
             })
             status = str(row["status"])
             if status in {"queued", "running"}:
+                from app.services.resource_import.render_tasks import _accepted_render_results
+                try:
+                    accepted, _, _ = _accepted_render_results(row)
+                    completed = len(accepted)
+                except (TypeError, ValueError, KeyError):
+                    completed = 0
                 params.update({
                     "workflow_state": "rendering",
                     "preview_status": "rendering",
                     "preview_error": None,
                     "render_stage": "queued" if status == "queued" else "rendering",
-                    "render_completed": 0,
+                    "render_completed": completed,
+                    "render_worker_attempt": int(row["attempts"]),
                 })
+                message = f"已完成 {completed} / {total} 页图片渲染" if completed else "等待 Windows 转换节点领取任务…"
                 db.execute(
-                    "UPDATE tasks SET status='pending', progress=0, total=?,"
-                    " message='等待 Windows 转换节点领取任务…', error_message=NULL, params=?,"
+                    "UPDATE tasks SET status='pending', progress=?, total=?,"
+                    " message=?, error_message=NULL, params=?,"
                     " updated_at=strftime('%Y-%m-%dT%H:%M:%S','now','localtime') WHERE id=?",
-                    (total, json.dumps(params, ensure_ascii=False), parent_id),
+                    (completed, total, message, json.dumps(params, ensure_ascii=False), parent_id),
                 )
             elif status == "completed":
                 params.update({

@@ -69,7 +69,6 @@ class UserManagementTests(unittest.TestCase):
                 patch.object(settings, "storage_backend", "local"),
                 patch.object(settings, "user_custom_tags", False),
                 patch.object(settings, "user_custom_user_tags", False),
-                patch.object(settings, "user_custom_secrecy_tags", False),
                 patch.object(settings, "user_custom_status_tags", False),
             ]
         )
@@ -328,6 +327,36 @@ class UserManagementTests(unittest.TestCase):
             self.assertEqual(unknown_tag.status_code, 200, unknown_tag.text)
             self.assertEqual(unknown_tag.json(), {"users": [], "total": 0})
 
+    def test_user_list_can_sort_by_last_login_time(self):
+        admin_id = self.insert_user("root", role="system_admin")
+        older_id = self.insert_user("older-login")
+        newer_id = self.insert_user("newer-login")
+        never_id = self.insert_user("never-login")
+        self.db.execute(
+            "UPDATE users SET last_login_at = ? WHERE id = ?",
+            ("2025-01-01T00:00:00+00:00", older_id),
+        )
+        self.db.execute(
+            "UPDATE users SET last_login_at = ? WHERE id = ?",
+            ("2025-02-01T00:00:00+00:00", newer_id),
+        )
+        self.db.commit()
+
+        with self.client_for(admin_id) as client:
+            ascending = client.get("/api/admin/users", params={"login_sort": "asc"})
+            descending = client.get("/api/admin/users", params={"login_sort": "desc"})
+            invalid = client.get("/api/admin/users", params={"login_sort": "sideways"})
+
+        self.assertEqual(ascending.status_code, 200, ascending.text)
+        self.assertEqual(descending.status_code, 200, descending.text)
+        self.assertEqual(invalid.status_code, 400)
+        ascending_ids = [user["id"] for user in ascending.json()["users"]]
+        descending_ids = [user["id"] for user in descending.json()["users"]]
+        self.assertLess(ascending_ids.index(older_id), ascending_ids.index(newer_id))
+        self.assertLess(ascending_ids.index(newer_id), ascending_ids.index(never_id))
+        self.assertLess(descending_ids.index(newer_id), descending_ids.index(older_id))
+        self.assertLess(descending_ids.index(older_id), descending_ids.index(never_id))
+
     def test_login_updates_last_login_without_touching_profile_timestamp(self):
         user_id = self.insert_user("login-user")
         before = self.db.execute(
@@ -515,11 +544,14 @@ class UserManagementTests(unittest.TestCase):
         self.db.commit()
 
         with self.client_for(admin_id) as client:
-            for domain in ("subject", "secrecy", "status"):
+            for domain in ("subject", "status"):
                 public_list = client.get(f"/api/{domain}-tags")
                 admin_list = client.get(f"/api/admin/{domain}-tags")
                 self.assertEqual(public_list.status_code, 200, public_list.text)
                 self.assertEqual(admin_list.status_code, 200, admin_list.text)
+
+            self.assertEqual(client.get("/api/secrecy-tags").status_code, 405)
+            self.assertEqual(client.get("/api/admin/secrecy-tags").status_code, 404)
 
             subject_groups = client.get("/api/subject-tags").json()["groups"]
             self.assertEqual([group["category"] for group in subject_groups], ["主体"])
@@ -536,20 +568,12 @@ class UserManagementTests(unittest.TestCase):
             subject = next(item for item in subject_tags if item["name"] == "集团")
             self.assertEqual(subject["usage_count"], 1)
 
-            created = client.post("/api/admin/secrecy-tags", json={"tags": ["内部"]})
-            self.assertEqual(created.status_code, 200, created.text)
-            self.assertEqual(created.json()["created"][0]["name"], "内部")
-            self.assertEqual(created.json()["created"][0]["category"], "密级")
-            self.assertEqual(created.json()["created"][0]["label"], "内部")
-
             created_status = client.post("/api/admin/status-tags", json={"tags": ["草稿"]})
             self.assertEqual(created_status.status_code, 200, created_status.text)
             self.assertEqual(created_status.json()["created"][0]["category"], "状态")
             self.assertEqual(created_status.json()["created"][0]["label"], "草稿")
 
-            secrecy_groups = client.get("/api/secrecy-tags").json()["groups"]
             status_groups = client.get("/api/status-tags").json()["groups"]
-            self.assertEqual([group["category"] for group in secrecy_groups], ["密级"])
             self.assertEqual([group["category"] for group in status_groups], ["状态"])
 
             renamed = client.put(
@@ -569,33 +593,22 @@ class UserManagementTests(unittest.TestCase):
         user_id = self.insert_user("member")
 
         with self.client_for(user_id) as client:
-            secrecy_list = client.get("/api/secrecy-tags")
             status_list = client.get("/api/status-tags")
-            self.assertFalse(secrecy_list.json()["can_create"])
             self.assertFalse(status_list.json()["can_create"])
-            self.assertEqual(
-                client.post("/api/secrecy-tags", json={"tags": ["内部"]}).status_code,
-                403,
-            )
             self.assertEqual(
                 client.post("/api/status-tags", json={"tags": ["草稿"]}).status_code,
                 403,
             )
 
         with (
-            patch.object(settings, "user_custom_secrecy_tags", True),
             patch.object(settings, "user_custom_status_tags", True),
             self.client_for(user_id) as client,
         ):
-            self.assertTrue(client.get("/api/secrecy-tags").json()["can_create"])
             self.assertTrue(client.get("/api/status-tags").json()["can_create"])
-            secrecy = client.post("/api/secrecy-tags", json={"tags": ["内部"]})
             status = client.post("/api/status-tags", json={"tags": ["草稿"]})
-            self.assertEqual(secrecy.status_code, 200, secrecy.text)
             self.assertEqual(status.status_code, 200, status.text)
 
         with self.client_for(admin_id) as client:
-            self.assertTrue(client.get("/api/secrecy-tags").json()["can_create"])
             created = client.post("/api/status-tags", json={"tags": ["已发布"]})
             self.assertEqual(created.status_code, 200, created.text)
 
@@ -771,7 +784,6 @@ class UserManagementTests(unittest.TestCase):
         metadata_ids: dict[str, list[int]] = {}
         for domain, table, names in (
             ("subject", "subject_tag_definitions", ("subject-a", "subject-b")),
-            ("secrecy", "secrecy_tag_definitions", ("public", "secret")),
             ("status", "status_tag_definitions", ("active", "disabled")),
         ):
             metadata_ids[domain] = []
@@ -800,7 +812,7 @@ class UserManagementTests(unittest.TestCase):
                 )
                 self.assertEqual(response.status_code, 200, response.text)
 
-            for domain in ("subject", "secrecy", "status"):
+            for domain in ("subject", "status"):
                 first_id, second_id = metadata_ids[domain]
                 self.assertEqual(
                     client.put(
@@ -824,7 +836,6 @@ class UserManagementTests(unittest.TestCase):
                 {
                     "resource_tags": ["industry-a", "industry-b"],
                     "subject": "subject-b",
-                    "secrecy": "secret",
                     "status": "disabled",
                     "user_tags": ["team-a", "team-b"],
                 },
@@ -832,7 +843,6 @@ class UserManagementTests(unittest.TestCase):
 
         for domain, table in (
             ("subject", "subject_tag_definitions"),
-            ("secrecy", "secrecy_tag_definitions"),
             ("status", "status_tag_definitions"),
         ):
             enabled = self.db.execute(
@@ -840,7 +850,6 @@ class UserManagementTests(unittest.TestCase):
             ).fetchall()
             self.assertEqual([row["name"] for row in enabled], {
                 "subject": ["subject-b"],
-                "secrecy": ["secret"],
                 "status": ["disabled"],
             }[domain])
 

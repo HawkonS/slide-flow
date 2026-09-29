@@ -14,7 +14,7 @@ from app.core.errors import RENDERER_GENERIC_MESSAGE, storage_public_message
 from app.core.errors import RENDERER_TIMEOUT_MESSAGE
 from app.core.oss import StorageConfigurationError, StorageUnavailableError
 from app.db import get_db
-from app.services.resource_import.previews import _preview_set_is_current
+from app.services.resource_import.previews import _preview_page_events, _preview_set_is_current
 from app.services.resource_import.render_tasks import ensure_render_task, render_task_state
 from app.services.resource_import.sessions import (
     _load_resource_import_session_file,
@@ -90,17 +90,20 @@ def preview_stream(session_id, user):
         deadline = time.monotonic() + max(10, int(settings.render_total_timeout))
         yield encode({"type": "started", "total": session["slide_count"], "message": "已提交 Windows 图片渲染任务"})
         last_heartbeat = time.monotonic()
+        sent: set = set()
         while True:
             current = _load_resource_import_session_file(session_id) or session
-            if _preview_set_is_current(current):
-                attempt = current.get("render_attempt", "")
-                for index in range(int(current["slide_count"])):
-                    yield encode({"type": "page", "index": index, "preview_url": f"/api/resource-import/{session_id}/preview/{index}?attempt={attempt}"})
-                yield encode({"type": "completed", "preview_status": "ready", "preview_count": len(current.get("preview_paths", []))})
-                return
-            state = render_task_state(current)
+            if _preview_set_is_current(current) and not isinstance(current.get("render_task_id"), str):
+                state = {"status": "completed", "preview_count": len(current.get("preview_paths", []))}
+            else:
+                state = render_task_state(current)
             if state["status"] == "error":
                 yield encode({"type": "error", "message": state.get("message") or current.get("preview_error") or RENDERER_GENERIC_MESSAGE})
+                return
+            for event in _preview_page_events(current, state, sent):
+                yield encode(event)
+            if state["status"] == "completed" and _preview_set_is_current(current):
+                yield encode({"type": "completed", "preview_status": "ready", "preview_count": len(current.get("preview_paths", []))})
                 return
             if time.monotonic() >= deadline:
                 # This deadline belongs to one browser stream, not to the
@@ -114,6 +117,8 @@ def preview_stream(session_id, user):
                 return
             if time.monotonic() - last_heartbeat >= 5:
                 message = "等待 Windows 转换节点领取任务" if state["status"] in {"pending", "queued"} else "Windows 正在转换 PPT 为 PNG"
+                if state.get("preview_count", 0):
+                    message = f"已完成 {state['preview_count']} / {current['slide_count']} 页图片渲染"
                 yield encode({"type": "progress", "message": message})
                 last_heartbeat = time.monotonic()
             await asyncio.sleep(1)

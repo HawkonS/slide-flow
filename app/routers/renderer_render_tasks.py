@@ -18,6 +18,7 @@ from app.services.resource_import.render_tasks import (
     claim_render_task,
     complete_render_task,
     fail_render_task,
+    publish_render_task_progress,
     refresh_render_task_source_url,
     refresh_render_task_urls,
     render_queue_status,
@@ -35,6 +36,7 @@ class LeaseRequest(BaseModel):
 
 class UrlRequest(LeaseRequest):
     page_index: int = Field(..., ge=0, le=100_000)
+    include_source: bool = True
 
 
 class RenderedPage(BaseModel):
@@ -137,7 +139,10 @@ def urls(task_id: str, payload: UrlRequest, _: None = Depends(_renderer_auth)):
     db = get_db()
     try:
         try:
-            page = refresh_render_task_urls(db, task_id, payload.lease_token, payload.page_index)
+            page = refresh_render_task_urls(
+                db, task_id, payload.lease_token, payload.page_index,
+                include_source=payload.include_source,
+            )
         except Exception as exc:
             raise _lease_error(exc) from exc
         return {"page": page}
@@ -154,6 +159,21 @@ def source_url(task_id: str, payload: LeaseRequest, _: None = Depends(_renderer_
         except Exception as exc:
             raise _lease_error(exc) from exc
         return {"source": source}
+    finally:
+        db.close()
+
+
+@router.post("/render-tasks/{task_id}/progress")
+def progress(task_id: str, payload: CompleteRequest, _: None = Depends(_renderer_auth)):
+    db = get_db()
+    try:
+        try:
+            return publish_render_task_progress(
+                db, task_id, payload.lease_token,
+                [page.model_dump() for page in payload.pages],
+            )
+        except Exception as exc:
+            raise _lease_error(exc) from exc
     finally:
         db.close()
 

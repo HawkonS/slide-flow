@@ -12,6 +12,7 @@ import shutil
 import sqlite3
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,7 @@ from typing import Any
 from app.config import settings
 from app.core.errors import render_public_message
 from app.core.fonts import normalize_font_name
-from app.core.oss import oss_ref, storage as oss_storage
+from app.core.oss import oss_key, oss_ref, storage as oss_storage
 from app.core.ppt import split_pptx_to_single_pages
 from app.db import get_db, now_iso
 from app.services.files import _compress_hd_image
@@ -40,6 +41,7 @@ LEASE_SECONDS = 600
 MAX_ATTEMPTS = 5
 MAX_OUTPUT_IMAGE_BYTES = 64 * 1024 * 1024
 MAX_TOTAL_OUTPUT_BYTES = 512 * 1024 * 1024
+RENDER_RESULT_IO_CONCURRENCY = 4
 RESULT_URL_SECONDS = 900
 RENDER_SESSION_TTL = 7 * 24 * 3600
 TERMINAL_OBJECT_CLEANUP_GRACE_SECONDS = RESULT_URL_SECONDS + 300
@@ -429,14 +431,13 @@ def create_render_task(session: dict[str, Any]) -> sqlite3.Row:
             size = single.stat().st_size
             if not 0 < size <= 120 * 1024 * 1024:
                 raise RuntimeError(f"第 {index + 1} 页 PPTX 为空或超过 120 MiB")
-            source_ref = oss_storage.upload_file(
-                single, _task_key(task_id, "input", index, ".pptx"),
-                content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            )
-            refs.append(source_ref)
+            # Keep the immutable local split for import and v1 fallback. A v2
+            # worker only needs the full source, so upload singles on demand.
+            source_ref = oss_ref(_task_key(task_id, "input", index, ".pptx"))
             pages.append({
                 "index": index,
                 "source_ref": source_ref,
+                "source_uploaded": False,
                 "sha256": sha256_file(single),
                 "size": size,
             })
@@ -499,8 +500,10 @@ def create_render_task(session: dict[str, Any]) -> sqlite3.Row:
             # This closes the race where an extremely fast worker could finish
             # before the session knew which immutable render attempt it owned.
             session.update(
-                preview_status="rendering", preview_error=None, preview_paths=[], partial_preview_paths={},
-                render_attempt=attempt, render_task_id=task_id, renderer_version=RESOURCE_IMPORT_RENDERER_VERSION,
+                preview_status="rendering", preview_error=None, preview_paths=[], preview_hashes=[],
+                partial_preview_paths={}, partial_preview_hashes={},
+                render_attempt=attempt, render_task_id=task_id, render_worker_attempt=0,
+                renderer_version=RESOURCE_IMPORT_RENDERER_VERSION,
                 split_paths=[str(path) for path in singles], split_hashes=[item["sha256"] for item in pages],
                 rendered_source_sha256=source_sha256, expires_at=time.time() + RENDER_SESSION_TTL,
             )
@@ -552,28 +555,162 @@ def ensure_render_task(session: dict[str, Any]) -> sqlite3.Row:
     return create_render_task(session)
 
 
+def _render_result_manifest(row: sqlite3.Row) -> dict:
+    try:
+        return _manifest(row, "result_manifest")
+    except RuntimeError as exc:
+        raise ValueError("invalid_result_receipt") from exc
+
+
+def _render_receipt_files(row: sqlite3.Row) -> tuple[dict, dict]:
+    result = _render_result_manifest(row)
+    if "worker_attempt" in result:
+        _, paths, hashes = _accepted_render_results(row)
+        return paths, hashes
+    if row["status"] != "completed":
+        return {}, {}
+    # Completed receipts written before incremental publication remain valid.
+    paths, hashes = result.get("preview_paths"), result.get("preview_hashes")
+    indexes = sorted(int(item["index"]) for item in _manifest(row, "source_manifest").get("pages", []))
+    if (not isinstance(paths, list) or not isinstance(hashes, list)
+            or len(paths) != len(indexes) or len(hashes) != len(indexes)
+            or any(not isinstance(value, str) or not value for value in paths)
+            or any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None for value in hashes)):
+        raise ValueError("invalid_result_receipt")
+    return dict(zip(map(str, indexes), paths)), dict(zip(map(str, indexes), hashes))
+
+
+def _recover_render_snapshot(db: sqlite3.Connection, row: sqlite3.Row, session: dict) -> bool:
+    """Repair JSON publication without reviving a reclaimed or cancelled claim."""
+    try:
+        with _resource_import_operation(session):
+            current = _current_render_session(row)
+            latest = db.execute("SELECT * FROM renderer_ppt_tasks WHERE task_id=?", (row["task_id"],)).fetchone()
+            if (latest is None or latest["status"] not in {"queued", "running", "completed"}
+                    or latest["attempts"] != row["attempts"]):
+                return False
+            _assert_render_owner(db, latest, current)
+            paths, hashes = _render_receipt_files(latest)
+            _verify_render_receipt_files(current, paths, hashes)
+            final = latest["status"] == "completed"
+            expected = {str(item["index"]) for item in _manifest(latest, "source_manifest").get("pages", [])}
+            if final and set(paths) != expected:
+                return False
+            indexes = sorted(paths, key=int)
+            receipt = {
+                "partial_preview_paths": paths, "partial_preview_hashes": hashes,
+                "preview_paths": [paths[index] for index in indexes],
+                "preview_hashes": [hashes[index] for index in indexes],
+            }
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                checked = db.execute("SELECT * FROM renderer_ppt_tasks WHERE task_id=?", (row["task_id"],)).fetchone()
+                if (checked is None or checked["status"] != latest["status"]
+                        or checked["attempts"] != latest["attempts"]
+                        or checked["result_manifest"] != latest["result_manifest"]):
+                    db.rollback()
+                    return False
+                _assert_render_owner(db, checked, _current_render_session(checked))
+                _apply_render_snapshot(current, checked, receipt, final=final)
+                _write_resource_import_session(current)
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+            session.clear()
+            session.update(current)
+            return True
+    except Exception:
+        # A writer may still own the operation lock or disk may be unavailable.
+        # The durable receipt remains intact for a later status poll.
+        return False
+
+
 def render_task_state(session: dict[str, Any]) -> dict[str, Any]:
-    if session.get("preview_status") == "ready":
-        return {"status": "completed", "preview_count": len(session.get("preview_paths", []))}
     task_id = session.get("render_task_id")
     if not isinstance(task_id, str):
-        return {"status": "pending", "preview_count": 0}
+        ready = session.get("preview_status") == "ready"
+        count = len(session.get("preview_paths", [])) if ready else 0
+        return {"status": "completed" if ready else "pending", "preview_count": count,
+                "ready_indexes": list(range(count))}
     db = get_db()
     try:
         row = db.execute("SELECT * FROM renderer_ppt_tasks WHERE task_id=?", (task_id,)).fetchone()
+        if row is None:
+            return {"status": "error", "message": "渲染任务不存在，请重新生成图片", "preview_count": 0}
+        try:
+            _assert_render_owner(db, row, session)
+        except PermissionError:
+            return {"status": "error", "message": "该图片渲染任务已失效，请刷新预览", "preview_count": 0}
+        if row["status"] in {"cancelled", "failed"}:
+            message = "该图片渲染任务已取消，请重新生成" if row["status"] == "cancelled" else render_public_message(row["error_code"])
+            return {"status": "error", "message": message, "preview_count": 0}
+        generation = int(row["attempts"])
+        try:
+            paths, hashes = _render_receipt_files(row)
+        except (TypeError, ValueError, KeyError):
+            return {"status": "publishing", "preview_count": 0, "ready_indexes": [], "attempts": generation}
+        final = row["status"] == "completed"
+        indexes = sorted(paths, key=int)
+        expected_count = len(_manifest(row, "source_manifest").get("pages", []))
+        if final and len(paths) != expected_count:
+            return {"status": "publishing", "preview_count": 0, "ready_indexes": [], "attempts": generation}
+        matching = (
+            session.get("render_worker_attempt") == generation
+            and session.get("renderer_version") == RESOURCE_IMPORT_RENDERER_VERSION
+            and session.get("preview_status") == ("ready" if final else "rendering")
+            and (session.get("preview_paths") == [paths[index] for index in indexes]
+                 and session.get("preview_hashes") == [hashes[index] for index in indexes]
+                 if final else session.get("partial_preview_paths", {}) == paths
+                 and session.get("partial_preview_hashes", {}) == hashes
+                 and not session.get("preview_paths"))
+        )
+        if not matching and not _recover_render_snapshot(db, row, session):
+            return {"status": "publishing", "preview_count": 0, "ready_indexes": [], "attempts": generation}
+        # Recovery cannot return an old receipt after another worker reclaimed it.
+        latest = db.execute("SELECT * FROM renderer_ppt_tasks WHERE task_id=?", (task_id,)).fetchone()
+        if (latest is None or latest["attempts"] != row["attempts"]
+                or latest["status"] != row["status"] or latest["result_manifest"] != row["result_manifest"]):
+            return {"status": "publishing", "preview_count": 0, "ready_indexes": [],
+                    "attempts": int(latest["attempts"]) if latest else generation}
+        try:
+            _assert_render_owner(db, latest, session)
+        except PermissionError:
+            return {"status": "error", "message": "该图片渲染任务已失效，请刷新预览", "preview_count": 0}
+        return {"status": str(row["status"]), "preview_count": len(paths),
+                "ready_indexes": [int(index) for index in indexes], "attempts": generation,
+                "render_attempt": str(row["render_attempt"])}
     finally:
         db.close()
-    if row is None:
-        return {"status": "error", "message": "渲染任务不存在，请重新生成图片"}
-    if row["status"] == "cancelled":
-        return {"status": "error", "message": "该图片渲染任务已取消，请重新生成"}
-    if row["status"] == "failed":
-        return {"status": "error", "message": render_public_message(row["error_code"])}
-    if row["status"] == "completed" and session.get("preview_status") != "ready":
-        if _recover_completed_session(row, session):
-            return {"status": "completed", "preview_count": len(session.get("preview_paths", []))}
-        return {"status": "publishing", "preview_count": 0, "attempts": int(row["attempts"])}
-    return {"status": str(row["status"]), "preview_count": 0, "attempts": int(row["attempts"])}
+
+
+def render_task_preview_file(session: dict, index: int, worker_attempt: int | None = None) -> Path:
+    """Resolve a verified current receipt, never a stale JSON partial path."""
+    db = get_db()
+    try:
+        with _resource_import_operation(session, wait=True):
+            row = db.execute("SELECT * FROM renderer_ppt_tasks WHERE task_id=?", (session.get("render_task_id"),)).fetchone()
+            if row is None or row["status"] not in {"queued", "running", "completed"}:
+                raise PermissionError("stale_render_attempt")
+            current = _current_render_session(row)
+            _assert_render_owner(db, row, current)
+            if (session.get("render_attempt") != row["render_attempt"]
+                    or worker_attempt is not None and worker_attempt != int(row["attempts"])):
+                raise PermissionError("stale_worker_attempt")
+            paths, hashes = _render_receipt_files(row)
+            if str(index) not in paths:
+                raise KeyError(index)
+            path = _resource_import_file(current, paths[str(index)])
+            if sha256_file(path) != hashes[str(index)]:
+                raise ValueError("preview_checksum_mismatch")
+            latest = db.execute("SELECT * FROM renderer_ppt_tasks WHERE task_id=?", (row["task_id"],)).fetchone()
+            if (latest is None or latest["attempts"] != row["attempts"]
+                    or latest["status"] not in {"queued", "running", "completed"}):
+                raise PermissionError("stale_worker_attempt")
+            _assert_render_owner(db, latest, _current_render_session(latest))
+            return path
+    finally:
+        db.close()
 
 
 def _recover_completed_session(row: sqlite3.Row, session: dict[str, Any]) -> bool:
@@ -678,7 +815,7 @@ def claim_render_task(db: sqlite3.Connection, worker_id: str) -> tuple[sqlite3.R
             ]
             changed = db.execute(
                 "UPDATE renderer_ppt_tasks SET status='running', lease_token_hash=?, lease_until=?, worker_id=?,"
-                " attempts=attempts+1, source_manifest=?, error_code=NULL, updated_at=? WHERE task_id=? AND "
+                " attempts=attempts+1, source_manifest=?, result_manifest=NULL, error_code=NULL, updated_at=? WHERE task_id=? AND "
                 "(status='queued' OR (status='running' AND lease_until<? AND attempts<?))",
                 (_token_hash(token), now + LEASE_SECONDS, worker_id,
                  json.dumps(manifest, ensure_ascii=False, separators=(",", ":")),
@@ -687,6 +824,10 @@ def claim_render_task(db: sqlite3.Connection, worker_id: str) -> tuple[sqlite3.R
             if changed.rowcount != 1:
                 db.rollback()
                 return None
+            claimed = db.execute(
+                "SELECT * FROM renderer_ppt_tasks WHERE task_id=?", (row["task_id"],)
+            ).fetchone()
+            _update_parent_render_progress(db, claimed, 0)
         db.commit()
         for item in expired:
             session = _load_resource_import_session_file(str(item["session_id"]))
@@ -742,6 +883,7 @@ def claim_payload(row: sqlite3.Row, lease_token: str) -> dict[str, Any]:
         "task_id": row["task_id"], "lease_token": lease_token, "lease_seconds": LEASE_SECONDS,
         "attempts": int(row["attempts"]), "dpi": int(manifest["dpi"]), "pages": pages,
         "batch_size": max(1, min(50, int(manifest.get("batch_size", 1)))),
+        "incremental_results": True, "first_batch_size": 4,
         "required_fonts": manifest.get("required_fonts", []),
         "font_hashes": manifest.get("font_hashes", []),
         "font_bindings": manifest.get("font_bindings", []),
@@ -774,6 +916,7 @@ def refresh_render_task_source_url(
 
 def refresh_render_task_urls(
     db: sqlite3.Connection, task_id: str, lease_token: str, page_index: int,
+    include_source: bool = True,
 ) -> dict[str, Any]:
     """Issue fresh signed URLs for one page without changing its task lease."""
     row = _leased_row(db, task_id, lease_token)
@@ -782,14 +925,98 @@ def refresh_render_task_urls(
     outputs = {int(item["index"]): item for item in manifest.get("outputs", [])}
     if page_index not in sources or page_index not in outputs:
         raise ValueError("invalid_page_index")
-    return {
+    if include_source and sources[page_index].get("source_uploaded") is False:
+        session = _current_render_session(row)
+        with _resource_import_operation(session, wait=True):
+            row = _leased_row(db, task_id, lease_token)
+            session = _current_render_session(row)
+            _assert_render_owner(db, row, session)
+            manifest = _manifest(row, "source_manifest")
+            source = next(item for item in manifest["pages"] if item["index"] == page_index)
+            if source.get("source_uploaded") is False:
+                split_paths, split_hashes = session.get("split_paths"), session.get("split_hashes")
+                if (not isinstance(split_paths, list) or not isinstance(split_hashes, list)
+                        or page_index >= len(split_paths) or page_index >= len(split_hashes)
+                        or split_hashes[page_index] != source["sha256"]):
+                    raise ValueError("invalid_split_source")
+                path = _resource_import_file(session, split_paths[page_index])
+                if path.stat().st_size != source["size"] or sha256_file(path) != source["sha256"]:
+                    raise ValueError("split_source_checksum_mismatch")
+                # The session operation lock prevents replacement of the local
+                # source. No SQLite writer lock is held during OSS transfer.
+                oss_storage.upload_file(
+                    path, oss_key(source["source_ref"]),
+                    content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                )
+                db.execute("BEGIN IMMEDIATE")
+                try:
+                    row = _leased_row(db, task_id, lease_token)
+                    _assert_render_owner(db, row, _current_render_session(row))
+                    manifest = _manifest(row, "source_manifest")
+                    current_source = next(item for item in manifest["pages"] if item["index"] == page_index)
+                    if current_source["source_ref"] != source["source_ref"] or current_source["sha256"] != source["sha256"]:
+                        raise PermissionError("stale_render_source")
+                    current_source["source_uploaded"] = True
+                    db.execute(
+                        "UPDATE renderer_ppt_tasks SET source_manifest=?, updated_at=? WHERE task_id=?",
+                        (json.dumps(manifest, separators=(",", ":")), now_iso(), task_id),
+                    )
+                    db.commit()
+                except Exception:
+                    db.rollback()
+                    raise
+        # A cancelled or reclaimed task must not receive a fresh signed URL.
+        row = _leased_row(db, task_id, lease_token)
+        manifest = _manifest(row, "source_manifest")
+        sources = {int(item["index"]): item for item in manifest["pages"]}
+        outputs = {int(item["index"]): item for item in manifest["outputs"]}
+    result = {
         "index": page_index,
-        "download_url": oss_storage.signed_url(sources[page_index]["source_ref"]),
         "upload_url": oss_storage.signed_put_url(
             outputs[page_index]["output_ref"], expires_seconds=RESULT_URL_SECONDS,
             content_type="image/png",
         ),
     }
+    if include_source:
+        result["download_url"] = oss_storage.signed_url(sources[page_index]["source_ref"])
+    return result
+
+
+def _current_render_session(row: sqlite3.Row) -> dict[str, Any]:
+    session = _load_resource_import_session_file(str(row["session_id"]))
+    if (not session or session.get("render_attempt") != row["render_attempt"]
+            or session.get("render_task_id") != row["task_id"]):
+        raise PermissionError("stale_render_attempt")
+    return session
+
+
+def _render_parent_params(db: sqlite3.Connection, row: sqlite3.Row) -> dict | None:
+    parent_id = row["parent_task_id"]
+    if parent_id is None:
+        return None
+    parent = db.execute("SELECT status, params FROM tasks WHERE id=?", (parent_id,)).fetchone()
+    if parent is None or parent["status"] not in {"uploading", "pending", "processing"}:
+        raise PermissionError("stale_render_parent")
+    try:
+        params = json.loads(parent["params"] or "{}")
+    except (TypeError, ValueError):
+        raise PermissionError("stale_render_parent") from None
+    if (not isinstance(params, dict)
+            or params.get("render_task_id") not in (None, row["task_id"])
+            or params.get("render_attempt") not in (None, row["render_attempt"])
+            or params.get("session_id") not in (None, row["session_id"])):
+        raise PermissionError("stale_render_parent")
+    return params
+
+
+def _assert_render_owner(db: sqlite3.Connection, row: sqlite3.Row, session: dict[str, Any]) -> None:
+    if (session.get("render_attempt") != row["render_attempt"]
+            or session.get("render_task_id") != row["task_id"]
+            or "commit_result" in session):
+        raise PermissionError("stale_render_attempt")
+    if row["parent_task_id"] is not None and session.get("task_id") not in (None, row["parent_task_id"]):
+        raise PermissionError("stale_render_parent")
+    _render_parent_params(db, row)
 
 
 def _leased_row(db: sqlite3.Connection, task_id: str, lease_token: str) -> sqlite3.Row:
@@ -829,13 +1056,16 @@ def _update_parent_task(
     parent = row["parent_task_id"]
     if parent is None:
         return
-    task = db.execute("SELECT params FROM tasks WHERE id=?", (parent,)).fetchone()
-    params = json.loads(task["params"] or "{}") if task else {}
+    try:
+        params = _render_parent_params(db, row)
+    except PermissionError:
+        return
     if success:
         total = len(_manifest(row, "source_manifest").get("pages", []))
         params.update({
             "workflow_state": "awaiting_confirmation", "preview_status": "ready", "preview_error": None,
             "render_stage": "completed", "render_completed": total, "render_total": total,
+            "render_worker_attempt": int(row["attempts"]),
         })
         message, progress = "图片已渲染，等待确认导入", len(_manifest(row, "source_manifest").get("pages", []))
         db.execute(
@@ -858,106 +1088,230 @@ def _update_parent_task(
         )
 
 
-def complete_render_task(db: sqlite3.Connection, task_id: str, lease_token: str, pages: list[dict[str, Any]]) -> None:
-    row = _leased_row(db, task_id, lease_token)
-    manifest = _manifest(row, "source_manifest")
-    expected = {int(item["index"]): item for item in manifest.get("outputs", [])}
+def _validated_render_pages(pages: list[dict[str, Any]], expected: set[int]) -> dict[int, dict[str, Any]]:
+    if not isinstance(pages, list) or not 1 <= len(pages) <= 500:
+        raise ValueError("invalid_results")
     received: dict[int, dict[str, Any]] = {}
     for item in pages:
+        if not isinstance(item, dict):
+            raise ValueError("invalid_page_result")
         index = item.get("index")
         if type(index) is not int or index not in expected or index in received:
             raise ValueError("invalid_page_index")
         size, digest = item.get("size"), item.get("sha256")
         if type(size) is not int or not 0 < size <= MAX_OUTPUT_IMAGE_BYTES:
             raise ValueError("invalid_page_size")
-        if not isinstance(digest, str) or len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
             raise ValueError("invalid_page_sha256")
         received[index] = {"index": index, "size": size, "sha256": digest}
-    if set(received) != set(expected) or sum(item["size"] for item in received.values()) > MAX_TOTAL_OUTPUT_BYTES:
-        raise ValueError("incomplete_results")
+    return received
 
-    session = _load_resource_import_session_file(str(row["session_id"]))
-    if not session or session.get("render_attempt") != row["render_attempt"] or session.get("render_task_id") != task_id:
-        raise PermissionError("stale_render_attempt")
+
+def _accepted_render_results(row: sqlite3.Row) -> tuple[dict, dict, dict]:
+    """Only receipts accepted during this claim can participate in publication."""
+    result = _render_result_manifest(row)
+    if type(result.get("worker_attempt")) is not int or result["worker_attempt"] != int(row["attempts"]):
+        return {}, {}, {}
+    expected = {int(item["index"]) for item in _manifest(row, "source_manifest").get("pages", [])}
+    received = _validated_render_pages(result.get("pages"), expected)
+    paths = result.get("partial_preview_paths")
+    hashes = result.get("partial_preview_hashes")
+    keys = {str(index) for index in received}
+    if (not isinstance(paths, dict) or not isinstance(hashes, dict)
+            or set(paths) != keys or set(hashes) != keys
+            or any(not isinstance(value, str) or not value for value in paths.values())
+            or any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
+                   for value in hashes.values())
+            or sum(item["size"] for item in received.values()) > MAX_TOTAL_OUTPUT_BYTES):
+        raise ValueError("invalid_result_receipt")
+    return received, dict(paths), dict(hashes)
+
+
+def _merge_render_results(previous: dict, received: dict) -> dict:
+    for index, item in received.items():
+        if index in previous and previous[index] != item:
+            raise ValueError("conflicting_page_result")
+    merged = {**previous, **received}
+    if sum(item["size"] for item in merged.values()) > MAX_TOTAL_OUTPUT_BYTES:
+        raise ValueError("results_too_large")
+    return merged
+
+
+def _verify_render_receipt_files(session: dict, paths: dict, hashes: dict) -> None:
+    for index, raw_path in paths.items():
+        path = _resource_import_file(session, raw_path)
+        if sha256_file(path) != hashes[index]:
+            raise ValueError("preview_checksum_mismatch")
+
+
+def _apply_render_snapshot(session: dict, row: sqlite3.Row, receipt: dict, *, final: bool) -> None:
+    session.update(
+        preview_paths=receipt.get("preview_paths", []) if final else [],
+        preview_hashes=receipt.get("preview_hashes", []) if final else [],
+        partial_preview_paths={} if final else receipt["partial_preview_paths"],
+        partial_preview_hashes={} if final else receipt["partial_preview_hashes"],
+        render_worker_attempt=int(row["attempts"]),
+        preview_status="ready" if final else "rendering", preview_error=None,
+        renderer_version=RESOURCE_IMPORT_RENDERER_VERSION,
+        expires_at=time.time() + RENDER_SESSION_TTL,
+    )
+
+
+def _update_parent_render_progress(db: sqlite3.Connection, row: sqlite3.Row, count: int) -> None:
+    parent_id = row["parent_task_id"]
+    if parent_id is None:
+        return
+    try:
+        params = _render_parent_params(db, row)
+    except PermissionError:
+        return
+    total = len(_manifest(row, "source_manifest").get("pages", []))
+    params.update({
+        "workflow_state": "rendering", "preview_status": "rendering", "preview_error": None,
+        "render_stage": "rendering", "render_completed": count, "render_total": total,
+        "render_task_id": row["task_id"], "render_attempt": row["render_attempt"],
+        "render_worker_attempt": int(row["attempts"]),
+    })
+    db.execute(
+        "UPDATE tasks SET progress=?, total=?, message=?, error_message=NULL, params=?,"
+        " updated_at=strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
+        " WHERE id=? AND status IN ('uploading','pending','processing')",
+        (count, total, f"已完成 {count} / {total} 页图片渲染", json.dumps(params, ensure_ascii=False), parent_id),
+    )
+
+
+def _publish_render_task_results(
+    db: sqlite3.Connection, task_id: str, lease_token: str, pages: list[dict[str, Any]], *, final: bool,
+) -> dict[str, Any]:
+    row = _leased_row(db, task_id, lease_token)
+    manifest = _manifest(row, "source_manifest")
+    expected = {int(item["index"]): item for item in manifest.get("outputs", [])}
+    received = _validated_render_pages(pages, set(expected))
+    if final and set(received) != set(expected):
+        raise ValueError("incomplete_results")
+    session = _current_render_session(row)
+    _assert_render_owner(db, row, session)
+    previous, _, _ = _accepted_render_results(row)
+    _merge_render_results(previous, received)
+    generation = int(row["attempts"])
     root = _resource_import_temp_dir(session)
     directory = root / f"previews_{row['render_attempt']}"
+    # Reclaimed leases never overwrite files a previous lease published.
+    # Preserve first-claim paths for compatibility with existing receipts.
+    destination = directory if generation == 1 else directory / f"worker_{generation}"
+    destination.mkdir(parents=True, exist_ok=True)
     staging = directory / f".complete-{uuid.uuid4().hex}"
     staging.mkdir()
-    paths: list[Path] = []
+    staged: dict[int, Path] = {}
+    staged_hashes: dict[int, str] = {}
     published: list[Path] = []
     database_committed = False
-    completed_successfully = False
     try:
-        for index in sorted(expected):
-            ref = expected[index]["output_ref"]
+        new_indexes = sorted(set(received) - set(previous))
+
+        def stage_one(index: int) -> tuple[int, Path, str]:
             target = staging / f"page_{index:04d}.png"
-            oss_storage.download_file(ref, target)
-            paths.append(target)
+            oss_storage.download_file(expected[index]["output_ref"], target)
             if target.stat().st_size != received[index]["size"] or sha256_file(target) != received[index]["sha256"]:
                 raise ValueError("result_checksum_mismatch")
-            _validate_import_image(target)
+            try:
+                _validate_import_image(target)
+            except Exception as exc:
+                raise ValueError("invalid_rendered_image") from exc
             normalized = _compress_hd_image(target)
-            paths[-1] = normalized
+            return index, normalized, sha256_file(normalized)
+
+        # Each output is immutable and independently checksummed. Parallelize
+        # the OSS download and image normalization before taking the SQLite
+        # writer lock, so one slow page does not delay publication of the rest
+        # of the incremental batch.
+        if new_indexes:
+            workers = min(RENDER_RESULT_IO_CONCURRENCY, len(new_indexes))
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="render-result") as pool:
+                for index, normalized, digest in pool.map(stage_one, new_indexes):
+                    staged[index] = normalized
+                    staged_hashes[index] = digest
         with _resource_import_operation(session, wait=True):
-            session = _load_resource_import_session_file(str(row["session_id"]))
-            if not session or session.get("render_attempt") != row["render_attempt"] or session.get("render_task_id") != task_id:
-                raise PermissionError("stale_render_attempt")
+            session = _current_render_session(row)
+            current = _leased_row(db, task_id, lease_token)
+            _assert_render_owner(db, current, session)
+            previous, preview_paths, preview_hashes = _accepted_render_results(current)
+            _merge_render_results(previous, received)
+            # Filesystem checks occur outside the SQLite writer transaction.
+            if final or not staged:
+                _verify_render_receipt_files(session, preview_paths, preview_hashes)
             db.execute("BEGIN IMMEDIATE")
             try:
-                _leased_row(db, task_id, lease_token)
-                for index, path in zip(sorted(expected), paths):
-                    target = directory / f"page_{index:04d}.png"
+                current = _leased_row(db, task_id, lease_token)
+                _assert_render_owner(db, current, _current_render_session(current))
+                if int(current["attempts"]) != generation:
+                    raise PermissionError("stale_worker_attempt")
+                previous, preview_paths, preview_hashes = _accepted_render_results(current)
+                merged = _merge_render_results(previous, received)
+                for index in sorted(set(received) - set(previous)):
+                    path = staged[index]
+                    target = destination / f"page_{index:04d}.png"
                     path.replace(target)
                     published.append(target)
-                preview_hashes = [sha256_file(path) for path in published]
-                db.execute(
-                    "UPDATE renderer_ppt_tasks SET status='completed', lease_token_hash=NULL, lease_until=NULL,"
-                    " result_manifest=?, updated_at=? WHERE task_id=?",
-                    (json.dumps({
-                        "pages": [received[i] for i in sorted(received)],
-                        "preview_paths": [str(path) for path in published],
-                        "preview_hashes": preview_hashes,
-                    }, separators=(",", ":")), now_iso(), task_id),
-                )
-                completed = db.execute("SELECT * FROM renderer_ppt_tasks WHERE task_id=?", (task_id,)).fetchone()
-                _update_parent_task(db, completed, success=True)
+                    preview_paths[str(index)] = str(target)
+                    preview_hashes[str(index)] = staged_hashes[index]
+                receipt = {
+                    "worker_attempt": generation,
+                    "pages": [merged[index] for index in sorted(merged)],
+                    "partial_preview_paths": preview_paths,
+                    "partial_preview_hashes": preview_hashes,
+                }
+                if final:
+                    if set(merged) != set(expected):
+                        raise ValueError("incomplete_results")
+                    receipt["preview_paths"] = [preview_paths[str(index)] for index in sorted(expected)]
+                    receipt["preview_hashes"] = [preview_hashes[str(index)] for index in sorted(expected)]
+                    db.execute(
+                        "UPDATE renderer_ppt_tasks SET status='completed', lease_token_hash=NULL, lease_until=NULL,"
+                        " result_manifest=?, updated_at=? WHERE task_id=?",
+                        (json.dumps(receipt, separators=(",", ":")), now_iso(), task_id),
+                    )
+                    _update_parent_task(db, current, success=True)
+                else:
+                    db.execute(
+                        "UPDATE renderer_ppt_tasks SET result_manifest=?, updated_at=? WHERE task_id=?",
+                        (json.dumps(receipt, separators=(",", ":")), now_iso(), task_id),
+                    )
+                    _update_parent_render_progress(db, current, len(merged))
                 db.commit()
                 database_committed = True
             except Exception:
                 db.rollback()
-                # Filesystem publication and SQLite cannot share one native
-                # transaction. Remove only files published by this request
-                # before restoring the previous session snapshot. A stale
-                # worker cannot enter this section because the lease is
-                # rechecked while BEGIN IMMEDIATE holds the writer lock.
+                # Never delete another batch's durable, accepted page.
                 for path in published:
                     path.unlink(missing_ok=True)
                 published.clear()
                 raise
-            session.update(
-                preview_paths=[str(path) for path in published], partial_preview_paths={},
-                preview_hashes=preview_hashes, preview_status="ready", preview_error=None,
-                renderer_version=RESOURCE_IMPORT_RENDERER_VERSION,
-                expires_at=time.time() + RENDER_SESSION_TTL,
-            )
+            _apply_render_snapshot(session, current, receipt, final=final)
             try:
                 _write_resource_import_session(session)
             except Exception:
-                # SQLite is the durable completion receipt. Status polling
-                # reconstructs this session snapshot from result_manifest.
-                logger.exception("Completed render session publication deferred to recovery")
-        completed_successfully = True
+                logger.exception("Render session publication deferred to receipt recovery")
+        if final:
+            _cleanup_manifest_objects(manifest)
+        return {"ok": True, "preview_count": len(merged), "total": len(expected)}
     except Exception:
         if not database_committed:
-            for path in paths:
-                path.unlink(missing_ok=True)
             for path in published:
                 path.unlink(missing_ok=True)
         raise
     finally:
         shutil.rmtree(staging, ignore_errors=True)
-    if completed_successfully:
-        _cleanup_manifest_objects(manifest)
+
+
+def publish_render_task_progress(
+    db: sqlite3.Connection, task_id: str, lease_token: str, pages: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return _publish_render_task_results(db, task_id, lease_token, pages, final=False)
+
+
+def complete_render_task(db: sqlite3.Connection, task_id: str, lease_token: str, pages: list[dict[str, Any]]) -> None:
+    _publish_render_task_results(db, task_id, lease_token, pages, final=True)
 
 
 def fail_render_task(db: sqlite3.Connection, task_id: str, lease_token: str, error_code: str | None) -> str:

@@ -4,13 +4,21 @@ from __future__ import annotations
 
 from app.config import settings
 from app.core.oss import is_oss_ref
-from app.core.permissions import can_view_resource, is_system_admin, require_user
+from app.core.permissions import (
+    ROLE_OPERATIONS_ADMIN,
+    can_manage_resource,
+    can_view_resource,
+    is_system_admin,
+    require_admin,
+    require_user,
+)
 from app.db import now_iso
 from app.routers.dependencies import db_dep, db_read_dep
-from app.schemas.resources import ShareLinkPayload
+from app.schemas.resources import ShareLinkPayload, ShareLinksBulkPayload
 from app.services.files import _safe_abs, asset_preview_url
 from app.core.sanitize import sanitize_html
 from app.services.resources import _resource_row, _version_row
+from app.services.tagging import tag_relation_join
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, RedirectResponse
@@ -63,7 +71,7 @@ def _share_row(db: sqlite3.Connection, token: str) -> sqlite3.Row:
         raise _share_not_found()
     row = db.execute(
         """
-        SELECT st.*, r.name, r.subject, r.tags, r.status, r.secrecy_level,
+        SELECT st.*, r.name, r.subject, r.tags, r.status,
                r.current_version, r.updated_at, r.detail_token
         FROM resource_share_tokens st
         JOIN resources r ON r.id = st.resource_id
@@ -87,7 +95,6 @@ def _public_share_payload(db: sqlite3.Connection, row: sqlite3.Row, token: str) 
             "name": row["name"],
             "subject": row["subject"] or "",
             "tags": row["tags"] or "",
-            "secrecy_level": row["secrecy_level"],
             "current_version": int(row["current_version"]),
             "updated_at": row["updated_at"],
             "version": {
@@ -174,9 +181,28 @@ def list_share_links(
     return {"items": items}
 
 
-def _share_owner_clause(user: sqlite3.Row) -> tuple[str, dict[str, Any]]:
+def _share_owner_clause(
+    user: sqlite3.Row,
+    db: sqlite3.Connection,
+) -> tuple[str, dict[str, Any]]:
     if is_system_admin(user):
         return "1=1", {}
+    if user["role"] == ROLE_OPERATIONS_ADMIN:
+        management_tag_join = tag_relation_join(db, "resource_management_tags", "rmt")
+        user_id = int(user["id"])
+        return (
+            "(st.created_by = :share_uid"
+            " OR r.owner_id = :manage_uid"
+            " OR r.management_scope = 'public'"
+            " OR (r.management_scope = 'partial' AND EXISTS ("
+            "SELECT 1 FROM resource_management rm "
+            "WHERE rm.resource_id = r.id AND rm.user_id = :manage_uid))"
+            " OR (r.management_scope = 'partial' AND EXISTS ("
+            "SELECT 1 FROM resource_management_tags rmt "
+            f"JOIN user_tags ut ON {management_tag_join} "
+            "WHERE rmt.resource_id = r.id AND ut.user_id = :manage_uid)))",
+            {"share_uid": user_id, "manage_uid": user_id},
+        )
     return "st.created_by = :share_uid", {"share_uid": int(user["id"])}
 
 
@@ -192,20 +218,14 @@ def _share_status(row: sqlite3.Row, current_time: str) -> str:
     return "active"
 
 
-@router.get("/api/resource-share-links")
-def list_managed_share_links(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-    search: str = Query("", max_length=100),
-    status: str = Query("all"),
-    user: sqlite3.Row = Depends(require_user),
-    db: sqlite3.Connection = Depends(db_read_dep),
-) -> dict[str, Any]:
+def _managed_share_filter(
+    user: sqlite3.Row, db: sqlite3.Connection, search: str, status: str,
+    current_time: str,
+) -> tuple[str, dict[str, Any]]:
     if status not in {"all", "active", "expired", "revoked"}:
         raise HTTPException(400, "分享状态筛选不正确")
 
-    current_time = now_iso()
-    owner_clause, params = _share_owner_clause(user)
+    owner_clause, params = _share_owner_clause(user, db)
     where_parts = [owner_clause]
     query = search.strip().lower()
     if query:
@@ -225,6 +245,22 @@ def list_managed_share_links(
         where_parts.append(status_clauses[status])
     where_sql = " AND ".join(where_parts)
 
+    return where_sql, params
+
+
+@router.get("/api/resource-share-links")
+def list_managed_share_links(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    search: str = Query("", max_length=100),
+    status: str = Query("all"),
+    user: sqlite3.Row = Depends(require_user),
+    db: sqlite3.Connection = Depends(db_read_dep),
+) -> dict[str, Any]:
+    current_time = now_iso()
+    owner_clause, _ = _share_owner_clause(user, db)
+    where_sql, params = _managed_share_filter(user, db, search, status, current_time)
+
     total = int(
         db.execute(
             f"""
@@ -243,7 +279,7 @@ def list_managed_share_links(
         SELECT st.id, st.resource_id, st.token_ciphertext, st.created_by,
                st.expires_at, st.revoked_at, st.created_at,
                r.name AS resource_name, r.subject AS resource_subject,
-               r.status AS resource_status, r.secrecy_level, r.detail_token,
+               r.status AS resource_status, r.detail_token,
                u.name AS creator_name, u.username AS creator_username
         FROM resource_share_tokens st
         JOIN resources r ON r.id = st.resource_id
@@ -267,7 +303,7 @@ def list_managed_share_links(
         JOIN resources r ON r.id = st.resource_id
         WHERE {owner_clause}
         """,
-        {**_share_owner_clause(user)[1], "stats_now": current_time},
+        {**_share_owner_clause(user, db)[1], "stats_now": current_time},
     ).fetchone()
 
     items = []
@@ -291,7 +327,6 @@ def list_managed_share_links(
                     "name": row["resource_name"],
                     "subject": row["resource_subject"] or "",
                     "status": row["resource_status"],
-                    "secrecy_level": row["secrecy_level"],
                     "detail_path": f"/resources/{row['detail_token']}",
                 },
             }
@@ -310,6 +345,66 @@ def list_managed_share_links(
     }
 
 
+@router.get("/api/resource-share-links/ids")
+def list_managed_share_link_ids(
+    search: str = Query("", max_length=100),
+    status: str = Query("all"),
+    user: sqlite3.Row = Depends(require_admin),
+    db: sqlite3.Connection = Depends(db_read_dep),
+) -> dict[str, list[int]]:
+    where_sql, params = _managed_share_filter(user, db, search, status, now_iso())
+    rows = db.execute(
+        f"""
+        SELECT st.id FROM resource_share_tokens st
+        JOIN resources r ON r.id = st.resource_id
+        LEFT JOIN users u ON u.id = st.created_by
+        WHERE {where_sql}
+        ORDER BY st.created_at DESC, st.id DESC
+        LIMIT 1001
+        """,
+        params,
+    ).fetchall()
+    if len(rows) > 1000:
+        raise HTTPException(400, "每次最多选择 1000 条分享记录，请缩小筛选范围")
+    return {"ids": [int(row["id"]) for row in rows]}
+
+
+@router.post("/api/resource-share-links/bulk-revoke")
+def bulk_revoke_share_links(
+    payload: ShareLinksBulkPayload,
+    user: sqlite3.Row = Depends(require_admin),
+    db: sqlite3.Connection = Depends(db_dep),
+) -> dict[str, int]:
+    link_ids = sorted(set(payload.link_ids))
+    params = {f"id_{index}": value for index, value in enumerate(link_ids)}
+    placeholders = ",".join(f":{key}" for key in params)
+    # Lock before checking ownership so permission changes cannot race revocation.
+    with db:
+        db.execute("BEGIN IMMEDIATE")
+        owner_clause, owner_params = _share_owner_clause(user, db)
+        forbidden = db.execute(
+            f"""
+            SELECT 1 FROM resource_share_tokens st
+            JOIN resources r ON r.id = st.resource_id
+            WHERE st.id IN ({placeholders}) AND NOT ({owner_clause})
+            LIMIT 1
+            """,
+            {**params, **owner_params},
+        ).fetchone()
+        if forbidden:
+            raise HTTPException(403, "无权撤销部分分享记录，请刷新列表后重试")
+        cursor = db.execute(
+            f"""
+            UPDATE resource_share_tokens
+            SET revoked_at = COALESCE(revoked_at, :revoked_at)
+            WHERE id IN ({placeholders}) AND revoked_at IS NULL
+            """,
+            {**params, "revoked_at": now_iso()},
+        )
+        revoked = cursor.rowcount
+    return {"revoked": revoked}
+
+
 @router.delete("/api/resources/{resource_id}/share-links/{link_id}")
 def revoke_share_link(
     resource_id: int,
@@ -318,12 +413,15 @@ def revoke_share_link(
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, bool]:
     row = _resource_row(db, resource_id)
-    if not can_view_resource(db, row, user):
+    can_manage_all = is_system_admin(user) or (
+        user["role"] == ROLE_OPERATIONS_ADMIN and can_manage_resource(db, row, user)
+    )
+    if not can_manage_all and not can_view_resource(db, row, user):
         raise HTTPException(403, "无权查看该素材")
-    creator_clause = "" if is_system_admin(user) else " AND created_by = ?"
+    creator_clause = "" if can_manage_all else " AND created_by = ?"
     values: tuple[Any, ...] = (
         (now_iso(), link_id, resource_id)
-        if is_system_admin(user)
+        if can_manage_all
         else (now_iso(), link_id, resource_id, int(user["id"]))
     )
     cursor = db.execute(

@@ -1205,6 +1205,17 @@
               "default": "",
               "title": "Role"
             }
+          },
+          {
+            "name": "login_sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 8,
+              "default": "",
+              "title": "Login Sort"
+            }
           }
         ],
         "responses": {
@@ -2180,29 +2191,6 @@
         }
       }
     },
-    "/api/secrecy-tags": {
-      "get": {
-        "tags": [
-          "tags"
-        ],
-        "summary": "List Secrecy Tags",
-        "operationId": "list_secrecy_tags_api_secrecy_tags_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "type": "object",
-                  "title": "Response List Secrecy Tags Api Secrecy Tags Get"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/status-tags": {
       "get": {
         "tags": [
@@ -2723,6 +2711,232 @@
         }
       }
     },
+    "/api/admin/tags/batch": {
+      "put": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "Admin Batch Update Tags",
+        "operationId": "admin_batch_update_tags_api_admin_tags_batch_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TagsBatchUpdatePayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Admin Batch Update Tags Api Admin Tags Batch Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/tags/categories/rename": {
+      "put": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "Admin Rename Resource Category",
+        "operationId": "admin_rename_resource_category_api_admin_tags_categories_rename_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CategoryRenamePayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Admin Rename Resource Category Api Admin Tags Categories Rename Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/user-tags/categories/rename": {
+      "put": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "Admin Rename User Category",
+        "operationId": "admin_rename_user_category_api_admin_user_tags_categories_rename_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CategoryRenamePayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Admin Rename User Category Api Admin User Tags Categories Rename Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/user-tags/batch": {
+      "put": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "Admin Batch Update User Tags",
+        "operationId": "admin_batch_update_user_tags_api_admin_user_tags_batch_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TagsBatchUpdatePayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Admin Batch Update User Tags Api Admin User Tags Batch Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/{domain}-tags/batch": {
+      "put": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "Admin Batch Update Metadata Tags",
+        "operationId": "admin_batch_update_metadata_tags_api_admin__domain__tags_batch_put",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Domain"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TagsBatchUpdatePayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Admin Batch Update Metadata Tags Api Admin  Domain  Tags Batch Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/tags/{tag_id}": {
       "put": {
         "tags": [
@@ -2782,7 +2996,7 @@
           "tags"
         ],
         "summary": "Admin Delete Tag",
-        "description": "删除预设定义；历史业务数据和用户标签文本保持不变。",
+        "description": "删除预设定义及其素材/放映关联。",
         "operationId": "admin_delete_tag_api_admin_tags__tag_id__delete",
         "parameters": [
           {
@@ -3262,6 +3476,22 @@
               ],
               "title": "Attempt"
             }
+          },
+          {
+            "name": "worker_attempt",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Worker Attempt"
+            }
           }
         ],
         "responses": {
@@ -3415,6 +3645,68 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Commit Resource Import Api Resource Import  Session Id  Commit Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/resources/{resource_id}/versions/from-import/{session_id}": {
+      "post": {
+        "summary": "Commit Resource Iteration",
+        "operationId": "commit_resource_iteration_api_resources__resource_id__versions_from_import__session_id__post",
+        "parameters": [
+          {
+            "name": "resource_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Resource Id"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Commit Resource Iteration Api Resources  Resource Id  Versions From Import  Session Id  Post"
                 }
               }
             }
@@ -3622,6 +3914,106 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response List Managed Share Links Api Resource Share Links Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/resource-share-links/ids": {
+      "get": {
+        "summary": "List Managed Share Link Ids",
+        "operationId": "list_managed_share_link_ids_api_resource_share_links_ids_get",
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 100,
+              "default": "",
+              "title": "Search"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "all",
+              "title": "Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer"
+                    }
+                  },
+                  "title": "Response List Managed Share Link Ids Api Resource Share Links Ids Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/resource-share-links/bulk-revoke": {
+      "post": {
+        "summary": "Bulk Revoke Share Links",
+        "operationId": "bulk_revoke_share_links_api_resource_share_links_bulk_revoke_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShareLinksBulkPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "type": "object",
+                  "title": "Response Bulk Revoke Share Links Api Resource Share Links Bulk Revoke Post"
                 }
               }
             }
@@ -3848,16 +4240,6 @@
             }
           },
           {
-            "name": "secrecy",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "default": "all",
-              "title": "Secrecy"
-            }
-          },
-          {
             "name": "permission",
             "in": "query",
             "required": false,
@@ -4029,16 +4411,6 @@
             }
           },
           {
-            "name": "secrecy",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "default": "all",
-              "title": "Secrecy"
-            }
-          },
-          {
             "name": "permission",
             "in": "query",
             "required": false,
@@ -4190,18 +4562,8 @@
             "required": false,
             "schema": {
               "type": "string",
-              "default": "active",
-              "title": "Status"
-            }
-          },
-          {
-            "name": "secrecy",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
               "default": "all",
-              "title": "Secrecy"
+              "title": "Status"
             }
           },
           {
@@ -4323,18 +4685,8 @@
             "required": false,
             "schema": {
               "type": "string",
-              "default": "active",
-              "title": "Status"
-            }
-          },
-          {
-            "name": "secrecy",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
               "default": "all",
-              "title": "Secrecy"
+              "title": "Status"
             }
           },
           {
@@ -4620,68 +4972,6 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Create Resource Version Api Resources  Resource Id  Versions Post"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/resources/{resource_id}/versions/from-import/{session_id}": {
-      "post": {
-        "summary": "Commit Resource Iteration",
-        "operationId": "commit_resource_iteration_api_resources__resource_id__versions_from_import__session_id__post",
-        "parameters": [
-          {
-            "name": "resource_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "integer",
-              "title": "Resource Id"
-            }
-          },
-          {
-            "name": "session_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Session Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Payload"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "title": "Response Commit Resource Iteration Api Resources  Resource Id  Versions From Import  Session Id  Post"
                 }
               }
             }
@@ -5627,6 +5917,23 @@
               "default": false,
               "title": "With Fonts"
             }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(pptx-embedded|pptx|zip)$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Format"
+            }
           }
         ],
         "responses": {
@@ -5743,16 +6050,6 @@
               "type": "string",
               "default": "all",
               "title": "Status"
-            }
-          },
-          {
-            "name": "secrecy",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "default": "all",
-              "title": "Secrecy"
             }
           },
           {
@@ -7029,6 +7326,135 @@
         }
       }
     },
+    "/api/shows/{show_id}/offline-manifest": {
+      "get": {
+        "summary": "Get Show Offline Manifest",
+        "operationId": "get_show_offline_manifest_api_shows__show_id__offline_manifest_get",
+        "parameters": [
+          {
+            "name": "show_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Show Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Show Offline Manifest Api Shows  Show Id  Offline Manifest Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/shows/{show_id}/offline-assets/{resource_id}/{asset_kind}": {
+      "get": {
+        "summary": "Get Show Offline Asset",
+        "operationId": "get_show_offline_asset_api_shows__show_id__offline_assets__resource_id___asset_kind__get",
+        "parameters": [
+          {
+            "name": "show_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Show Id"
+            }
+          },
+          {
+            "name": "resource_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Resource Id"
+            }
+          },
+          {
+            "name": "asset_kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "enum": [
+                "image",
+                "thumb"
+              ],
+              "type": "string",
+              "title": "Asset Kind"
+            }
+          },
+          {
+            "name": "version_no",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "title": "Version No"
+            }
+          },
+          {
+            "name": "sha256",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 64,
+                  "maxLength": 64,
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sha256"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/shows/{show_id}/offline-version": {
       "get": {
         "summary": "Get Show Offline Version",
@@ -7160,7 +7586,7 @@
     "/api/tasks": {
       "get": {
         "summary": "List Tasks",
-        "description": "获取任务列表，支持 status / task_type / owner_id 过滤、追踪码搜索及分页。\n\n权限规则：\n- 管理员：可传任意 owner_id（不传则返回所有用户的任务）\n- 非管理员：忽略 owner_id 参数，强制只看自己的任务\n\n分页：page 从 1 开始，page_size 默认 20、上限 100。\n搜索：search 仅在 task_type=download 时对 params.track_code 字段做模糊匹配。",
+        "description": "获取任务列表，支持 status / task_type / owner_id 过滤、关键词搜索及分页。\n\n权限规则：\n- 管理员：可传任意 owner_id（不传则返回所有用户的任务）\n- 非管理员：忽略 owner_id 参数，强制只看自己的任务\n\n分页：page 从 1 开始，page_size 默认 20、上限 100。\n搜索：下载任务搜索追踪码、放映名称和文件名；上传任务搜索系列、名称前缀、\n文件名、主体和标签。",
         "operationId": "list_tasks_api_tasks_get",
         "parameters": [
           {
@@ -7962,6 +8388,66 @@
         }
       }
     },
+    "/api/renderer/render-tasks/{task_id}/progress": {
+      "post": {
+        "tags": [
+          "renderer-render-tasks"
+        ],
+        "summary": "Progress",
+        "operationId": "progress_api_renderer_render_tasks__task_id__progress_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompleteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/renderer/render-tasks/{task_id}/complete": {
       "post": {
         "tags": [
@@ -8215,6 +8701,11 @@
             "type": "boolean",
             "title": "With Fonts",
             "default": false
+          },
+          "embed_fonts": {
+            "type": "boolean",
+            "title": "Embed Fonts",
+            "default": false
           }
         },
         "type": "object",
@@ -8268,11 +8759,6 @@
           "manage_user_tags": {
             "type": "string",
             "title": "Manage User Tags",
-            "default": ""
-          },
-          "secrecy_level": {
-            "type": "string",
-            "title": "Secrecy Level",
             "default": ""
           },
           "status": {
@@ -8374,11 +8860,6 @@
           "tags": {
             "type": "string",
             "title": "Tags",
-            "default": ""
-          },
-          "secrecy_level": {
-            "type": "string",
-            "title": "Secrecy Level",
             "default": ""
           },
           "status": {
@@ -8693,6 +9174,29 @@
           "avatar"
         ],
         "title": "Body_upload_user_avatar_api_admin_users__user_id__avatar_post"
+      },
+      "CategoryRenamePayload": {
+        "properties": {
+          "old_category": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Old Category"
+          },
+          "new_category": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "New Category"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "old_category",
+          "new_category"
+        ],
+        "title": "CategoryRenamePayload"
       },
       "ChangePasswordPayload": {
         "properties": {
@@ -9132,10 +9636,6 @@
             },
             "type": "array",
             "title": "Manage User Tags"
-          },
-          "secrecy_level": {
-            "type": "string",
-            "title": "Secrecy Level"
           }
         },
         "additionalProperties": false,
@@ -9143,8 +9643,7 @@
         "required": [
           "name",
           "visibility_scope",
-          "management_scope",
-          "secrecy_level"
+          "management_scope"
         ],
         "title": "MetadataPayload"
       },
@@ -9245,6 +9744,26 @@
         "title": "ShareLinkPayload",
         "description": "分享链接有效期；原始令牌只在创建响应中返回一次。"
       },
+      "ShareLinksBulkPayload": {
+        "properties": {
+          "link_ids": {
+            "items": {
+              "type": "integer",
+              "exclusiveMinimum": 0.0
+            },
+            "type": "array",
+            "maxItems": 1000,
+            "minItems": 1,
+            "title": "Link Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "link_ids"
+        ],
+        "title": "ShareLinksBulkPayload"
+      },
       "ShowCreatePayload": {
         "properties": {
           "name": {
@@ -9266,11 +9785,6 @@
             "title": "Status",
             "default": ""
           },
-          "secrecy_level": {
-            "type": "string",
-            "title": "Secrecy Level",
-            "default": ""
-          },
           "visibility_scope": {
             "type": "string",
             "title": "Visibility Scope",
@@ -9286,16 +9800,28 @@
               "type": "integer"
             },
             "type": "array",
-            "title": "Visible User Ids",
-            "default": []
+            "title": "Visible User Ids"
+          },
+          "visible_user_tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Visible User Tags"
           },
           "manage_user_ids": {
             "items": {
               "type": "integer"
             },
             "type": "array",
-            "title": "Manage User Ids",
-            "default": []
+            "title": "Manage User Ids"
+          },
+          "manage_user_tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Manage User Tags"
           },
           "resource_ids": {
             "items": {
@@ -9487,11 +10013,6 @@
             "title": "Status",
             "default": ""
           },
-          "secrecy_level": {
-            "type": "string",
-            "title": "Secrecy Level",
-            "default": ""
-          },
           "visibility_scope": {
             "type": "string",
             "title": "Visibility Scope",
@@ -9507,16 +10028,28 @@
               "type": "integer"
             },
             "type": "array",
-            "title": "Visible User Ids",
-            "default": []
+            "title": "Visible User Ids"
+          },
+          "visible_user_tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Visible User Tags"
           },
           "manage_user_ids": {
             "items": {
               "type": "integer"
             },
             "type": "array",
-            "title": "Manage User Ids",
-            "default": []
+            "title": "Manage User Ids"
+          },
+          "manage_user_tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Manage User Tags"
           }
         },
         "additionalProperties": false,
@@ -9541,6 +10074,28 @@
         "type": "object",
         "title": "ShowUpgradePayload"
       },
+      "TagBatchUpdateItem": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Name"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "TagBatchUpdateItem"
+      },
       "TagUpdatePayload": {
         "properties": {
           "name": {
@@ -9556,6 +10111,25 @@
           "name"
         ],
         "title": "TagUpdatePayload"
+      },
+      "TagsBatchUpdatePayload": {
+        "properties": {
+          "updates": {
+            "items": {
+              "$ref": "#/components/schemas/TagBatchUpdateItem"
+            },
+            "type": "array",
+            "maxItems": 1000,
+            "minItems": 1,
+            "title": "Updates"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "updates"
+        ],
+        "title": "TagsBatchUpdatePayload"
       },
       "TagsConfigPayload": {
         "properties": {
@@ -9580,17 +10154,6 @@
               }
             ],
             "title": "User Custom Tags"
-          },
-          "secrecy_custom_tags": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Secrecy Custom Tags"
           },
           "status_custom_tags": {
             "anyOf": [
@@ -9758,6 +10321,11 @@
             "maximum": 100000.0,
             "minimum": 0.0,
             "title": "Page Index"
+          },
+          "include_source": {
+            "type": "boolean",
+            "title": "Include Source",
+            "default": true
           }
         },
         "type": "object",

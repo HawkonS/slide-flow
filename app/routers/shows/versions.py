@@ -19,10 +19,13 @@ from app.schemas.shows import (
 )
 from app.services.shows import (
     _serialize_show,
+    _set_show_scope_tags,
     _set_show_scope_users,
+    _show_scope_tag_names,
     _show_row,
     _show_scope_user_ids,
 )
+from app.services.tagging import entity_tag_names, set_entity_tags
 from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import HTTPException
@@ -50,17 +53,35 @@ def iterate_show(
     ts = now_iso()
     db.execute(
         """
-        INSERT INTO shows (name, owner_id, subject, tags, status, secrecy_level, visibility_scope, management_scope, is_standard, series_id, version_no, change_note, updated_by, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO shows (name, owner_id, subject, tags, status, visibility_scope, management_scope, is_standard, series_id, version_no, change_note, updated_by, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (new_name, user["id"], row["subject"], row["tags"], row["status"], row["secrecy_level"], row["visibility_scope"], row["management_scope"], row["is_standard"], series_id, new_version_no, payload.change_note, user["id"], ts, ts),
+        (new_name, user["id"], row["subject"], row["tags"], row["status"], row["visibility_scope"], row["management_scope"], row["is_standard"], series_id, new_version_no, payload.change_note, user["id"], ts, ts),
     )
     new_show_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+    set_entity_tags(
+        db,
+        relation_table="show_tags",
+        entity_column="show_id",
+        entity_id=new_show_id,
+        names=entity_tag_names(
+            db,
+            relation_table="show_tags",
+            entity_column="show_id",
+            entity_id=int(show_id),
+            fallback=row["tags"] or "",
+        ),
+        cache_table="shows",
+        created_by=int(user["id"]),
+    )
     # 复制权限记录
     visible_ids = _show_scope_user_ids(db, "show_visibility", show_id)
     manage_ids = _show_scope_user_ids(db, "show_management", show_id)
+    manage_tags = _show_scope_tag_names(db, show_id, "show_management_tags")
     _set_show_scope_users(db, "show_visibility", new_show_id, visible_ids)
+    _set_show_scope_tags(db, new_show_id, _show_scope_tag_names(db, show_id))
     _set_show_scope_users(db, "show_management", new_show_id, manage_ids)
+    _set_show_scope_tags(db, new_show_id, manage_tags, "show_management_tags")
     # 复制资源
     if payload.resource_ids is None:
         # 复制源 show 的所有 show_resources
@@ -237,17 +258,35 @@ def iterate_upgrade_show(
     ts = now_iso()
     db.execute(
         """
-        INSERT INTO shows (name, owner_id, subject, tags, status, secrecy_level, visibility_scope, management_scope, is_standard, series_id, version_no, change_note, updated_by, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO shows (name, owner_id, subject, tags, status, visibility_scope, management_scope, is_standard, series_id, version_no, change_note, updated_by, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (row["name"], user["id"], row["subject"], row["tags"], row["status"], row["secrecy_level"], row["visibility_scope"], row["management_scope"], row["is_standard"], series_id, new_version_no, payload.change_note, user["id"], ts, ts),
+        (row["name"], user["id"], row["subject"], row["tags"], row["status"], row["visibility_scope"], row["management_scope"], row["is_standard"], series_id, new_version_no, payload.change_note, user["id"], ts, ts),
     )
     new_show_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+    set_entity_tags(
+        db,
+        relation_table="show_tags",
+        entity_column="show_id",
+        entity_id=new_show_id,
+        names=entity_tag_names(
+            db,
+            relation_table="show_tags",
+            entity_column="show_id",
+            entity_id=int(show_id),
+            fallback=row["tags"] or "",
+        ),
+        cache_table="shows",
+        created_by=int(user["id"]),
+    )
     # 2. 复制权限记录
     visible_ids = _show_scope_user_ids(db, "show_visibility", show_id)
     manage_ids = _show_scope_user_ids(db, "show_management", show_id)
+    manage_tags = _show_scope_tag_names(db, show_id, "show_management_tags")
     _set_show_scope_users(db, "show_visibility", new_show_id, visible_ids)
+    _set_show_scope_tags(db, new_show_id, _show_scope_tag_names(db, show_id))
     _set_show_scope_users(db, "show_management", new_show_id, manage_ids)
+    _set_show_scope_tags(db, new_show_id, manage_tags, "show_management_tags")
     # 3. 复制 show_resources 并升级选中资源
     upgrade_target_ids = set(payload.resource_ids)
     resource_rows = db.execute(

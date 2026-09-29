@@ -20,6 +20,7 @@ from app.services.resources import (
     _set_scope_tags,
     _set_scope_users,
 )
+from app.services.tagging import set_entity_tags
 from app.services.tasks.runtime import (
     SPLIT_TASK_TIMEOUT,
     _pending_task_futures,
@@ -134,7 +135,6 @@ def _execute_split_task(
         subject = params["subject"]
         tags = params["tags"]
         resource_status = params["status"]
-        secrecy_level = params["secrecy_level"]
         visibility_scope = params["visibility_scope"]
         visible_user_ids = params["visible_user_ids"]
         visible_user_tags = params.get("visible_user_tags", "")
@@ -147,6 +147,10 @@ def _execute_split_task(
 
         BATCH_COMMIT = 5
         progress = 0
+        # Keep enough precision to distinguish two batches committed in the
+        # same second while retaining one shared timestamp per batch.
+        batch_ts = now_iso(timespec="milliseconds")
+        name_width = max(2, len(str(total)))
 
         for index, split_ppt in enumerate(split_files, start=1):
             pending_refs.clear()
@@ -175,34 +179,41 @@ def _execute_split_task(
             if png_ref:
                 pending_refs.append(png_ref)
 
-            ts = now_iso()
             db.execute(
                 """
                 INSERT INTO resources (
                     detail_token, name, owner_id, subject, tags, status,
                     visibility_scope, management_scope, secrecy_level,
                     current_version, updated_by, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', 1, ?, ?, ?)
                 """,
                 (
                     new_resource_detail_token(),
-                    f"{name_prefix}_{index:02d}",
+                    f"{name_prefix}_{index:0{name_width}d}",
                     owner_id,
                     subject,
                     tags,
                     resource_status,
                     visibility_scope,
                     management_scope,
-                    secrecy_level,
                     owner_id,
-                    ts,
-                    ts,
+                    batch_ts,
+                    batch_ts,
                 ),
             )
             resource_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
             if resource_id <= 0:
                 raise ValueError(f"Failed to insert resource, got invalid id: {resource_id}")
             resource_ids.append(resource_id)
+            set_entity_tags(
+                db,
+                relation_table="resource_tags",
+                entity_column="resource_id",
+                entity_id=resource_id,
+                names=tags,
+                cache_table="resources",
+                created_by=int(owner_id),
+            )
             _set_scope_users(db, "resource_visibility", resource_id, _parse_id_list(visible_user_ids))
             _set_scope_users(db, "resource_management", resource_id, _parse_id_list(manage_user_ids))
             _set_scope_tags(

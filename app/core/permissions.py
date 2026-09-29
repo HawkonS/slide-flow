@@ -7,6 +7,7 @@ from fastapi import Depends, HTTPException, Request
 from app.db import get_read_db, release_db
 from app.core.security import read_session_claims
 from app.config import settings
+from app.services.tagging import tag_relation_join
 
 
 # 角色常量
@@ -105,9 +106,10 @@ def _user_matches_resource_tag(
     resource_id: int,
     user_id: int,
 ) -> bool:
+    join_condition = tag_relation_join(db, table, "rt")
     return db.execute(
         f"SELECT 1 FROM {table} rt "
-        "JOIN user_tags ut ON ut.tag_name = rt.tag_name "
+        f"JOIN user_tags ut ON {join_condition} "
         "WHERE rt.resource_id = ? AND ut.user_id = ? LIMIT 1",
         (resource_id, user_id),
     ).fetchone() is not None
@@ -162,6 +164,24 @@ def _linked_show_user_ids(db: sqlite3.Connection, table: str, show_id: int) -> s
     return {int(row["user_id"]) for row in rows}
 
 
+def _show_scope_matches_user_tag(
+    db: sqlite3.Connection,
+    show_id: int,
+    user_id: int,
+) -> bool:
+    tag_join = tag_relation_join(db, "show_visibility_tags", "scope_tags", "user_tags")
+    return db.execute(
+        f"""
+        SELECT 1
+        FROM show_visibility_tags scope_tags
+        JOIN user_tags ON {tag_join}
+        WHERE scope_tags.show_id = ? AND user_tags.user_id = ?
+        LIMIT 1
+        """,
+        (show_id, user_id),
+    ).fetchone() is not None
+
+
 def can_view_show(db: sqlite3.Connection, show: sqlite3.Row, user: sqlite3.Row) -> bool:
     if is_system_admin(user):
         return True
@@ -173,7 +193,12 @@ def can_view_show(db: sqlite3.Connection, show: sqlite3.Row, user: sqlite3.Row) 
     if scope == "private":
         return False
     if scope == "partial":
-        return int(user["id"]) in _linked_show_user_ids(db, "show_visibility", int(show["id"]))
+        show_id = int(show["id"])
+        user_id = int(user["id"])
+        return (
+            user_id in _linked_show_user_ids(db, "show_visibility", show_id)
+            or _show_scope_matches_user_tag(db, show_id, user_id)
+        )
     return False
 
 
@@ -188,5 +213,19 @@ def can_manage_show(db: sqlite3.Connection, show: sqlite3.Row, user: sqlite3.Row
     if scope == "private":
         return False
     if scope == "partial":
-        return int(user["id"]) in _linked_show_user_ids(db, "show_management", int(show["id"]))
+        show_id = int(show["id"])
+        user_id = int(user["id"])
+        tag_join = tag_relation_join(db, "show_management_tags", "scope_tags", "user_tags")
+        return (
+            user_id in _linked_show_user_ids(db, "show_management", show_id)
+            or db.execute(
+                f"""
+                SELECT 1 FROM show_management_tags scope_tags
+                JOIN user_tags ON {tag_join}
+                WHERE scope_tags.show_id = ? AND user_tags.user_id = ?
+                LIMIT 1
+                """,
+                (show_id, user_id),
+            ).fetchone() is not None
+        )
     return False

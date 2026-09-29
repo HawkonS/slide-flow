@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from app.schemas.base import ApiPayload
 from pydantic import Field
+from typing import Annotated
 
 
 class MetadataPayload(ApiPayload):
@@ -17,13 +18,16 @@ class MetadataPayload(ApiPayload):
     management_scope: str
     manage_user_ids: list[int] = Field(default_factory=list)
     manage_user_tags: list[str] = Field(default_factory=list)
-    secrecy_level: str
 
 
 class ShareLinkPayload(ApiPayload):
     """分享链接有效期；原始令牌只在创建响应中返回一次。"""
 
     expires_in_days: int = Field(default=7, ge=1, le=30)
+
+
+class ShareLinksBulkPayload(ApiPayload):
+    link_ids: list[Annotated[int, Field(gt=0)]] = Field(..., min_length=1, max_length=1000)
 
 
 class CommonRemarkPayload(ApiPayload):

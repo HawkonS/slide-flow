@@ -10,7 +10,12 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc -b --noEmit"
+    "typecheck": "tsc -b --noEmit",
+    "test:pwa:install": "playwright install chromium",
+    "test:pwa:unit": "node --test tests/offline-session.mjs tests/playback-assets.mjs tests/legacy-offline.mjs ../tests/test_pwa_service_worker.mjs",
+    "test:pwa:browser": "node --test --test-concurrency=1 tests/offline-auth.mjs tests/playback-browser.mjs tests/playback-integration.mjs tests/offline-cache-ui.mjs ../tests/test_pwa_browser.mjs",
+    "test:pwa:ui": "node --test tests/offline-cache-ui.mjs",
+    "test:pwa": "npm run test:pwa:unit && npm run build && npm run test:pwa:browser"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",
@@ -47,6 +52,7 @@
     "@vitejs/plugin-basic-ssl": "^1.2.0",
     "@vitejs/plugin-react": "^4.7.0",
     "autoprefixer": "^10.4.20",
+    "playwright": "1.62.1",
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.13",
     "typescript": "^5.6.2",

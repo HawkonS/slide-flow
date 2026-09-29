@@ -19,6 +19,7 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { MetadataTagSelect } from "@/components/resource/MetadataTagSelect";
 import { UserPicker } from "@/components/resource/UserPicker";
 import {
   DropdownMenu,
@@ -65,6 +66,7 @@ import { downloadWithProgress } from "@/lib/fonts";
 import { TemplateItem, VisibilityScope } from "@/lib/types";
 import { useUrlPage } from "@/lib/use-url-page";
 import { cn } from "@/lib/utils";
+import { PageHeader } from "@/components/common/PageHeader";
 
 interface TemplateListResponse {
   items: TemplateItem[];
@@ -183,17 +185,12 @@ export function AdminTemplatesPage() {
 
   return (
     <div className="page-shell">
-      {/* 页头 */}
-      <header className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-1.5">
-          <h1 className="page-title">模板管理</h1>
-          <span className="page-count">
-            {filtered.length === templates.length
-              ? `共 ${templates.length} 条`
-              : `筛选后 ${filtered.length} / ${templates.length} 条`}
-          </span>
-        </div>
-      </header>
+      <PageHeader
+        title="模板管理"
+        count={filtered.length === templates.length
+          ? `共 ${templates.length} 条`
+          : `筛选后 ${filtered.length} / ${templates.length} 条`}
+      />
 
       {/* 筛选行 */}
       <div className="flex flex-wrap items-center gap-2">
@@ -588,10 +585,10 @@ export function TemplateFormDialog({
           </div>
           <div className="space-y-1.5">
             <Label>主体 *</Label>
-            <Input
+            <MetadataTagSelect
+              domain="subject"
               value={subject}
-              onChange={(e) => setSubject(e.target.value)}
-              placeholder="只能填写一个主体"
+              onChange={setSubject}
             />
           </div>
           <div className="space-y-1.5">

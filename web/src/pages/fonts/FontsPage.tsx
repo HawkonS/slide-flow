@@ -19,6 +19,8 @@ import {
 import { toast } from "sonner";
 
 import { FontUploadDialog } from "@/components/font/FontUploadDialog";
+import { PageMetrics } from "@/components/common/PageMetrics";
+import { PageHeader } from "@/components/common/PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -251,43 +253,25 @@ export function FontsPage() {
 
   return (
     <div className="page-shell">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 className="page-title">标准字体</h1>
-            {isAdmin && <Badge variant="secondary" className="rounded-md px-2 text-[11px]">可维护</Badge>}
-          </div>
-          <p className="mt-1.5 text-sm text-muted-foreground">
-            统一管理用于 PPT 导入、渲染与导出的字体资源。
-          </p>
-        </div>
-        {isAdmin && (
+      <PageHeader
+        title="标准字体"
+        titleExtra={isAdmin ? <Badge variant="secondary" className="rounded-md px-2 text-[11px]">可维护</Badge> : null}
+        description="统一管理用于 PPT 导入、渲染与导出的字体资源。"
+        actions={isAdmin ? (
           <Button size="sm" className="h-9 shrink-0 gap-1.5" onClick={() => setUploadOpen(true)}>
             <Upload className="h-3.5 w-3.5" />上传字体
           </Button>
-        )}
-      </header>
+        ) : null}
+      />
 
-      <section className="grid grid-cols-3 divide-x rounded-md border bg-card shadow-sm" aria-label="字体统计">
-        <div className="min-w-0 px-3 py-2.5 sm:px-4">
-          <div className="truncate text-[11px] font-medium text-muted-foreground">字体总数</div>
-          <div className="mt-1 flex items-center gap-1.5 text-lg font-semibold tabular-nums">
-            <Type className="h-4 w-4 text-primary" />{fonts.length}
-          </div>
-        </div>
-        <div className="min-w-0 px-3 py-2.5 sm:px-4">
-          <div className="truncate text-[11px] font-medium text-muted-foreground">服务器已安装</div>
-          <div className="mt-1 flex items-center gap-1.5 text-lg font-semibold tabular-nums">
-            <Server className="h-4 w-4 text-primary" />{installedCount}
-          </div>
-        </div>
-        <div className="min-w-0 px-3 py-2.5 sm:px-4">
-          <div className="truncate text-[11px] font-medium text-muted-foreground">可检索别名</div>
-          <div className="mt-1 flex items-center gap-1.5 text-lg font-semibold tabular-nums">
-            <Tags className="h-4 w-4 text-muted-foreground" />{aliasCount}
-          </div>
-        </div>
-      </section>
+      <PageMetrics
+        ariaLabel="字体统计"
+        items={[
+          { label: "字体", value: fonts.length, icon: Type },
+          { label: "服务器已安装", value: installedCount, icon: Server, tone: "success" },
+          { label: "可检索别名", value: aliasCount, icon: Tags },
+        ]}
+      />
 
       <div className="page-toolbar">
         <div className="relative min-w-0 flex-1 sm:flex-none">

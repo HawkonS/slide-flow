@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.schemas.base import ApiPayload
+from pydantic import Field
 
 
 class ShowCreatePayload(ApiPayload):
@@ -10,11 +11,12 @@ class ShowCreatePayload(ApiPayload):
     subject: str = ""
     tags: str = ""
     status: str = ""
-    secrecy_level: str = ""
     visibility_scope: str = "private"
     management_scope: str = "private"
-    visible_user_ids: list[int] = []
-    manage_user_ids: list[int] = []
+    visible_user_ids: list[int] = Field(default_factory=list)
+    visible_user_tags: list[str] = Field(default_factory=list)
+    manage_user_ids: list[int] = Field(default_factory=list)
+    manage_user_tags: list[str] = Field(default_factory=list)
     resource_ids: list[int] = []
     change_note: str = ""
 
@@ -24,11 +26,12 @@ class ShowUpdatePayload(ApiPayload):
     subject: str = ""
     tags: str = ""
     status: str = ""
-    secrecy_level: str = ""
     visibility_scope: str = "private"
     management_scope: str = "private"
-    visible_user_ids: list[int] = []
-    manage_user_ids: list[int] = []
+    visible_user_ids: list[int] = Field(default_factory=list)
+    visible_user_tags: list[str] = Field(default_factory=list)
+    manage_user_ids: list[int] = Field(default_factory=list)
+    manage_user_tags: list[str] = Field(default_factory=list)
 
 
 class ShowResourcesPayload(ApiPayload):

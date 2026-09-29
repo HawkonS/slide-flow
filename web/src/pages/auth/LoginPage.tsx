@@ -29,7 +29,7 @@ interface FeishuConfig {
 export function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { setUser } = useAuth();
+  const { beginLogin, completeLogin } = useAuth();
   const [submitting, setSubmitting] = useState(false);
   const [feishuConfig, setFeishuConfig] = useState<FeishuConfig | null>(null);
   const [feishuLogging, setFeishuLogging] = useState(false);
@@ -128,8 +128,10 @@ export function LoginPage() {
   
     // 验证 state 参数防 CSRF
     const savedState = sessionStorage.getItem("feishu_sso_state");
+    const loginEpoch = sessionStorage.getItem("feishu_login_epoch");
     sessionStorage.removeItem("feishu_sso_state");
-    if (!savedState || !state || state !== savedState) {
+    sessionStorage.removeItem("feishu_login_epoch");
+    if (!savedState || !state || state !== savedState || !loginEpoch) {
       toast.error("登录验证失败，请重试");
       window.history.replaceState({}, "", window.location.pathname);
       return;
@@ -143,9 +145,8 @@ export function LoginPage() {
       method: "POST",
       json: { code, state },
     })
-      .then((res) => {
-        // 回调已返回完整用户信息，直接登录跳转，无需再请求 /api/me
-        setUser(res.user);
+      .then(async (res) => {
+        await completeLogin(res.user, loginEpoch);
         toast.success(`欢迎，${res.user.name || res.user.username}`);
         sessionStorage.removeItem("login_return_to");
         navigate(from, { replace: true });
@@ -161,14 +162,14 @@ export function LoginPage() {
 
   async function onSubmit(values: LoginForm) {
     setSubmitting(true);
+    const loginEpoch = beginLogin();
     try {
       const res = await api<{ user: CurrentUser }>("/api/auth/login", {
         method: "POST",
         json: values,
       });
       const user = res.user;
-      // 登录接口已返回完整用户信息，直接跳转，无需再请求 /api/me
-      setUser(user);
+      await completeLogin(user, loginEpoch);
       toast.success(`欢迎回来，${user.name || user.username}`);
       sessionStorage.removeItem("login_return_to");
       navigate(from, { replace: true });
@@ -190,6 +191,7 @@ export function LoginPage() {
       return;
     }
     sessionStorage.setItem("feishu_sso_state", state);
+    sessionStorage.setItem("feishu_login_epoch", beginLogin());
     sessionStorage.setItem("login_return_to", from);
     const authUrl =
       `https://open.feishu.cn/open-apis/authen/v1/authorize` +

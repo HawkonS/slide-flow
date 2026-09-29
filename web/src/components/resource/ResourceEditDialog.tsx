@@ -55,7 +55,6 @@ interface FormState {
   name: string;
   subject: string;
   tagList: string[];
-  secrecy_level: string;
   status: string;
   visibility_scope: ScopeValue | "";
   management_scope: ScopeValue | "";
@@ -75,7 +74,6 @@ function defaultForm(resource: Resource | null): FormState {
       name: "",
       subject: DEFAULT_RESOURCE_SUBJECT,
       tagList: [],
-      secrecy_level: "",
       status: "",
       visibility_scope: "",
       management_scope: "",
@@ -93,7 +91,6 @@ function defaultForm(resource: Resource | null): FormState {
     name: resource.name,
     subject: resource.subject || DEFAULT_RESOURCE_SUBJECT,
     tagList: parseTags(resource.tags),
-    secrecy_level: resource.secrecy_level,
     status: resource.status,
     visibility_scope: resource.visibility_scope,
     management_scope: resource.management_scope,
@@ -125,7 +122,6 @@ export function ResourceEditDialog({
 
   const mutation = useMutation({
     mutationFn: async () => {
-      if (!form.secrecy_level) throw new Error("请选择密级");
       if (!form.status) throw new Error("请选择状态");
       if (isCreate) {
         if (!form.pptFile) throw new Error("请上传 PPT 文件");
@@ -134,7 +130,6 @@ export function ResourceEditDialog({
         fd.append("name", form.name.trim());
         fd.append("subject", form.subject.trim() || DEFAULT_RESOURCE_SUBJECT);
         fd.append("tags", serializeTags(form.tagList));
-        fd.append("secrecy_level", form.secrecy_level);
         fd.append("status", form.status);
         fd.append("visibility_scope", form.visibility_scope);
         fd.append("management_scope", form.management_scope);
@@ -159,7 +154,6 @@ export function ResourceEditDialog({
           name: form.name.trim(),
           subject: form.subject.trim() || DEFAULT_RESOURCE_SUBJECT,
           tags: serializeTags(form.tagList),
-          secrecy_level: form.secrecy_level,
           status: form.status,
           visibility_scope: form.visibility_scope,
           management_scope: form.management_scope,
@@ -348,8 +342,8 @@ export function ResourceEditDialog({
             />
           </div>
 
-          {/* 主体 + 密级 + 状态 */}
-          <div className="grid gap-4 sm:grid-cols-3">
+          {/* 主体 + 状态 */}
+          <div className="grid gap-4 sm:grid-cols-2">
             <div className="grid gap-1.5">
               <Label htmlFor="res-subject">主体</Label>
               <MetadataTagSelect
@@ -357,15 +351,6 @@ export function ResourceEditDialog({
                 domain="subject"
                 value={form.subject}
                 onChange={(value) => setForm({ ...form, subject: value })}
-              />
-            </div>
-
-            <div className="grid gap-1.5">
-              <Label>密级 <span className="text-destructive">*</span></Label>
-              <MetadataTagSelect
-                domain="secrecy"
-                value={form.secrecy_level}
-                onChange={(value) => setForm({ ...form, secrecy_level: value })}
               />
             </div>
 

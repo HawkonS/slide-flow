@@ -182,7 +182,6 @@ def _validate_resource_import_payload(payload: dict[str, Any], db: sqlite3.Conne
         "subject": (80, "主体"),
         "tags": (RESOURCE_IMPORT_MAX_TAGS_LENGTH, "标签"),
         "remark_html": (100_000, "备注"),
-        "secrecy_level": (32, "密级"),
         "status": (32, "状态"),
         "visibility_scope": (32, "可见范围"),
         "management_scope": (32, "管理范围"),

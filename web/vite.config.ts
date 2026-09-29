@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import basicSsl from "@vitejs/plugin-basic-ssl";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { offlineShellPlugin } from "./pwa/build-plugin";
 
 const configDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -26,7 +27,7 @@ const allowedHosts = allowedHostRaw
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [react(), ...(enableHttps ? [basicSsl()] : [])],
+  plugins: [react(), ...(enableHttps ? [basicSsl()] : []), offlineShellPlugin()],
   resolve: {
     alias: {
       "@": path.resolve(configDir, "./src"),

@@ -30,6 +30,7 @@ from app.services.downloads.fonts import (
     _build_fonts_bundle,
     _write_fonts_into_zip,
 )
+from app.services.downloads.embed_fonts import FontEmbeddingError, embed_fonts_in_pptx
 from app.services.files import (
     asset_preview_url,
     _compress_hd_image,
@@ -54,13 +55,14 @@ from app.services.templates import (
     _template_office_file_name,
     _template_preview_file_name,
     _template_row,
-    _validate_standalone_template_subject,
+    _validate_template_subject,
     _validate_standalone_template_type,
     _validate_template_platform,
     _validate_template_ratio,
     _validate_template_series,
     can_view_template,
 )
+from app.services.tagging import tag_relation_join
 from app.services.resources import _normalise_scope_tags
 from app.services.resource_import.validation import (
     _validate_import_image,
@@ -205,13 +207,14 @@ def list_templates(
     if is_system_admin(user):
         vis_cond = "1=1"
     else:
+        tag_join = tag_relation_join(db, "template_visibility_tags", "tvt")
         vis_cond = (
             "(t.owner_id = :vis_uid"
             " OR t.visibility_scope = 'public'"
             " OR (t.visibility_scope = 'partial' AND (t.id IN"
             " (SELECT template_id FROM template_visibility WHERE user_id = :vis_uid)"
             " OR EXISTS (SELECT 1 FROM template_visibility_tags tvt"
-            " JOIN user_tags ut ON ut.tag_name = tvt.tag_name"
+            f" JOIN user_tags ut ON {tag_join}"
             " WHERE tvt.template_id = t.id AND ut.user_id = :vis_uid))))"
         )
 
@@ -387,7 +390,7 @@ async def create_template(
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
     series = _validate_template_series(series)
-    subject = _validate_standalone_template_subject(subject)
+    subject = _validate_template_subject(db, subject)
     platform = _validate_template_platform(platform)
     ratio = _validate_template_ratio(ratio)
     template_type = _validate_standalone_template_type(template_type)
@@ -493,7 +496,7 @@ async def update_template(
 ) -> dict[str, Any]:
     row = _template_row(db, template_id)
     series = _validate_template_series(series)
-    subject = _validate_standalone_template_subject(subject)
+    subject = _validate_template_subject(db, subject, allow_legacy=subject.strip() == str(row["subject"] or "").strip())
     platform = _validate_template_platform(platform)
     ratio = _validate_template_ratio(ratio)
     template_type = _validate_standalone_template_type(template_type)
@@ -636,6 +639,7 @@ def template_preview_thumb(
 def download_template(
     template_id: int,
     with_fonts: bool = Query(False),
+    format: str | None = Query(None, pattern="^(pptx-embedded|pptx|zip)$"),
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_read_dep),
 ):
@@ -646,7 +650,8 @@ def download_template(
     if path is None or not path.exists():
         raise HTTPException(404, "模板文件不存在")
     filename = row["office_file_name"] or path.name
-    if not with_fonts:
+    download_format = format or ("zip" if with_fonts else "pptx")
+    if download_format == "pptx":
         background = None
         if is_oss_ref(row["office_path"]):
             from app.services.files import cleanup_materialized, defer_materialized_cleanup
@@ -656,6 +661,18 @@ def download_template(
             path,
             headers={"Content-Disposition": _content_disposition(filename)},
             background=background,
+        )
+
+    if download_format == "pptx-embedded":
+        font_names = _json_loads(row["font_names"], [])
+        try:
+            content = embed_fonts_in_pptx(path, db, font_names)
+        except FontEmbeddingError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return Response(
+            content=content,
+            media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            headers={"Content-Disposition": _content_disposition(f"{Path(filename).stem}_embedded_fonts.pptx")},
         )
 
     font_names = _json_loads(row["font_names"], [])

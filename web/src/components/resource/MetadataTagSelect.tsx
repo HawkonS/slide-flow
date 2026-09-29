@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/select";
 import { api } from "@/lib/api";
 
-export type MetadataTagDomain = "subject" | "secrecy" | "status";
+export type MetadataTagDomain = "subject" | "status";
 
 interface MetadataTag {
   id: number;
@@ -62,9 +62,7 @@ export function MetadataTagSelect({
   const displayed = value && !options.some((item) => item.value === value)
     ? [{ value, label: fallbackLabel(domain, value) }, ...options]
     : options;
-  const emptyText = domain === "subject"
-    ? "请选择主体（可选）"
-    : "请选择" + (domain === "secrecy" ? "密级" : "状态");
+  const emptyText = domain === "subject" ? "请选择主体（可选）" : "请选择状态";
   return (
     <div className="grid gap-1">
       <Select

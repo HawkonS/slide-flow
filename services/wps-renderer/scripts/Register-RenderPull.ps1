@@ -15,6 +15,7 @@ param(
     [string]$WorkerId = "",
     [int]$LocalJobTimeoutSeconds = 2100,
     [int]$PollFailureExitSeconds = 300,
+    [int]$PublishConcurrency = 4,
     [string]$TaskName = "SlideFlow-WPS-Render-Pull"
 )
 . (Join-Path $PSScriptRoot "Renderer-Common.ps1")
@@ -45,6 +46,7 @@ if (-not $WorkerId) { $WorkerId = "$env:COMPUTERNAME-render-pull" }
 if ($WorkerId -notmatch '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$') { throw "WorkerId is invalid." }
 if ($LocalJobTimeoutSeconds -lt 60 -or $LocalJobTimeoutSeconds -gt 7200) { throw "LocalJobTimeoutSeconds must be between 60 and 7200." }
 if ($PollFailureExitSeconds -lt 60 -or $PollFailureExitSeconds -gt 3600) { throw "PollFailureExitSeconds must be between 60 and 3600." }
+if ($PublishConcurrency -lt 1 -or $PublishConcurrency -gt 8) { throw "PublishConcurrency must be between 1 and 8." }
 $pullConfig = if ($ConfigFile) { Resolve-RendererPath $ConfigFile } else { Join-Path $layout.Shared "render-pull.json" }
 $pullParent = Split-Path -Parent $pullConfig
 $pullStem = [IO.Path]::GetFileNameWithoutExtension($pullConfig)
@@ -77,6 +79,7 @@ $pullSettings = @{
     retry_seconds = 5
     local_job_timeout_seconds = $LocalJobTimeoutSeconds
     poll_failure_exit_seconds = $PollFailureExitSeconds
+    publish_concurrency = $PublishConcurrency
     work_dir = $pullWorkDir
 }
 if ($rendererTokenPath) {

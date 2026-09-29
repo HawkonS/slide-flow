@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/select";
 import { TagInput } from "@/components/resource/TagInput";
 import { UserPicker } from "@/components/resource/UserPicker";
-import { useMetadataTagOptions } from "@/components/resource/MetadataTagSelect";
+import { MetadataTagSelect, useMetadataTagOptions } from "@/components/resource/MetadataTagSelect";
 import { ResourcePicker } from "@/components/show/ResourcePicker";
 import {
   DeleteScopeDialog,
@@ -51,12 +51,13 @@ interface FormState {
   name: string;
   subject: string;
   tagList: string[];
-  secrecy_level: string;
   status: string;
   visibility_scope: ScopeValue;
   management_scope: ScopeValue;
   visible_user_ids: number[];
+  visible_user_tags: string[];
   manage_user_ids: number[];
+  manage_user_tags: string[];
   resource_ids: number[];
 }
 
@@ -66,12 +67,13 @@ function defaultForm(show: Show | null): FormState {
       name: "",
       subject: "",
       tagList: [],
-      secrecy_level: "",
       status: "",
       visibility_scope: "public",
       management_scope: "private",
       visible_user_ids: [],
+      visible_user_tags: [],
       manage_user_ids: [],
+      manage_user_tags: [],
       resource_ids: [],
     };
   }
@@ -79,12 +81,13 @@ function defaultForm(show: Show | null): FormState {
     name: show.name,
     subject: show.subject || "",
     tagList: parseTags(show.tags),
-    secrecy_level: show.secrecy_level as FormState["secrecy_level"],
     status: show.status as FormState["status"],
     visibility_scope: show.visibility_scope,
     management_scope: show.management_scope,
     visible_user_ids: show.visible_user_ids ?? [],
+    visible_user_tags: show.visible_user_tags ?? [],
     manage_user_ids: show.manage_user_ids ?? [],
+    manage_user_tags: show.manage_user_tags ?? [],
     resource_ids: show.resources
       .filter((r): r is ShowResourceAccessible => r.accessible === true)
       .map((r) => r.id),
@@ -102,7 +105,6 @@ export function ShowEditDialog({
   const [form, setForm] = React.useState<FormState>(() => defaultForm(show));
   const queryClient = useQueryClient();
   const { user } = useAuth();
-  const { options: secrecyOptions } = useMetadataTagOptions("secrecy");
   const { options: statusOptions } = useMetadataTagOptions("status");
 
   React.useEffect(() => {
@@ -112,12 +114,11 @@ export function ShowEditDialog({
   React.useEffect(() => {
     if (!open) return;
     setForm((current) => {
-      const secrecyLevel = current.secrecy_level || secrecyOptions[0]?.value || "";
       const status = current.status || statusOptions[0]?.value || "";
-      if (secrecyLevel === current.secrecy_level && status === current.status) return current;
-      return { ...current, secrecy_level: secrecyLevel, status };
+      if (status === current.status) return current;
+      return { ...current, status };
     });
-  }, [open, secrecyOptions, statusOptions]);
+  }, [open, statusOptions]);
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -129,13 +130,16 @@ export function ShowEditDialog({
             subject: form.subject.trim(),
             tags: serializeTags(form.tagList),
             status: form.status,
-            secrecy_level: form.secrecy_level,
             visibility_scope: form.visibility_scope,
             management_scope: form.management_scope,
             visible_user_ids:
               form.visibility_scope === "partial" ? form.visible_user_ids : [],
+            visible_user_tags:
+              form.visibility_scope === "partial" ? form.visible_user_tags : [],
             manage_user_ids:
               form.management_scope === "partial" ? form.manage_user_ids : [],
+            manage_user_tags:
+              form.management_scope === "partial" ? form.manage_user_tags : [],
             resource_ids: form.resource_ids,
           },
         });
@@ -149,13 +153,16 @@ export function ShowEditDialog({
           subject: form.subject.trim(),
           tags: serializeTags(form.tagList),
           status: form.status,
-          secrecy_level: form.secrecy_level,
           visibility_scope: form.visibility_scope,
           management_scope: form.management_scope,
           visible_user_ids:
             form.visibility_scope === "partial" ? form.visible_user_ids : [],
+          visible_user_tags:
+            form.visibility_scope === "partial" ? form.visible_user_tags : [],
           manage_user_ids:
             form.management_scope === "partial" ? form.manage_user_ids : [],
+          manage_user_tags:
+            form.management_scope === "partial" ? form.manage_user_tags : [],
         },
       });
 
@@ -210,12 +217,20 @@ export function ShowEditDialog({
       toast.error("请填写放映名称");
       return;
     }
-    if (form.visibility_scope === "partial" && form.visible_user_ids.length === 0) {
-      toast.error("可见范围为部分时请至少选择一位用户");
+    if (
+      form.visibility_scope === "partial" &&
+      form.visible_user_ids.length === 0 &&
+      form.visible_user_tags.length === 0
+    ) {
+      toast.error("可见范围为部分时请至少选择一位用户或一个用户标签");
       return;
     }
-    if (form.management_scope === "partial" && form.manage_user_ids.length === 0) {
-      toast.error("管理范围为部分时请至少选择一位用户");
+    if (
+      form.management_scope === "partial" &&
+      form.manage_user_ids.length === 0 &&
+      form.manage_user_tags.length === 0
+    ) {
+      toast.error("管理范围为部分时请至少选择一位用户或一个用户标签");
       return;
     }
     mutation.mutate();
@@ -255,42 +270,16 @@ export function ShowEditDialog({
             />
           </div>
 
-          {/* 主体 + 密级 + 状态 */}
-          <div className="grid gap-4 sm:grid-cols-3">
+          {/* 主体 + 状态 */}
+          <div className="grid gap-4 sm:grid-cols-2">
             <div className="grid gap-1.5">
               <Label htmlFor="show-subject">主体</Label>
-              <Input
+              <MetadataTagSelect
+                domain="subject"
                 id="show-subject"
-                list="show-subject-list"
                 value={form.subject}
-                onChange={(e) => setForm({ ...form, subject: e.target.value })}
+                onChange={(value) => setForm({ ...form, subject: value })}
               />
-              <datalist id="show-subject-list">
-                {subjectSuggestions.map((s) => (
-                  <option key={s} value={s} />
-                ))}
-              </datalist>
-            </div>
-
-            <div className="grid gap-1.5">
-              <Label>密级</Label>
-              <Select
-                value={form.secrecy_level}
-                onValueChange={(v) =>
-                  setForm({ ...form, secrecy_level: v as FormState["secrecy_level"] })
-                }
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {secrecyOptions.map((opt) => (
-                    <SelectItem key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
             </div>
 
             <div className="grid gap-1.5">
@@ -372,11 +361,14 @@ export function ShowEditDialog({
           {form.visibility_scope === "partial" && (
             <div className="grid gap-1.5">
               <Label className="text-xs text-muted-foreground">
-                可见用户（必选至少 1 人）
+                可见用户或用户标签（必选至少 1 项）
               </Label>
               <UserPicker
                 value={form.visible_user_ids}
                 onChange={(ids) => setForm({ ...form, visible_user_ids: ids })}
+                tagValue={form.visible_user_tags}
+                onTagChange={(tags) => setForm({ ...form, visible_user_tags: tags })}
+                allowTagSelection
                 lockedIds={ownerId ? [ownerId] : undefined}
               />
             </div>
@@ -384,11 +376,14 @@ export function ShowEditDialog({
           {form.management_scope === "partial" && (
             <div className="grid gap-1.5">
               <Label className="text-xs text-muted-foreground">
-                可管理用户（必选至少 1 人）
+                可管理用户或用户标签（必选至少 1 项）
               </Label>
               <UserPicker
                 value={form.manage_user_ids}
                 onChange={(ids) => setForm({ ...form, manage_user_ids: ids })}
+                tagValue={form.manage_user_tags}
+                onTagChange={(tags) => setForm({ ...form, manage_user_tags: tags })}
+                allowTagSelection
                 lockedIds={ownerId ? [ownerId] : undefined}
               />
             </div>

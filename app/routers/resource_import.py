@@ -47,7 +47,7 @@ from app.services.resource_import.rendering import (
     _replace_ppt_fonts,
 )
 from app.services.resource_import.streaming import preview_stream
-from app.services.resource_import.render_tasks import cancel_render_tasks
+from app.services.resource_import.render_tasks import cancel_render_tasks, render_task_preview_file
 from app.services.resource_import.sessions import (
     _cleanup_expired_resource_imports,
     _cleanup_resource_import_session,
@@ -275,6 +275,7 @@ def resource_import_preview(
     index: int,
     user: sqlite3.Row = Depends(require_user),
     attempt: str | None = None,
+    worker_attempt: int | None = None,
 ) -> FileResponse:
     session = _resource_import_session(session_id, user)
     if attempt is not None and attempt != session.get("render_attempt"):
@@ -283,11 +284,21 @@ def resource_import_preview(
         raise HTTPException(409, "预览已过期，请重新生成图片")
     if index < 0 or index >= int(session["slide_count"]):
         raise HTTPException(404, "预览图不存在")
-    previews = session.get("preview_paths", [])
-    raw = previews[index] if index < len(previews) else session.get("partial_preview_paths", {}).get(str(index))
-    if not raw:
-        raise HTTPException(404, "此页尚未完成渲染")
-    path = _resource_import_file(session, raw)
+    if session.get("mode") == "ppt" and isinstance(session.get("render_task_id"), str):
+        try:
+            path = render_task_preview_file(session, index, worker_attempt)
+        except PermissionError as exc:
+            raise HTTPException(409, "该图片属于旧渲染任务，请刷新预览") from exc
+        except KeyError as exc:
+            raise HTTPException(404, "此页尚未完成渲染") from exc
+        except (ValueError, OSError) as exc:
+            raise HTTPException(409, "图片校验失败，请重新生成预览") from exc
+    else:
+        previews = session.get("preview_paths", [])
+        raw = previews[index] if index < len(previews) else None
+        if not raw:
+            raise HTTPException(404, "此页尚未完成渲染")
+        path = _resource_import_file(session, raw)
     media_type = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}.get(path.suffix.lower(), "application/octet-stream")
     return FileResponse(path, media_type=media_type, headers={"Cache-Control": "private, no-store"})
 

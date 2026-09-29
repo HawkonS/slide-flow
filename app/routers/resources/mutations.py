@@ -30,7 +30,6 @@ from app.services.common import (
     _validate_resource_status,
     _validate_resource_subject,
     _validate_scope,
-    _validate_secrecy,
 )
 from app.services.files import (
     _compress_hd_image,
@@ -65,6 +64,7 @@ from app.services.resources import (
     _set_scope_users,
     _version_row,
 )
+from app.services.tagging import set_entity_tags
 from fastapi import APIRouter
 from fastapi import Body
 from fastapi import Depends
@@ -96,7 +96,6 @@ async def create_resource(
     management_scope: str = Form("private"),
     manage_user_ids: str = Form(""),
     manage_user_tags: str = Form(""),
-    secrecy_level: str = Form(""),
     status: str = Form(""),
     subject: str = Form(DEFAULT_RESOURCE_SUBJECT),
     ppt_file: UploadFile = File(...),
@@ -108,7 +107,6 @@ async def create_resource(
     _validate_ppt_upload(ppt_file)
     visibility_scope = _validate_scope(visibility_scope)
     management_scope = _validate_scope(management_scope)
-    secrecy_level = _validate_secrecy(secrecy_level)
     status = _validate_resource_status(status)
     subject = _validate_resource_subject(subject)
     visible_ids = _parse_id_list(visible_user_ids)
@@ -152,15 +150,24 @@ async def create_resource(
                     detail_token, name, owner_id, subject, tags, status,
                     visibility_scope, management_scope, secrecy_level,
                     current_version, updated_by, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', 1, ?, ?, ?)
                 """,
                 (
                     new_resource_detail_token(), name, user["id"], subject, tags, status,
-                    visibility_scope, management_scope, secrecy_level,
+                    visibility_scope, management_scope,
                     user["id"], ts, ts,
                 ),
             )
             resource_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+            set_entity_tags(
+                db,
+                relation_table="resource_tags",
+                entity_column="resource_id",
+                entity_id=resource_id,
+                names=tags,
+                cache_table="resources",
+                created_by=int(user["id"]),
+            )
             _set_scope_users(db, "resource_visibility", resource_id, visible_ids)
             _set_scope_users(db, "resource_management", resource_id, manage_ids)
             _set_scope_tags(db, "resource_visibility_tags", resource_id, visible_tags)
@@ -232,7 +239,7 @@ def update_resource_metadata(
     db.execute(
         """
         UPDATE resources
-        SET name = ?, subject = ?, tags = ?, status = ?, visibility_scope = ?, management_scope = ?, secrecy_level = ?, updated_by = ?, updated_at = ?
+        SET name = ?, subject = ?, tags = ?, status = ?, visibility_scope = ?, management_scope = ?, updated_by = ?, updated_at = ?
         WHERE id = ?
         """,
         (
@@ -242,11 +249,19 @@ def update_resource_metadata(
             status,
             visibility_scope,
             management_scope,
-            _validate_secrecy(payload.secrecy_level),
             user["id"],
             now_iso(),
             resource_id,
         ),
+    )
+    set_entity_tags(
+        db,
+        relation_table="resource_tags",
+        entity_column="resource_id",
+        entity_id=resource_id,
+        names=payload.tags,
+        cache_table="resources",
+        created_by=int(user["id"]),
     )
     _set_scope_users(db, "resource_visibility", resource_id, payload.visible_user_ids)
     _set_scope_users(db, "resource_management", resource_id, payload.manage_user_ids)
@@ -451,10 +466,8 @@ def batch_update_resources(
         raise HTTPException(400, "fields 不能为空")
     fields = dict(fields_raw)
 
-    # 允许更新的字段白名单
+    # 允许更新的字段白名单。
     allowed_scalar = {
-        "subject": None,
-        "secrecy_level": _validate_secrecy,
         "status": _validate_resource_status,
         "visibility_scope": _validate_scope,
         "management_scope": _validate_scope,
@@ -463,7 +476,7 @@ def batch_update_resources(
         "visible_user_ids", "manage_user_ids", "visible_user_tags", "manage_user_tags"
     }
 
-    invalid = set(fields.keys()) - set(allowed_scalar.keys()) - allowed_relational - {"tags"}
+    invalid = set(fields.keys()) - set(allowed_scalar.keys()) - allowed_relational - {"name", "tags"}
     if invalid:
         raise HTTPException(400, f"不支持的字段: {', '.join(sorted(invalid))}")
 
@@ -472,16 +485,35 @@ def batch_update_resources(
     for key, validator in allowed_scalar.items():
         if key not in fields:
             continue
-        if key == "subject":
-            fields[key] = _validate_resource_subject(fields[key])
-        elif validator is not None:
-            fields[key] = validator(fields[key])
+        fields[key] = validator(fields[key])
     for key in ("visible_user_ids", "manage_user_ids"):
         if key in fields:
             fields[key] = _normalise_scope_user_ids(db, fields[key])
     for key in ("visible_user_tags", "manage_user_tags"):
         if key in fields:
             fields[key] = _normalise_scope_tags(db, fields[key])
+    if fields.get("visibility_scope") in {"public", "private"}:
+        fields["visible_user_ids"] = []
+        fields["visible_user_tags"] = []
+    if fields.get("management_scope") in {"public", "private"}:
+        fields["manage_user_ids"] = []
+        fields["manage_user_tags"] = []
+    if "name" in fields:
+        name_field = fields["name"]
+        if not isinstance(name_field, dict):
+            raise HTTPException(400, "name 必须是包含 mode 的对象")
+        mode = name_field.get("mode")
+        value = name_field.get("value", "")
+        search = name_field.get("search", "")
+        if mode not in {"prefix", "suffix", "replace"}:
+            raise HTTPException(400, f"不支持的 name mode: {mode}")
+        if not isinstance(value, str) or not isinstance(search, str):
+            raise HTTPException(400, "name.value 和 name.search 必须是字符串")
+        if mode in {"prefix", "suffix"} and not value.strip():
+            raise HTTPException(400, "名称前缀或后缀不能为空")
+        if mode == "replace" and not search.strip():
+            raise HTTPException(400, "名称查找内容不能为空")
+        fields["name"] = {"mode": mode, "value": value, "search": search}
     if "tags" in fields:
         tags_field = fields["tags"]
         if not isinstance(tags_field, dict):
@@ -492,17 +524,35 @@ def batch_update_resources(
             raise HTTPException(400, f"不支持的 tags mode: {mode}")
         if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
             raise HTTPException(400, "tags.values 必须是字符串数组")
+        normalised_values = list(dict.fromkeys(value.strip() for value in values if value.strip()))
+        if mode in {"append", "remove"} and not normalised_values:
+            raise HTTPException(400, "追加或移除标签时必须至少选择一个标签")
         fields["tags"] = {
             "mode": mode,
-            "values": list(dict.fromkeys(value.strip() for value in values if value.strip())),
+            "values": normalised_values,
         }
 
     # 预先检查权限并收集资源行
     rows: dict[int, sqlite3.Row] = {}
+    planned_names: dict[int, str] = {}
     for rid in resource_ids:
         row = _resource_row(db, rid)
         if not can_manage_resource(db, row, user):
             raise HTTPException(403, f"资源 {rid} 无管理权限")
+        if "name" in fields:
+            name_field = fields["name"]
+            current_name = str(row["name"] or "")
+            if name_field["mode"] == "prefix":
+                next_name = f"{name_field['value']}{current_name}"
+            elif name_field["mode"] == "suffix":
+                next_name = f"{current_name}{name_field['value']}"
+            else:
+                next_name = current_name.replace(name_field["search"], name_field["value"])
+            if not next_name.strip():
+                raise HTTPException(400, f"资源 {rid} 修改后的名称不能为空")
+            if len(next_name) > 200:
+                raise HTTPException(400, f"资源 {rid} 修改后的名称不能超过 200 个字符")
+            planned_names[rid] = next_name
         visibility_scope = fields.get("visibility_scope", row["visibility_scope"])
         visible_ids = fields.get(
             "visible_user_ids", _scope_user_ids(db, "resource_visibility", rid)
@@ -524,55 +574,71 @@ def batch_update_resources(
         rows[rid] = row
 
     updated = 0
-    for rid, row in rows.items():
-        set_clauses: list[str] = []
-        set_values: list[Any] = []
-        for key, validator in allowed_scalar.items():
-            if key in fields:
-                value = fields[key]
-                set_clauses.append(f"{key} = ?")
-                set_values.append(value)
+    timestamp = now_iso()
+    try:
+        for rid, row in rows.items():
+            set_clauses: list[str] = []
+            set_values: list[Any] = []
+            for key in allowed_scalar:
+                if key in fields:
+                    set_clauses.append(f"{key} = ?")
+                    set_values.append(fields[key])
 
-        # 处理 tags 字段：支持 replace/append/remove 三种模式
-        if "tags" in fields:
-            tags_field = fields["tags"]
-            mode = tags_field.get("mode")
-            values = tags_field.get("values")
-            if mode == "replace":
-                tag_value = ",".join(values)
-            elif mode == "append":
-                existing = _parse_csv(row["tags"] or "")
-                tag_value = ",".join(dict.fromkeys([*existing, *values]))
-            else:
-                remove_set = set(values)
-                tag_value = ",".join(
-                    tag for tag in _parse_csv(row["tags"] or "") if tag not in remove_set
-                )
-            set_clauses.append("tags = ?")
-            set_values.append(tag_value)
+            if rid in planned_names:
+                set_clauses.append("name = ?")
+                set_values.append(planned_names[rid])
 
-        if set_clauses:
-            set_clauses.append("updated_at = ?")
-            set_values.append(now_iso())
-            set_values.append(rid)
+            # 处理 tags 字段：支持 replace/append/remove 三种模式
+            if "tags" in fields:
+                tags_field = fields["tags"]
+                mode = tags_field.get("mode")
+                values = tags_field.get("values")
+                if mode == "replace":
+                    tag_value = ",".join(values)
+                elif mode == "append":
+                    existing = _parse_csv(row["tags"] or "")
+                    tag_value = ",".join(dict.fromkeys([*existing, *values]))
+                else:
+                    remove_set = set(values)
+                    tag_value = ",".join(
+                        tag for tag in _parse_csv(row["tags"] or "") if tag not in remove_set
+                    )
+                set_clauses.append("tags = ?")
+                set_values.append(tag_value)
+
+            set_clauses.extend(["updated_by = ?", "updated_at = ?"])
+            set_values.extend([user["id"], timestamp, rid])
             db.execute(
                 f"UPDATE resources SET {', '.join(set_clauses)} WHERE id = ?",
                 tuple(set_values),
             )
+            if "tags" in fields:
+                set_entity_tags(
+                    db,
+                    relation_table="resource_tags",
+                    entity_column="resource_id",
+                    entity_id=rid,
+                    names=tag_value,
+                    cache_table="resources",
+                    created_by=int(user["id"]),
+                )
 
-        # 处理关联表字段
-        if "visible_user_ids" in fields:
-            _set_scope_users(db, "resource_visibility", rid, fields["visible_user_ids"])
-        if "manage_user_ids" in fields:
-            _set_scope_users(db, "resource_management", rid, fields["manage_user_ids"])
-        if "visible_user_tags" in fields:
-            _set_scope_tags(db, "resource_visibility_tags", rid, fields["visible_user_tags"])
-        if "manage_user_tags" in fields:
-            _set_scope_tags(db, "resource_management_tags", rid, fields["manage_user_tags"])
+            # 处理关联表字段
+            if "visible_user_ids" in fields:
+                _set_scope_users(db, "resource_visibility", rid, fields["visible_user_ids"])
+            if "manage_user_ids" in fields:
+                _set_scope_users(db, "resource_management", rid, fields["manage_user_ids"])
+            if "visible_user_tags" in fields:
+                _set_scope_tags(db, "resource_visibility_tags", rid, fields["visible_user_tags"])
+            if "manage_user_tags" in fields:
+                _set_scope_tags(db, "resource_management_tags", rid, fields["manage_user_tags"])
 
-        updated += 1
+            updated += 1
 
-    db.commit()
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     return {"updated": updated}
 
 

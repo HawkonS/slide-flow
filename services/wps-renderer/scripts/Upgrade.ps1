@@ -5,7 +5,10 @@ param(
     [string]$InstallRoot = "C:\ProgramData\SlideFlow\WpsRenderer",
     [string]$Python = "python",
     [string]$TaskName = "SlideFlow-WPS-Renderer",
+    [string]$TaskPath = "\",
     [string]$Version = "",
+    [string]$ConstraintsFile = "",
+    [string]$Wheelhouse = "",
     [int]$DrainTimeoutSeconds = 300
 )
 
@@ -72,12 +75,33 @@ function Wait-RendererProcessExit([string]$ConfigPath, [int]$Seconds) {
     return $false
 }
 
-function Get-OwnedTask([string]$Name, [string]$Description) {
-    $task = Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue
+function Get-OwnedTask([string]$Name, [string]$Description, [string]$Path = "\") {
+    $task = Get-ScheduledTask -TaskName $Name -TaskPath $Path -ErrorAction SilentlyContinue
     if ($task -and $task.Description -ne $Description) {
         throw "Refusing to operate on unrelated scheduled task '$Name'."
     }
     return $task
+}
+
+function Get-TaskSnapshot($Task, [string]$ConfigPath) {
+    $actions = @($Task.Actions)
+    if ($actions.Count -ne 1) { throw "Task '$($Task.TaskName)' has an unexpected action count." }
+    [pscustomobject]@{
+        Name = [string]$Task.TaskName
+        Path = [string]$Task.TaskPath
+        Config = $ConfigPath
+        WasEnabled = [bool]$Task.Settings.Enabled
+        WasRunning = [bool]($Task.State -eq 'Running')
+        Execute = [string]$actions[0].Execute
+        Arguments = [string]$actions[0].Arguments
+        WorkingDirectory = [string]$actions[0].WorkingDirectory
+    }
+}
+
+function Disable-PullWorkers([object[]]$Workers) {
+    foreach ($worker in $Workers) {
+        Disable-ScheduledTask -TaskName $worker.Name -TaskPath $worker.Path | Out-Null
+    }
 }
 
 function Stop-PullWorkers([object[]]$Workers) {
@@ -92,17 +116,34 @@ function Stop-PullWorkers([object[]]$Workers) {
     }
 }
 
-function Restore-PullWorkers([object[]]$Workers) {
+function Restore-TaskStates([object[]]$Workers) {
     foreach ($worker in $Workers) {
         $task = Get-ScheduledTask -TaskName $worker.Name -TaskPath $worker.Path -ErrorAction SilentlyContinue
         if (-not $task) { throw "Pull worker '$($worker.Name)' disappeared during upgrade." }
-        if ($worker.WasEnabled) { Enable-ScheduledTask -InputObject $task | Out-Null }
-        if ($worker.WasRunning) { Start-ScheduledTask -InputObject $task }
+        if ($worker.WasRunning -and $task.State -ne 'Running') {
+            Enable-ScheduledTask -InputObject $task | Out-Null
+            Start-ScheduledTask -TaskName $worker.Name -TaskPath $worker.Path
+        } elseif (-not $worker.WasRunning -and $task.State -eq 'Running') {
+            Stop-ScheduledTask -InputObject $task
+            if (-not (Wait-RendererProcessExit $worker.Config 45)) { throw "Task '$($worker.Name)' did not return to its stopped state." }
+        }
+        if ($worker.WasEnabled) {
+            Enable-ScheduledTask -TaskName $worker.Name -TaskPath $worker.Path | Out-Null
+        } else {
+            Disable-ScheduledTask -TaskName $worker.Name -TaskPath $worker.Path | Out-Null
+        }
     }
 }
 
-function Set-PullWorkersCurrentRelease([object[]]$Workers, [string]$CurrentPath) {
-    $python = Join-Path $CurrentPath ".venv\Scripts\python.exe"
+function Restore-TaskActions([object[]]$Workers) {
+    foreach ($worker in $Workers) {
+        $action = New-ScheduledTaskAction -Execute $worker.Execute -Argument $worker.Arguments -WorkingDirectory $worker.WorkingDirectory
+        Set-ScheduledTask -TaskName $worker.Name -TaskPath $worker.Path -Action $action | Out-Null
+    }
+}
+
+function Set-TasksCurrentRelease([object[]]$Workers, [string]$CurrentPath, [string]$Executable = "python.exe") {
+    $python = Join-Path $CurrentPath (".venv\Scripts\" + $Executable)
     if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
         throw "Pull worker Python does not exist in the current release."
     }
@@ -113,11 +154,15 @@ function Set-PullWorkersCurrentRelease([object[]]$Workers, [string]$CurrentPath)
         if ($actions.Count -ne 1) { throw "Pull worker '$($worker.Name)' has an unexpected action count." }
         $action = New-ScheduledTaskAction `
             -Execute $python `
-            -Argument ([string]$actions[0].Arguments) `
+            -Argument $worker.Arguments `
             -WorkingDirectory $CurrentPath
-        $triggers = @(New-RendererPullTaskTriggers)
-        Set-ScheduledTask -TaskName $worker.Name -TaskPath $worker.Path -Action $action -Trigger $triggers | Out-Null
+        Set-ScheduledTask -TaskName $worker.Name -TaskPath $worker.Path -Action $action | Out-Null
     }
+}
+
+function Start-RendererTask($State) {
+    Enable-ScheduledTask -TaskName $State.Name -TaskPath $State.Path | Out-Null
+    Start-ScheduledTask -TaskName $State.Name -TaskPath $State.Path
 }
 
 function Wait-RendererHealthy([string]$Uri, [string]$Token, [int]$Attempts = 30) {
@@ -153,53 +198,96 @@ $baseUri = $null
 $healthUri = $null
 $token = ""
 $pullWorkerStates = @()
+$rendererState = $null
 $maintenanceStarted = $false
+$createdStage = $false
+$rendererStopRequested = $false
+$drainRequested = $false
 try {
     if (-not (Test-Path -LiteralPath $sourceRoot -PathType Container)) { throw "Source directory does not exist." }
     if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot "wps_renderer") -PathType Container)) { throw "Source component is incomplete." }
     if (-not (Test-Path -LiteralPath $current -PathType Container)) { throw "No current installation exists; use Install.ps1 first." }
-    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf) -or -not (Test-Path -LiteralPath $tokenPath -PathType Leaf)) { throw "Shared config or token is missing." }
+    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { throw "Shared config is missing." }
     if (-not $Version) { $Version = [DateTime]::Now.ToString("yyyy.MM.dd-HHmmss") }
     if ($Version -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') { throw "Version contains unsafe characters." }
+    if ($Version -in @('previous', 'current', 'shared', 'releases') -or $Version -like 'retiring-*' -or $Version -like 'failed-*') {
+        throw "Version uses a reserved release name."
+    }
+    $newRelease = Join-Path $releases $Version
     $retiring = Join-Path $releases "retiring-$Version"
+    if (Test-Path -LiteralPath $newRelease) { throw "Release $Version already exists." }
+    if (Test-Path -LiteralPath $retiring) { throw "A rollback directory for $Version already exists." }
     if ($DrainTimeoutSeconds -lt 1 -or $DrainTimeoutSeconds -gt 3600) { throw "DrainTimeoutSeconds must be between 1 and 3600." }
-
-    $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
-    $port = [int]$config.port
-    $token = (Get-Content -LiteralPath $tokenPath -Raw).Trim()
-    if ($port -lt 1 -or $port -gt 65535) { throw "Shared config contains an invalid port." }
-    if ($token.Length -lt 32 -or $token -match '\s') { throw "Shared token is invalid." }
+    if ($ConstraintsFile) {
+        $ConstraintsFile = [IO.Path]::GetFullPath($ConstraintsFile)
+        if (-not (Test-Path -LiteralPath $ConstraintsFile -PathType Leaf)) { throw "Dependency constraints file does not exist." }
+    }
+    if ($Wheelhouse) {
+        $Wheelhouse = [IO.Path]::GetFullPath($Wheelhouse)
+        if (-not (Test-Path -LiteralPath $Wheelhouse -PathType Container)) { throw "Dependency wheelhouse does not exist." }
+    }
     $Python = Resolve-Executable $Python "Python"
     & $Python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"
     if ($LASTEXITCODE -ne 0) { throw "Python 3.10 or newer is required." }
-    $baseUri = "http://127.0.0.1:{0}" -f $port
-    $healthUri = "$baseUri/v1/health"
     $sourceBytes = [int64]((Get-ChildItem -LiteralPath $sourceRoot -Recurse -File | Measure-Object -Property Length -Sum).Sum)
     $drive = New-Object -TypeName System.IO.DriveInfo -ArgumentList @([IO.Path]::GetPathRoot($InstallRoot))
     if ($drive.AvailableFreeSpace -lt [Math]::Max([int64](512MB), $sourceBytes * 2)) { throw "Not enough free disk space for staging and rollback." }
 
-    $rendererTask = Get-OwnedTask $TaskName 'SlideFlow WPS Renderer protocol v1'
-    if (-not $rendererTask) { throw "Renderer scheduled task is not registered." }
-    $pullWorkerStates = @(Get-RendererManagedPullTasks | ForEach-Object {
-        [pscustomobject]@{
-            Name = [string]$_.Task.TaskName
-            Path = [string]$_.Task.TaskPath
-            Config = [string]$_.Config
-            WasEnabled = [bool]($_.Task.State -ne 'Disabled')
-            WasRunning = [bool]($_.Task.State -eq 'Running')
-        }
-    })
-    $maintenanceStarted = $true
-    # Stop pull workers before draining the local renderer. Otherwise a pull
-    # worker can keep claiming main-server leases while maintenance rejects
-    # local submissions, consuming all retry attempts during the upgrade.
-    foreach ($worker in $pullWorkerStates) {
-        if ($worker.WasEnabled) {
-            Disable-ScheduledTask -TaskName $worker.Name -TaskPath $worker.Path | Out-Null
-        }
-    }
-    Stop-PullWorkers $pullWorkerStates
+    # All copying, dependency resolution and import checks precede maintenance.
+    # Only a directory created by this invocation is eligible for cleanup.
+    New-Item -ItemType Directory -Path $newRelease -ErrorAction Stop | Out-Null
+    $createdStage = $true
+    Copy-Component $sourceRoot $newRelease
+    $venv = Join-Path $newRelease ".venv"
+    & $Python -m venv $venv
+    if ($LASTEXITCODE -ne 0) { throw "Could not create the new Python environment." }
+    $venvPython = Join-Path $venv "Scripts\python.exe"
+    $pipArgs = @('-m', 'pip', 'install', '--disable-pip-version-check', '--no-cache-dir', '-r', (Join-Path $newRelease 'requirements.txt'))
+    if ($ConstraintsFile) { $pipArgs += @('-c', $ConstraintsFile) }
+    if ($Wheelhouse) { $pipArgs += @('--no-index', '--find-links', $Wheelhouse) }
+    & $venvPython @pipArgs
+    if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed; running services were not changed." }
+    & $venvPython -m pip check
+    if ($LASTEXITCODE -ne 0) { throw "Staged dependencies are inconsistent." }
+    & $venvPython -m compileall -q (Join-Path $newRelease 'wps_renderer')
+    if ($LASTEXITCODE -ne 0) { throw "Staged renderer source could not be compiled." }
+    & $venvPython -c "import sys; sys.path.insert(0, sys.argv[1]); import fastapi, uvicorn, PIL, fontTools, defusedxml, wps_renderer.render_pull" $newRelease
+    if ($LASTEXITCODE -ne 0) { throw "Staged renderer import check failed." }
 
+    $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+    $port = [int]$config.port
+    if (($config.PSObject.Properties.Name -contains 'token_file') -and $config.token_file) {
+        $tokenPath = [string]$config.token_file
+        if (-not [IO.Path]::IsPathRooted($tokenPath)) { $tokenPath = Join-Path (Split-Path -Parent $configPath) $tokenPath }
+    }
+    if (-not (Test-Path -LiteralPath $tokenPath -PathType Leaf)) { throw "Configured renderer token file is missing." }
+    $token = (Get-Content -LiteralPath $tokenPath -Raw).Trim()
+    if ($port -lt 1 -or $port -gt 65535) { throw "Shared config contains an invalid port." }
+    if ($token.Length -lt 32 -or $token -match '\s') { throw "Shared token is invalid." }
+    $baseUri = "http://127.0.0.1:{0}" -f $port
+    $healthUri = "$baseUri/v1/health"
+
+    $rendererTask = Get-OwnedTask $TaskName 'SlideFlow WPS Renderer protocol v1' $TaskPath
+    if (-not $rendererTask) { throw "Renderer scheduled task is not registered." }
+    $rendererState = Get-TaskSnapshot $rendererTask $configPath
+    if ($rendererState.Arguments -notmatch '(?:^|\s)-m\s+wps_renderer(?:\s|$)' -or
+        $rendererState.Arguments -notmatch '(?:^|\s)--config\s+(?:"([^"]+)"|(\S+))') {
+        throw "Renderer scheduled task does not declare the expected module and config."
+    }
+    $taskConfig = if ($Matches[1]) { $Matches[1] } else { $Matches[2] }
+    if (-not [IO.Path]::IsPathRooted($taskConfig) -or
+        -not [string]::Equals([IO.Path]::GetFullPath($taskConfig), $configPath, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Renderer scheduled task belongs to a different installation."
+    }
+    $sharedPrefix = $shared.TrimEnd('\') + '\'
+    $pullWorkerStates = @(Get-RendererManagedPullTasks | Where-Object {
+        ([string]$_.Config).StartsWith($sharedPrefix, [StringComparison]::OrdinalIgnoreCase)
+    } | ForEach-Object { Get-TaskSnapshot $_.Task ([string]$_.Config) })
+
+    $maintenanceStarted = $true
+    Disable-PullWorkers $pullWorkerStates
+    Stop-PullWorkers $pullWorkerStates
+    $drainRequested = $true
     Invoke-Renderer "Post" "$baseUri/v1/admin/drain" $token | Out-Null
     $drained = $true
     $deadline = [DateTime]::UtcNow.AddSeconds($DrainTimeoutSeconds)
@@ -210,85 +298,96 @@ try {
     } while ($active -gt 0 -and [DateTime]::UtcNow -lt $deadline)
     if ($active -gt 0) { throw "Renderer did not drain before timeout." }
 
-    Disable-ScheduledTask -TaskName $TaskName -ErrorAction Stop | Out-Null
-    Stop-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+    Disable-ScheduledTask -TaskName $rendererState.Name -TaskPath $rendererState.Path | Out-Null
+    $rendererStopRequested = $true
+    Stop-ScheduledTask -TaskName $rendererState.Name -TaskPath $rendererState.Path
     if (-not (Wait-RendererProcessExit $configPath 45)) { throw "Renderer process did not stop; release switch was aborted." }
-
-    $newRelease = Join-Path $releases $Version
-    if (Test-Path -LiteralPath $newRelease) { throw "Release $Version already exists." }
-    Copy-Component $sourceRoot $newRelease
-    $venv = Join-Path $newRelease ".venv"
-    & $Python -m venv $venv
-    if ($LASTEXITCODE -ne 0) { throw "Could not create the new Python environment." }
-    $venvPython = Join-Path $venv "Scripts\python.exe"
-    & $venvPython -m pip install --disable-pip-version-check --no-cache-dir -r (Join-Path $newRelease "requirements.txt")
-    if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed; current release was not switched." }
-
-    if (Test-Path -LiteralPath $retiring) { Remove-Item -LiteralPath $retiring -Recurse -Force }
+    if (Test-Path -LiteralPath $retiring) { throw "Rollback directory appeared during staging; release switch was aborted." }
     if (Test-Path -LiteralPath $previous) { Move-Item -LiteralPath $previous -Destination $retiring; $movedPrevious = $true }
     Move-Item -LiteralPath $current -Destination $previous
     $movedCurrent = $true
     Move-Item -LiteralPath $newRelease -Destination $current
     $movedNew = $true
     $switched = $true
-    & (Join-Path $current "scripts\Register.ps1") -InstallRoot $InstallRoot -Config $configPath -Python (Join-Path $current ".venv\Scripts\pythonw.exe") -TaskName $TaskName -Start
-    if ($LASTEXITCODE -ne 0) { throw "Could not register the upgraded scheduled task." }
 
+    # Update only code entry points. Registration would rewrite shared config,
+    # token files, principals, triggers and settings that belong to operators.
+    Set-TasksCurrentRelease @($rendererState) $current 'pythonw.exe'
+    Start-RendererTask $rendererState
     if (-not (Wait-RendererHealthy $healthUri $token 30)) { throw "New renderer failed its health check." }
-    # Every environment keeps its own URL, token and config arguments, but all
-    # workers import code from the atomically switched release. This prevents
-    # a development worker from surviving an upgrade on a stale dev-code copy.
-    Set-PullWorkersCurrentRelease $pullWorkerStates $current
-    Restore-PullWorkers $pullWorkerStates
-    if (Test-Path -LiteralPath $retiring) { Remove-Item -LiteralPath $retiring -Recurse -Force }
+    Set-TasksCurrentRelease $pullWorkerStates $current
+    Restore-TaskStates @($rendererState)
+    Restore-TaskStates $pullWorkerStates
+    $versionTemp = Join-Path $InstallRoot "version-$Version.tmp"
     @{ version = $Version; upgraded_at = [DateTime]::UtcNow.ToString("o"); task = $TaskName } |
-        ConvertTo-Json | Set-Content -LiteralPath (Join-Path $InstallRoot "version.json") -Encoding UTF8
+        ConvertTo-Json | Set-Content -LiteralPath $versionTemp -Encoding UTF8
+    Move-Item -LiteralPath $versionTemp -Destination (Join-Path $InstallRoot 'version.json') -Force
+    if (Test-Path -LiteralPath $retiring) {
+        try { Remove-Item -LiteralPath $retiring -Recurse -Force }
+        catch { Write-Warning "Upgrade succeeded; the retired release could not be removed." }
+    }
     Write-Host "Upgraded SlideFlow WPS Renderer to $Version. Previous release is retained at $previous."
 } catch {
-    Write-Warning $_.Exception.Message
-    if ($maintenanceStarted) {
-        try { Stop-PullWorkers $pullWorkerStates } catch { Write-Warning $_.Exception.Message }
-        try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue } catch { }
-        Wait-RendererProcessExit $configPath 30 | Out-Null
-    }
-    if ($maintenanceStarted -and $movedCurrent -and (Test-Path -LiteralPath $previous -PathType Container)) {
+    $upgradeError = $_
+    Write-Warning $upgradeError.Exception.Message
+    if ($maintenanceStarted -and $movedCurrent) {
+        # No filesystem rollback is safe while any process may still import
+        # this release. Disable restart triggers before verifying shutdown.
         try {
-            if ($movedNew -and (Test-Path -LiteralPath $current)) { Remove-Item -LiteralPath $current -Recurse -Force }
+            Disable-PullWorkers $pullWorkerStates
+            Disable-ScheduledTask -TaskName $rendererState.Name -TaskPath $rendererState.Path | Out-Null
+            Stop-PullWorkers $pullWorkerStates
+            Stop-ScheduledTask -TaskName $rendererState.Name -TaskPath $rendererState.Path
+            if (-not (Wait-RendererProcessExit $configPath 45)) { throw "Renderer process is still running." }
+        } catch {
+            throw "Automatic rollback was not attempted because process shutdown could not be confirmed. Release directories were preserved and tasks remain disabled: $($_.Exception.Message)"
+        }
+        try {
+            if (-not (Test-Path -LiteralPath $previous -PathType Container)) { throw "Previous release is missing; current was preserved." }
+            if (Test-Path -LiteralPath $current) {
+                if (-not $movedNew) { throw "Current directory ownership is uncertain; it was preserved." }
+                Remove-Item -LiteralPath $current -Recurse -Force
+            }
             Move-Item -LiteralPath $previous -Destination $current
-            if (Test-Path -LiteralPath $retiring) { Move-Item -LiteralPath $retiring -Destination $previous }
-            & (Join-Path $current "scripts\Register.ps1") -InstallRoot $InstallRoot -Config $configPath -Python (Join-Path $current ".venv\Scripts\pythonw.exe") -TaskName $TaskName -Start
+            if ($movedPrevious -and (Test-Path -LiteralPath $retiring)) { Move-Item -LiteralPath $retiring -Destination $previous }
+            Restore-TaskActions (@($rendererState) + $pullWorkerStates)
+            Start-RendererTask $rendererState
             if (-not (Wait-RendererHealthy $healthUri $token 30)) { throw "Restored renderer failed its health check." }
-            Set-PullWorkersCurrentRelease $pullWorkerStates $current
-            Restore-PullWorkers $pullWorkerStates
-            Write-Warning "The previous renderer release was restored."
-        } catch { throw "Automatic rollback failed: $($_.Exception.Message)" }
-    } elseif ($maintenanceStarted -and -not $switched -and $newRelease -and (Test-Path -LiteralPath $newRelease)) {
-        if ($newRelease -and (Test-Path -LiteralPath $newRelease)) { Remove-Item -LiteralPath $newRelease -Recurse -Force }
-        if ($movedPrevious -and (Test-Path -LiteralPath $retiring) -and -not (Test-Path -LiteralPath $previous)) { Move-Item -LiteralPath $retiring -Destination $previous }
+            Restore-TaskStates @($rendererState)
+            Restore-TaskStates $pullWorkerStates
+            Write-Warning "The previous renderer release and original task actions/states were restored."
+        } catch { throw "Automatic rollback failed; preserved releases require operator recovery: $($_.Exception.Message)" }
+    } elseif ($maintenanceStarted) {
+        # A failed drain must not kill an active conversion. The original
+        # current directory is intact; resume it and restore worker states.
         try {
-            & (Join-Path $current "scripts\Register.ps1") -InstallRoot $InstallRoot -Config $configPath -Python (Join-Path $current ".venv\Scripts\pythonw.exe") -TaskName $TaskName -Start
-            if (-not (Wait-RendererHealthy $healthUri $token 30)) { throw "Current renderer failed its health check after staging rollback." }
-            Set-PullWorkersCurrentRelease $pullWorkerStates $current
-            Restore-PullWorkers $pullWorkerStates
-            Write-Warning "The current renderer release was restarted after the failed staging step."
-        } catch { throw "Could not restart the current renderer release: $($_.Exception.Message)" }
-    } elseif ($maintenanceStarted -and -not $switched -and (Test-Path -LiteralPath $current -PathType Container)) {
-        try {
-            & (Join-Path $current "scripts\Register.ps1") -InstallRoot $InstallRoot -Config $configPath -Python (Join-Path $current ".venv\Scripts\pythonw.exe") -TaskName $TaskName -Start
-            if (-not (Wait-RendererHealthy $healthUri $token 30)) { throw "Current renderer failed its health check after upgrade failure." }
-            Set-PullWorkersCurrentRelease $pullWorkerStates $current
-            Restore-PullWorkers $pullWorkerStates
-            Write-Warning "The current renderer release was restarted after the failed upgrade."
-        } catch { throw "Could not restart the current renderer release: $($_.Exception.Message)" }
+            if ($movedPrevious -and (Test-Path -LiteralPath $retiring) -and -not (Test-Path -LiteralPath $previous)) {
+                Move-Item -LiteralPath $retiring -Destination $previous
+            }
+            if ($rendererStopRequested) { Start-RendererTask $rendererState }
+            if ($drainRequested) {
+                if ($rendererStopRequested) {
+                    try {
+                        $health = Invoke-Renderer "Get" $healthUri $token
+                        if ($health.status -eq 'draining') { Invoke-Renderer "Post" "$baseUri/v1/admin/resume" $token | Out-Null }
+                    } catch { }
+                } else {
+                    $health = Invoke-Renderer "Get" $healthUri $token
+                    if ($health.status -eq 'draining') { Invoke-Renderer "Post" "$baseUri/v1/admin/resume" $token | Out-Null }
+                }
+                if (-not (Wait-RendererHealthy $healthUri $token 30)) { throw "Original renderer could not be resumed." }
+            }
+            Restore-TaskStates @($rendererState)
+            Restore-TaskStates $pullWorkerStates
+            Write-Warning "The original renderer and worker states were restored without switching releases."
+        } catch { throw "Could not restore pre-upgrade task states; release directories were preserved: $($_.Exception.Message)" }
     }
-    throw
+    if ($createdStage -and $newRelease -and (Test-Path -LiteralPath $newRelease)) {
+        try { Remove-Item -LiteralPath $newRelease -Recurse -Force }
+        catch { Write-Warning "The failed staging directory was preserved for inspection." }
+    }
+    throw $upgradeError
 } finally {
-    if ($drained) {
-        try {
-            $health = Invoke-Renderer "Get" $healthUri $token
-            if ($health.status -eq "draining") { Invoke-Renderer "Post" "$baseUri/v1/admin/resume" $token | Out-Null }
-        } catch { }
-    }
     try { $mutex.ReleaseMutex() } catch { }
     $mutex.Dispose()
 }

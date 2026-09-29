@@ -23,14 +23,35 @@ def _preview_set_is_current(session: dict) -> bool:
     )
 
 
+def _preview_page_events(session: dict, state: dict, sent: set):
+    """Emit each accepted page once per worker attempt on this connection."""
+    indexes = state.get("ready_indexes")
+    if not isinstance(indexes, list):
+        indexes = list(range(int(session["slide_count"]))) if _preview_set_is_current(session) else []
+    attempt = state.get("render_attempt", session.get("render_attempt", ""))
+    worker = state.get("attempts", session.get("render_worker_attempt"))
+    for index in sorted(set(indexes)):
+        if type(index) is not int or not 0 <= index < int(session["slide_count"]):
+            continue
+        key = (attempt, worker, index)
+        if key in sent:
+            continue
+        sent.add(key)
+        url = f"/api/resource-import/{session['session_id']}/preview/{index}?attempt={attempt}"
+        if type(worker) is int and worker > 0:
+            url += f"&worker_attempt={worker}"
+        yield {"type": "page", "index": index, "preview_url": url}
+
+
 def _render_and_publish_ppt_previews(session: dict, emit=None, cancel=None) -> list[Path]:
     """Compatibility wrapper that waits for a durable Windows pull task."""
     emit = emit or (lambda _event: None)
     expected = int(session["slide_count"])
-    if _preview_set_is_current(session):
+    sent: set = set()
+    if _preview_set_is_current(session) and not isinstance(session.get("render_task_id"), str):
         paths = [_resource_import_file(session, path) for path in session["preview_paths"]]
-        for index in range(expected):
-            emit({"type": "page", "index": index, "preview_url": f"/api/resource-import/{session['session_id']}/preview/{index}?attempt={session.get('render_attempt', '')}"})
+        for event in _preview_page_events(session, {"ready_indexes": list(range(expected))}, sent):
+            emit(event)
         return paths
     with _resource_import_operation(session, wait=True):
         current = _load_resource_import_session_file(session["session_id"]) or session
@@ -46,14 +67,15 @@ def _render_and_publish_ppt_previews(session: dict, emit=None, cancel=None) -> l
         if refreshed:
             session.clear()
             session.update(refreshed)
-        if state["status"] == "completed" and _preview_set_is_current(session):
-            paths = [_resource_import_file(session, path) for path in session["preview_paths"]]
-            for index in range(expected):
-                emit({"type": "page", "index": index, "preview_url": f"/api/resource-import/{session['session_id']}/preview/{index}?attempt={session.get('render_attempt', '')}"})
-            return paths
         if state["status"] == "error":
             raise RuntimeError(state.get("message") or "Windows 图片渲染失败")
-        emit({"type": "progress", "message": "Windows 正在领取或转换 PPT，请稍候"})
+        for event in _preview_page_events(session, state, sent):
+            emit(event)
+        if state["status"] == "completed" and _preview_set_is_current(session):
+            paths = [_resource_import_file(session, path) for path in session["preview_paths"]]
+            return paths
+        count = int(state.get("preview_count", 0))
+        emit({"type": "progress", "message": f"已完成 {count} / {expected} 页图片渲染" if count else "Windows 正在领取或转换 PPT，请稍候"})
         time.sleep(1)
     session.update(preview_status="error", preview_error="等待 Windows 转换超时，可稍后重试")
     _write_resource_import_session(session)

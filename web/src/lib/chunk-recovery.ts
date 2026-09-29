@@ -22,6 +22,9 @@ export function isChunkLoadError(error: unknown): boolean {
  */
 export function reloadAfterChunkError(error: unknown): boolean {
   if (!isChunkLoadError(error)) return false;
+  // Reloading cannot repair an offline connection and must never interrupt
+  // a running fullscreen, presenter or audience display during an upgrade.
+  if (!navigator.onLine || isPlaybackWindow()) return false;
 
   const token = [
     window.location.pathname,
@@ -47,3 +50,4 @@ export function installChunkLoadRecovery(): void {
     if (reloadAfterChunkError(payload)) event.preventDefault();
   });
 }
+import { isPlaybackWindow } from "./pwa";

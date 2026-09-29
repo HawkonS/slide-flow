@@ -19,6 +19,7 @@ param(
     [string]$RenderWorkerId = "",
     [int]$RenderLocalJobTimeoutSeconds = 2100,
     [int]$RenderPollFailureExitSeconds = 300,
+    [int]$RenderPublishConcurrency = 4,
     [switch]$Start
 )
 . (Join-Path $PSScriptRoot "Renderer-Common.ps1")
@@ -65,7 +66,7 @@ if ($FontTaskUrl) {
     & (Join-Path $PSScriptRoot "Register-FontSync.ps1") @fontArgs
 }
 if ($RenderTaskUrl) {
-    $pullArgs = @{ InstallRoot = $InstallRoot; Python = (Join-Path $layout.CodeRoot ".venv\Scripts\python.exe"); Url = $RenderTaskUrl; RendererUrl = ("http://127.0.0.1:{0}" -f $Port); LocalJobTimeoutSeconds = $RenderLocalJobTimeoutSeconds; PollFailureExitSeconds = $RenderPollFailureExitSeconds }
+    $pullArgs = @{ InstallRoot = $InstallRoot; Python = (Join-Path $layout.CodeRoot ".venv\Scripts\python.exe"); Url = $RenderTaskUrl; RendererUrl = ("http://127.0.0.1:{0}" -f $Port); LocalJobTimeoutSeconds = $RenderLocalJobTimeoutSeconds; PollFailureExitSeconds = $RenderPollFailureExitSeconds; PublishConcurrency = $RenderPublishConcurrency }
     if ($RenderTaskToken) { $pullArgs.Token = $RenderTaskToken }
     if ($RenderTaskTokenFile) { $pullArgs.TokenFile = $RenderTaskTokenFile }
     if ($RenderWorkerId) { $pullArgs.WorkerId = $RenderWorkerId }

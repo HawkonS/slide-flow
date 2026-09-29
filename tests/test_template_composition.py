@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import io
 import sqlite3
 import tempfile
 import time
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -196,6 +198,35 @@ class TemplateCompositionTests(unittest.TestCase):
         )
         self.assertEqual(forbidden.status_code, 403, forbidden.text)
 
+    def test_template_download_supports_three_formats_and_legacy_zip_flag(self):
+        template_id = self.insert_template(name="下载模板", owner=self.alice, text="DOWNLOAD")
+
+        plain = self.client.get(f"/api/templates/{template_id}/download?format=pptx")
+        self.assertEqual(plain.status_code, 200, plain.text)
+        self.assertIn(".pptx", plain.headers["content-disposition"])
+        self.assertEqual(
+            plain.headers["content-type"],
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        )
+
+        embedded = self.client.get(f"/api/templates/{template_id}/download?format=pptx-embedded")
+        self.assertEqual(embedded.status_code, 200, embedded.text)
+        self.assertIn("embedded_fonts.pptx", embedded.headers["content-disposition"])
+        self.assertEqual(
+            embedded.headers["content-type"],
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        )
+
+        archive = self.client.get(f"/api/templates/{template_id}/download?format=zip")
+        self.assertEqual(archive.status_code, 200, archive.text)
+        self.assertEqual(archive.headers["content-type"], "application/zip")
+        with zipfile.ZipFile(io.BytesIO(archive.content)) as package:
+            self.assertIn("下载模板.pptx", package.namelist())
+
+        legacy = self.client.get(f"/api/templates/{template_id}/download?with_fonts=true")
+        self.assertEqual(legacy.status_code, 200, legacy.text)
+        self.assertEqual(legacy.headers["content-type"], "application/zip")
+
     def test_commits_reviewed_ppt_as_ordered_template_series(self):
         self.db.execute("UPDATE users SET role = 'admin' WHERE id = ?", (int(self.alice["id"]),))
         self.db.commit()
@@ -241,6 +272,11 @@ class TemplateCompositionTests(unittest.TestCase):
             "INSERT INTO user_tag_definitions "
             "(name, category, label, sort_order, created_at) VALUES (?, ?, ?, ?, ?)",
             ("company-leader", "组织", "公司领导", 0, "2026-09-26T00:00:00Z"),
+        )
+        self.db.execute(
+            "INSERT INTO subject_tag_definitions "
+            "(name, category, label, sort_order, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("品牌", "主体", "品牌", 0, int(self.alice["id"]), "2026-09-26T00:00:00Z"),
         )
         self.db.commit()
 
@@ -329,6 +365,12 @@ class TemplateCompositionTests(unittest.TestCase):
         self.db.execute("UPDATE users SET role = 'admin' WHERE id = ?", (int(self.alice["id"]),))
         self.db.commit()
         self.current_user = self.db.execute("SELECT * FROM users WHERE id = ?", (int(self.alice["id"]),)).fetchone()
+        self.db.execute(
+            "INSERT INTO subject_tag_definitions "
+            "(name, category, label, sort_order, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("品牌", "主体", "品牌", 0, int(self.alice["id"]), "2026-09-26T00:00:00Z"),
+        )
+        self.db.commit()
         source = settings.data_dir / "template-series.pptx"
         presentation = Presentation()
         presentation.slides.add_slide(presentation.slide_layouts[6])
@@ -341,7 +383,6 @@ class TemplateCompositionTests(unittest.TestCase):
                     "name_prefix": "品牌系列",
                     "subject": "品牌",
                     "tags": "",
-                    "secrecy_level": "public",
                     "status": "active",
                     "visibility_scope": "public",
                     "visible_user_ids": "[]",

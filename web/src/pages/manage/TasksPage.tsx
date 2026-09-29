@@ -6,16 +6,16 @@ import {
   CheckCircle2,
   CircleDashed,
   Clock,
+  Check,
+  ChevronsUpDown,
   Download,
   Eye,
   FileText,
   Hash,
   Info,
   Loader2,
-  Lock,
   OctagonX,
   Search,
-  ShieldCheck,
   Trash2,
   Upload,
   User,
@@ -26,7 +26,9 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { UserSearchSelect } from "@/components/resource/UserSearchSelect";
+import { Input } from "@/components/ui/input";
+import { FilterChip as ResourceFilterChip, type ChipOption } from "@/components/resource/filter-chips";
+import { PageHeader } from "@/components/common/PageHeader";
 import {
   Dialog,
   DialogContent,
@@ -36,12 +38,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  Command,
+  CommandEmpty,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Table,
   TableBody,
@@ -59,7 +62,7 @@ import {
 } from "@/components/ui/tooltip";
 import { api, downloadFile } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { isAdminRole } from "@/lib/types";
+import { isAdminRole, type UserOption } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /* ---------- types ---------- */
@@ -79,7 +82,6 @@ interface TaskParams {
   ratio?: string;
   template_type?: string;
   tags?: string;
-  secrecy_level?: string;
   visibility_scope?: string;
   visible_user_ids?: string;
   management_scope?: string;
@@ -94,6 +96,7 @@ interface TaskParams {
   download_type?: string;
   watermark?: string;
   with_fonts?: boolean;
+  embed_fonts?: boolean;
   file_size?: number;
   track_code?: string;
   client_ip?: string;
@@ -248,6 +251,7 @@ const ACTIVE_STATUSES: TaskStatus[] = ["uploading", "pending", "processing"];
 
 const STATUS_FILTERS: { value: "all" | TaskStatus; label: string }[] = [
   { value: "all", label: "全部" },
+  { value: "uploading", label: "上传中" },
   { value: "processing", label: "处理中" },
   { value: "pending", label: "等待中" },
   { value: "completed", label: "已完成" },
@@ -456,7 +460,7 @@ function TaskRow({ task, onOpenDetails, onCancel, canManage, showOwner, isAdmin,
           </span>
         </TableCell>
 
-        <TableCell className="w-28">
+        <TableCell className="w-32">
           <div className="flex items-center gap-1">
             {task.params.session_id && !isCompleted && !isCancelled ? (
               <Button
@@ -487,9 +491,9 @@ function TaskRow({ task, onOpenDetails, onCancel, canManage, showOwner, isAdmin,
             ) : null}
             <Button
               type="button"
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7"
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1 text-xs"
               aria-label={`查看任务 #${task.id} 详情`}
               title="查看详情"
               onClick={(event) => {
@@ -498,6 +502,7 @@ function TaskRow({ task, onOpenDetails, onCancel, canManage, showOwner, isAdmin,
               }}
             >
               <Eye className="h-3.5 w-3.5" />
+              详情
             </Button>
           </div>
         </TableCell>
@@ -598,7 +603,6 @@ function TaskDetail({ task, onClose }: { task: Task; onClose: () => void }) {
               {params.tags && <InfoRow label="标签" value={params.tags} />}
               {params.visibility_scope && <InfoRow label="可见范围" value={SCOPE_LABEL[params.visibility_scope] || params.visibility_scope} />}
               {params.management_scope && <InfoRow label="管理范围" value={SCOPE_LABEL[params.management_scope] || params.management_scope} />}
-              {params.secrecy_level && <InfoRow label="密级" value={params.secrecy_level} />}
               {typeof params.image_count === "number" && <InfoRow label="预览图片" value={`${params.image_count} 张`} />}
               {params.remark_html && (
                 <div className="mt-3 space-y-1">
@@ -708,40 +712,182 @@ function InfoRow({
 
 /* ---------- Status Chips ---------- */
 
-function FilterChip({
-  active,
-  onClick,
-  children,
-  count,
+interface UserOptionsResponse {
+  users: UserOption[];
+}
+
+function TaskOwnerFilter({
+  value,
+  onChange,
 }: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-  count?: number;
+  value: string;
+  onChange: (value: string) => void;
 }) {
+  const [open, setOpen] = React.useState(false);
+  const [input, setInput] = React.useState("");
+  const [search, setSearch] = React.useState("");
+  const selectedId = /^\d+$/.test(value) ? Number(value) : null;
+
+  React.useEffect(() => {
+    const timer = window.setTimeout(() => setSearch(input.trim()), 250);
+    return () => window.clearTimeout(timer);
+  }, [input]);
+
+  const { data, isFetching } = useQuery({
+    queryKey: ["users", "options", "task-owner", search, selectedId],
+    queryFn: () => api<UserOptionsResponse>("/api/users/options", {
+      params: {
+        search: search || undefined,
+        ids: selectedId ? String(selectedId) : undefined,
+        limit: 100,
+      },
+    }),
+    enabled: open || selectedId != null,
+    staleTime: 60_000,
+  });
+
+  const users = data?.users ?? [];
+  const selectedUser = users.find((user) => user.id === selectedId);
+  const summary = value === "self"
+    ? "仅自己"
+    : value === "all"
+      ? "全部用户"
+      : selectedUser
+        ? selectedUser.name || selectedUser.username
+        : "指定用户";
+
+  const choose = (nextValue: string) => {
+    onChange(nextValue);
+    setOpen(false);
+  };
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "inline-flex items-center gap-1.5 rounded-md border px-3 py-1 text-xs transition-colors",
-        active
-          ? "border-primary bg-primary text-primary-foreground shadow-sm"
-          : "border-border bg-background text-muted-foreground hover:border-foreground/30 hover:text-foreground",
-      )}
-    >
-      {children}
-      {typeof count === "number" && (
-        <span
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
           className={cn(
-            "inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[10px]",
-            active ? "bg-primary-foreground/20 text-primary-foreground" : "bg-muted text-muted-foreground",
+            "group inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-3 text-sm transition hover:border-foreground/30 hover:bg-accent",
+            value !== "all" && "border-foreground/25 bg-primary-weak",
           )}
+          aria-expanded={open}
+          aria-label="按提交人筛选"
         >
-          {count}
-        </span>
+          <span className={cn("text-muted-foreground", value !== "all" && "text-foreground")}>提交人</span>
+          <span className="max-w-36 truncate font-medium">{summary}</span>
+          <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-60" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-72 p-0" align="start">
+        <Command shouldFilter={false}>
+          <CommandInput
+            value={input}
+            onValueChange={setInput}
+            placeholder="输入姓名或用户名搜索"
+          />
+          <CommandList>
+            <CommandItem value="all" onSelect={() => choose("all")}>
+              <Check className={cn("h-4 w-4", value === "all" ? "opacity-100" : "opacity-0")} />
+              <span>全部用户</span>
+            </CommandItem>
+            <CommandItem value="self" onSelect={() => choose("self")}>
+              <Check className={cn("h-4 w-4", value === "self" ? "opacity-100" : "opacity-0")} />
+              <span>仅自己</span>
+            </CommandItem>
+            <div className="my-1 border-t" />
+            {isFetching && users.length === 0 ? (
+              <div className="flex items-center justify-center gap-2 py-5 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />加载用户…
+              </div>
+            ) : users.length === 0 ? (
+              <CommandEmpty>没有匹配的用户</CommandEmpty>
+            ) : (
+              users.map((user) => (
+                <CommandItem
+                  key={user.id}
+                  value={String(user.id)}
+                  onSelect={() => choose(String(user.id))}
+                >
+                  <Check className={cn("h-4 w-4", user.id === selectedId ? "opacity-100" : "opacity-0")} />
+                  <span className="truncate">{user.name || user.username}</span>
+                  <span className="ml-auto truncate text-xs text-muted-foreground">@{user.username}</span>
+                </CommandItem>
+              ))
+            )}
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function TaskFilterBar({
+  isAdmin,
+  ownerFilter,
+  onOwnerFilterChange,
+  filter,
+  onFilterChange,
+  searchInput,
+  onSearchInputChange,
+  searchPlaceholder,
+  selectedCount,
+  onBulkDelete,
+  bulkDeletePending,
+}: {
+  isAdmin: boolean;
+  ownerFilter: string;
+  onOwnerFilterChange: (value: string) => void;
+  filter: "all" | TaskStatus;
+  onFilterChange: (value: "all" | TaskStatus) => void;
+  searchInput: string;
+  onSearchInputChange: (value: string) => void;
+  searchPlaceholder: string;
+  selectedCount: number;
+  onBulkDelete?: () => void;
+  bulkDeletePending?: boolean;
+}) {
+  const statusOptions: ChipOption[] = STATUS_FILTERS;
+
+  return (
+    <div className="page-toolbar">
+      <div className="relative min-w-[220px] flex-1 sm:flex-none">
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          value={searchInput}
+          onChange={(event) => onSearchInputChange(event.target.value)}
+          placeholder={searchPlaceholder}
+          className={cn(
+            "h-8 w-full bg-background pl-7 pr-3 text-sm shadow-sm sm:w-64",
+            searchInput.trim() && "border-primary/40 bg-primary/5",
+          )}
+        />
+      </div>
+
+      <ResourceFilterChip
+        label="状态"
+        options={statusOptions}
+        value={filter}
+        onChange={(value) => onFilterChange(value as "all" | TaskStatus)}
+        baseValue="all"
+      />
+
+      {isAdmin && (
+        <TaskOwnerFilter value={ownerFilter} onChange={onOwnerFilterChange} />
       )}
-    </button>
+
+      {isAdmin && onBulkDelete && (
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={selectedCount === 0 || bulkDeletePending}
+          onClick={onBulkDelete}
+          className="ml-auto h-8 gap-1.5 px-3 text-sm text-destructive hover:text-destructive"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+          删除选中{selectedCount ? `（${selectedCount}）` : ""}
+        </Button>
+      )}
+    </div>
   );
 }
 
@@ -814,24 +960,18 @@ export default function TasksPage() {
 
   return (
     <div className="page-shell">
-      {/* 页头 */}
-      <header className="flex items-center gap-3">
-        <h1 className="page-title">{title}</h1>
-        {canManage ? (
-          <Badge variant="blue" className="gap-1 text-[11px]">
-            <ShieldCheck className="h-3 w-3" />
-            可维护
+      <PageHeader
+        title={title}
+        titleExtra={
+          <Badge variant="secondary" className="rounded-md px-2 text-[11px]">
+            {canManage ? "可维护" : "只读"}
           </Badge>
-        ) : (
-          <Badge variant="outline" className="gap-1 text-[11px] text-muted-foreground">
-            <Lock className="h-3 w-3" />
-            只读
-          </Badge>
-        )}
-      </header>
+        }
+        description="查看上传和下载任务，按状态、提交人或关键词快速筛选。"
+      />
 
       <Tabs value={tab} onValueChange={handleTabChange} className="flex min-h-0 flex-1 flex-col">
-        <TabsList className="w-fit">
+        <TabsList className="w-fit border bg-muted/40">
           <TabsTrigger value="downloads" className="gap-1.5">
             <Download className="h-3.5 w-3.5" />
             下载任务
@@ -870,6 +1010,8 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
   const [selected, setSelected] = React.useState<Set<number>>(new Set());
   // 用户维度筛选："all" = 所有用户；"self" = 仅自己；其他为某个用户 id 的字符串形式
   const [ownerFilter, setOwnerFilter] = React.useState<string>("all");
+  const [searchInput, setSearchInput] = React.useState("");
+  const [search, setSearch] = React.useState("");
   const [page, setPage] = React.useState(1);
 
   // 表格容器引用 + 自适应分页大小（根据可用高度动态计算）
@@ -888,26 +1030,27 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
     return Number.isFinite(n) && n > 0 ? n : undefined;
   }, [isAdmin, ownerFilter, currentUserId]);
 
-  // 筛选/用户/分页大小变化时重置页码（避免越界）
+  React.useEffect(() => {
+    const timer = window.setTimeout(() => setSearch(searchInput.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [searchInput]);
+
+  // 筛选/搜索/用户/分页大小变化时重置页码（避免越界）
   React.useEffect(() => {
     setPage(1);
-  }, [filter, ownerIdParam, pageSize]);
-
-  const selectedOwnerId = React.useMemo(() => {
-    if (ownerFilter === "all" || ownerFilter === "self") return null;
-    const id = Number(ownerFilter);
-    return Number.isFinite(id) && id > 0 ? id : null;
-  }, [ownerFilter]);
+  }, [filter, ownerIdParam, search, pageSize]);
 
   const { data, isLoading, isError, error } = useQuery({
-    queryKey: ["tasks", "upload", ownerIdParam ?? "all", filter, page, pageSize],
+    queryKey: ["tasks", "upload", ownerIdParam ?? "all", filter, search, page, pageSize],
     queryFn: async () => {
       const params: Record<string, string | number> = {
+        task_type: "batch_split_import",
         page,
         page_size: pageSize,
       };
       if (ownerIdParam != null) params.owner_id = ownerIdParam;
       if (filter !== "all") params.status = filter;
+      if (search) params.search = search;
       return api<TaskListResponse>("/api/tasks", { params });
     },
     // pageSize 首次完成测量前不发起请求，避免无意义的占位查询
@@ -924,11 +1067,7 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
   // 容器尚未测量完成时（pageSize=0），视为加载态
   const isMeasuring = pageSize === 0;
 
-  // 后端返回 items；过滤掉下载类任务（后端未限定 task_type，这里按原逻辑保证仅上传类可见）
-  const tasks = React.useMemo(
-    () => (data?.items ?? []).filter((t) => t.task_type !== "download"),
-    [data?.items],
-  );
+  const tasks = data?.items ?? [];
   const total = data?.total ?? tasks.length;
   const totalPages = Math.max(1, Math.ceil(total / Math.max(1, pageSize)));
 
@@ -983,50 +1122,25 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
-      {/* 筛选区：用户下拉 + 状态 chips */}
-      <div className="flex flex-wrap items-center gap-2">
-        {isAdmin && (
-          <div className="flex items-center gap-1.5">
-            <FilterChip active={ownerFilter === "all"} onClick={() => setOwnerFilter("all")}>所有用户</FilterChip>
-            <FilterChip active={ownerFilter === "self"} onClick={() => setOwnerFilter("self")}>仅自己</FilterChip>
-            <div className="w-48">
-              <UserSearchSelect
-                value={selectedOwnerId}
-                onChange={(id) => setOwnerFilter(String(id))}
-                placeholder="搜索其他用户"
-                triggerClassName="h-8 text-xs"
-              />
-            </div>
-          </div>
-        )}
-        {STATUS_FILTERS.map((f) => (
-          <FilterChip
-            key={f.value}
-            active={filter === f.value}
-            onClick={() => setFilter(f.value)}
-          >
-            {f.label}
-          </FilterChip>
-        ))}
-        {isAdmin && (
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={selected.size === 0 || bulkDelMut.isPending}
-            onClick={() => {
-              if (!window.confirm(`确认删除选中的 ${selected.size} 个任务记录？`)) return;
-              bulkDelMut.mutate(Array.from(selected));
-            }}
-            className="h-8 gap-1.5 px-3 text-sm text-destructive hover:text-destructive"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-            删除选中{selected.size ? `（${selected.size}）` : ""}
-          </Button>
-        )}
-      </div>
+      <TaskFilterBar
+        isAdmin={isAdmin}
+        ownerFilter={ownerFilter}
+        onOwnerFilterChange={setOwnerFilter}
+        filter={filter}
+        onFilterChange={setFilter}
+        searchInput={searchInput}
+        onSearchInputChange={setSearchInput}
+        searchPlaceholder="搜索系列、文件名或主体"
+        selectedCount={selected.size}
+        bulkDeletePending={bulkDelMut.isPending}
+        onBulkDelete={() => {
+          if (!window.confirm(`确认删除选中的 ${selected.size} 个任务记录？`)) return;
+          bulkDelMut.mutate(Array.from(selected));
+        }}
+      />
 
       {/* 内容区 */}
-      <div ref={listContainerRef} className="min-h-0 flex-1 overflow-auto">
+      <div ref={listContainerRef} className="surface min-h-0 flex-1 overflow-auto">
         {isMeasuring || isLoading ? (
           <div className="flex items-center justify-center py-16 text-muted-foreground">
             <Loader2 className="mr-2 h-5 w-5 animate-spin" /> 加载中…
@@ -1037,13 +1151,17 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
           </div>
         ) : tasks.length === 0 ? (
           <div className="rounded-md border border-dashed py-16 text-center text-sm text-muted-foreground">
-            {filter === "all" ? "暂无任务" : `无${STATUS_LABEL[filter as TaskStatus] || ""}的任务`}
+            {search
+              ? `没有匹配“${search}”的上传任务`
+              : filter === "all"
+                ? "暂无上传任务"
+                : `无${STATUS_LABEL[filter as TaskStatus] || ""}的上传任务`}
           </div>
         ) : (
-          <div className="overflow-hidden rounded-lg border bg-card shadow-sm">
+          <div className="overflow-hidden">
             <Table>
               <TableHeader>
-                <TableRow className="bg-muted/40 hover:bg-muted/40">
+                <TableRow className="bg-muted/30 hover:bg-muted/30">
                   {isAdmin && (
                     <TableHead className="w-10">
                       <Checkbox
@@ -1150,12 +1268,12 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
 /* ---------- Download Tasks Tab ---------- */
 
 const DOWNLOAD_TYPE_LABEL: Record<string, string> = {
-  pdf: "PDF",
-  pptx_images: "纯图 PPT",
-  pptx: "合并 PPT",
-  pptx_fonts: "PPT + 字体包",
-  zip: "逐个 PPT",
-  zip_fonts: "PPT + 字体（ZIP）",
+  pdf: "PDF（纯图）",
+  pptx_images: "PPT（纯图）",
+  pptx: "PPT（无内嵌字体）",
+  pptx_fonts: "ZIP（PPT + 字体包）",
+  zip: "ZIP（逐个 PPT）",
+  zip_fonts: "ZIP（PPT + 字体包）",
 };
 
 function formatFileSize(bytes?: number | null): string {
@@ -1181,7 +1299,7 @@ function DownloadTasksTab({ canManage }: { canManage: boolean }) {
   const [selected, setSelected] = React.useState<Set<number>>(new Set());
   // 用户维度筛选："all" = 所有用户；"self" = 仅自己；其他为某个用户 id 的字符串形式
   const [ownerFilter, setOwnerFilter] = React.useState<string>("all");
-  // 追踪码搜索：输入值与防抖后的实际查询值分开
+  // 搜索输入值与防抖后的实际查询值分开
   const [searchInput, setSearchInput] = React.useState("");
   const [search, setSearch] = React.useState("");
   const [page, setPage] = React.useState(1);
@@ -1213,12 +1331,6 @@ function DownloadTasksTab({ canManage }: { canManage: boolean }) {
   React.useEffect(() => {
     setPage(1);
   }, [filter, ownerIdParam, search, pageSize]);
-
-  const selectedOwnerId = React.useMemo(() => {
-    if (ownerFilter === "all" || ownerFilter === "self") return null;
-    const id = Number(ownerFilter);
-    return Number.isFinite(id) && id > 0 ? id : null;
-  }, [ownerFilter]);
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["tasks", "download", ownerIdParam ?? "all", filter, search, page, pageSize],
@@ -1288,64 +1400,25 @@ function DownloadTasksTab({ canManage }: { canManage: boolean }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
-      {/* 筛选区：用户下拉 + 状态 chips + 追踪码搜索 */}
-      <div className="flex flex-wrap items-center gap-2">
-        {isAdmin && (
-          <div className="flex items-center gap-1.5">
-            <FilterChip active={ownerFilter === "all"} onClick={() => setOwnerFilter("all")}>所有用户</FilterChip>
-            <FilterChip active={ownerFilter === "self"} onClick={() => setOwnerFilter("self")}>仅自己</FilterChip>
-            <div className="w-48">
-              <UserSearchSelect
-                value={selectedOwnerId}
-                onChange={(id) => setOwnerFilter(String(id))}
-                placeholder="搜索其他用户"
-                triggerClassName="h-8 text-xs"
-              />
-            </div>
-          </div>
-        )}
-        {STATUS_FILTERS.map((f) => (
-          <FilterChip
-            key={f.value}
-            active={filter === f.value}
-            onClick={() => setFilter(f.value)}
-          >
-            {f.label}
-          </FilterChip>
-        ))}
-        <div className="relative min-w-0">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <input
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            placeholder="搜索追踪码"
-            className={cn(
-              "h-8 w-full rounded-md border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition sm:w-48",
-              "placeholder:text-muted-foreground",
-              "focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
-              search.trim() !== "" && "border-primary/40 bg-primary/5",
-            )}
-          />
-        </div>
-        {isAdmin && (
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={selected.size === 0 || bulkDelMut.isPending}
-            onClick={() => {
-              if (!window.confirm(`确认删除选中的 ${selected.size} 个任务记录？`)) return;
-              bulkDelMut.mutate(Array.from(selected));
-            }}
-            className="h-8 gap-1.5 px-3 text-sm text-destructive hover:text-destructive"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-            删除选中{selected.size ? `（${selected.size}）` : ""}
-          </Button>
-        )}
-      </div>
+      <TaskFilterBar
+        isAdmin={isAdmin}
+        ownerFilter={ownerFilter}
+        onOwnerFilterChange={setOwnerFilter}
+        filter={filter}
+        onFilterChange={setFilter}
+        searchInput={searchInput}
+        onSearchInputChange={setSearchInput}
+        searchPlaceholder="搜索追踪码、放映名称或文件名"
+        selectedCount={selected.size}
+        bulkDeletePending={bulkDelMut.isPending}
+        onBulkDelete={() => {
+          if (!window.confirm(`确认删除选中的 ${selected.size} 个任务记录？`)) return;
+          bulkDelMut.mutate(Array.from(selected));
+        }}
+      />
 
       {/* 内容区 */}
-      <div ref={listContainerRef} className="min-h-0 flex-1 overflow-auto">
+      <div ref={listContainerRef} className="surface min-h-0 flex-1 overflow-auto">
         {isMeasuring || isLoading ? (
           <div className="flex items-center justify-center py-16 text-muted-foreground">
             <Loader2 className="mr-2 h-5 w-5 animate-spin" /> 加载中…
@@ -1357,17 +1430,17 @@ function DownloadTasksTab({ canManage }: { canManage: boolean }) {
         ) : tasks.length === 0 ? (
           <div className="rounded-md border border-dashed py-16 text-center text-sm text-muted-foreground">
             {search
-              ? `没有匹配追踪码“${search}”的任务`
+              ? `没有匹配“${search}”的下载任务`
               : filter === "all"
                 ? "暂无下载任务"
                 : `无${STATUS_LABEL[filter as TaskStatus] || ""}的下载任务`}
           </div>
         ) : (
           <TooltipProvider delayDuration={150}>
-          <div className="overflow-hidden rounded-lg border bg-card shadow-sm">
+          <div className="overflow-hidden">
             <Table>
               <TableHeader>
-                <TableRow className="bg-muted/40 hover:bg-muted/40">
+                <TableRow className="bg-muted/30 hover:bg-muted/30">
                   {isAdmin && (
                     <TableHead className="w-10">
                       <Checkbox
@@ -1443,6 +1516,11 @@ function DownloadTaskRow({ task, showOwner, isAdmin, isSelected, onSelectToggle 
         : 0;
 
   const downloadType = task.params?.download_type || "";
+  const downloadLabel = task.params?.embed_fonts
+    ? "PPT（内嵌字体）"
+    : task.params?.with_fonts && downloadType === "pptx"
+      ? "ZIP（PPT + 字体包）"
+      : DOWNLOAD_TYPE_LABEL[downloadType] || downloadType;
   const fileName = task.params?.file_name;
   const fileSize = task.params?.file_size;
   const trackCode = task.params?.track_code;
@@ -1493,7 +1571,7 @@ function DownloadTaskRow({ task, showOwner, isAdmin, isSelected, onSelectToggle 
 
       <TableCell>
         <span className="inline-flex items-center rounded-md border bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground">
-          {DOWNLOAD_TYPE_LABEL[downloadType] || downloadType || "—"}
+            {downloadLabel || "—"}
         </span>
       </TableCell>
 

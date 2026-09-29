@@ -110,10 +110,6 @@ export function ResourceDetailDialog({
                 value={resource.status}
               />
               <InfoRow
-                label="密级"
-                value={resource.secrecy_level}
-              />
-              <InfoRow
                 label="可见范围"
                 value={RESOURCE_SCOPE_LABEL[resource.visibility_scope] || resource.visibility_scope}
               />

@@ -387,7 +387,6 @@ export function ResourceDetailPage() {
     enabled: resource != null,
     staleTime: 60_000,
   });
-  const secrecyLabel = resource?.secrecy_level || "";
   const statusLabel = resource?.status || "";
   const publicUrl = window.location.href;
   const closeAndRefresh = React.useCallback((open: boolean, setOpen: (value: boolean) => void) => {
@@ -422,11 +421,6 @@ export function ResourceDetailPage() {
           <div className="min-w-0">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <h1 className="max-w-full truncate text-xl font-semibold tracking-tight sm:text-2xl">{resource.name}</h1>
-              {secrecyLabel && (
-                <Badge variant="outline" className="h-5 px-1.5 text-[10px]">
-                  {secrecyLabel}
-                </Badge>
-              )}
               {statusLabel && (
                 <Badge variant={resource.status === "active" ? "secondary" : "outline"} className="h-5 px-1.5 text-[10px]">
                   {statusLabel}
@@ -620,7 +614,6 @@ interface PublicShareResource {
   name: string;
   subject: string;
   tags: string;
-  secrecy_level: string;
   current_version: number;
   updated_at: string;
   preview_url: string;
@@ -653,9 +646,6 @@ export function ResourceSharePage() {
             <div>
               <h1 className="text-2xl font-semibold tracking-tight">{resource.name}</h1>
               <div className="mt-2 flex flex-wrap gap-1.5">
-                <Badge variant="outline">
-                  {resource.secrecy_level}
-                </Badge>
                 {tags.map((tag) => (
                   <Badge key={tag} variant="outline" className="font-normal">{tag}</Badge>
                 ))}

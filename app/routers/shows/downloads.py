@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from PIL import Image
-from app.core.permissions import can_view_resource
 from app.core.permissions import can_view_show
 from app.core.permissions import require_user
+from app.core.storage import safe_filename
 from app.core.ppt import _build_watermark_tile
 from app.core.ppt import add_watermark_to_image
 from app.core.ppt import add_watermark_to_pptx
@@ -32,7 +32,7 @@ from app.services.downloads.tracking import (
 )
 from app.services.files import (
     _content_disposition,
-    _safe_abs,
+    _resource_file_abs,
     materialization_scope,
 )
 from app.services.shows import (
@@ -68,7 +68,10 @@ def _cleanup_oss_materialized(endpoint: Callable[..., _T]) -> Callable[..., _T]:
     @wraps(endpoint)
     def wrapped(*args: Any, **kwargs: Any) -> _T:
         with materialization_scope():
-            return endpoint(*args, **kwargs)
+            response = endpoint(*args, **kwargs)
+            if isinstance(response, FileResponse):
+                response.headers["Cache-Control"] = "private, no-store"
+            return response
     return wrapped
 
 
@@ -86,11 +89,12 @@ def download_show_pdf(
         raise HTTPException(403, "无可见权限")
     track_code = _record_download(db, user, request, show_id, "pdf")
     wm_text = _compose_watermark_text(track_code, watermark) if watermark else ""
+    items = _collect_show_accessible_resources(db, show_id, user)
 
     # 无水印时尝试缓存命中
     cache_key = ""
     if not wm_text:
-        cache_key = _show_download_cache_key(show_id, "pdf", db)
+        cache_key = _show_download_cache_key(show_id, "pdf", items)
         cached = _get_cached_download(cache_key, "pdf")
         if cached:
             return FileResponse(
@@ -99,29 +103,11 @@ def download_show_pdf(
                 headers={"Content-Disposition": _content_disposition(f"{row['name']}.pdf")},
             )
 
-    sr_rows = db.execute(
-        """
-        SELECT sr.resource_id, sr.version_no, r.name
-        FROM show_resources sr
-        JOIN resources r ON r.id = sr.resource_id
-        WHERE sr.show_id = ?
-        ORDER BY sr.sort_order
-        """,
-        (show_id,),
-    ).fetchall()
-
     # ── 预扫描：收集有效 PNG 路径并动态确定画布尺寸 ──
     valid_paths: list[Path] = []
-    for sr in sr_rows:
-        resource = db.execute("SELECT * FROM resources WHERE id = ?", (sr["resource_id"],)).fetchone()
-        if resource is None or not can_view_resource(db, resource, user):
-            continue
-        version_row = db.execute(
-            "SELECT png_path FROM resource_versions WHERE resource_id = ? AND version_no = ?",
-            (sr["resource_id"], sr["version_no"]),
-        ).fetchone()
-        if version_row and version_row["png_path"]:
-            path = _safe_abs(version_row["png_path"])
+    for item in items:
+        if item["png_path"]:
+            path = _resource_file_abs(item["png_path"])
             if path and path.exists():
                 valid_paths.append(path)
     if not valid_paths:
@@ -130,24 +116,14 @@ def download_show_pdf(
 
     images = []
     wm_tile = None
-    for sr in sr_rows:
-        resource = db.execute("SELECT * FROM resources WHERE id = ?", (sr["resource_id"],)).fetchone()
-        if resource is None or not can_view_resource(db, resource, user):
-            continue
-        version_row = db.execute(
-            "SELECT png_path FROM resource_versions WHERE resource_id = ? AND version_no = ?",
-            (sr["resource_id"], sr["version_no"]),
-        ).fetchone()
-        if version_row and version_row["png_path"]:
-            path = _safe_abs(version_row["png_path"])
-            if path and path.exists():
-                img = Image.open(path).convert("RGB")
-                img = fit_image_to_canvas(img, canvas_w, canvas_h)
-                if wm_text:
-                    if wm_tile is None:
-                        wm_tile = _build_watermark_tile(canvas_w, canvas_h, wm_text)
-                    img = add_watermark_to_image(img, wm_text, tile=wm_tile).convert("RGB")
-                images.append(img)
+    for path in valid_paths:
+        img = Image.open(path).convert("RGB")
+        img = fit_image_to_canvas(img, canvas_w, canvas_h)
+        if wm_text:
+            if wm_tile is None:
+                wm_tile = _build_watermark_tile(canvas_w, canvas_h, wm_text)
+            img = add_watermark_to_image(img, wm_text, tile=wm_tile).convert("RGB")
+        images.append(img)
     if wm_tile is not None:
         wm_tile.close()
     if not images:
@@ -190,11 +166,12 @@ def download_show_pptx_images(
         raise HTTPException(403, "无可见权限")
     track_code = _record_download(db, user, request, show_id, "pptx_images")
     wm_text = _compose_watermark_text(track_code, watermark) if watermark else ""
+    items = _collect_show_accessible_resources(db, show_id, user)
 
     # 无水印时尝试缓存命中
     cache_key = ""
     if not wm_text:
-        cache_key = _show_download_cache_key(show_id, "pptx_images", db)
+        cache_key = _show_download_cache_key(show_id, "pptx_images", items)
         cached = _get_cached_download(cache_key, "pptx")
         if cached:
             return FileResponse(
@@ -203,27 +180,10 @@ def download_show_pptx_images(
                 headers={"Content-Disposition": _content_disposition(f"{row['name']}_纯图.pptx")},
             )
 
-    sr_rows = db.execute(
-        """
-        SELECT sr.resource_id, sr.version_no, r.name
-        FROM show_resources sr
-        JOIN resources r ON r.id = sr.resource_id
-        WHERE sr.show_id = ?
-        ORDER BY sr.sort_order
-        """,
-        (show_id,),
-    ).fetchall()
     image_paths: list[Path] = []
-    for sr in sr_rows:
-        resource = db.execute("SELECT * FROM resources WHERE id = ?", (sr["resource_id"],)).fetchone()
-        if resource is None or not can_view_resource(db, resource, user):
-            continue
-        version_row = db.execute(
-            "SELECT png_path FROM resource_versions WHERE resource_id = ? AND version_no = ?",
-            (sr["resource_id"], sr["version_no"]),
-        ).fetchone()
-        if version_row and version_row["png_path"]:
-            path = _safe_abs(version_row["png_path"])
+    for item in items:
+        if item["png_path"]:
+            path = _resource_file_abs(item["png_path"])
             if path and path.exists():
                 image_paths.append(path)
     if not image_paths:
@@ -286,11 +246,12 @@ def download_show_pptx(
     track_code = _record_download(db, user, request, show_id, "pptx_fonts" if with_fonts else "pptx")
     wm_text = _compose_watermark_text(track_code, watermark) if watermark else ""
     dl_type = "pptx_fonts" if with_fonts else "pptx"
+    items = _collect_show_accessible_resources(db, show_id, user)
 
     # 无水印时尝试缓存命中
     cache_key = ""
     if not wm_text:
-        cache_key = _show_download_cache_key(show_id, dl_type, db)
+        cache_key = _show_download_cache_key(show_id, dl_type, items)
         cache_ext = "zip" if with_fonts else "pptx"
         cached = _get_cached_download(cache_key, cache_ext)
         if cached:
@@ -302,13 +263,12 @@ def download_show_pptx(
                 headers={"Content-Disposition": _content_disposition(filename)},
             )
 
-    items = _collect_show_accessible_resources(db, show_id, user)
     input_paths: list[Path] = []
     hidden_flags: list[bool] = []
     for item in items:
         if not item["ppt_path"]:
             continue
-        ppt_path = _safe_abs(item["ppt_path"])
+        ppt_path = _resource_file_abs(item["ppt_path"])
         if not ppt_path or not ppt_path.exists():
             continue
         input_paths.append(ppt_path)
@@ -343,7 +303,7 @@ def download_show_pptx(
     zip_tmp.close()
     try:
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.write(merged_path, arcname=f"{row['name']}.pptx")
+            zf.write(merged_path, arcname=f"{safe_filename(row['name'])}.pptx")
             _write_fonts_into_zip(zf, fonts, agg["missing_fonts"])
     finally:
         merged_path.unlink(missing_ok=True)
@@ -386,10 +346,10 @@ def download_show_zip(
         for item in items:
             if not item["ppt_path"]:
                 continue
-            ppt_path = _safe_abs(item["ppt_path"])
+            ppt_path = _resource_file_abs(item["ppt_path"])
             if not ppt_path or not ppt_path.exists():
                 continue
-            arcname = f"{item['name']}_v{item['version_no']}.pptx"
+            arcname = f"{safe_filename(item['name'])}_v{item['version_no']}.pptx"
             if wm_text:
                 # 复制一份并加水印，然后加入 zip
                 wm_tmp = tempfile.NamedTemporaryFile(suffix=".pptx", delete=False)

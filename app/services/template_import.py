@@ -22,7 +22,7 @@ from app.services.templates import (
     _template_group_order_values,
     _template_page_name,
     _template_page_office_file_name,
-    _validate_standalone_template_subject,
+    _validate_template_subject,
     _validate_standalone_template_type,
     _validate_template_platform,
     _validate_template_ratio,
@@ -56,7 +56,7 @@ def _commit_template_import_sync(
         raise HTTPException(400, "预览版本已过期，请重新渲染")
 
     series = _validate_template_series(payload.get("series"))
-    subject = _validate_standalone_template_subject(payload.get("subject"))
+    subject = _validate_template_subject(db, payload.get("subject"))
     platform = _validate_template_platform(str(payload.get("platform") or ""))
     ratio = _validate_template_ratio(str(payload.get("ratio") or ""))
     template_type = _validate_standalone_template_type(str(payload.get("template_type") or ""))

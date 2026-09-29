@@ -65,7 +65,6 @@ interface Option {
 interface ManageUrlState {
   q: string;
   sub: string;
-  sec: string;
   sta: string;
   own: string;
   rc: string;
@@ -76,7 +75,7 @@ interface ManageUrlState {
 }
 
 const URL_DEFAULTS: ManageUrlState = {
-  q: "", sub: "all", sec: "all", sta: "all", own: "all",
+  q: "", sub: "all", sta: "all", own: "all",
   rc: "all", rp: "all", tags: [], tm: "all", p: 1,
 };
 
@@ -86,14 +85,9 @@ export default function ResourceManagePage() {
   const { user } = useAuth();
   const filters = useManageResourceFilters();
   const { options: statusTags } = useMetadataTagOptions("status");
-  const { options: secrecyTags } = useMetadataTagOptions("secrecy");
   const statusOptions = React.useMemo<Option[]>(
     () => [{ value: "all", label: "全部" }, ...statusTags],
     [statusTags],
-  );
-  const secrecyOptions = React.useMemo<Option[]>(
-    () => [{ value: "all", label: "全部" }, ...secrecyTags],
-    [secrecyTags],
   );
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -128,7 +122,6 @@ export default function ResourceManagePage() {
     const s = urlState;
     filters.setQuery(s.q);
     filters.setSubject(s.sub);
-    filters.setSecrecy(s.sec as "all" | "public" | "confidential" | "secret");
     filters.setStatus(s.sta as "all" | "active" | "disabled");
     filters.setOwnership(s.own as "all" | "created" | "managed");
     filters.setRemarkCommon(s.rc as "all" | "has" | "none");
@@ -144,7 +137,7 @@ export default function ResourceManagePage() {
   const prevFiltersKey = React.useRef("");
   React.useEffect(() => {
     const key = JSON.stringify({
-      q: filters.query, sub: filters.subject, sec: filters.secrecy,
+      q: filters.query, sub: filters.subject,
       sta: filters.status, own: filters.ownership,
       rc: filters.remarkCommon, rp: filters.remarkPersonal,
       tags: filters.tags, tm: filters.tagsMode,
@@ -153,14 +146,14 @@ export default function ResourceManagePage() {
     const filtersChanged = prevFiltersKey.current !== "";
     prevFiltersKey.current = key;
     setUrlState((prev) => ({
-      q: filters.query, sub: filters.subject, sec: filters.secrecy,
+      q: filters.query, sub: filters.subject,
       sta: filters.status, own: filters.ownership,
       rc: filters.remarkCommon, rp: filters.remarkPersonal,
       tags: filters.tags, tm: filters.tagsMode,
       p: filtersChanged ? 1 : prev.p,
     }));
   }, [
-    filters.query, filters.subject, filters.secrecy, filters.status,
+    filters.query, filters.subject, filters.status,
     filters.ownership, filters.remarkCommon, filters.remarkPersonal,
     filters.tags, filters.tagsMode, setUrlState,
   ]);
@@ -183,7 +176,6 @@ export default function ResourceManagePage() {
       search: filters.query.trim() || undefined,
       subject: filters.subject !== "all" ? filters.subject : undefined,
       status: filters.status !== "all" ? filters.status : undefined,
-      secrecy: filters.secrecy !== "all" ? filters.secrecy : undefined,
       permission: filters.ownership !== "all" ? filters.ownership : undefined,
       tags: filters.tags.length > 0 ? serializeTags(filters.tags) : undefined,
       tags_mode: filters.tagsMode,
@@ -225,7 +217,6 @@ export default function ResourceManagePage() {
 
   const filterDirtyCount = [
     filters.status !== "all",
-    filters.secrecy !== "all",
     filters.ownership !== "all",
   ].filter(Boolean).length;
 
@@ -255,13 +246,6 @@ export default function ResourceManagePage() {
         onChange: (v) => filters.setStatus(v as typeof filters.status),
       },
       {
-        key: "secrecy",
-        label: "密级",
-        options: secrecyOptions,
-        value: filters.secrecy,
-        onChange: (v) => filters.setSecrecy(v as typeof filters.secrecy),
-      },
-      {
         key: "ownership",
         label: "权限",
         options: OWNERSHIP_OPTIONS,
@@ -269,7 +253,7 @@ export default function ResourceManagePage() {
         onChange: (v) => filters.setOwnership(v as typeof filters.ownership),
       },
     ],
-    [filters.status, filters.secrecy, filters.ownership, OWNERSHIP_OPTIONS, filters, statusOptions, secrecyOptions],
+    [filters.status, filters.ownership, OWNERSHIP_OPTIONS, filters, statusOptions],
   );
 
   /* ---- Selection ---- */
@@ -317,7 +301,6 @@ export default function ResourceManagePage() {
       if (apiParams.search) params.set("search", apiParams.search);
       if (apiParams.subject) params.set("subject", apiParams.subject);
       if (apiParams.status) params.set("status", apiParams.status);
-      if (apiParams.secrecy) params.set("secrecy", apiParams.secrecy);
       if (apiParams.permission) params.set("permission", apiParams.permission);
       if (apiParams.tags) params.set("tags", apiParams.tags);
       if (apiParams.tags_mode) params.set("tags_mode", apiParams.tags_mode);
@@ -536,7 +519,6 @@ export default function ResourceManagePage() {
                   <TableHead>名称</TableHead>
                   <TableHead className="w-28">主体</TableHead>
                   <TableHead className="w-52">标签</TableHead>
-                  <TableHead className="w-20">密级</TableHead>
                   <TableHead className="w-16">状态</TableHead>
                   <TableHead className="w-24">所有者</TableHead>
                   <TableHead className="w-24">更新时间</TableHead>
@@ -610,14 +592,6 @@ export default function ResourceManagePage() {
                             </span>
                           )}
                         </div>
-                      </TableCell>
-                      <TableCell>
-                        <Badge
-                          variant="outline"
-                          className="text-[11px]"
-                        >
-                          {r.secrecy_level}
-                        </Badge>
                       </TableCell>
                       <TableCell>
                         <Badge

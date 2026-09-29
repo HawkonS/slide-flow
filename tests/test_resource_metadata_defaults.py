@@ -4,17 +4,14 @@ import unittest
 from fastapi import HTTPException
 
 from app.db import _maintain_resource_metadata_tags
-from app.services.common import _validate_resource_status, _validate_secrecy
+from app.services.common import _validate_resource_status
 
 
 class ResourceMetadataDefaultsTests(unittest.TestCase):
-    def test_secrecy_and_status_require_explicit_values(self) -> None:
-        with self.assertRaisesRegex(HTTPException, "请选择密级"):
-            _validate_secrecy("")
+    def test_status_still_requires_value(self) -> None:
         with self.assertRaisesRegex(HTTPException, "请选择状态"):
             _validate_resource_status(None)
 
-        self.assertEqual(_validate_secrecy("内部"), "内部")
         self.assertEqual(_validate_resource_status("草稿"), "草稿")
 
     def test_generated_metadata_definitions_are_removed(self) -> None:
@@ -60,10 +57,7 @@ class ResourceMetadataDefaultsTests(unittest.TestCase):
         secrecy = db.execute(
             "SELECT name, category, label FROM secrecy_tag_definitions"
         ).fetchall()
-        self.assertEqual(
-            [(row["name"], row["category"], row["label"]) for row in secrecy],
-            [("内部", "密级", "内部")],
-        )
+        self.assertEqual(secrecy, [])
         remaining = db.execute(
             "SELECT name, category, label FROM status_tag_definitions"
         ).fetchall()

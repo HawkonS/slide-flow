@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import {
   ArrowDownUp,
+  Archive,
   Check,
   Download,
   Files,
@@ -12,6 +13,7 @@ import {
   Loader2,
   MoreHorizontal,
   Pencil,
+  Presentation,
   Plus,
   Search,
   Trash2,
@@ -20,6 +22,8 @@ import {
 import { toast } from "sonner";
 
 import { TemplateFormDialog, TemplateSortDialog } from "@/pages/admin/AdminTemplatesPage";
+import { PageMetrics } from "@/components/common/PageMetrics";
+import { PageHeader } from "@/components/common/PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -76,7 +80,6 @@ export function TemplatesPage() {
   const [platformFilter, setPlatformFilter] = React.useState("all");
   const [typeFilter, setTypeFilter] = React.useState("all");
   const [selected, setSelected] = React.useState<Set<number>>(new Set());
-  const [downloadingId, setDownloadingId] = React.useState<number | null>(null);
 
   // 列数由共享 hook 按容器宽度连续计算
   // widthOffset:16 用于补偿 grid 上层 `pl-4` 造成的实际可用宽度 -16 偏差，避免临界宽度下列数抖动
@@ -208,18 +211,8 @@ export function TemplatesPage() {
     });
   };
 
-  const handleSingleDownload = async (template: TemplateItem) => {
-    const url = template.download_url || "/api/templates/" + template.id + "/download";
-    const filename = template.office_file_name || template.name + ".pptx";
-    setDownloadingId(template.id);
-    try {
-      await downloadWithProgress(url, filename);
-      toast.success("模板下载完成");
-    } catch (downloadError) {
-      toast.error((downloadError as Error).message || "下载失败");
-    } finally {
-      setDownloadingId(null);
-    }
+  const handleSingleDownload = (template: TemplateItem) => {
+    setDetail(template);
   };
 
   const handleSeriesDownload = (subject: string, series: string) => {
@@ -228,7 +221,7 @@ export function TemplatesPage() {
       && ((template.series || "").trim() || "未设置系列") === series,
     );
     if (seriesItems.length === 1) {
-      void handleSingleDownload(seriesItems[0]);
+      setDetail(seriesItems[0]);
       return;
     }
     composeDownload.mutate({
@@ -259,48 +252,30 @@ export function TemplatesPage() {
 
   return (
     <div className="page-shell">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 className="page-title">标准模板</h1>
-            {isAdmin && <Badge variant="secondary" className="rounded-md px-2 text-[11px]">可维护</Badge>}
-          </div>
-          <p className="mt-1.5 text-sm text-muted-foreground">
-            按主体和系列管理标准单页，可单页下载或选择多页组合下载。
-          </p>
-        </div>
-        {isAdmin && (
-          <div className="flex items-center gap-2">
+      <PageHeader
+        title="标准模板"
+        titleExtra={isAdmin ? <Badge variant="secondary" className="rounded-md px-2 text-[11px]">可维护</Badge> : null}
+        description="按主体和系列管理标准单页，可单页下载或选择多页组合下载。"
+        actions={isAdmin ? (
+          <>
             <Button variant="outline" size="sm" className="h-9 gap-1.5" onClick={() => setSortOpen(true)} disabled={templates.length === 0}>
               <ArrowDownUp className="h-3.5 w-3.5" />排序
             </Button>
             <Button size="sm" className="h-9 gap-1.5" onClick={() => navigate("/templates/import")}>
               <Plus className="h-3.5 w-3.5" />导入模板系列
             </Button>
-          </div>
-        )}
-      </header>
+          </>
+        ) : null}
+      />
 
-      <section className="grid grid-cols-3 divide-x rounded-md border bg-card shadow-sm" aria-label="模板统计">
-        <div className="min-w-0 px-3 py-2.5 sm:px-4">
-          <div className="truncate text-[11px] font-medium text-muted-foreground">模板总数</div>
-          <div className="mt-1 flex items-center gap-1.5 text-lg font-semibold tabular-nums">
-            <Layers3 className="h-4 w-4 text-primary" />{total}
-          </div>
-        </div>
-        <div className="min-w-0 px-3 py-2.5 sm:px-4">
-          <div className="truncate text-[11px] font-medium text-muted-foreground">主体数</div>
-          <div className="mt-1 flex items-center gap-1.5 text-lg font-semibold tabular-nums">
-            <FolderTree className="h-4 w-4 text-muted-foreground" />{subjectCount}
-          </div>
-        </div>
-        <div className="min-w-0 px-3 py-2.5 sm:px-4">
-          <div className="truncate text-[11px] font-medium text-muted-foreground">系列数</div>
-          <div className="mt-1 flex items-center gap-1.5 text-lg font-semibold tabular-nums">
-            <Files className="h-4 w-4 text-muted-foreground" />{seriesCount}
-          </div>
-        </div>
-      </section>
+      <PageMetrics
+        ariaLabel="模板统计"
+        items={[
+          { label: "模板", value: total, icon: Layers3 },
+          { label: "主体", value: subjectCount, icon: FolderTree },
+          { label: "系列", value: seriesCount, icon: Files },
+        ]}
+      />
 
       <div className="page-toolbar">
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
@@ -463,7 +438,7 @@ export function TemplatesPage() {
                             className="ml-auto h-7 w-7 text-muted-foreground hover:bg-primary/10 hover:text-primary"
                             title={`下载「${series}」完整系列`}
                             aria-label={`下载系列 ${series}`}
-                            disabled={composeDownload.isPending || downloadingId != null}
+                            disabled={composeDownload.isPending}
                             onClick={() => handleSeriesDownload(subject, series)}
                           >
                             {composeDownload.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
@@ -476,7 +451,7 @@ export function TemplatesPage() {
                               template={t}
                               selected={selected.has(t.id)}
                               isAdmin={isAdmin}
-                              downloading={downloadingId === t.id}
+                              downloading={false}
                               onToggle={() => toggleSelection(t.id)}
                               onClick={() => setDetail(t)}
                               onDownload={() => void handleSingleDownload(t)}
@@ -651,6 +626,7 @@ function TemplateDetailDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const [local, setLocal] = React.useState<LocalFontInfo | null>(null);
+  const [activeFormat, setActiveFormat] = React.useState<"pptx-embedded" | "pptx" | "zip" | null>(null);
   const [progress, setProgress] = React.useState<{ label: string; percent: number | null } | null>(
     null,
   );
@@ -680,8 +656,9 @@ function TemplateDetailDialog({
 
   if (!template) return null;
 
-  const recommendPpt = local?.recommend === "ppt";
+  const recommendEmbedded = local?.recommend !== "ppt";
   const previewUrl = template.original_preview_url || template.preview_url;
+  const previewAspectRatio = template.ratio === "4:3" ? "4 / 3" : "16 / 9";
 
   const typeLabel = template.template_type
     ? TEMPLATE_TYPE_LABEL[template.template_type] || template.template_type
@@ -699,12 +676,13 @@ function TemplateDetailDialog({
   ].filter(Boolean) as string[];
 
   const baseUrl = template.download_url || `/api/templates/${template.id}/download`;
-  const runDownload = async (withFonts: boolean) => {
-    const url = `${baseUrl}${withFonts ? "?with_fonts=true" : ""}`;
+  const runDownload = async (format: "pptx-embedded" | "pptx" | "zip") => {
+    const url = `${baseUrl}?format=${format}`;
     const base = template.office_file_name || `${template.name}.pptx`;
-    const fallbackName = withFonts
-      ? `${base.replace(/\.[^.]+$/, "")}_with_fonts.zip`
-      : base;
+    const suffix = format === "pptx-embedded" ? "_内嵌字体" : format === "zip" ? "_含字体包" : "";
+    const extension = format === "zip" ? "zip" : "pptx";
+    const fallbackName = `${base.replace(/\.[^.]+$/, "")}${suffix}.${extension}`;
+    setActiveFormat(format);
     setProgress({ label: "准备下载…", percent: null });
     try {
       await downloadWithProgress(url, fallbackName, (percent, bytes) => {
@@ -717,6 +695,7 @@ function TemplateDetailDialog({
       toast.error((err as Error).message || "下载失败");
     } finally {
       setProgress(null);
+      setActiveFormat(null);
     }
   };
 
@@ -726,14 +705,21 @@ function TemplateDetailDialog({
 
   return (
     <Dialog open={!!template} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-4xl gap-0 overflow-hidden p-0">
-        <DialogHeader className="border-b px-6 py-4">
-          <DialogTitle className="pr-6 text-base font-semibold leading-snug">
-            {template.name}
-          </DialogTitle>
-          <DialogDescription className="sr-only">模板详情</DialogDescription>
+      <DialogContent className="max-w-6xl gap-0 overflow-hidden p-0">
+        <DialogHeader className="border-b px-6 py-5">
+          <div className="flex items-start gap-4 pr-8">
+            <div className="min-w-0 flex-1">
+              <DialogTitle className="text-lg font-semibold leading-snug">{template.name}</DialogTitle>
+              <DialogDescription className="mt-1">选择适合交付场景的文件格式</DialogDescription>
+            </div>
+            {template.office_file_name && (
+              <Badge variant="outline" className="shrink-0 font-mono text-[10px] font-normal">
+                PPTX
+              </Badge>
+            )}
+          </div>
           {metaChips.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1.5">
+            <div className="mt-3 flex flex-wrap gap-1.5">
               {metaChips.map((chip) => (
                 <Badge key={chip} variant="secondary" className="font-normal">
                   {chip}
@@ -743,25 +729,28 @@ function TemplateDetailDialog({
           )}
         </DialogHeader>
 
-        <div className="grid max-h-[65vh] gap-0 overflow-hidden md:grid-cols-[1.4fr_1fr]">
+        <div className="grid max-h-[68vh] gap-0 overflow-hidden md:grid-cols-[minmax(0,1.55fr)_minmax(20rem,0.85fr)]">
           {/* 左侧：预览图 */}
-          <div className="flex items-center justify-center overflow-hidden bg-muted/40 p-4">
+          <div
+            className="flex w-full self-start items-center justify-center overflow-hidden bg-muted/40 p-3"
+            style={{ aspectRatio: previewAspectRatio }}
+          >
             {previewUrl ? (
               <img
                 src={previewUrl}
                 alt={template.name}
-                className="max-h-full max-w-full rounded-md object-contain shadow-sm"
+                className="h-full w-full rounded-md object-contain shadow-sm"
               />
             ) : (
-              <div className="flex h-56 w-full items-center justify-center text-muted-foreground">
+              <div className="flex h-full w-full items-center justify-center text-muted-foreground">
                 <ImageOff className="h-6 w-6" />
               </div>
             )}
           </div>
 
           {/* 右侧：字体检测 + 下载进度 */}
-          <div className="flex flex-col gap-4 overflow-y-auto border-l bg-background p-5">
-            <section className="space-y-2">
+          <div className="flex flex-col gap-5 overflow-y-auto border-l bg-background p-6">
+            <section className="space-y-3">
               <div className="flex items-center justify-between">
                 <h4 className="text-sm font-medium">本机字体检测</h4>
                 {hasFonts && (
@@ -773,7 +762,7 @@ function TemplateDetailDialog({
               <div
                 className={cn(
                   "rounded-md border px-3 py-2 text-xs leading-relaxed",
-                  recommendPpt
+                  !recommendEmbedded
                     ? "border-[hsl(var(--success))]/30 bg-[hsl(var(--success))]/5 text-[hsl(var(--success))]"
                     : "border-[hsl(var(--warning))]/30 bg-[hsl(var(--warning))]/5 text-[hsl(var(--warning))]",
                 )}
@@ -825,6 +814,42 @@ function TemplateDetailDialog({
                 </div>
               </div>
             )}
+
+            <section className="space-y-2 border-t pt-4">
+              <div>
+                <h4 className="text-sm font-semibold">下载文件</h4>
+                <p className="mt-1 text-xs text-muted-foreground">PNG 仅用于预览，交付请下载以下格式之一。</p>
+              </div>
+              <div className="grid gap-2">
+                <TemplateDownloadOption
+                  icon={Presentation}
+                  title="PPT（内嵌字体）"
+                  detail="交付首选，打开时无需安装字体"
+                  recommended={recommendEmbedded}
+                  active={activeFormat === "pptx-embedded"}
+                  disabled={progress != null}
+                  onClick={() => void runDownload("pptx-embedded")}
+                />
+                <TemplateDownloadOption
+                  icon={Presentation}
+                  title="PPT（无内嵌字体）"
+                  detail="文件更小，使用本机已安装字体"
+                  recommended={!recommendEmbedded}
+                  active={activeFormat === "pptx"}
+                  disabled={progress != null}
+                  onClick={() => void runDownload("pptx")}
+                />
+                <TemplateDownloadOption
+                  icon={Archive}
+                  title="ZIP（含字体包）"
+                  detail="包含 PPT、可用字体文件和缺失字体清单"
+                  recommended={false}
+                  active={activeFormat === "zip"}
+                  disabled={progress != null}
+                  onClick={() => void runDownload("zip")}
+                />
+              </div>
+            </section>
           </div>
         </div>
 
@@ -832,24 +857,56 @@ function TemplateDetailDialog({
           <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={progress != null}>
             关闭
           </Button>
-          <Button
-            variant={recommendPpt ? "outline" : "default"}
-            onClick={() => runDownload(true)}
-            disabled={progress != null}
-          >
-            <Download className="mr-1.5 h-4 w-4" />
-            PPT + 字体包{!recommendPpt ? "（推荐）" : ""}
-          </Button>
-          <Button
-            variant={recommendPpt ? "default" : "outline"}
-            onClick={() => runDownload(false)}
-            disabled={progress != null}
-          >
-            <Download className="mr-1.5 h-4 w-4" />
-            仅 PPT{recommendPpt ? "（推荐）" : ""}
-          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function TemplateDownloadOption({
+  icon,
+  title,
+  detail,
+  recommended,
+  active,
+  disabled,
+  onClick,
+}: {
+  icon: React.ElementType<{ className?: string }>;
+  title: string;
+  detail: string;
+  recommended: boolean;
+  active: boolean;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  const Icon = icon;
+  return (
+    <Button
+      variant="outline"
+      className={cn(
+        "h-auto min-h-[68px] justify-start px-3.5 py-3 text-left",
+        active && "border-primary/50 bg-primary/5",
+      )}
+      disabled={disabled}
+      onClick={onClick}
+    >
+      <span className={cn(
+        "flex h-9 w-9 shrink-0 items-center justify-center rounded-md",
+        active || recommended ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground",
+      )}>
+        {active ? <Loader2 className="h-4 w-4 animate-spin" /> : <Icon className="h-4 w-4" />}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex flex-wrap items-center gap-2 text-sm font-medium">
+          {title}
+          {recommended && <Badge variant="success" className="px-1.5 py-0 text-[10px]">推荐</Badge>}
+        </span>
+        <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
+          {active ? "下载中，请稍候…" : detail}
+        </span>
+      </span>
+      <Download className="h-4 w-4 shrink-0 text-muted-foreground" />
+    </Button>
   );
 }

@@ -3,15 +3,16 @@ import { useMutation } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -21,26 +22,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { UserPicker } from "@/components/resource/UserPicker";
 import { TagInput } from "@/components/resource/TagInput";
 import { useMetadataTagOptions } from "@/components/resource/MetadataTagSelect";
+import { UserPicker } from "@/components/resource/UserPicker";
 import {
-  DEFAULT_RESOURCE_SUBJECT,
   MANAGEMENT_SCOPE_OPTIONS,
   VISIBILITY_SCOPE_OPTIONS,
 } from "@/lib/constants";
 import { api } from "@/lib/api";
 import { parseTags } from "@/lib/types";
-import type {
-  Resource,
-  SecrecyLevel,
-  ResourceStatus,
-  VisibilityScope,
-} from "@/lib/types";
-
-/* -------------------------------------------------------------------------- */
-/*  Types                                                                      */
-/* -------------------------------------------------------------------------- */
+import type { Resource, ResourceStatus, VisibilityScope } from "@/lib/types";
 
 export interface BatchEditDialogProps {
   open: boolean;
@@ -50,97 +41,90 @@ export interface BatchEditDialogProps {
   onSuccess: () => void;
 }
 
+type NameMode = "prefix" | "suffix" | "replace";
 type TagMode = "replace" | "append" | "remove";
 
 interface FieldsState {
+  name: {
+    enabled: boolean;
+    mode: NameMode;
+    value: string;
+    search: string;
+  };
   tags: { enabled: boolean; mode: TagMode; values: string[] };
-  subject: { enabled: boolean; value: string };
-  secrecy_level: { enabled: boolean; value: SecrecyLevel };
   status: { enabled: boolean; value: ResourceStatus };
-  visibility_scope: { enabled: boolean; value: VisibilityScope; userIds: number[] };
-  management_scope: { enabled: boolean; value: VisibilityScope; userIds: number[] };
-}
-
-/* -------------------------------------------------------------------------- */
-/*  Helpers                                                                     */
-/* -------------------------------------------------------------------------- */
-
-function defaultFields(): FieldsState {
-  return {
-    tags: { enabled: false, mode: "replace", values: [] },
-    subject: { enabled: false, value: DEFAULT_RESOURCE_SUBJECT },
-    secrecy_level: { enabled: false, value: "" },
-    status: { enabled: false, value: "" },
-    visibility_scope: { enabled: false, value: "public", userIds: [] },
-    management_scope: { enabled: false, value: "private", userIds: [] },
+  visibility_scope: {
+    enabled: boolean;
+    value: VisibilityScope;
+    userIds: number[];
+    userTags: string[];
+  };
+  management_scope: {
+    enabled: boolean;
+    value: VisibilityScope;
+    userIds: number[];
+    userTags: string[];
   };
 }
 
-function computeSummary(resources: Resource[], resourceIds: number[]) {
-  const idSet = new Set(resourceIds);
-  const matched = resources.filter((r) => idSet.has(r.id));
+const NAME_MODE_OPTIONS: Array<{ value: NameMode; label: string }> = [
+  { value: "prefix", label: "添加前缀" },
+  { value: "suffix", label: "添加后缀" },
+  { value: "replace", label: "查找替换" },
+];
 
-  // Tags: count unique
-  const allTags = new Set<string>();
-  matched.forEach((r) => parseTags(r.tags).forEach((t) => allTags.add(t)));
-
-  // Subject distribution
-  const subjectMap = new Map<string, number>();
-  matched.forEach((r) => {
-    const s = r.subject || "(无)";
-    subjectMap.set(s, (subjectMap.get(s) || 0) + 1);
-  });
-
-  // Secrecy distribution
-  const secrecyMap = new Map<string, number>();
-  matched.forEach((r) => {
-    secrecyMap.set(r.secrecy_level, (secrecyMap.get(r.secrecy_level) || 0) + 1);
-  });
-
-  // Status distribution
-  const statusMap = new Map<string, number>();
-  matched.forEach((r) => {
-    statusMap.set(r.status, (statusMap.get(r.status) || 0) + 1);
-  });
-
-  // Visibility distribution
-  const visMap = new Map<string, number>();
-  matched.forEach((r) => {
-    visMap.set(r.visibility_scope, (visMap.get(r.visibility_scope) || 0) + 1);
-  });
-
-  // Management distribution
-  const mgmtMap = new Map<string, number>();
-  matched.forEach((r) => {
-    mgmtMap.set(r.management_scope, (mgmtMap.get(r.management_scope) || 0) + 1);
-  });
-
-  return { matched, allTags, subjectMap, secrecyMap, statusMap, visMap, mgmtMap };
-}
-
-function distributionText(
-  map: Map<string, number>,
-  labelMap: Record<string, string>,
-): string {
-  if (map.size === 0) return "";
-  return Array.from(map.entries())
-    .map(([k, v]) => `${labelMap[k] || k} ${v}`)
-    .join(" / ");
-}
-
-const SECRECY_LABELS: Record<string, string> = {};
-const STATUS_LABELS: Record<string, string> = {};
-const SCOPE_LABELS: Record<string, string> = { public: "公开", partial: "部分", private: "仅自己" };
-
-const TAG_MODE_OPTIONS: { value: TagMode; label: string }[] = [
+const TAG_MODE_OPTIONS: Array<{ value: TagMode; label: string }> = [
   { value: "replace", label: "覆盖" },
   { value: "append", label: "追加" },
   { value: "remove", label: "移除" },
 ];
 
-/* -------------------------------------------------------------------------- */
-/*  Component                                                                  */
-/* -------------------------------------------------------------------------- */
+const SCOPE_LABELS: Record<string, string> = {
+  public: "公开",
+  partial: "部分用户或用户标签",
+  private: "仅自己",
+};
+
+function defaultFields(): FieldsState {
+  return {
+    name: { enabled: false, mode: "prefix", value: "", search: "" },
+    tags: { enabled: false, mode: "replace", values: [] },
+    status: { enabled: false, value: "" },
+    visibility_scope: {
+      enabled: false,
+      value: "public",
+      userIds: [],
+      userTags: [],
+    },
+    management_scope: {
+      enabled: false,
+      value: "private",
+      userIds: [],
+      userTags: [],
+    },
+  };
+}
+
+function countDistribution(values: string[]): Map<string, number> {
+  const result = new Map<string, number>();
+  values.forEach((value) => result.set(value, (result.get(value) || 0) + 1));
+  return result;
+}
+
+function distributionText(
+  distribution: Map<string, number>,
+  labels: Record<string, string> = {},
+): string {
+  return Array.from(distribution.entries())
+    .map(([value, count]) => (labels[value] || value || "未设置") + " " + count + " 项")
+    .join(" / ");
+}
+
+function transformName(name: string, field: FieldsState["name"]): string {
+  if (field.mode === "prefix") return field.value + name;
+  if (field.mode === "suffix") return name + field.value;
+  return field.search ? name.split(field.search).join(field.value) : name;
+}
 
 export function BatchEditDialog({
   open,
@@ -150,63 +134,112 @@ export function BatchEditDialog({
   onSuccess,
 }: BatchEditDialogProps) {
   const [fields, setFields] = React.useState<FieldsState>(defaultFields);
-  const [confirmStep, setConfirmStep] = React.useState(false);
-  const { options: secrecyOptions } = useMetadataTagOptions("secrecy");
   const { options: statusOptions } = useMetadataTagOptions("status");
 
   React.useEffect(() => {
-    if (open) {
-      setFields(defaultFields());
-      setConfirmStep(false);
-    }
+    if (open) setFields(defaultFields());
   }, [open]);
 
   React.useEffect(() => {
-    if (!open) return;
+    if (!open || !statusOptions[0]?.value) return;
     setFields((current) => {
-      const secrecyValue = current.secrecy_level.value || secrecyOptions[0]?.value || "";
-      const statusValue = current.status.value || statusOptions[0]?.value || "";
-      if (secrecyValue === current.secrecy_level.value && statusValue === current.status.value) return current;
+      if (current.status.value) return current;
       return {
         ...current,
-        secrecy_level: { ...current.secrecy_level, value: secrecyValue },
-        status: { ...current.status, value: statusValue },
+        status: { ...current.status, value: statusOptions[0].value },
       };
     });
-  }, [open, secrecyOptions, statusOptions]);
+  }, [open, statusOptions]);
 
-  const summary = React.useMemo(
-    () => computeSummary(resources, resourceIds),
-    [resources, resourceIds],
+  const selectedResources = React.useMemo(() => {
+    const selectedIds = new Set(resourceIds);
+    return resources.filter((resource) => selectedIds.has(resource.id));
+  }, [resourceIds, resources]);
+
+  const currentTagCount = React.useMemo(() => {
+    const tags = new Set<string>();
+    selectedResources.forEach((resource) => {
+      parseTags(resource.tags).forEach((tag) => tags.add(tag));
+    });
+    return tags.size;
+  }, [selectedResources]);
+
+  const statusLabels = React.useMemo(
+    () => Object.fromEntries(statusOptions.map((option) => [option.value, option.label])),
+    [statusOptions],
   );
+  const statusDistribution = React.useMemo(
+    () => countDistribution(selectedResources.map((resource) => resource.status)),
+    [selectedResources],
+  );
+  const visibilityDistribution = React.useMemo(
+    () => countDistribution(selectedResources.map((resource) => resource.visibility_scope)),
+    [selectedResources],
+  );
+  const managementDistribution = React.useMemo(
+    () => countDistribution(selectedResources.map((resource) => resource.management_scope)),
+    [selectedResources],
+  );
+  const namePreviews = React.useMemo(
+    () => selectedResources.slice(0, 3).map((resource) => ({
+      before: resource.name,
+      after: transformName(resource.name, fields.name),
+    })),
+    [fields.name, selectedResources],
+  );
+
+  const updateField = <K extends keyof FieldsState>(
+    key: K,
+    patch: Partial<FieldsState[K]>,
+  ) => {
+    setFields((previous) => ({
+      ...previous,
+      [key]: { ...previous[key], ...patch },
+    }));
+  };
+
+  const enabledFieldLabels = React.useMemo(() => {
+    const labels: string[] = [];
+    if (fields.name.enabled) labels.push("名称");
+    if (fields.tags.enabled) labels.push("标签");
+    if (fields.status.enabled) labels.push("状态");
+    if (fields.visibility_scope.enabled) labels.push("可见范围");
+    if (fields.management_scope.enabled) labels.push("管理范围");
+    return labels;
+  }, [fields]);
 
   const mutation = useMutation({
     mutationFn: async () => {
       const payloadFields: Record<string, unknown> = {};
 
+      if (fields.name.enabled) {
+        payloadFields.name = {
+          mode: fields.name.mode,
+          value: fields.name.value,
+          search: fields.name.search,
+        };
+      }
       if (fields.tags.enabled) {
         payloadFields.tags = { mode: fields.tags.mode, values: fields.tags.values };
       }
-      if (fields.subject.enabled) {
-        payloadFields.subject = fields.subject.value;
-      }
-      if (fields.secrecy_level.enabled) {
-        payloadFields.secrecy_level = fields.secrecy_level.value;
-      }
-      if (fields.status.enabled) {
-        payloadFields.status = fields.status.value;
-      }
+      if (fields.status.enabled) payloadFields.status = fields.status.value;
       if (fields.visibility_scope.enabled) {
         payloadFields.visibility_scope = fields.visibility_scope.value;
-        if (fields.visibility_scope.value === "partial") {
-          payloadFields.visible_user_ids = fields.visibility_scope.userIds;
-        }
+        payloadFields.visible_user_ids = fields.visibility_scope.value === "partial"
+          ? fields.visibility_scope.userIds
+          : [];
+        payloadFields.visible_user_tags = fields.visibility_scope.value === "partial"
+          ? fields.visibility_scope.userTags
+          : [];
       }
       if (fields.management_scope.enabled) {
         payloadFields.management_scope = fields.management_scope.value;
-        if (fields.management_scope.value === "partial") {
-          payloadFields.manage_user_ids = fields.management_scope.userIds;
-        }
+        payloadFields.manage_user_ids = fields.management_scope.value === "partial"
+          ? fields.management_scope.userIds
+          : [];
+        payloadFields.manage_user_tags = fields.management_scope.value === "partial"
+          ? fields.management_scope.userTags
+          : [];
       }
 
       return api("/api/resources/batch", {
@@ -215,375 +248,256 @@ export function BatchEditDialog({
       });
     },
     onSuccess: () => {
-      toast.success("批量编辑成功");
+      toast.success("已更新 " + resourceIds.length + " 项单页素材");
       onSuccess();
       onOpenChange(false);
     },
-    onError: (err: Error) => {
-      toast.error(err.message || "批量编辑失败");
+    onError: (error: Error) => {
+      toast.error(error.message || "批量编辑失败");
     },
   });
 
-  const enabledFields = React.useMemo(() => {
-    const list: string[] = [];
-    if (fields.tags.enabled) list.push("标签");
-    if (fields.subject.enabled) list.push("主体");
-    if (fields.secrecy_level.enabled) list.push("密级");
-    if (fields.status.enabled) list.push("状态");
-    if (fields.visibility_scope.enabled) list.push("可见范围");
-    if (fields.management_scope.enabled) list.push("管理范围");
-    return list;
-  }, [fields]);
-
-  const changeSummaryText = React.useMemo(() => {
-    const parts: string[] = [];
-    if (fields.tags.enabled) {
-      const modeLabel = TAG_MODE_OPTIONS.find((o) => o.value === fields.tags.mode)?.label || "";
-      parts.push(`标签→${modeLabel} ${fields.tags.values.join(", ") || "(空)"}`);
-    }
-    if (fields.subject.enabled) parts.push(`主体→${fields.subject.value || "(空)"}`);
-    if (fields.secrecy_level.enabled)
-      parts.push(`密级→${SECRECY_LABELS[fields.secrecy_level.value] || fields.secrecy_level.value}`);
-    if (fields.status.enabled) parts.push(`状态→${STATUS_LABELS[fields.status.value] || fields.status.value}`);
-    if (fields.visibility_scope.enabled)
-      parts.push(`可见范围→${SCOPE_LABELS[fields.visibility_scope.value]}`);
-    if (fields.management_scope.enabled)
-      parts.push(`管理范围→${SCOPE_LABELS[fields.management_scope.value]}`);
-    return parts.join("；");
-  }, [fields]);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-
-    if (enabledFields.length === 0) {
-      toast.error("请至少选择一个要修改的字段");
+  const handleSubmit = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (enabledFieldLabels.length === 0) {
+      toast.error("请至少启用一项修改");
       return;
     }
-
+    if (fields.name.enabled) {
+      if (fields.name.mode === "replace") {
+        if (!fields.name.search.trim()) {
+          toast.error("请输入要查找的名称内容");
+          return;
+        }
+      } else if (!fields.name.value.trim()) {
+        toast.error(fields.name.mode === "prefix" ? "请输入名称前缀" : "请输入名称后缀");
+        return;
+      }
+    }
+    if (fields.tags.enabled && fields.tags.mode !== "replace" && fields.tags.values.length === 0) {
+      toast.error(fields.tags.mode === "append" ? "请选择要追加的标签" : "请选择要移除的标签");
+      return;
+    }
+    if (fields.status.enabled && !fields.status.value) {
+      toast.error("请选择状态");
+      return;
+    }
     if (
       fields.visibility_scope.enabled &&
       fields.visibility_scope.value === "partial" &&
-      fields.visibility_scope.userIds.length === 0
+      fields.visibility_scope.userIds.length === 0 &&
+      fields.visibility_scope.userTags.length === 0
     ) {
-      toast.error("可见范围为部分时请至少选择一位用户");
+      toast.error("可见范围为部分时，请至少选择一位用户或一个用户标签");
       return;
     }
-
     if (
       fields.management_scope.enabled &&
       fields.management_scope.value === "partial" &&
-      fields.management_scope.userIds.length === 0
+      fields.management_scope.userIds.length === 0 &&
+      fields.management_scope.userTags.length === 0
     ) {
-      toast.error("管理范围为部分时请至少选择一位用户");
+      toast.error("管理范围为部分时，请至少选择一位用户或一个用户标签");
       return;
     }
-
-    if (!confirmStep) {
-      setConfirmStep(true);
-      return;
-    }
-
     mutation.mutate();
-  };
-
-  const updateField = <K extends keyof FieldsState>(
-    key: K,
-    patch: Partial<FieldsState[K]>,
-  ) => {
-    setFields((prev) => ({
-      ...prev,
-      [key]: { ...prev[key], ...patch },
-    }));
-    setConfirmStep(false);
   };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[90vh] max-w-lg flex-col overflow-hidden">
+      <DialogContent className="flex max-h-[92vh] max-w-3xl flex-col overflow-hidden">
         <DialogHeader>
-          <DialogTitle>批量编辑</DialogTitle>
-          <p className="text-sm text-muted-foreground">
-            共选中{" "}
-            <span className="font-semibold text-foreground">{resourceIds.length}</span>{" "}
-            项资源
-          </p>
+          <DialogTitle>批量编辑单页素材</DialogTitle>
+          <DialogDescription>
+            已选择 {resourceIds.length} 项。只启用需要统一修改的内容，未启用的字段保持不变。
+          </DialogDescription>
         </DialogHeader>
 
-        <form
-          onSubmit={handleSubmit}
-          className="flex min-h-0 flex-1 flex-col gap-0 overflow-y-auto"
-        >
-          <div className="divide-y">
-            {/* 标签 */}
-            <FieldRow
-              label="标签"
-              checked={fields.tags.enabled}
-              onCheckedChange={(v) => updateField("tags", { enabled: v })}
-              summary={
-                fields.tags.enabled && summary.allTags.size > 0
-                  ? `当前共 ${summary.allTags.size} 种不同标签`
-                  : undefined
-              }
+        <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
+          <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto px-0.5 pb-1">
+            <EditSection
+              id="batch-name"
+              title="名称"
+              description="按原名称批量添加前后缀，或查找并替换指定内容"
+              checked={fields.name.enabled}
+              onCheckedChange={(enabled) => updateField("name", { enabled })}
             >
-              {fields.tags.enabled && (
-                <div className="flex flex-col gap-2">
-                  <div className="flex gap-0.5 rounded-md bg-muted p-0.5">
-                    {TAG_MODE_OPTIONS.map((opt) => (
-                      <button
-                        key={opt.value}
-                        type="button"
-                        className={`flex-1 rounded px-2 py-1 text-xs font-medium transition-colors select-none ${
-                          fields.tags.mode === opt.value
-                            ? "bg-background text-foreground shadow-sm"
-                            : "text-muted-foreground hover:text-foreground"
-                        }`}
-                        onClick={() => updateField("tags", { mode: opt.value })}
-                      >
-                        {opt.label}
-                      </button>
-                    ))}
+              <ModeSelector
+                options={NAME_MODE_OPTIONS}
+                value={fields.name.mode}
+                onChange={(mode) => updateField("name", { mode })}
+              />
+              {fields.name.mode === "replace" ? (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="batch-name-search">查找内容</Label>
+                    <Input
+                      id="batch-name-search"
+                      value={fields.name.search}
+                      onChange={(event) => updateField("name", { search: event.target.value })}
+                      placeholder="例如：旧版"
+                    />
                   </div>
-                  <TagInput
-                    value={fields.tags.values}
-                    onChange={(next) => updateField("tags", { values: next })}
-                    placeholder="选择或输入标签"
-                  />
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="batch-name-value">替换为</Label>
+                    <Input
+                      id="batch-name-value"
+                      value={fields.name.value}
+                      onChange={(event) => updateField("name", { value: event.target.value })}
+                      placeholder="留空表示删除查找内容"
+                    />
+                  </div>
                 </div>
-              )}
-            </FieldRow>
-
-            {/* 主体 */}
-            <FieldRow
-              label="主体"
-              checked={fields.subject.enabled}
-              onCheckedChange={(v) => updateField("subject", { enabled: v })}
-              summary={
-                fields.subject.enabled && summary.subjectMap.size > 0
-                  ? summary.subjectMap.size === 1
-                    ? `统一为 ${Array.from(summary.subjectMap.keys())[0]}`
-                    : Array.from(summary.subjectMap.entries())
-                        .slice(0, 3)
-                        .map(([k, v]) => `${k}（${v}项）`)
-                        .join("、")
-                  : undefined
-              }
-            >
-              {fields.subject.enabled && (
-                <>
+              ) : (
+                <div className="grid gap-1.5">
+                  <Label htmlFor="batch-name-value">
+                    {fields.name.mode === "prefix" ? "名称前缀" : "名称后缀"}
+                  </Label>
                   <Input
-                    value={fields.subject.value}
-                    onChange={(e) => updateField("subject", { value: e.target.value })}
-                    list="batch-subject-list"
-                    className="h-8"
+                    id="batch-name-value"
+                    value={fields.name.value}
+                    onChange={(event) => updateField("name", { value: event.target.value })}
+                    placeholder={fields.name.mode === "prefix" ? "例如：[2026] " : "例如：- 已审核"}
                   />
-                  <datalist id="batch-subject-list">
-                    <option value={DEFAULT_RESOURCE_SUBJECT} />
-                  </datalist>
-                </>
+                </div>
               )}
-            </FieldRow>
+              {namePreviews.length > 0 && (
+                <div className="grid gap-1.5 rounded-md border bg-background p-3 text-xs">
+                  <span className="font-medium text-foreground">名称预览</span>
+                  {namePreviews.map((item, index) => (
+                    <div key={item.before + "-" + index} className="grid gap-1 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:items-center">
+                      <span className="truncate text-muted-foreground" title={item.before}>{item.before}</span>
+                      <span className="hidden text-muted-foreground sm:block">→</span>
+                      <span className="truncate text-foreground" title={item.after}>{item.after || "（空名称，无效）"}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </EditSection>
 
-            {/* 密级 */}
-            <FieldRow
-              label="密级"
-              checked={fields.secrecy_level.enabled}
-              onCheckedChange={(v) => updateField("secrecy_level", { enabled: v })}
-              summary={
-                fields.secrecy_level.enabled && summary.secrecyMap.size > 0
-                  ? distributionText(summary.secrecyMap, SECRECY_LABELS)
-                  : undefined
-              }
+            <EditSection
+              id="batch-tags"
+              title="分类标签"
+              description={currentTagCount ? "当前选中素材共包含 " + currentTagCount + " 种标签" : "覆盖可用于清空全部标签"}
+              checked={fields.tags.enabled}
+              onCheckedChange={(enabled) => updateField("tags", { enabled })}
             >
-              {fields.secrecy_level.enabled && (
-                <Select
-                  value={fields.secrecy_level.value}
-                  onValueChange={(v) =>
-                    updateField("secrecy_level", { value: v as SecrecyLevel })
-                  }
-                >
-                  <SelectTrigger className="h-8">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {secrecyOptions.map((opt) => (
-                      <SelectItem key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+              <ModeSelector
+                options={TAG_MODE_OPTIONS}
+                value={fields.tags.mode}
+                onChange={(mode) => updateField("tags", { mode })}
+              />
+              <TagInput
+                value={fields.tags.values}
+                onChange={(values) => updateField("tags", { values })}
+                placeholder={fields.tags.mode === "remove" ? "选择要移除的标签" : "选择或输入标签"}
+              />
+              {fields.tags.mode === "replace" && fields.tags.values.length === 0 && (
+                <p className="text-xs text-muted-foreground">保持为空将清空所选素材的全部标签。</p>
               )}
-            </FieldRow>
+            </EditSection>
 
-            {/* 状态 */}
-            <FieldRow
-              label="状态"
+            <EditSection
+              id="batch-status"
+              title="状态"
+              description={distributionText(statusDistribution, statusLabels) || "统一修改素材状态"}
               checked={fields.status.enabled}
-              onCheckedChange={(v) => updateField("status", { enabled: v })}
-              summary={
-                fields.status.enabled && summary.statusMap.size > 0
-                  ? distributionText(summary.statusMap, STATUS_LABELS)
-                  : undefined
-              }
+              onCheckedChange={(enabled) => updateField("status", { enabled })}
             >
-              {fields.status.enabled && (
-                <Select
-                  value={fields.status.value}
-                  onValueChange={(v) =>
-                    updateField("status", { value: v as ResourceStatus })
-                  }
-                >
-                  <SelectTrigger className="h-8">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {statusOptions.map((opt) => (
-                      <SelectItem key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-            </FieldRow>
+              <Select value={fields.status.value} onValueChange={(value) => updateField("status", { value })}>
+                <SelectTrigger><SelectValue placeholder="请选择状态" /></SelectTrigger>
+                <SelectContent>
+                  {statusOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </EditSection>
 
-            {/* 可见范围 */}
-            <FieldRow
-              label="可见范围"
+            <EditSection
+              id="batch-visibility"
+              title="可见范围"
+              description={distributionText(visibilityDistribution, SCOPE_LABELS) || "设置谁可以查看这些素材"}
               checked={fields.visibility_scope.enabled}
-              onCheckedChange={(v) => updateField("visibility_scope", { enabled: v })}
-              summary={
-                fields.visibility_scope.enabled && summary.visMap.size > 0
-                  ? distributionText(summary.visMap, SCOPE_LABELS)
-                  : undefined
-              }
+              onCheckedChange={(enabled) => updateField("visibility_scope", { enabled })}
             >
-              {fields.visibility_scope.enabled && (
-                <div className="flex flex-col gap-2">
-                  <Select
-                    value={fields.visibility_scope.value}
-                    onValueChange={(v) =>
-                      updateField("visibility_scope", { value: v as VisibilityScope })
-                    }
-                  >
-                    <SelectTrigger className="h-8">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {VISIBILITY_SCOPE_OPTIONS.map((opt) => (
-                        <SelectItem key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {fields.visibility_scope.value === "partial" && (
-                    <div className="ml-4">
-                      <Label className="mb-1 text-xs text-muted-foreground">
-                        可见用户（必选至少 1 人）
-                      </Label>
-                      <UserPicker
-                        value={fields.visibility_scope.userIds}
-                        onChange={(ids) =>
-                          updateField("visibility_scope", { userIds: ids })
-                        }
-                      />
-                    </div>
-                  )}
+              <Select
+                value={fields.visibility_scope.value}
+                onValueChange={(value) => updateField("visibility_scope", {
+                  value: value as VisibilityScope,
+                  ...(value === "partial" ? {} : { userIds: [], userTags: [] }),
+                })}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {VISIBILITY_SCOPE_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {fields.visibility_scope.value === "partial" && (
+                <div className="grid gap-1.5">
+                  <Label className="text-xs text-muted-foreground">可见用户或用户标签（至少选 1 项）</Label>
+                  <UserPicker
+                    value={fields.visibility_scope.userIds}
+                    onChange={(userIds) => updateField("visibility_scope", { userIds })}
+                    tagValue={fields.visibility_scope.userTags}
+                    onTagChange={(userTags) => updateField("visibility_scope", { userTags })}
+                    allowTagSelection
+                  />
                 </div>
               )}
-            </FieldRow>
+            </EditSection>
 
-            {/* 管理范围 */}
-            <FieldRow
-              label="管理范围"
+            <EditSection
+              id="batch-management"
+              title="管理范围"
+              description={distributionText(managementDistribution, SCOPE_LABELS) || "设置谁可以维护这些素材"}
               checked={fields.management_scope.enabled}
-              onCheckedChange={(v) => updateField("management_scope", { enabled: v })}
-              summary={
-                fields.management_scope.enabled && summary.mgmtMap.size > 0
-                  ? distributionText(summary.mgmtMap, SCOPE_LABELS)
-                  : undefined
-              }
+              onCheckedChange={(enabled) => updateField("management_scope", { enabled })}
             >
-              {fields.management_scope.enabled && (
-                <div className="flex flex-col gap-2">
-                  <Select
-                    value={fields.management_scope.value}
-                    onValueChange={(v) =>
-                      updateField("management_scope", { value: v as VisibilityScope })
-                    }
-                  >
-                    <SelectTrigger className="h-8">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {MANAGEMENT_SCOPE_OPTIONS.map((opt) => (
-                        <SelectItem key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {fields.management_scope.value === "partial" && (
-                    <div className="ml-4">
-                      <Label className="mb-1 text-xs text-muted-foreground">
-                        可管理用户（必选至少 1 人）
-                      </Label>
-                      <UserPicker
-                        value={fields.management_scope.userIds}
-                        onChange={(ids) =>
-                          updateField("management_scope", { userIds: ids })
-                        }
-                      />
-                    </div>
-                  )}
+              <Select
+                value={fields.management_scope.value}
+                onValueChange={(value) => updateField("management_scope", {
+                  value: value as VisibilityScope,
+                  ...(value === "partial" ? {} : { userIds: [], userTags: [] }),
+                })}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {MANAGEMENT_SCOPE_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {fields.management_scope.value === "partial" && (
+                <div className="grid gap-1.5">
+                  <Label className="text-xs text-muted-foreground">可管理用户或用户标签（至少选 1 项）</Label>
+                  <UserPicker
+                    value={fields.management_scope.userIds}
+                    onChange={(userIds) => updateField("management_scope", { userIds })}
+                    tagValue={fields.management_scope.userTags}
+                    onTagChange={(userTags) => updateField("management_scope", { userTags })}
+                    allowTagSelection
+                  />
                 </div>
               )}
-            </FieldRow>
+            </EditSection>
           </div>
 
-          {/* 确认摘要 */}
-          {confirmStep && (
-            <div className="mx-1 mt-3 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
-              将修改 {resourceIds.length} 项资源的 {enabledFields.length} 个字段：
-              {changeSummaryText}
-            </div>
-          )}
-
-          <DialogFooter className="mt-3 border-t pt-3">
-            {confirmStep ? (
-              <>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setConfirmStep(false)}
-                  disabled={mutation.isPending}
-                >
-                  返回修改
-                </Button>
-                <Button type="submit" size="sm" disabled={mutation.isPending}>
-                  {mutation.isPending && (
-                    <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                  )}
-                  确认执行
-                </Button>
-              </>
-            ) : (
-              <>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => onOpenChange(false)}
-                >
-                  取消
-                </Button>
-                <Button type="submit" size="sm">
-                  确认修改
-                </Button>
-              </>
-            )}
+          <DialogFooter className="mt-4 border-t pt-3 sm:items-center sm:justify-between">
+            <p className="mr-auto text-xs text-muted-foreground">
+              {enabledFieldLabels.length > 0
+                ? "将修改：" + enabledFieldLabels.join("、")
+                : "尚未启用任何修改项"}
+            </p>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={mutation.isPending}>
+              取消
+            </Button>
+            <Button type="submit" disabled={mutation.isPending}>
+              {mutation.isPending && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+              应用到 {resourceIds.length} 项
+            </Button>
           </DialogFooter>
         </form>
       </DialogContent>
@@ -591,35 +505,65 @@ export function BatchEditDialog({
   );
 }
 
-/* -------------------------------------------------------------------------- */
-/*  FieldRow helper                                                            */
-/* -------------------------------------------------------------------------- */
-
-interface FieldRowProps {
-  label: string;
-  checked: boolean;
-  onCheckedChange: (v: boolean) => void;
-  summary?: string;
-  children?: React.ReactNode;
+function ModeSelector<T extends string>({
+  options,
+  value,
+  onChange,
+}: {
+  options: Array<{ value: T; label: string }>;
+  value: T;
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div className="flex flex-wrap gap-1 rounded-md bg-muted p-1">
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          className={"rounded px-3 py-1.5 text-xs font-medium transition-colors " + (
+            value === option.value
+              ? "bg-background text-foreground shadow-sm"
+              : "text-muted-foreground hover:text-foreground"
+          )}
+          onClick={() => onChange(option.value)}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
 }
 
-function FieldRow({ label, checked, onCheckedChange, summary, children }: FieldRowProps) {
+function EditSection({
+  id,
+  title,
+  description,
+  checked,
+  onCheckedChange,
+  children,
+}: {
+  id: string;
+  title: string;
+  description: string;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+  children: React.ReactNode;
+}) {
   return (
-    <div className="flex items-start gap-3 py-3 first:pt-0 last:pb-0">
-      <Checkbox
-        checked={checked}
-        onCheckedChange={(v) => onCheckedChange(v === true)}
-        className="mt-0.5"
-      />
-      <div className="min-w-[60px] shrink-0 pt-0.5">
-        <Label className="text-sm font-medium">{label}</Label>
-      </div>
-      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-        {children}
-        {summary && (
-          <p className="text-[11px] leading-tight text-muted-foreground">{summary}</p>
-        )}
-      </div>
-    </div>
+    <section className={"grid gap-3 rounded-lg border p-4 transition-colors " + (checked ? "bg-muted/20" : "bg-background")}>
+      <header className="flex items-start gap-3">
+        <Checkbox
+          id={id}
+          checked={checked}
+          onCheckedChange={(value) => onCheckedChange(value === true)}
+          className="mt-0.5"
+        />
+        <Label htmlFor={id} className="grid flex-1 cursor-pointer gap-0.5">
+          <span className="text-sm font-medium text-foreground">{title}</span>
+          <span className="text-xs font-normal text-muted-foreground">{description}</span>
+        </Label>
+      </header>
+      {checked && <div className="grid gap-3 pl-7">{children}</div>}
+    </section>
   );
 }

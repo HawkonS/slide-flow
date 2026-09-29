@@ -26,7 +26,6 @@ from app.services.common import (
     _validate_required_scope,
     _validate_resource_status,
     _validate_resource_subject,
-    _validate_secrecy,
 )
 from app.services.files import (
     _compress_hd_image,
@@ -64,7 +63,7 @@ from app.services.tasks.split import (
     _execute_split_task,
 )
 from app.services.templates import (
-    _validate_standalone_template_subject,
+    _validate_template_subject,
     _validate_standalone_template_type,
     _validate_template_platform,
     _validate_template_ratio,
@@ -105,14 +104,15 @@ def list_tasks(
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
-    """获取任务列表，支持 status / task_type / owner_id 过滤、追踪码搜索及分页。
+    """获取任务列表，支持 status / task_type / owner_id 过滤、关键词搜索及分页。
 
     权限规则：
     - 管理员：可传任意 owner_id（不传则返回所有用户的任务）
     - 非管理员：忽略 owner_id 参数，强制只看自己的任务
 
     分页：page 从 1 开始，page_size 默认 20、上限 100。
-    搜索：search 仅在 task_type=download 时对 params.track_code 字段做模糊匹配。
+    搜索：下载任务搜索追踪码、放映名称和文件名；上传任务搜索系列、名称前缀、
+    文件名、主体和标签。
     """
     where_clauses: list[str] = []
     params_list: list[Any] = []
@@ -132,11 +132,36 @@ def list_tasks(
         where_clauses.append("task_type = ?")
         params_list.append(task_type)
 
-    # 追踪码搜索：仅在筛选下载任务时生效（上传任务无 track_code 字段）
+    # 任务参数保存在 JSON 中，按任务类型搜索用户实际可见的业务字段。
     search_kw = (search or "").strip()
-    if search_kw and task_type == "download":
-        where_clauses.append("json_extract(params, '$.track_code') LIKE ?")
-        params_list.append(f"%{search_kw}%")
+    if search_kw:
+        search_value = f"%{search_kw}%"
+        if task_type == "download":
+            search_fields = (
+                "$.track_code",
+                "$.show_name",
+                "$.file_name",
+            )
+        elif task_type == "batch_split_import":
+            search_fields = (
+                "$.series",
+                "$.name_prefix",
+                "$.file_name",
+                "$.subject",
+                "$.tags",
+            )
+        else:
+            search_fields = ()
+        if search_fields:
+            where_clauses.append(
+                "("
+                + " OR ".join(
+                    "json_extract(params, ?) LIKE ?" for _ in search_fields
+                )
+                + ")"
+            )
+            for field in search_fields:
+                params_list.extend((field, search_value))
 
     where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
@@ -180,7 +205,6 @@ async def create_split_import_task(
     name_prefix: str = Form(...),
     subject: str = Form(DEFAULT_RESOURCE_SUBJECT),
     tags: str = Form(""),
-    secrecy_level: str = Form(""),
     status: str = Form(""),
     visibility_scope: str = Form(""),
     visible_user_ids: str = Form(""),
@@ -213,7 +237,6 @@ async def create_split_import_task(
             name_prefix=name_prefix,
             subject=subject,
             tags=tags,
-            secrecy_level=secrecy_level,
             status=status,
             visibility_scope=visibility_scope,
             visible_user_ids=visible_user_ids,
@@ -241,7 +264,6 @@ async def create_split_import_task(
         raise HTTPException(400, "权限范围数据过长，请减少选择项后重试")
     visibility_scope = _validate_required_scope(visibility_scope, "可见范围")
     management_scope = _validate_required_scope(management_scope, "管理范围")
-    secrecy_level = _validate_secrecy(secrecy_level)
     status = _validate_resource_status(status)
     subject = _validate_resource_subject(subject, allow_empty=True)
 
@@ -288,7 +310,6 @@ async def create_split_import_task(
         "name_prefix": name_prefix,
         "subject": subject,
         "tags": tags,
-        "secrecy_level": secrecy_level,
         "visibility_scope": visibility_scope,
         "visible_user_ids": visible_user_ids,
         "visible_user_tags": visible_user_tags,
@@ -359,7 +380,6 @@ async def create_resource_import_task(
     name_prefix: str = Form(...),
     subject: str = Form(DEFAULT_RESOURCE_SUBJECT),
     tags: str = Form(""),
-    secrecy_level: str = Form(""),
     status: str = Form(""),
     visibility_scope: str = Form(""),
     visible_user_ids: str = Form(""),
@@ -390,19 +410,17 @@ async def create_resource_import_task(
         if not is_admin(user):
             raise HTTPException(403, "只有管理员可以导入标准模板")
         series = _validate_template_series(series)
-        subject = _validate_standalone_template_subject(subject)
+        subject = _validate_template_subject(db, subject)
         platform = _validate_template_platform(platform)
         ratio = _validate_template_ratio(ratio)
         template_type = _validate_standalone_template_type(template_type)
         # 任务底层仍共用单页素材的耐久化渲染链路，这两项仅是兼容参数。
         name_prefix = series
-        secrecy_level = ""
         status = ""
         tags = ""
         remark_html = ""
     else:
         subject = _validate_resource_subject(subject, allow_empty=True)
-        secrecy_level = _validate_secrecy(secrecy_level)
         status = _validate_resource_status(status)
     visibility_scope = _validate_required_scope(visibility_scope, "可见范围")
     management_scope = _validate_required_scope(management_scope, "管理范围")
@@ -422,7 +440,6 @@ async def create_resource_import_task(
         "ratio": ratio,
         "template_type": template_type,
         "tags": tags,
-        "secrecy_level": secrecy_level,
         "status": status,
         "visibility_scope": visibility_scope,
         "visible_user_ids": visible_user_ids,

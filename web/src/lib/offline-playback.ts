@@ -1,156 +1,49 @@
-import { getDirectoryHandle, ensurePermission } from './offline-cache'
-
-export interface OfflineShowInfo {
-  format_version: 2
-  id: number
-  name: string
-  version_no: number
-  slide_count: number
-  resources: Array<{
-    id: number
-    name: string
-    version_no: number
-    slide_index: number
-    file: string
-    thumb_file: string
-    common_remark_html: string
-    personal_remark_html: string
-    show_remark_html: string
-  }>
-}
+import { getCachedAsset, getCachedShow, pinCachedShow, type CachedShow } from './pwa-cache';
+import { PlaybackAssets } from './playback-assets';
+import type { Show } from './types';
 
 export interface OfflineSlideData {
-  showInfo: OfflineShowInfo
-  slideUrls: string[]        // 懒填充，'' 表示尚未加载
-  thumbUrls: string[]        // 预加载的缩略图（文件小，启动时全部加载）
-  /** 按需加载指定索引的幻灯片大图，返回 blob URL 或 null */
-  loadSlide(index: number): Promise<string | null>
-  /** 后台预加载多个索引的幻灯片（fire-and-forget） */
-  preloadSlides(indices: number[]): void
-  /** 释放所有 blob URL */
-  revokeAll(): void
+  showInfo: CachedShow;
+  assets: PlaybackAssets;
+  loadSlide(index: number): Promise<string>;
+  revokeAll(): void;
 }
 
-/**
- * 从本地缓存文件夹读取 show 数据。
- * - 缩略图（thumbUrls）全部预加载（文件小，640×360 JPEG）
- * - 幻灯片大图（slideUrls）采用懒加载，仅首页立即加载
- * - 调用 loadSlide / preloadSlides 按需加载其余页面
- */
-export async function loadOfflineShowData(showId: string | number): Promise<OfflineSlideData | null> {
-  try {
-    const handle = await getDirectoryHandle()
-    if (!handle) return null
-
-    const granted = await ensurePermission(handle)
-    if (!granted) return null
-
-    // 读取 info.js
-    const showsDir = await handle.getDirectoryHandle('shows')
-    const showDir = await showsDir.getDirectoryHandle(String(showId))
-    const infoFile = await showDir.getFileHandle('info.js')
-    const infoText = await (await infoFile.getFile()).text()
-
-    // 解析 JSONP: "window.__SHOW_INFO = {...};"
-    const jsonStr = infoText.replace(/^window\.__SHOW_INFO\s*=\s*/, '').replace(/;\s*$/, '')
-    const showInfo = JSON.parse(jsonStr) as OfflineShowInfo
-    if (
-      showInfo.format_version !== 2 ||
-      !Array.isArray(showInfo.resources) ||
-      showInfo.resources.some(resource => !resource.file || !resource.thumb_file)
-    ) {
-      return null
-    }
-
-    // 获取 slides 目录句柄（后续 loadSlide 需要）
-    const slidesDir = await showDir.getDirectoryHandle('slides')
-
-    const slideUrls: string[] = new Array<string>(showInfo.resources.length).fill('')
-    const thumbUrls: string[] = new Array<string>(showInfo.resources.length).fill('')
-
-    // 预加载所有缩略图（缓存包保证每个资源都有 thumb_file）。
-    const loadOneThumb = async (idx: number): Promise<void> => {
-      const resource = showInfo.resources[idx]
-      const thumbHandle = await slidesDir.getFileHandle(resource.thumb_file)
-      const thumbFile = await thumbHandle.getFile()
-      const thumbBlob = new Blob([await thumbFile.arrayBuffer()], { type: 'image/jpeg' })
-      thumbUrls[idx] = URL.createObjectURL(thumbBlob)
-    }
-
-    // 限制并发，避免一次性把所有 PNG 解码到内存
-    const CONCURRENCY = 4
-    let nextIdx = 0
-    await Promise.all(
-      Array.from({ length: CONCURRENCY }, async () => {
-        while (true) {
-          const i = nextIdx++
-          if (i >= showInfo.resources.length) return
-          await loadOneThumb(i)
-        }
-      })
-    )
-
-    // 立即加载首页大图
-    const firstRes = showInfo.resources[0]
-    if (firstRes) {
-      try {
-        const fileHandle = await slidesDir.getFileHandle(firstRes.file)
-        const file = await fileHandle.getFile()
-        const blob = new Blob([await file.arrayBuffer()], { type: 'image/png' })
-        slideUrls[0] = URL.createObjectURL(blob)
-      } catch {
-        // ignore
-      }
-    }
-
-    return {
-      showInfo,
-      slideUrls,
-      thumbUrls,
-      loadSlide: async (index: number): Promise<string | null> => {
-        if (index < 0 || index >= showInfo.resources.length) return null
-        if (slideUrls[index]) return slideUrls[index] // 已加载
-
-        try {
-          const resource = showInfo.resources[index]
-          const fileHandle = await slidesDir.getFileHandle(resource.file)
-          const file = await fileHandle.getFile()
-          const blob = new Blob([await file.arrayBuffer()], { type: 'image/png' })
-          const url = URL.createObjectURL(blob)
-          slideUrls[index] = url
-          return url
-        } catch {
-          return null
-        }
-      },
-      preloadSlides: (indices: number[]): void => {
-        for (const idx of indices) {
-          if (idx >= 0 && idx < showInfo.resources.length && !slideUrls[idx]) {
-            const resource = showInfo.resources[idx]
-            slidesDir.getFileHandle(resource.file)
-              .then(fh => fh.getFile())
-              .then(async file => {
-                const blob = new Blob([await file.arrayBuffer()], { type: 'image/png' })
-                slideUrls[idx] = URL.createObjectURL(blob)
-              })
-              .catch(() => { /* ignore */ })
-          }
-        }
-      },
-      revokeAll: (): void => {
-        for (const url of slideUrls) { if (url) URL.revokeObjectURL(url) }
-        for (const url of thumbUrls) { if (url) URL.revokeObjectURL(url) }
-      },
-    }
-  } catch {
-    return null
-  }
+/** Reads authenticated PWA packages; never opens legacy directory/JSONP exports. */
+export async function loadOfflineShowData(showId: string | number, packageId?: string): Promise<OfflineSlideData> {
+  const showInfo = await getCachedShow(Number(showId), packageId);
+  const release = await pinCachedShow(showInfo.package_id);
+  const assets = new PlaybackAssets((index, kind) => getCachedAsset(showInfo.package_id, index, kind));
+  let released = false;
+  return {
+    showInfo, assets,
+    async loadSlide(index) {
+      await getCachedShow(Number(showId), showInfo.package_id);
+      return assets.load(index, 'image', true);
+    },
+    revokeAll() {
+      assets.dispose();
+      if (!released) { released = true; release(); }
+    },
+  };
 }
 
-/**
- * 检查 URL 是否为离线模式
- */
+export function cachedPlaybackShow(manifest: CachedShow): Show {
+  return {
+    id: manifest.show_id, name: manifest.name, version_no: manifest.version_no,
+    series_id: manifest.series_id, updated_at: manifest.updated_at,
+    subject: manifest.subject, tags: manifest.tags.join(','), status: manifest.status,
+    owner_id: manifest.user_id, owner: null, visibility_scope: 'private',
+    management_scope: 'private', is_standard: false, can_manage: false,
+    has_other_versions: false, created_at: manifest.issued_at,
+    resources: manifest.resources.map(resource => ({
+      id: resource.id, name: resource.name, accessible: true,
+      hidden: resource.hidden, version_no: resource.version_no,
+      latest_version_no: resource.version_no, preview_url: null, original_preview_url: null,
+    })),
+  };
+}
+
 export function isOfflineMode(): boolean {
-  const params = new URLSearchParams(window.location.search)
-  return params.get('offline') === 'true'
+  return new URLSearchParams(window.location.search).get('offline') === 'true';
 }

@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { PageHeader } from "@/components/common/PageHeader";
 
 interface ConfigItem {
   value: string;
@@ -173,15 +174,14 @@ export function AdminConfigPage() {
 
   return (
     <div className="page-shell">
-      {/* 页头 */}
-      <header className="flex items-center justify-between gap-4">
-        <h1 className="page-title">配置管理</h1>
-        {dirtyKeys.length > 0 && (
+      <PageHeader
+        title="配置管理"
+        titleExtra={dirtyKeys.length > 0 ? (
           <span className="page-count bg-primary-weak text-foreground">
             已修改 {dirtyKeys.length} 项
           </span>
-        )}
-      </header>
+        ) : null}
+      />
 
       <Tabs defaultValue={data.groups[0]?.key} className="w-full">
         <TabsList className="h-auto flex-wrap justify-start gap-1 bg-muted/60 p-1">

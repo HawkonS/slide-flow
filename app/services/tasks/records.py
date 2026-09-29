@@ -22,7 +22,6 @@ _TASK_PARAMS_PUBLIC_KEYS = (
     "ratio",
     "template_type",
     "tags",
-    "secrecy_level",
     "visibility_scope",
     "visible_user_ids",
     "visible_user_tags",

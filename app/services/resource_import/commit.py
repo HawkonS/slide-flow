@@ -14,7 +14,6 @@ from app.services.common import (
     _validate_resource_status,
     _validate_resource_subject,
     _validate_required_scope,
-    _validate_secrecy,
 )
 from app.services.files import _delete_resource_files, persist_asset
 from app.services.resource_import.limits import (
@@ -39,6 +38,7 @@ from app.services.resources import (
     _set_scope_users,
     _version_row,
 )
+from app.services.tagging import set_entity_tags
 from fastapi import HTTPException
 from pathlib import Path
 from typing import Any
@@ -187,7 +187,6 @@ def _commit_resource_import_sync(
         raise HTTPException(400, f"名称前缀不能超过 {RESOURCE_IMPORT_MAX_NAME_LENGTH} 个字符且不能包含控制字符")
     subject = _validate_resource_subject(str(payload.get("subject", DEFAULT_RESOURCE_SUBJECT)), allow_empty=True)
     tags = str(payload.get("tags", ""))
-    secrecy_level = _validate_secrecy(str(payload.get("secrecy_level", "")))
     status = _validate_resource_status(str(payload.get("status", "")))
     visibility_scope = _validate_required_scope(payload.get("visibility_scope"), "可见范围")
     management_scope = _validate_required_scope(payload.get("management_scope"), "管理范围")
@@ -232,6 +231,10 @@ def _commit_resource_import_sync(
         image_paths = [_resource_import_file(session, p) for p in session.get("image_paths", [])]
         if not image_paths:
             image_paths = [_resource_import_file(session, p) for p in session.get("preview_paths", [])]
+        # Keep enough precision to distinguish two batches committed in the
+        # same second while retaining one shared timestamp per batch.
+        batch_ts = now_iso(timespec="milliseconds")
+        name_width = max(2, len(str(len(split_files))))
         for index, split_ppt in enumerate(split_files, start=1):
             # split_ppt and the reviewed PNG are temporary working files. They
             # are uploaded directly; no persistent local asset directory is
@@ -247,17 +250,25 @@ def _commit_resource_import_sync(
             png_ref = persist_asset(png_path, "resources/png") if png_path else None
             if png_ref:
                 uploaded_refs.append(png_ref)
-            ts = now_iso()
             db.execute(
                 """INSERT INTO resources (detail_token, name, owner_id, subject, tags, status,
                    visibility_scope, management_scope, secrecy_level, current_version,
                    updated_by, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
-                (new_resource_detail_token(), f"{name_prefix}_{index:02d}", user["id"], subject, tags, status,
-                 visibility_scope, management_scope, secrecy_level, user["id"], ts, ts),
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', 1, ?, ?, ?)""",
+                (new_resource_detail_token(), f"{name_prefix}_{index:0{name_width}d}", user["id"], subject, tags, status,
+                 visibility_scope, management_scope, user["id"], batch_ts, batch_ts),
             )
             resource_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
             resource_ids.append(resource_id)
+            set_entity_tags(
+                db,
+                relation_table="resource_tags",
+                entity_column="resource_id",
+                entity_id=resource_id,
+                names=tags,
+                cache_table="resources",
+                created_by=int(user["id"]),
+            )
             _set_scope_users(db, "resource_visibility", resource_id, [int(x) for x in visible_user_ids])
             _set_scope_users(db, "resource_management", resource_id, [int(x) for x in manage_user_ids])
             _set_scope_tags(db, "resource_visibility_tags", resource_id, visible_user_tags)

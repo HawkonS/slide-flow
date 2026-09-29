@@ -40,7 +40,7 @@ interface ShowDownloadDialogProps {
 }
 
 /** 异步下载创建接口契约 */
-type DownloadType = "pdf" | "pptx_images" | "pptx" | "pptx_fonts" | "pptx_pages";
+type DownloadType = "pdf" | "pptx_images" | "pptx" | "pptx_embedded" | "pptx_fonts";
 
 interface CreateDownloadResponse {
   task_id: number;
@@ -49,11 +49,11 @@ interface CreateDownloadResponse {
 }
 
 const DOWNLOAD_TYPE_LABEL: Record<DownloadType, string> = {
-  pdf: "PDF 文档",
-  pptx_images: "纯图 PPT",
-  pptx: "合并 PPT",
-  pptx_fonts: "PPT + 字体包",
-  pptx_pages: "逐页 PPT",
+  pdf: "PDF（纯图）",
+  pptx_images: "PPT（纯图）",
+  pptx: "PPT（无内嵌字体）",
+  pptx_embedded: "PPT（内嵌字体）",
+  pptx_fonts: "ZIP（PPT + 字体包）",
 };
 
 export function ShowDownloadDialog({ open, onOpenChange, show }: ShowDownloadDialogProps) {
@@ -114,26 +114,27 @@ export function ShowDownloadDialog({ open, onOpenChange, show }: ShowDownloadDia
   const accessibleCount = show.resources.filter((r) => r.accessible).length;
   const isBusy = submitting != null;
 
-  const submitDownload = async (downloadType: DownloadType, withFonts: boolean) => {
+  const submitDownload = async (downloadType: DownloadType) => {
     if (!show) return;
-    // UI loading 状态用 pptx_fonts 区分两个 pptx 按钮，但实际请求 download_type 仍为 pptx
-    const submittingKey: DownloadType =
-      withFonts && downloadType === "pptx" ? "pptx_fonts" : downloadType;
-    const labelKey: DownloadType = submittingKey;
+    const submittingKey = downloadType;
+    const requestType = downloadType === "pptx_embedded" || downloadType === "pptx_fonts" ? "pptx" : downloadType;
+    const withFonts = downloadType === "pptx_fonts";
+    const embedFonts = downloadType === "pptx_embedded";
     setSubmitting(submittingKey);
     try {
       const res = await api<CreateDownloadResponse>("/api/downloads/create", {
         method: "POST",
         json: {
           show_id: show.id,
-          download_type: downloadType,
+          download_type: requestType,
           watermark: watermarkText,
           with_fonts: withFonts,
+          embed_fonts: embedFonts,
         },
       });
       addTask(res.task_id, show.name, res.track_code);
       toast.success("下载任务已提交", {
-        description: `${show.name} · ${DOWNLOAD_TYPE_LABEL[labelKey]}`,
+        description: `${show.name} · ${DOWNLOAD_TYPE_LABEL[downloadType]}`,
         action: {
           label: "查看任务",
           onClick: () => {
@@ -169,43 +170,43 @@ export function ShowDownloadDialog({ open, onOpenChange, show }: ShowDownloadDia
             <div className="space-y-2">
               <DownloadRow
                 icon={<FileText className="h-4 w-4" />}
-                title="PDF 文档"
-                desc="将预览图拼合为 PDF，不受字体影响"
-                onClick={() => submitDownload("pdf", false)}
+                title="PPT（内嵌字体）"
+                desc="字体直接写入 PPT，适合跨设备播放"
+                onClick={() => submitDownload("pptx_embedded")}
                 disabled={isBusy}
-                loading={submitting === "pdf"}
-              />
-              <DownloadRow
-                icon={<ImageIcon className="h-4 w-4" />}
-                title="纯图 PPT"
-                desc="每张预览图生成一页幻灯片"
-                onClick={() => submitDownload("pptx_images", false)}
-                disabled={isBusy}
-                loading={submitting === "pptx_images"}
+                loading={submitting === "pptx_embedded"}
               />
               <DownloadRow
                 icon={<FileType className="h-4 w-4" />}
-                title="合并 PPT"
-                desc="所有资源合并为一个 PPTX 文件"
-                onClick={() => submitDownload("pptx", false)}
+                title="PPT（无内嵌字体）"
+                desc="保留可编辑文字，不在文件中嵌入字体"
+                onClick={() => submitDownload("pptx")}
                 disabled={isBusy}
                 loading={submitting === "pptx"}
               />
               <DownloadRow
                 icon={<PackageOpen className="h-4 w-4" />}
-                title="PPT + 字体包"
-                desc="PPTX 与所需字体打包为 ZIP"
-                onClick={() => submitDownload("pptx", true)}
+                title="ZIP（PPT + 字体包）"
+                desc="可编辑 PPT 与所需字体一起打包"
+                onClick={() => submitDownload("pptx_fonts")}
                 disabled={isBusy}
                 loading={submitting === "pptx_fonts"}
               />
               <DownloadRow
-                icon={<PackageOpen className="h-4 w-4" />}
-                title="逐页 PPT"
-                desc="每页幻灯片单独一个 PPTX，打包为 ZIP"
-                onClick={() => submitDownload("pptx_pages", false)}
+                icon={<ImageIcon className="h-4 w-4" />}
+                title="PPT（纯图）"
+                desc="每张高清预览图生成一页幻灯片"
+                onClick={() => submitDownload("pptx_images")}
                 disabled={isBusy}
-                loading={submitting === "pptx_pages"}
+                loading={submitting === "pptx_images"}
+              />
+              <DownloadRow
+                icon={<FileText className="h-4 w-4" />}
+                title="PDF（纯图）"
+                desc="将高清预览图拼合为 PDF，不受字体影响"
+                onClick={() => submitDownload("pdf")}
+                disabled={isBusy}
+                loading={submitting === "pdf"}
               />
             </div>
 

@@ -106,11 +106,17 @@ function SectionLabel({ title }: { title: string }) {
 }
 
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
-  const { user } = useAuth();
+  const { user, offline } = useAuth();
   const versionCommit = useSiteConfig((s) => s.versionCommit);
   const versionUpdatedAt = useSiteConfig((s) => s.versionUpdatedAt);
   const isAdmin = isAdminRole(user?.role);
   const isSystemAdmin = isSystemAdminRole(user?.role);
+  if (offline) return (
+    <div className="flex h-full flex-col px-3 py-3">
+      <div onClick={onNavigate}><NavItemLink item={{ key: "offline-cache", to: "/manage/offline-cache", label: "离线缓存", icon: MonitorPlay }} /></div>
+      <p className="px-3 py-3 text-xs text-muted-foreground">当前离线，仅可使用已授权的缓存放映。</p>
+    </div>
+  );
 
   return (
     <div className="flex h-full flex-col select-none">
@@ -163,7 +169,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
 
 export function AppShell() {
   const location = useLocation();
-  const { user, logout } = useAuth();
+  const { user, logout, offline } = useAuth();
   const [sheetOpen, setSheetOpen] = useState(false);
 
   useEffect(() => {
@@ -173,13 +179,13 @@ export function AppShell() {
   // 用户登录后初始化全局 WebSocket 连接，用于接收异步任务推送
   // 同源 WebSocket 通过 httpOnly Cookie 鉴权；用户 ID 只用于隔离事件游标。
   useEffect(() => {
-    if (!user || user.must_change_pwd) return;
+    if (!user || user.must_change_pwd || offline) return;
     const userKey = String(user.id);
     useDownloadManager.getState().connect(userKey);
     return () => {
       useDownloadManager.getState().disconnect();
     };
-  }, [user?.id, user?.must_change_pwd]);
+  }, [user?.id, user?.must_change_pwd, offline]);
 
   const userDisplayName = user?.name || user?.username || "";
   const userRoleText =
@@ -280,7 +286,7 @@ export function AppShell() {
       </div>
 
       {/* 强制修改密码弹窗 */}
-      <ForceChangePassword />
+      {!offline && <ForceChangePassword />}
     </div>
   );
 }

@@ -29,14 +29,9 @@ export interface ShowFiltersProps {
 export function ShowFilters({ subjects, tags, actions }: ShowFiltersProps) {
   const s = useShowFilters();
   const { options: statusTags } = useMetadataTagOptions("status");
-  const { options: secrecyTags } = useMetadataTagOptions("secrecy");
   const statusOptions = React.useMemo<ChipOption[]>(
     () => [{ value: "all", label: "全部" }, ...statusTags],
     [statusTags],
-  );
-  const secrecyOptions = React.useMemo<ChipOption[]>(
-    () => [{ value: "all", label: "全部" }, ...secrecyTags],
-    [secrecyTags],
   );
 
   const subjectOptions = React.useMemo<ChipOption[]>(() => {
@@ -59,13 +54,6 @@ export function ShowFilters({ subjects, tags, actions }: ShowFiltersProps) {
         onChange: (v) => s.setStatus(v as typeof s.status),
       },
       {
-        key: "secrecy",
-        label: "密级",
-        options: secrecyOptions,
-        value: s.secrecy,
-        onChange: (v) => s.setSecrecy(v as typeof s.secrecy),
-      },
-      {
         key: "permission",
         label: "权限",
         options: RESOURCE_PERMISSION_OPTIONS,
@@ -73,12 +61,11 @@ export function ShowFilters({ subjects, tags, actions }: ShowFiltersProps) {
         onChange: (v) => s.setPermission(v as typeof s.permission),
       },
     ],
-    [s.status, s.secrecy, s.permission, s, statusOptions, secrecyOptions],
+    [s.status, s.permission, s, statusOptions],
   );
 
   const filterDirtyCount = [
     s.status !== "all",
-    s.secrecy !== "all",
     s.permission !== "all",
   ].filter(Boolean).length;
 

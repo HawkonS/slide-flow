@@ -92,6 +92,10 @@ interface ShowUpgradeDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   show: Show | null;
+  /** 页面模式：复用迭代内容，但不渲染 Dialog 遮罩和弹窗容器。 */
+  page?: boolean;
+  /** 页面首次进入时默认展示的工作模式。草稿存在时仍优先恢复草稿。 */
+  initialTab?: "upgrade" | "reorganize";
   /** 创建成功回调，参数为新创建的版本 Show */
   onSuccess?: (newShow: Show) => void;
 }
@@ -109,6 +113,8 @@ export function ShowUpgradeDialog({
   open,
   onOpenChange,
   show,
+  page = false,
+  initialTab = "reorganize",
   onSuccess,
 }: ShowUpgradeDialogProps) {
   const queryClient = useQueryClient();
@@ -118,7 +124,7 @@ export function ShowUpgradeDialog({
   const [detailResourceId, setDetailResourceId] = React.useState<number | null>(null);
 
   // ── Tab 模式 ──
-  const [activeTab, setActiveTab] = React.useState<TabMode>("reorganize");
+  const [activeTab, setActiveTab] = React.useState<TabMode>(initialTab);
 
   // ── 选中资源（升级 Tab） ──
   const [selectedIds, setSelectedIds] = React.useState<Set<number>>(new Set());
@@ -176,7 +182,7 @@ export function ShowUpgradeDialog({
         setRemarkDrafts({});
         setChangeNote("");
         setName("");
-        setActiveTab("reorganize");
+        setActiveTab(initialTab);
         setHasDraft(false);
         setDraftSavedAt(null);
         const accessible = show.resources
@@ -186,7 +192,7 @@ export function ShowUpgradeDialog({
         initialOrganizedRef.current = accessible;
       }
     }
-  }, [open, show]);
+  }, [open, show, initialTab]);
 
   // 切换 Tab 时，如果在详情视图自动返回列表
   const handleTabChange = (tab: TabMode) => {
@@ -468,7 +474,7 @@ export function ShowUpgradeDialog({
     setRemarkDrafts({});
     setChangeNote("");
     setName("");
-    setActiveTab("reorganize");
+    setActiveTab(initialTab);
     setView("list");
     setDetailResourceId(null);
     const accessible = show.resources
@@ -477,7 +483,7 @@ export function ShowUpgradeDialog({
     setOrganizedResources(accessible);
     initialOrganizedRef.current = accessible;
     toast.success("草稿已清除");
-  }, [show]);
+  }, [show, initialTab]);
 
   // ── 手动暂存草稿 ──
   const handleSaveDraft = React.useCallback(() => {
@@ -537,35 +543,35 @@ export function ShowUpgradeDialog({
 
   if (!show) return null;
 
-  return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="flex h-[min(860px,92vh)] max-w-6xl flex-col gap-0 overflow-hidden p-0">
+  const titleContent = (
+    <>
+      <GitBranch className="h-5 w-5 text-primary" />
+      版本迭代
+      <Badge variant="outline" className="ml-1 text-xs font-normal">
+        基于 v{show.version_no}
+      </Badge>
+      {hasDraft && draftSavedAt && (
+        <span className="flex items-center gap-1 text-xs text-amber-600">
+          有暂存草稿 ({relativeTime(draftSavedAt)})
+          <button
+            type="button"
+            onClick={handleClearDraft}
+            className="ml-1 inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs text-amber-700 transition hover:bg-amber-100"
+            title="清除草稿并重置表单"
+          >
+            <Eraser className="h-3 w-3" />
+            清除
+          </button>
+        </span>
+      )}
+    </>
+  );
+  const content = (
+    <>
         {/* 标题栏 */}
         <DialogHeader className="shrink-0 border-b px-6 py-4">
-          <DialogTitle className="flex items-center gap-2 text-base">
-            <GitBranch className="h-5 w-5 text-primary" />
-            版本迭代
-            <Badge variant="outline" className="ml-1 text-xs font-normal">
-              基于 v{show.version_no}
-            </Badge>
-            {hasDraft && draftSavedAt && (
-              <span className="flex items-center gap-1 text-xs text-amber-600">
-                有暂存草稿 ({relativeTime(draftSavedAt)})
-                <button
-                  type="button"
-                  onClick={handleClearDraft}
-                  className="ml-1 inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs text-amber-700 hover:bg-amber-100 transition"
-                  title="清除草稿并重置表单"
-                >
-                  <Eraser className="h-3 w-3" />
-                  清除
-                </button>
-              </span>
-            )}
-          </DialogTitle>
-          <DialogDescription className="sr-only">
-            创建放映的新版本，可选升级资源或重新组织资源
-          </DialogDescription>
+          {page ? <h2 className="flex items-center gap-2 text-base font-semibold">{titleContent}</h2> : <DialogTitle className="flex items-center gap-2 text-base">{titleContent}</DialogTitle>}
+          {page ? <p className="sr-only">创建放映的新版本，可选升级资源或重新组织资源</p> : <DialogDescription className="sr-only">创建放映的新版本，可选升级资源或重新组织资源</DialogDescription>}
         </DialogHeader>
 
         {/* 顶部表单区（紧凑，shrink-0，不滚动） */}
@@ -688,6 +694,21 @@ export function ShowUpgradeDialog({
             </Button>
           </div>
         </div>
+    </>
+  );
+
+  if (page) {
+    return (
+      <div className="mx-auto flex min-h-[min(860px,calc(100vh-5rem))] w-full max-w-6xl flex-col overflow-hidden rounded-xl border bg-card shadow-sm">
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent className="flex h-[min(860px,92vh)] max-w-6xl flex-col gap-0 overflow-hidden p-0">
+        {content}
       </DialogContent>
     </Dialog>
   );

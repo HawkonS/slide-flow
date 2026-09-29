@@ -14,6 +14,8 @@ from app.services.downloads.fonts import (
 )
 from app.services.files import asset_preview_url
 from app.services.resources import _normalise_scope_tags, _normalise_scope_user_ids
+from app.services.tagging import table_has_column
+from app.services.tagging import tag_relation_join
 from fastapi import HTTPException
 from pathlib import Path
 from typing import Any
@@ -46,6 +48,26 @@ def _validate_standalone_template_subject(subject: str | None) -> str:
         raise HTTPException(400, "主体只能填写一个")
     if len(value) > 80:
         raise HTTPException(400, "主体不能超过 80 个字符")
+    return value
+
+
+def _validate_template_subject(
+    db: sqlite3.Connection,
+    subject: str | None,
+    *,
+    allow_legacy: bool = False,
+) -> str:
+    """Validate a template subject against the administrator-maintained catalog."""
+    value = _validate_standalone_template_subject(subject)
+    try:
+        row = db.execute(
+            "SELECT 1 FROM subject_tag_definitions WHERE name = ? LIMIT 1",
+            (value,),
+        ).fetchone()
+    except sqlite3.OperationalError as exc:
+        raise HTTPException(500, "主体标签配置不可用，请联系管理员") from exc
+    if row is None and not allow_legacy:
+        raise HTTPException(400, f"主体「{value}」未在标签管理中维护，请先添加主体标签")
     return value
 
 
@@ -160,18 +182,41 @@ def _set_template_scope_tags(
 ) -> None:
     tags = _normalise_scope_tags(db, tag_names)
     db.execute(f"DELETE FROM {table} WHERE template_id = ?", (template_id,))
-    for tag_name in tags:
-        db.execute(
-            f"INSERT OR IGNORE INTO {table} (template_id, tag_name) VALUES (?, ?)",
-            (template_id, tag_name),
-        )
+    if table_has_column(db, table, "tag_id"):
+        definitions = {
+            str(row["name"]): int(row["id"])
+            for row in db.execute(
+                f"SELECT id, name FROM user_tag_definitions "
+                f"WHERE name IN ({','.join('?' for _ in tags)})",
+                tags,
+            ).fetchall()
+        } if tags else {}
+        for tag_name in tags:
+            db.execute(
+                f"INSERT OR IGNORE INTO {table} (template_id, tag_name, tag_id) VALUES (?, ?, ?)",
+                (template_id, tag_name, definitions.get(tag_name)),
+            )
+    else:
+        for tag_name in tags:
+            db.execute(
+                f"INSERT OR IGNORE INTO {table} (template_id, tag_name) VALUES (?, ?)",
+                (template_id, tag_name),
+            )
 
 
 def _template_scope_tag_names(db: sqlite3.Connection, table: str, template_id: int) -> list[str]:
-    rows = db.execute(
-        f"SELECT tag_name FROM {table} WHERE template_id = ? ORDER BY tag_name",
-        (template_id,),
-    ).fetchall()
+    if table_has_column(db, table, "tag_id"):
+        rows = db.execute(
+            f"SELECT COALESCE(t.name, scope.tag_name) AS tag_name "
+            f"FROM {table} scope LEFT JOIN user_tag_definitions t ON t.id = scope.tag_id "
+            f"WHERE scope.template_id = ? ORDER BY tag_name",
+            (template_id,),
+        ).fetchall()
+    else:
+        rows = db.execute(
+            f"SELECT tag_name FROM {table} WHERE template_id = ? ORDER BY tag_name",
+            (template_id,),
+        ).fetchall()
     return [str(row["tag_name"]) for row in rows]
 
 
@@ -193,11 +238,12 @@ def _template_scope_matches_user_tag(
     template_id: int,
     user_id: int,
 ) -> bool:
+    tag_join = tag_relation_join(db, table, "scope_tags", "user_tags")
     return db.execute(
         f"""
         SELECT 1
         FROM {table} scope_tags
-        JOIN user_tags ON user_tags.tag_name = scope_tags.tag_name
+        JOIN user_tags ON {tag_join}
         WHERE scope_tags.template_id = ? AND user_tags.user_id = ?
         LIMIT 1
         """,

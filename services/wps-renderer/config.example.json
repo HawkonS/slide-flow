@@ -7,6 +7,7 @@
   "max_pages": 4,
   "max_batch_pages": 50,
   "max_source_slides": 500,
+  "publish_concurrency": 4,
   "max_input_file_bytes": 125829120,
   "max_dpi": 300,
   "render_timeout_seconds": 120,

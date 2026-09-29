@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from app.config import settings
 from pathlib import Path
+from typing import Any
+import hashlib
+import json
 import shutil
-import sqlite3
 import time
 
 
@@ -15,16 +17,16 @@ _DOWNLOAD_CACHE_DIR = settings.downloads_dir / "cache"
 _DOWNLOAD_CACHE_TTL = 24 * 3600  # 24 小时
 
 
-def _show_download_cache_key(show_id: int, dl_type: str, db: sqlite3.Connection) -> str:
-    """基于 show_id + 资源版本列表生成缓存文件名。"""
-    import hashlib
-    rows = db.execute(
-        "SELECT sr.resource_id, sr.version_no FROM show_resources sr WHERE sr.show_id = ? ORDER BY sr.sort_order",
-        (show_id,),
-    ).fetchall()
-    parts = [f"{r['resource_id']}v{r['version_no']}" for r in rows]
-    content_hash = hashlib.md5("|".join(parts).encode()).hexdigest()[:12]
-    return f"show_{show_id}_{dl_type}_{content_hash}"
+def _show_download_cache_key(show_id: int, dl_type: str, resources: list[dict[str, Any]]) -> str:
+    """Key only the authorized, ordered fixed versions used by this export.
+
+    Metadata includes hidden flags, filenames and asset references so edits do
+    not reuse stale output. The v2 namespace excludes legacy shared caches,
+    which may contain another user's broader or narrower resource selection.
+    """
+    content = json.dumps(resources, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:24]
+    return f"show_{show_id}_{dl_type}_v2_{content_hash}"
 
 
 def _get_cached_download(cache_key: str, ext: str) -> Path | None:

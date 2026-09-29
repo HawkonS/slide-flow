@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from app.config import settings
 from app.core.permissions import can_view_show
-from app.core.permissions import is_admin
+from app.core.permissions import is_system_admin
 from app.core.permissions import require_user
 from app.routers.dependencies import (
     db_dep,
@@ -13,10 +13,12 @@ from app.routers.dependencies import (
 from app.services.downloads.tracking import (
     _record_download,
 )
+from app.services.downloads.access import _validate_download_result_access
 from app.services.files import (
     _content_disposition,
 )
 from app.services.shows import (
+    _collect_show_accessible_resources,
     _show_row,
 )
 from app.services.tasks.runtime import (
@@ -50,15 +52,20 @@ async def create_download_task(
     download_type: str = Body(..., embed=True),
     watermark: str = Body("", embed=True),
     with_fonts: bool = Body(False, embed=True),
+    embed_fonts: bool = Body(False, embed=True),
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
     """创建一个异步下载任务。返回 task_id，后台生成文件并通过 WebSocket 推送进度。"""
     if download_type not in _ALLOWED_DOWNLOAD_TYPES:
         raise HTTPException(400, f"不支持的 download_type: {download_type}")
+    if embed_fonts and (download_type != "pptx" or with_fonts):
+        raise HTTPException(400, "内嵌字体仅支持普通 PPT 下载")
     show_row = _show_row(db, show_id)
     if not can_view_show(db, show_row, user):
         raise HTTPException(403, "无可见权限")
+    if not _collect_show_accessible_resources(db, show_id, user):
+        raise HTTPException(404, "放映组没有可下载的资源")
 
     # 生成追踪码 + 记录下载（与同步 API 保持一致）
     record_type = download_type
@@ -74,8 +81,10 @@ async def create_download_task(
         "download_type": download_type,
         "with_fonts": bool(with_fonts),
         "user_watermark": watermark or "",
+        "embed_fonts": bool(embed_fonts),
         "track_code": track_code,
         "client_ip": client_ip,
+        "session_version": int(user["session_version"]),
     }
     db.execute(
         """
@@ -120,7 +129,7 @@ def get_download_file(
     row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     if row is None:
         raise HTTPException(404, "任务不存在")
-    if int(row["owner_id"]) != int(user["id"]) and not is_admin(user):
+    if int(row["owner_id"]) != int(user["id"]) and not is_system_admin(user):
         raise HTTPException(403, "无权访问此任务")
     if row["task_type"] != "download":
         raise HTTPException(400, "任务类型不匹配")
@@ -130,8 +139,11 @@ def get_download_file(
         result = json.loads(row["result_data"] or "{}")
     except (ValueError, TypeError):
         result = {}
+    if not isinstance(result, dict):
+        result = {}
     if result.get("expired"):
         raise HTTPException(410, "下载文件已过期，请重新发起下载")
+    _validate_download_result_access(db, row, user, result)
     fp = result.get("file_path")
     if not fp:
         raise HTTPException(410, "下载文件不可用")
@@ -155,5 +167,5 @@ def get_download_file(
     return FileResponse(
         file_path,
         media_type=media_type,
-        headers={"Content-Disposition": _content_disposition(file_name)},
+        headers={"Content-Disposition": _content_disposition(file_name), "Cache-Control": "private, no-store"},
     )

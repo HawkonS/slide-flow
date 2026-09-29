@@ -108,7 +108,6 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
             {"key": "app.max_concurrent_splits", "label": "最大并发拆分数", "default": "2", "type": "int", "hot_reload": False, "desc": "最大并发的 PPT 拆分任务数"},
             {"key": "app.user_custom_tags", "label": "允许自定义分类标签", "default": "false", "type": "bool", "hot_reload": True, "desc": "开启后素材编辑可自由创建分类标签；关闭后只能选择管理员预设的分类标签"},
             {"key": "app.user_custom_user_tags", "label": "允许自定义用户标签", "default": "false", "type": "bool", "hot_reload": True, "desc": "开启后用户编辑可自由创建用户标签；关闭后只能选择管理员预设的用户标签"},
-            {"key": "app.user_custom_secrecy_tags", "label": "允许自定义密级标签", "default": "false", "type": "bool", "hot_reload": True, "desc": "开启后普通用户可在素材编辑时创建密级标签；关闭后仅管理员可添加"},
             {"key": "app.user_custom_status_tags", "label": "允许自定义状态标签", "default": "false", "type": "bool", "hot_reload": True, "desc": "开启后普通用户可在素材编辑时创建状态标签；关闭后仅管理员可添加"},
         ],
     },
@@ -182,6 +181,8 @@ DEFAULT_PROPERTIES: dict[str, str] = {
 }
 LEGACY_CONFIG_KEYS = {
     "security.default_password",
+    # Removed metadata setting; accepted only long enough to clean old files.
+    "app.user_custom_secrecy_tags",
     "render.url",
     "render.ca_file",
     "render.connect_timeout",
@@ -319,7 +320,6 @@ _PROP_TO_ATTR: dict[str, str] = {
     "app.max_concurrent_splits": "max_concurrent_splits",
     "app.user_custom_tags": "user_custom_tags",
     "app.user_custom_user_tags": "user_custom_user_tags",
-    "app.user_custom_secrecy_tags": "user_custom_secrecy_tags",
     "app.user_custom_status_tags": "user_custom_status_tags",
     "image.hd.max_resolution": "image_hd_max_resolution",
     "image.hd.dpi": "image_hd_dpi",
@@ -418,7 +418,6 @@ class Settings:
     max_concurrent_splits: int = int(DEFAULT_PROPERTIES["app.max_concurrent_splits"])
     user_custom_tags: bool = _parse_bool(DEFAULT_PROPERTIES["app.user_custom_tags"])
     user_custom_user_tags: bool = _parse_bool(DEFAULT_PROPERTIES["app.user_custom_user_tags"])
-    user_custom_secrecy_tags: bool = _parse_bool(DEFAULT_PROPERTIES["app.user_custom_secrecy_tags"])
     user_custom_status_tags: bool = _parse_bool(DEFAULT_PROPERTIES["app.user_custom_status_tags"])
 
     # 图片压缩配置
@@ -639,7 +638,6 @@ def load_settings() -> Settings:
     max_concurrent_splits = int(get_value("app.max_concurrent_splits"))
     user_custom_tags = _parse_bool(get_value("app.user_custom_tags"))
     user_custom_user_tags = _parse_bool(get_value("app.user_custom_user_tags"))
-    user_custom_secrecy_tags = _parse_bool(get_value("app.user_custom_secrecy_tags"))
     user_custom_status_tags = _parse_bool(get_value("app.user_custom_status_tags"))
 
     # 图片压缩配置
@@ -728,7 +726,6 @@ def load_settings() -> Settings:
         max_concurrent_splits=max_concurrent_splits,
         user_custom_tags=user_custom_tags,
         user_custom_user_tags=user_custom_user_tags,
-        user_custom_secrecy_tags=user_custom_secrecy_tags,
         user_custom_status_tags=user_custom_status_tags,
         image_hd_max_resolution=image_hd_max_resolution,
         image_hd_dpi=image_hd_dpi,
