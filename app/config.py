@@ -84,7 +84,7 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
             {"key": "oss.internal_endpoint", "label": "OSS 内网 Endpoint", "default": "", "type": "str", "hot_reload": False, "desc": "服务端读写首选的同地域内网 Endpoint；网络类故障自动回退到 oss.endpoint，留空则直接使用外网"},
             {"key": "oss.public_endpoint", "label": "OSS 展示 Endpoint", "default": "", "type": "str", "hot_reload": False, "desc": "仅用于浏览器访问图片和下载签名 URL 的 Endpoint 或自定义域名；留空使用 oss.endpoint，不能填写内网地址"},
             {"key": "oss.bucket", "label": "OSS Bucket", "default": "", "type": "str", "hot_reload": False, "desc": "存放 PPT 和 PNG 的 Bucket 名称"},
-            {"key": "oss.prefix", "label": "OSS Bucket 内目录", "default": "slide-flow_test", "type": "str", "hot_reload": False, "desc": "Bucket 内的对象目录/前缀，支持多级目录（例如 prod/slide-flow）；留空则直接写入 Bucket 根目录"},
+            {"key": "oss.prefix", "label": "OSS Bucket 内目录", "default": "slide-flow", "type": "str", "hot_reload": False, "desc": "Bucket 内的对象目录/前缀，支持多级目录（例如 prod/slide-flow）；留空则直接写入 Bucket 根目录"},
             {"key": "oss.connect_timeout_seconds", "label": "OSS 连接超时（秒）", "default": "3", "type": "int", "hot_reload": False, "desc": "连接内网或外网 Endpoint 的超时；内网不可达时到期后自动尝试外网，建议 2–5 秒"},
             {"key": "oss.access_key_id", "label": "OSS AccessKey ID", "default": "", "type": "str", "hot_reload": False, "secret": True, "desc": "推荐使用环境变量 ALIBABA_CLOUD_ACCESS_KEY_ID，或在 ECS 上使用 ALIBABA_CLOUD_RAM_ROLE_NAME"},
             {"key": "oss.access_key_secret", "label": "OSS AccessKey Secret", "default": "", "type": "str", "hot_reload": False, "secret": True, "desc": "推荐使用环境变量 ALIBABA_CLOUD_ACCESS_KEY_SECRET；不要提交到 Git"},

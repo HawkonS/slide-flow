@@ -19,7 +19,7 @@ const enableHttps = ["true", "1", "yes", "on"].includes(
 );
 
 // 通过环境变量配置允许的访问域名（解决通过域名访问 Vite 开发服务器被拦截的问题）
-// 多个域名用逗号分隔，例如：slide-flow.example.com,example.com
+// 多个域名用逗号分隔，例如：slide-flow.example.com,example.org
 const allowedHostRaw = process.env.SLIDE_FLOW_ALLOWED_HOST || "";
 const allowedHosts = allowedHostRaw
   ? allowedHostRaw.split(",").map(h => {

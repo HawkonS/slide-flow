@@ -36,6 +36,3 @@ slide_flow.properties.bak
 slide_flow.env
 .env
 .secrets/
-
-# Legacy admin credentials
-legacy-admin/.credentials.json
