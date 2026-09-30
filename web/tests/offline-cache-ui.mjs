@@ -69,7 +69,7 @@ async function handle(request, response) {
       if (operation === 'present-session') return json({ session_token: 'ui-present-token' });
       if (!operation) {
         const data = manifest(id);
-        return json({ show: { ...data, id, can_manage: true, resources: data.resources.map(item => ({
+        return json({ show: { ...data, id, tags: row.tags.join(','), can_manage: true, resources: data.resources.map(item => ({
           ...item, accessible: true, latest_version_no: item.version_no, preview_url: item.thumb_url, original_preview_url: null })) } });
       }
     }
@@ -106,12 +106,19 @@ after(async () => {
   if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
   if (dist) await rm(dist, { recursive: true, force: true });
 });
-async function setup(t) {
+async function setup(t, cryptoMode) {
   state = { shows: new Map(), requests: [], held: [], heldManifests: [] };
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   context.setDefaultTimeout(10_000);
   t.after(() => context.close());
   const popups = [], errors = [];
+  if (cryptoMode) await context.addInitScript(mode => {
+    Object.defineProperty(crypto, 'randomUUID', { value: undefined });
+    if (mode === 'missing-crypto') Object.defineProperty(window, 'crypto', { value: undefined });
+    if (mode === 'rejecting-crypto') Object.defineProperty(crypto, 'getRandomValues', {
+      value: () => { throw new DOMException('Unavailable', 'NotSupportedError'); },
+    });
+  }, cryptoMode);
   await context.exposeBinding('__recordCachePopup', (_source, item) => { popups.push(item); });
   await context.addInitScript(() => {
     let click = null;
@@ -291,7 +298,7 @@ test('an update-check failure clears the all-current result without damaging com
 });
 
 test('the fullscreen card entry opens and plays the selected fixed package', { timeout: 60_000 }, async t => {
-  const { page, context } = await setup(t);
+  const { page, context, errors } = await setup(t, 'missing-uuid');
   const [saved] = await seed(page);
   await management(page);
   await card(page, saved.name).getByRole('button', { name: '全屏放映', exact: true }).click();
@@ -301,10 +308,11 @@ test('the fullscreen card entry opens and plays the selected fixed package', { t
   assert.equal(url.searchParams.get('package_id'), saved.package_id);
   await fullscreen.getByText('点击开始放映', { exact: true }).click();
   await visibleImage(fullscreen, 'img[alt=""][src^="blob:"].object-contain');
+  assert.deepEqual(errors, []);
 });
 
 test('dual-screen launch preopens Display during the click and shares one fixed package and session', { timeout: 60_000 }, async t => {
-  const { page, context, popups } = await setup(t);
+  const { page, context, popups, errors } = await setup(t, 'missing-uuid');
   const [saved] = await seed(page);
   await management(page);
   showState(1).manifestMode = 'hold';
@@ -338,72 +346,38 @@ test('dual-screen launch preopens Display during the click and shares one fixed 
   await visibleImage(presenter, 'img[alt="UI缓存01 第1页"][src^="blob:"].object-contain');
   await visibleImage(display, 'img[alt="幻灯片 1"][src^="blob:"]');
   assert.equal(context.pages().filter(candidate => new URL(candidate.url()).pathname.endsWith('/display')).length, 1);
+  assert.deepEqual(errors, []);
 });
 
-async function seedLegacyManifest(page) {
-  await page.evaluate(async () => {
-    const root = await navigator.storage.getDirectory();
-    const dir = await root.getDirectoryHandle('legacy-cache-ui-fixture', { create: true });
-    const now = new Date().toISOString();
-    const legacy = { version: 2, server_url: location.origin, generated_at: now, shows: {
-      '7001': { id: 7001, name: '旧目录样例', version_no: 2, series_id: 'legacy-7001', cached_at: now,
-        slide_count: 1, auth_mode: 'required', updated_at: now, subject: '历史', tags: ['旧目录'], status: 'active', owner_name: 'Legacy' } } };
-    localStorage.removeItem('__legacy_js_ran');
-    const file = await dir.getFileHandle('manifest.js', { create: true }); const writer = await file.createWritable();
-    await writer.write('window.__OFFLINE_MANIFEST = ' + JSON.stringify(legacy) + ';');
-    await writer.close();
-    const shows = await dir.getDirectoryHandle('shows', { create: true });
-    const legacyShow = await shows.getDirectoryHandle('7001', { create: true });
-    const info = await legacyShow.getFileHandle('info.js', { create: true });
-    const infoWriter = await info.createWritable();
-    await infoWriter.write('localStorage.setItem("__legacy_js_ran", "1"); window.__SHOW_INFO = {};');
-    await infoWriter.close();
-    await new Promise((resolve, reject) => {
-      const opening = indexedDB.open('slideflow-offline-cache', 1);
-      opening.onupgradeneeded = () => { if (!opening.result.objectStoreNames.contains('settings')) opening.result.createObjectStore('settings'); };
-      opening.onerror = () => reject(opening.error);
-      opening.onsuccess = () => {
-        const db = opening.result; const tx = db.transaction('settings', 'readwrite');
-        tx.objectStore('settings').put(dir, 'dir-handle');
-        tx.oncomplete = () => { db.close(); resolve(); };
-        tx.onabort = tx.onerror = () => { db.close(); reject(tx.error); };
-      };
-    });
+for (const cryptoMode of ['missing-uuid', 'missing-crypto', 'rejecting-crypto']) {
+  test(`detail playback opens fullscreen and synchronized presenter with ${cryptoMode}`, { timeout: 60_000 }, async t => {
+    const { page, context, popups, errors } = await setup(t, cryptoMode);
+    await page.goto(origin + '/shows/1');
+    await page.getByRole('button', { name: '放映', exact: true }).click();
+    const fullscreen = await playerPage(context, '/fullscreen');
+    assert.equal(await fullscreen.evaluate(() => typeof window.crypto?.randomUUID), 'undefined');
+    await fullscreen.getByText('点击开始放映', { exact: true }).click();
+    await visibleImage(fullscreen, 'img[alt=""][src^="blob:"].object-contain');
+    await fullscreen.keyboard.press('ArrowRight');
+    await fullscreen.getByText('2 / 3', { exact: true }).waitFor();
+    await fullscreen.close();
+
+    await page.getByRole('button', { name: '选择放映模式', exact: true }).click();
+    await page.getByRole('menuitem', { name: '讲演放映', exact: true }).click();
+    await page.waitForURL('**/shows/1/present?*');
+    const display = await playerPage(context, '/display');
+    await visibleImage(page, 'img[alt="UI缓存01 第1页"][src^="blob:"].object-contain');
+    await visibleImage(display, 'img[alt="幻灯片 1"][src^="blob:"]');
+    const session = new URL(page.url()).searchParams.get('playback_session');
+    assert.match(session, /^[a-zA-Z0-9_-]{16,80}$/);
+    assert.equal(new URL(display.url()).searchParams.get('playback_session'), session);
+    const preopen = popups.find(item => new URL(item.sourceUrl).pathname === '/shows/1' && item.name === 'slideflow-display-' + session);
+    assert.ok(preopen, 'the detail entry must preopen the display with the same session');
+    assert.equal(preopen.duringClick, true);
+    assert.equal(new URL(preopen.url, origin).searchParams.get('playback_session'), session);
+    await page.keyboard.press('ArrowRight');
+    await visibleImage(display, 'img[alt="幻灯片 2"][src^="blob:"]');
+    assert.equal(context.pages().filter(candidate => new URL(candidate.url()).pathname.endsWith('/display')).length, 1);
+    assert.deepEqual(errors, []);
   });
 }
-
-test('legacy manifest metadata allows only a fresh online download and never executes old JavaScript', { timeout: 60_000 }, async t => {
-  const { page, context, state } = await setup(t);
-  // Retain a real offline identity lease while leaving the new package list empty.
-  await seed(page);
-  await page.evaluate(() => window.__cacheUiTest.deleteCachedShow(1));
-  showState(7001).name = '旧目录样例'; showState(7001).version = 3;
-  await seedLegacyManifest(page);
-  await management(page);
-  await page.getByText('旧目录样例', { exact: true }).waitFor();
-  assert.equal(await page.evaluate(() => localStorage.getItem('__legacy_js_ran')), null);
-  assert.equal(await page.evaluate(() => window.__OFFLINE_MANIFEST), undefined);
-  for (const name of ['全屏放映', '讲演视图']) {
-    const actions = page.getByRole('button', { name, exact: true });
-    for (const action of await actions.all()) assert.equal(await action.isEnabled(), false);
-  }
-  await context.setOffline(true);
-  await page.waitForFunction(() => window.__testAuth.offline === true);
-  const redownload = page.getByRole('button', { name: /重新下载/ });
-  assert.equal(await redownload.isEnabled(), false);
-  assert.deepEqual(await page.evaluate(() => window.__cacheUiTest.listCachedShows()), []);
-  await context.setOffline(false);
-  await page.waitForFunction(() => !window.__testAuth.offline && !window.__testAuth.loading);
-  await redownload.click();
-  // Wait for the real ready card; async waitForFunction predicates resolve too early.
-  await card(page, '旧目录样例').waitFor();
-  const saved = await cached(page, 7001);
-  assert.equal(saved.version_no, 3);
-  assert.equal(saved.user_id, 1);
-  assert.equal(saved.state, 'ready');
-  assert.ok(state.requests.some(request => request.path === '/api/shows/7001/offline-manifest'));
-  assert.equal(state.requests.some(request => request.path === '/api/shows/7001/offline-package'), false);
-  assert.equal(await page.evaluate(() => localStorage.getItem('__legacy_js_ran')), null);
-  assert.equal(await page.evaluate(() => window.__OFFLINE_MANIFEST), undefined);
-  await card(page, saved.name).waitFor();
-});

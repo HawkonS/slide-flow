@@ -92,7 +92,7 @@ export function ResourceDetailDialog({
         </DialogHeader>
 
         {/* 2 行 2 列：左上信息卡片 / 右上通用备注；左下预览 / 右下个人备注 */}
-        <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-hidden md:grid-cols-[minmax(0,1fr)_minmax(320px,420px)] md:grid-rows-[auto_minmax(0,1fr)]">
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-y-auto md:overflow-hidden md:grid-cols-[minmax(0,1fr)_minmax(320px,420px)] md:grid-rows-[auto_minmax(0,1fr)]">
           {/* 左上：信息卡片 */}
           <div className="rounded-md border bg-muted/30 p-3 text-sm">
             <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">

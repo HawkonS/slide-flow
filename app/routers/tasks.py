@@ -542,7 +542,14 @@ def cancel_task(
     if row["status"] not in {"uploading", "pending", "processing"}:
         raise HTTPException(400, f"任务状态为 {row['status']}，无法取消")
 
-    # 设置取消标志
+    # Signal download generation cooperatively; its worker also observes the
+    # durable cancelled status so requests routed to sibling workers take effect.
+    if row["task_type"] == "download":
+        from app.core.download_tasks import request_download_cancel
+        request_download_cancel(task_id)
+        future = _pending_task_futures.get(task_id)
+        if row["status"] == "pending" and future is not None:
+            future.cancel()
     cancel_event = _task_cancel_flags.get(task_id)
     if cancel_event:
         cancel_event.set()
@@ -589,12 +596,22 @@ def bulk_delete_tasks(
         raise HTTPException(400, "请选择要删除的任务")
     placeholders = ",".join("?" for _ in task_ids)
     rows = db.execute(f"SELECT * FROM tasks WHERE id IN ({placeholders})", task_ids).fetchall()
-    for task_id in task_ids:
-        cancel_render_tasks_for_parent(db, task_id)
+    for row in rows:
+        task_id = int(row["id"])
+        if row["task_type"] == "download":
+            from app.core.download_tasks import cleanup_download_task_output, request_download_cancel
+            request_download_cancel(task_id)
+            cleanup_download_task_output(task_id)
+            future = _pending_task_futures.get(task_id)
+            if row["status"] == "pending" and future is not None:
+                future.cancel()
+        else:
+            cancel_render_tasks_for_parent(db, task_id)
     cur = db.execute(f"DELETE FROM tasks WHERE id IN ({placeholders})", task_ids)
     db.commit()
     for row in rows:
-        _cleanup_task_temp(row)
+        if row["task_type"] != "download":
+            _cleanup_task_temp(row)
     return {"ok": True, "deleted": cur.rowcount}
 
 
@@ -608,7 +625,15 @@ def delete_task(
     row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     if row is None:
         raise HTTPException(404, "任务不存在")
-    cancel_render_tasks_for_parent(db, task_id)
+    if row["task_type"] == "download":
+        from app.core.download_tasks import cleanup_download_task_output, request_download_cancel
+        request_download_cancel(task_id)
+        cleanup_download_task_output(task_id)
+        future = _pending_task_futures.get(task_id)
+        if row["status"] == "pending" and future is not None:
+            future.cancel()
+    else:
+        cancel_render_tasks_for_parent(db, task_id)
     db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
     db.commit()
     _cleanup_task_temp(row)

@@ -28,16 +28,6 @@ import uuid
 import zipfile
 
 
-# Keep the origin allow-list beside the origin validator.  The application
-# factory uses the same setting for CORS, while this dependency protects the
-# state-changing wizard endpoints before they reach business logic.
-_allowed_origins = [
-    origin.strip()
-    for origin in settings.allowed_host.split(",")
-    if origin.strip()
-]
-
-
 async def _save_resource_import_upload(
     upload: UploadFile,
     dest_dir: Path,
@@ -208,18 +198,5 @@ def _validate_resource_import_payload(payload: dict[str, Any], db: sqlite3.Conne
 
 
 def _require_resource_import_origin(request: Request) -> None:
-    """Reject cross-site cookie requests for the state-changing wizard APIs."""
-    origin = request.headers.get("origin", "").strip()
-    fetch_site = request.headers.get("sec-fetch-site", "").strip().lower()
-    if fetch_site == "same-origin":
-        # Browser-controlled metadata preserves the original origin through
-        # trusted dev/reverse proxies that rewrite the backend Host header.
-        return
-    if not origin:
-        if fetch_site == "cross-site":
-            raise HTTPException(403, "跨站请求已拒绝")
-        return
-    host = request.headers.get("host", "").strip()
-    same_origin = f"{request.url.scheme}://{host}" if host else ""
-    if origin != same_origin and origin not in _allowed_origins:
-        raise HTTPException(403, "请求来源不受信任，请刷新页面后重试")
+    from app.core.origins import require_browser_origin
+    require_browser_origin(request)

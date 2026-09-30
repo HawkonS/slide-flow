@@ -28,6 +28,7 @@ import {
   DeleteScopeDialog,
   type DeleteScope,
 } from "@/components/common/DeleteScopeDialog";
+import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import {
   MANAGEMENT_SCOPE_OPTIONS,
   VISIBILITY_SCOPE_OPTIONS,
@@ -103,6 +104,7 @@ export function ShowEditDialog({
 }: ShowEditDialogProps) {
   const isCreate = show == null;
   const [form, setForm] = React.useState<FormState>(() => defaultForm(show));
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = React.useState(false);
   const queryClient = useQueryClient();
   const { user } = useAuth();
   const { options: statusOptions } = useMetadataTagOptions("status");
@@ -204,11 +206,7 @@ export function ShowEditDialog({
       setDeleteScopeOpen(true);
       return;
     }
-    const ok = window.confirm(
-      `确定要删除放映「${show.name}」吗？此操作不可恢复。`,
-    );
-    if (!ok) return;
-    deleteMutation.mutate("latest");
+    setDeleteConfirmOpen(true);
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -443,6 +441,21 @@ export function ShowEditDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+    {show && (
+      <ConfirmDialog
+        open={deleteConfirmOpen}
+        onOpenChange={setDeleteConfirmOpen}
+        title="删除放映"
+        description={`确定要删除放映「${show.name}」吗？此操作不可恢复。`}
+        confirmLabel="删除放映"
+        destructive
+        loading={deleteMutation.isPending}
+        onConfirm={() => {
+          deleteMutation.mutate("latest", { onSuccess: () => setDeleteConfirmOpen(false) });
+        }}
+      />
+    )}
 
     {show && (
       <DeleteScopeDialog

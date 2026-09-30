@@ -131,7 +131,7 @@ export function ResourceCard({
   }, [resource.id, resource.is_pinned, queryClient]);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
-    if (event.key === "Enter" || event.key === " ") {
+    if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
       event.preventDefault();
       onOpen?.(resource);
     }
@@ -161,7 +161,7 @@ export function ResourceCard({
           </div>
         )}
 
-        <div className="absolute right-2 top-2 opacity-0 transition group-hover:opacity-100 focus-within:opacity-100">
+        <div className="absolute right-2 top-2 opacity-100 transition">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
@@ -220,7 +220,7 @@ export function ResourceCard({
         </div>
 
         {user && (
-          <div className="absolute right-2 bottom-2 opacity-0 transition group-hover:opacity-100 focus-within:opacity-100">
+          <div className="absolute right-2 bottom-2 opacity-100 transition">
             <DropdownMenu open={addOpen} onOpenChange={setAddOpen}>
               <DropdownMenuTrigger asChild>
                 <button
@@ -261,13 +261,8 @@ export function ResourceCard({
         )}
       </div>
 
-      <div className="h-[52px] shrink-0 overflow-hidden border-t bg-[hsl(var(--surface-subtle))] px-3 py-2.5">
-        <h3 className="line-clamp-1 text-[13px] font-medium text-foreground">{resource.name}</h3>
-        <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
-          <span>v{resource.current_version}</span>
-          <span aria-hidden="true">·</span>
-          <span className="min-w-0 truncate">{resource.subject || "未设置主体"}</span>
-        </div>
+      <div className="flex min-h-[48px] shrink-0 items-center overflow-hidden border-t bg-[hsl(var(--surface-subtle))] px-3 py-2.5">
+        <h3 className="line-clamp-1 text-[13px] font-medium text-foreground" title={resource.name}>{resource.name}</h3>
       </div>
     </article>
   );

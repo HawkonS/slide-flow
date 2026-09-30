@@ -1,3 +1,4 @@
+import { copyText } from "@/lib/clipboard";
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRightLeft, CalendarDays, Camera, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, CloudDownload, Copy, KeyRound, Loader2, MoreHorizontal, Pencil, Search, Shield, Tag, Trash2, Upload, User, UserCheck, UserPlus, X } from "lucide-react";
@@ -44,6 +45,7 @@ import { AdminUser, AdminUsersResponse, UserRole } from "@/lib/types";
 import { useUrlPage } from "@/lib/use-url-page";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/common/PageHeader";
+import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { TagInput } from "@/components/resource/TagInput";
 import { PageMetrics } from "@/components/common/PageMetrics";
 import { FilterChip, TagFilterChip } from "@/components/resource/filter-chips";
@@ -317,6 +319,9 @@ export function AdminUsersPage() {
   const [resetUser, setResetUser] = React.useState<AdminUser | null>(null);
   const [resetPassword, setResetPassword] = React.useState("");
   const [resettingPassword, setResettingPassword] = React.useState(false);
+  const [resetConfirmUser, setResetConfirmUser] = React.useState<AdminUser | null>(null);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
+  const [deleteTarget, setDeleteTarget] = React.useState<AdminUser | null>(null);
   const [queryInput, setQueryInput] = React.useState("");
   const [query, setQuery] = React.useState("");
   React.useEffect(() => {
@@ -373,13 +378,19 @@ export function AdminUsersPage() {
   };
 
   const requestPasswordReset = async (user: AdminUser) => {
-    if (!window.confirm(`为 ${user.username} 生成新的临时密码？该用户现有登录会话会立即失效。`)) return;
+    setResetConfirmUser(user);
+  };
+
+  const confirmPasswordReset = async () => {
+    const user = resetConfirmUser;
+    if (!user || resettingPassword) return;
     setResettingPassword(true);
     try {
       const result = await api<{ user: AdminUser; plain_password: string }>(
         `/api/admin/users/${user.id}/reset-password`,
         { method: "POST" },
       );
+      setResetConfirmUser(null);
       setResetUser(result.user);
       setResetPassword(result.plain_password);
       qc.invalidateQueries({ queryKey: ["admin", "users"] });
@@ -626,8 +637,7 @@ export function AdminUsersPage() {
             className="h-8 gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
             disabled={selected.size === 0 || bulkDelMut.isPending}
             onClick={() => {
-              if (!window.confirm(`确认删除选中的 ${selected.size} 个用户？`)) return;
-              bulkDelMut.mutate(Array.from(selected));
+              setBulkDeleteOpen(true);
             }}
           >
             <Trash2 className="h-3.5 w-3.5" />
@@ -803,11 +813,7 @@ export function AdminUsersPage() {
                             <DropdownMenuItem
                               className="text-destructive focus:text-destructive"
                               disabled={!canDeleteTarget || delMut.isPending}
-                              onClick={() => {
-                                if (window.confirm("确认删除用户 " + u.username + "？")) {
-                                  delMut.mutate(u.id);
-                                }
-                              }}
+                              onClick={() => setDeleteTarget(u)}
                             >
                               <Trash2 className="mr-2 h-3.5 w-3.5" />删除用户
                             </DropdownMenuItem>
@@ -864,7 +870,7 @@ export function AdminUsersPage() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => navigator.clipboard.writeText(resetPassword).then(() => toast.success("已复制到剪贴板"))}
+              onClick={() => void copyText(resetPassword)}
             >
               <Copy className="mr-1.5 h-3.5 w-3.5" />
               复制
@@ -875,6 +881,41 @@ export function AdminUsersPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <ConfirmDialog
+        open={resetConfirmUser !== null}
+        onOpenChange={(open) => { if (!open && !resettingPassword) setResetConfirmUser(null); }}
+        title="重置用户密码"
+        description={resetConfirmUser ? `确定为 ${resetConfirmUser.username} 生成新的临时密码吗？该用户现有登录会话会立即失效。` : ""}
+        confirmLabel="生成临时密码"
+        destructive
+        loading={resettingPassword}
+        onConfirm={() => void confirmPasswordReset()}
+      />
+      <ConfirmDialog
+        open={bulkDeleteOpen}
+        onOpenChange={setBulkDeleteOpen}
+        title="批量删除用户"
+        description={`确定删除选中的 ${selected.size} 个用户吗？删除后无法恢复，相关权限和会话也会失效。`}
+        confirmLabel="删除用户"
+        destructive
+        loading={bulkDelMut.isPending}
+        onConfirm={() => {
+          bulkDelMut.mutate(Array.from(selected), { onSuccess: () => setBulkDeleteOpen(false) });
+        }}
+      />
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
+        title="删除用户"
+        description={deleteTarget ? `确定删除用户「${deleteTarget.username}」吗？删除后无法恢复。` : ""}
+        confirmLabel="删除用户"
+        destructive
+        loading={delMut.isPending}
+        onConfirm={() => {
+          const target = deleteTarget;
+          if (target) delMut.mutate(target.id, { onSuccess: () => setDeleteTarget(null) });
+        }}
+      />
       <UserFormDialog
         open={editing != null}
         onOpenChange={(o) => {
@@ -911,6 +952,7 @@ function BulkUserTagsDialog({
   const qc = useQueryClient();
   const [mode, setMode] = React.useState<"add" | "remove" | "replace">("add");
   const [tags, setTags] = React.useState<string[]>([]);
+  const [clearConfirmOpen, setClearConfirmOpen] = React.useState(false);
 
   React.useEffect(() => {
     if (!open) {
@@ -945,8 +987,10 @@ function BulkUserTagsDialog({
     if (
       mode === "replace"
       && tags.length === 0
-      && !window.confirm("确认清空所选 " + userIds.length + " 个用户的全部标签？")
-    ) return;
+    ) {
+      setClearConfirmOpen(true);
+      return;
+    }
     mutation.mutate();
   };
 
@@ -995,6 +1039,18 @@ function BulkUserTagsDialog({
           </Button>
         </DialogFooter>
       </DialogContent>
+      <ConfirmDialog
+        open={clearConfirmOpen}
+        onOpenChange={setClearConfirmOpen}
+        title="清空用户标签"
+        description={`确定清空所选 ${userIds.length} 个用户的全部标签吗？此操作会立即影响按标签控制的访问权限。`}
+        confirmLabel="清空标签"
+        destructive
+        loading={mutation.isPending}
+        onConfirm={() => {
+          mutation.mutate(undefined, { onSuccess: () => setClearConfirmOpen(false) });
+        }}
+      />
     </Dialog>
   );
 }
@@ -1235,12 +1291,7 @@ function UserFormDialog({
     }
   };
 
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text).then(
-      () => toast.success("已复制到剪贴板"),
-      () => toast.error("复制失败，请手动复制"),
-    );
-  };
+  const copyToClipboard = (text: string) => { void copyText(text); };
 
   return (
     <Dialog

@@ -91,18 +91,19 @@ def _show_row(db: sqlite3.Connection, show_id: int) -> sqlite3.Row:
     return row
 
 
-def _serialize_show_resource(db: sqlite3.Connection, resource_id: int, version_no: int, user: sqlite3.Row, is_hidden: int = 0) -> dict[str, Any] | None:
-    resource = db.execute("SELECT * FROM resources WHERE id = ?", (resource_id,)).fetchone()
+def _serialize_show_resource(db: sqlite3.Connection, resource_id: int, version_no: int, user: sqlite3.Row, is_hidden: int = 0, *, resource: sqlite3.Row | None = None) -> dict[str, Any] | None:
+    if resource is None:
+        resource = db.execute(
+            "SELECT r.*, v.id AS preview_version_id, v.png_path AS preview_png FROM resources r "
+            "LEFT JOIN resource_versions v ON v.resource_id = r.id AND v.version_no = ? WHERE r.id = ?",
+            (version_no, resource_id),
+        ).fetchone()
     if resource is None:
         return None
     if can_view_resource(db, resource, user):
         latest_version_no = int(resource["current_version"])
-        version_row = db.execute(
-            "SELECT id, png_path FROM resource_versions WHERE resource_id = ? AND version_no = ?",
-            (resource_id, version_no),
-        ).fetchone()
-        version_id = version_row["id"] if version_row else None
-        png_path = version_row["png_path"] if version_row else None
+        version_id = resource["preview_version_id"]
+        png_path = resource["preview_png"]
         return {
             "id": resource_id,
             "accessible": True,
@@ -165,12 +166,15 @@ def _serialize_show(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row)
     visible_user_ids = _show_scope_user_ids(db, "show_visibility", int(row["id"]))
     manage_user_ids = _show_scope_user_ids(db, "show_management", int(row["id"]))
     sr_rows = db.execute(
-        "SELECT resource_id, version_no, is_hidden FROM show_resources WHERE show_id = ? ORDER BY sort_order",
+        "SELECT r.*, sr.resource_id, sr.version_no, sr.is_hidden, v.id AS preview_version_id, v.png_path AS preview_png "
+        "FROM show_resources sr JOIN resources r ON r.id = sr.resource_id "
+        "LEFT JOIN resource_versions v ON v.resource_id = r.id AND v.version_no = sr.version_no "
+        "WHERE sr.show_id = ? ORDER BY sr.sort_order",
         (row["id"],),
     ).fetchall()
     resources = []
     for sr in sr_rows:
-        sres = _serialize_show_resource(db, int(sr["resource_id"]), int(sr["version_no"]), user, int(sr["is_hidden"]))
+        sres = _serialize_show_resource(db, int(sr["resource_id"]), int(sr["version_no"]), user, int(sr["is_hidden"]), resource=sr)
         if sres is not None:
             resources.append(sres)
     updated_by_user = None
@@ -219,12 +223,15 @@ def _serialize_show_lite(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3
     """轻量级放映序列化：仅返回列表展示所需字段，资源只取前2个预览；同时附带完整 resource_id 列表用于前端判断资源是否已存在"""
     owner = db.execute("SELECT id, name, username FROM users WHERE id = ?", (row["owner_id"],)).fetchone()
     sr_rows = db.execute(
-        "SELECT resource_id, version_no FROM show_resources WHERE show_id = ? ORDER BY sort_order LIMIT 2",
+        "SELECT r.*, sr.resource_id, sr.version_no, sr.is_hidden, v.id AS preview_version_id, v.png_path AS preview_png "
+        "FROM show_resources sr JOIN resources r ON r.id = sr.resource_id "
+        "LEFT JOIN resource_versions v ON v.resource_id = r.id AND v.version_no = sr.version_no "
+        "WHERE sr.show_id = ? ORDER BY sr.sort_order LIMIT 2",
         (row["id"],),
     ).fetchall()
     resources = []
     for sr in sr_rows:
-        sres = _serialize_show_resource(db, int(sr["resource_id"]), int(sr["version_no"]), user)
+        sres = _serialize_show_resource(db, int(sr["resource_id"]), int(sr["version_no"]), user, int(sr["is_hidden"]), resource=sr)
         if sres is not None:
             resources.append(sres)
     all_ids_rows = db.execute(
@@ -270,9 +277,10 @@ def _collect_show_accessible_resources(
     """按当前用户权限，返回放映下可见资源的固定版本信息（按 sort_order）。"""
     sr_rows = db.execute(
         """
-        SELECT sr.resource_id, sr.version_no, sr.is_hidden, r.name
+        SELECT r.*, sr.resource_id, sr.version_no, sr.is_hidden, v.ppt_path, v.png_path, v.font_names, v.missing_fonts
         FROM show_resources sr
         JOIN resources r ON r.id = sr.resource_id
+        JOIN resource_versions v ON v.resource_id = r.id AND v.version_no = sr.version_no
         WHERE sr.show_id = ?
         ORDER BY sr.sort_order
         """,
@@ -280,27 +288,17 @@ def _collect_show_accessible_resources(
     ).fetchall()
     items: list[dict[str, Any]] = []
     for sr in sr_rows:
-        resource = db.execute(
-            "SELECT * FROM resources WHERE id = ?", (sr["resource_id"],)
-        ).fetchone()
-        if resource is None or not can_view_resource(db, resource, user):
-            continue
-        version_row = db.execute(
-            "SELECT ppt_path, png_path, font_names, missing_fonts FROM resource_versions"
-            " WHERE resource_id = ? AND version_no = ?",
-            (sr["resource_id"], sr["version_no"]),
-        ).fetchone()
-        if not version_row:
+        if not can_view_resource(db, sr, user):
             continue
         items.append(
             {
                 "resource_id": sr["resource_id"],
                 "name": sr["name"],
                 "version_no": sr["version_no"],
-                "ppt_path": version_row["ppt_path"],
-                "png_path": version_row["png_path"],
-                "font_names": _json_loads(version_row["font_names"], []),
-                "missing_fonts": _json_loads(version_row["missing_fonts"], []),
+                "ppt_path": sr["ppt_path"],
+                "png_path": sr["png_path"],
+                "font_names": _json_loads(sr["font_names"], []),
+                "missing_fonts": _json_loads(sr["missing_fonts"], []),
                 "is_hidden": bool(sr["is_hidden"]),
             }
         )

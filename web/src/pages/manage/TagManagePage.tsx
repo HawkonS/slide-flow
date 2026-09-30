@@ -38,6 +38,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/common/PageHeader";
+import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 
 type TagDomain = "resource" | "subject" | "status" | "user";
 
@@ -193,6 +194,7 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
   const [batchEditOpen, setBatchEditOpen] = React.useState(false);
   const [editTag, setEditTag] = React.useState<AdminTag | null>(null);
   const [editCategory, setEditCategory] = React.useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = React.useState<AdminTag | null>(null);
   const [selectedIds, setSelectedIds] = React.useState<Set<number>>(new Set());
   const isFlatDomain = isFlatTagDomain(domain);
 
@@ -297,12 +299,7 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
     });
   };
   const handleDelete = (item: AdminTag) => {
-    const detail = item.usage_count > 0
-      ? domain === "user"
-        ? `「${item.name}」当前有 ${item.usage_count} 个用户在使用。删除后会同时移除用户分组以及依赖该标签的素材/模板动态权限，是否继续？`
-        : `「${item.name}」当前有 ${item.usage_count} 个素材或放映在使用。删除定义不会清除历史业务字段，是否继续？`
-      : `确认删除${copy.label}「${item.name}」？`;
-    if (window.confirm(detail)) deleteMutation.mutate(item.id);
+    setDeleteTarget(item);
   };
   const invalidate = () => {
     setSelectedIds(new Set());
@@ -541,6 +538,23 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
         count={tags.filter((item) => item.category === editCategory).length}
         onOpenChange={(open) => !open && setEditCategory(null)}
         onSuccess={invalidate}
+      />
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
+        title={`删除${copy.label}`}
+        description={deleteTarget ? (deleteTarget.usage_count > 0
+          ? domain === "user"
+            ? `「${deleteTarget.name}」当前有 ${deleteTarget.usage_count} 个用户在使用。删除后会移除用户分组以及依赖该标签的动态权限。`
+            : `「${deleteTarget.name}」当前有 ${deleteTarget.usage_count} 个素材或放映在使用。删除定义不会清除历史业务字段。`
+          : `确定删除${copy.label}「${deleteTarget.name}」吗？`) : ""}
+        confirmLabel="删除标签"
+        destructive
+        loading={deleteMutation.isPending}
+        onConfirm={() => {
+          const target = deleteTarget;
+          if (target) deleteMutation.mutate(target.id, { onSuccess: () => setDeleteTarget(null) });
+        }}
       />
     </div>
   );

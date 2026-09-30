@@ -27,6 +27,7 @@ import { Switch } from "@/components/ui/switch";
 import { ApiError, api, downloadFile } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/common/PageHeader";
+import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { AdminConfigPage } from "./AdminConfigPage";
 
 // ==================== 升级遮罩 ====================
@@ -292,6 +293,7 @@ function RuntimeTab() {
   // 升级状态：控制全屏遮罩和轮询逻辑（从 sessionStorage 恢复，避免页面刷新丢失）
   const [upgradeState, setUpgradeState] = React.useState<UpgradeState | null>(() => loadUpgradeState());
   const [elapsed, setElapsed] = React.useState(0);
+  const [confirmOperation, setConfirmOperation] = React.useState<"shutdown" | "restart" | "upgrade" | null>(null);
 
   // 同步升级状态到 sessionStorage，确保页面刷新后能恢复。终态不持久化，
   // 防止用户手动刷新或切换页面后再次看到已经完成的倒计时。
@@ -552,27 +554,15 @@ function RuntimeTab() {
   });
 
   const handleShutdown = () => {
-    if (window.confirm("确定要关闭系统吗？这将停止所有服务。")) {
-      shutdownMut.mutate();
-    }
+    setConfirmOperation("shutdown");
   };
 
   const handleRestart = () => {
-    if (window.confirm("确定要重启系统吗？服务将短暂中断。")) {
-      restartMut.mutate();
-    }
+    setConfirmOperation("restart");
   };
 
   const handleUpgrade = () => {
-    if (window.confirm(
-      "确定要升级系统吗？\n\n" +
-      "此操作将：\n" +
-      "1. 从 Git 仓库拉取最新代码\n" +
-      "2. 自动重启服务\n\n" +
-      "升级期间页面将显示升级进度，服务恢复后自动刷新，确定继续吗？"
-    )) {
-      upgradeMut.mutate();
-    }
+    setConfirmOperation("upgrade");
   };
 
   const operationPending = shutdownMut.isPending || restartMut.isPending || upgradeMut.isPending;
@@ -641,6 +631,26 @@ function RuntimeTab() {
 
   return (
     <div className="flex flex-col gap-4">
+      <ConfirmDialog
+        open={confirmOperation !== null}
+        onOpenChange={(open) => { if (!open && !operationPending) setConfirmOperation(null); }}
+        title={confirmOperation === "shutdown" ? "关闭系统" : confirmOperation === "restart" ? "重启服务" : "升级系统"}
+        description={confirmOperation === "shutdown"
+          ? "确定关闭系统吗？所有服务会停止，其他用户将暂时无法访问。"
+          : confirmOperation === "restart"
+            ? "确定重启服务吗？服务会短暂中断，恢复后页面会自动刷新。"
+            : "系统将从 Git 仓库拉取最新代码并自动重启。升级期间请保持页面打开，服务恢复后会自动刷新。"}
+        confirmLabel={confirmOperation === "shutdown" ? "关闭系统" : confirmOperation === "restart" ? "重启服务" : "开始升级"}
+        destructive={confirmOperation !== "upgrade"}
+        loading={operationPending}
+        onConfirm={() => {
+          const operation = confirmOperation;
+          const afterSuccess = { onSuccess: () => setConfirmOperation(null) };
+          if (operation === "shutdown") shutdownMut.mutate(undefined, afterSuccess);
+          else if (operation === "restart") restartMut.mutate(undefined, afterSuccess);
+          else if (operation === "upgrade") upgradeMut.mutate(undefined, afterSuccess);
+        }}
+      />
       <section className="surface flex flex-wrap items-center justify-between gap-3 px-4 py-3 shadow-sm">
         <div className="flex min-w-0 items-center gap-3">
           <Power className="h-4 w-4 shrink-0 text-muted-foreground" />

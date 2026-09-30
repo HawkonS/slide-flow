@@ -15,10 +15,11 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import settings
+from app.core.origins import allowed_api_origins
 from app.core.errors import OSS_CONFIGURATION_MESSAGE, OSS_UNAVAILABLE_MESSAGE
 from app.core.oss import StorageConfigurationError, StorageUnavailableError
 from app.lifecycle import lifespan
-from app.middleware.http import ResponseCacheMiddleware, SecurityHeadersMiddleware, SlowRequestLogger
+from app.middleware.http import BrowserOriginMiddleware, ResponseCacheMiddleware, SecurityHeadersMiddleware, SlowRequestLogger
 from app.middleware.resource_import import ResourceImportRequestGuard
 from app.web.static import _StaticFilesWithHashedCache, router as static_router
 
@@ -51,22 +52,14 @@ def create_app() -> FastAPI:
             headers={"Cache-Control": "no-store", "Retry-After": "3"},
         )
 
-    allowed_origins = [origin.strip() for origin in settings.allowed_host.split(",") if origin.strip()]
-    if allowed_origins:
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=allowed_origins,
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
-    else:
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=["*"],
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_api_origins(),
+        allow_credentials=True,
+        allow_methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["*"],
+    )
+    app.add_middleware(BrowserOriginMiddleware)
     app.add_middleware(SlowRequestLogger)
     if settings.response_cache_enabled:
         app.add_middleware(ResponseCacheMiddleware)
@@ -75,7 +68,7 @@ def create_app() -> FastAPI:
     app.add_middleware(GZipMiddleware, minimum_size=1000)
 
     from app.routers import auth, config, download_records, feishu_auth, fonts, pages, system, tags, user_center, users
-    from app.routers import downloads, presentation, resource_import, resource_shares, task_events, tasks, templates, renderer_font_tasks, renderer_render_tasks
+    from app.routers import downloads, presentation, resource_import, resource_shares, show_shares, task_events, tasks, templates, renderer_font_tasks, renderer_render_tasks
     from app.routers.resources import files as resource_files
     from app.routers.resources import mutations as resource_mutations
     from app.routers.resources import queries as resource_queries
@@ -88,7 +81,7 @@ def create_app() -> FastAPI:
     for module in (pages, config, system, auth, user_center, users, fonts, tags, download_records):
         app.include_router(module.router, prefix="/api", tags=[module.__name__.rsplit(".", 1)[-1]])
     for module in (
-        resource_import, resource_shares, resource_queries, resource_mutations, resource_remarks, resource_files,
+        resource_import, resource_shares, show_shares, resource_queries, resource_mutations, resource_remarks, resource_files,
         templates, show_catalog, show_versions, show_remarks, show_downloads,
         downloads, task_events, presentation, tasks,
         renderer_font_tasks,

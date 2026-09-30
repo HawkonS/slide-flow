@@ -30,6 +30,7 @@ import {
   DeleteScopeDialog,
   type DeleteScope,
 } from "@/components/common/DeleteScopeDialog";
+import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import {
   DEFAULT_RESOURCE_SUBJECT,
   MANAGEMENT_SCOPE_OPTIONS,
@@ -113,6 +114,8 @@ export function ResourceEditDialog({
 }: ResourceEditDialogProps) {
   const isCreate = resource == null;
   const [form, setForm] = React.useState<FormState>(() => defaultForm(resource));
+  const [confirmAction, setConfirmAction] = React.useState<"rollback" | "delete" | null>(null);
+  const [deleteScopeOpen, setDeleteScopeOpen] = React.useState(false);
   const queryClient = useQueryClient();
   const { user } = useAuth();
 
@@ -232,11 +235,7 @@ export function ResourceEditDialog({
 
   const handleRollback = () => {
     if (!resource) return;
-    const ok = window.confirm(
-      `确定要将「${resource.name}」回退到上一版本吗？当前最新版本 v${resource.current_version} 及其 PPT / 预览图将被永久删除，此操作不可恢复。`,
-    );
-    if (!ok) return;
-    deleteMutation.mutate("rollback");
+    setConfirmAction("rollback");
   };
 
   const handleDelete = () => {
@@ -246,11 +245,7 @@ export function ResourceEditDialog({
       setDeleteScopeOpen(true);
       return;
     }
-    const ok = window.confirm(
-      `确定要彻底删除「${resource.name}」吗？所有文件、备注、访问配置都将被清除，此操作不可恢复。`,
-    );
-    if (!ok) return;
-    deleteMutation.mutate("all");
+    setConfirmAction("delete");
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -287,8 +282,6 @@ export function ResourceEditDialog({
   };
 
   const ownerId = resource?.owner_id ?? user?.id;
-  const [deleteScopeOpen, setDeleteScopeOpen] = React.useState(false);
-
   return (
     <>
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -543,6 +536,24 @@ export function ResourceEditDialog({
         </form>
       </DialogContent>
     </Dialog>
+
+    {resource && (
+      <ConfirmDialog
+        open={confirmAction !== null}
+        onOpenChange={(open) => { if (!open) setConfirmAction(null); }}
+        title={confirmAction === "rollback" ? "回退资源版本" : "删除资源"}
+        description={confirmAction === "rollback"
+          ? `确定将「${resource.name}」回退到上一版本吗？当前 v${resource.current_version} 及其文件会被永久删除。`
+          : `确定彻底删除「${resource.name}」吗？所有版本、备注和访问配置都会被清除。`}
+        confirmLabel={confirmAction === "rollback" ? "确认回退" : "删除资源"}
+        destructive
+        loading={deleteMutation.isPending}
+        onConfirm={() => {
+          const action = confirmAction;
+          if (action) deleteMutation.mutate(action === "rollback" ? "rollback" : "all", { onSuccess: () => setConfirmAction(null) });
+        }}
+      />
+    )}
 
     {resource && (
       <DeleteScopeDialog

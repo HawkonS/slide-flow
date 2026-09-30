@@ -117,10 +117,10 @@ export function ShowListView({
                       {onToggleStandard && isAdminRole(user?.role) && <DropdownMenuItem onSelect={() => onToggleStandard(show)}>{show.is_standard ? <><StarOff className="mr-2 h-4 w-4" />取消标准放映</> : <><Star className="mr-2 h-4 w-4" />设为标准放映</>}</DropdownMenuItem>}
                       {show.can_manage && (onEdit || onDuplicate || onIterate || onDelete) && <>
                         <DropdownMenuSeparator />
-                        {onEdit && <DropdownMenuItem onSelect={() => onEdit(show)}><Pencil className="mr-2 h-4 w-4" />编辑信息</DropdownMenuItem>}
-                        {onDuplicate && <DropdownMenuItem onSelect={() => onDuplicate(show)}><Copy className="mr-2 h-4 w-4" />创建副本</DropdownMenuItem>}
+                        {onEdit && <DropdownMenuItem onSelect={() => window.setTimeout(() => onEdit(show), 0)}><Pencil className="mr-2 h-4 w-4" />编辑信息</DropdownMenuItem>}
+                        {onDuplicate && <DropdownMenuItem onSelect={() => window.setTimeout(() => onDuplicate(show), 0)}><Copy className="mr-2 h-4 w-4" />创建副本</DropdownMenuItem>}
                         {onIterate && <DropdownMenuItem onSelect={() => onIterate(show)}><GitBranch className="mr-2 h-4 w-4" />版本迭代</DropdownMenuItem>}
-                        {onDelete && <DropdownMenuItem onSelect={() => onDelete(show)} className="text-destructive focus:text-destructive"><Trash2 className="mr-2 h-4 w-4" />删除</DropdownMenuItem>}
+                        {onDelete && <DropdownMenuItem onSelect={() => window.setTimeout(() => onDelete(show), 0)} className="text-destructive focus:text-destructive"><Trash2 className="mr-2 h-4 w-4" />删除</DropdownMenuItem>}
                       </>}
                     </DropdownMenuContent>
                   </DropdownMenu>

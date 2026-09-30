@@ -1,7 +1,7 @@
 import * as React from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronDown, ClipboardList, ListChecks, Loader2, Plus, Trash2, X } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { ArrowRight, Check, ChevronDown, ClipboardList, ListChecks, Loader2, Plus, Star, Trash2, X } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -14,6 +14,7 @@ import {
   DeleteScopeDialog,
   type DeleteScope,
 } from "@/components/common/DeleteScopeDialog";
+import { ConfirmDialog, PromptDialog } from "@/components/common/ConfirmDialog";
 import { PageHeader } from "@/components/common/PageHeader";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -58,7 +59,11 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
 
   // 分页
   const contentRef = React.useRef<HTMLDivElement>(null);
-  const { pageSize: cardPageSize, gridStyle } = useResponsiveGrid(contentRef);
+  const { pageSize: cardPageSize, gridStyle } = useResponsiveGrid(contentRef, {
+    columnStep: standardOnly ? 360 : 300,
+    maxCols: standardOnly ? 3 : 4,
+    titleHeight: 48,
+  });
   const [listPageSize, setListPageSize] = React.useState(12);
   React.useEffect(() => {
     const el = contentRef.current;
@@ -74,9 +79,10 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
 
   // 筛选 + 页码统一编码到 URL ?s=…
   const [urlState, setUrlState] = useEncodedUrlState({ defaults: URL_DEFAULTS });
-  const viewMode = urlState.view === "list" ? "list" : "card";
+  const viewMode = standardOnly ? "card" : urlState.view === "list" ? "list" : "card";
   const pageSize = viewMode === "list" ? listPageSize : cardPageSize;
   const setViewMode = (view: "card" | "list") => {
+    if (standardOnly) return;
     setUrlState((prev) => ({ ...prev, view, p: 1 }));
   };
 
@@ -138,7 +144,7 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
       search: filters.query.trim() || undefined,
       subject: filters.subject !== "all" ? filters.subject : undefined,
       status: filters.status !== "all" ? filters.status : undefined,
-      permission: filters.permission !== "all" ? filters.permission : undefined,
+      permission: standardOnly ? undefined : filters.permission !== "all" ? filters.permission : undefined,
       tags: filters.tags.length > 0 ? serializeTags(filters.tags) : undefined,
       tags_mode: filters.tagsMode,
       sort: filters.sort,
@@ -177,6 +183,10 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
   const [editShow, setEditShow] = React.useState<Show | null>(null);
   const [editOpen, setEditOpen] = React.useState(false);
   const [deleteTarget, setDeleteTarget] = React.useState<Show | null>(null);
+  const [singleDeleteTarget, setSingleDeleteTarget] = React.useState<Show | null>(null);
+  const [duplicateTarget, setDuplicateTarget] = React.useState<Show | null>(null);
+  const [duplicateName, setDuplicateName] = React.useState("");
+  const [duplicatePending, setDuplicatePending] = React.useState(false);
   const [selectedIds, setSelectedIds] = React.useState<Set<number>>(new Set());
   const [manageableIds, setManageableIds] = React.useState<Set<number>>(new Set());
   const showCacheRef = React.useRef<Map<number, Show>>(new Map());
@@ -258,8 +268,30 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
       setDeleteTarget(show);
       return;
     }
-    if (!window.confirm(`确定要删除放映「${show.name}」吗？此操作不可撤销。`)) return;
-    deleteMutation.mutate({ id: show.id, scope: "latest" });
+    setSingleDeleteTarget(show);
+  };
+
+  const handleDuplicate = (show: Show) => {
+    setDuplicateTarget(show);
+    setDuplicateName(`${show.name} - 副本`);
+  };
+
+  const submitDuplicate = async () => {
+    if (!duplicateTarget || !duplicateName.trim()) return;
+    setDuplicatePending(true);
+    try {
+      await api(`/api/shows/${duplicateTarget.id}/duplicate`, {
+        method: "POST",
+        json: { name: duplicateName.trim() },
+      });
+      toast.success("副本已创建");
+      setDuplicateTarget(null);
+      queryClient.invalidateQueries({ queryKey: ["shows"] });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "创建副本失败");
+    } finally {
+      setDuplicatePending(false);
+    }
   };
 
   const clearSelection = React.useCallback(() => {
@@ -379,12 +411,26 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
         title={standardOnly ? "标准放映" : "放映素材"}
         description={standardOnly ? "按主体、标签和状态浏览标准放映。" : "按主体、标签和状态快速查找并管理放映素材。"}
         count={total > 0 ? `共 ${total} 条` : "共 0 条"}
-        actions={<ViewModeSwitch value={viewMode} onChange={setViewMode} label="放映视图" />}
+        actions={!standardOnly && <ViewModeSwitch value={viewMode} onChange={setViewMode} label="放映视图" />}
       />
+
+      {standardOnly && (
+        <section className="flex flex-col gap-3 border-l-4 border-amber-400 bg-muted/30 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 items-start gap-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"><Star className="h-4 w-4 fill-current" /></div>
+              <div className="min-w-0">
+                <h2 className="text-sm font-semibold">由组织精选的标准放映</h2>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">由组织确认的对外标准版本。</p>
+              </div>
+            </div>
+            <Link to="/manage/shows" className="inline-flex shrink-0 items-center gap-1.5 self-start rounded-md border bg-background px-3 py-2 text-xs font-medium transition hover:bg-accent sm:self-auto">查看全部放映<ArrowRight className="h-3.5 w-3.5" /></Link>
+        </section>
+      )}
 
       <ShowFilters
         subjects={subjects}
         tags={tags}
+        hidePermission={standardOnly}
         actions={
           user && !standardOnly ? (
             <>
@@ -454,17 +500,7 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
               shows={shows}
               onOpen={handleOpenDetail}
               onEdit={standardOnly ? undefined : handleEdit}
-              onDuplicate={standardOnly ? undefined : (s) => {
-                const newName = window.prompt("请输入副本名称", `${s.name} - 副本`);
-                if (newName?.trim()) {
-                  api(`/api/shows/${s.id}/duplicate`, { method: "POST", json: { name: newName.trim() } })
-                    .then(() => {
-                      toast.success("副本已创建");
-                      queryClient.invalidateQueries({ queryKey: ["shows"] });
-                    })
-                    .catch((err: Error) => toast.error(err.message || "创建副本失败"));
-                }
-              }}
+              onDuplicate={standardOnly ? undefined : handleDuplicate}
               onIterate={standardOnly ? undefined : (s) => navigate(`/shows/${s.id}/iterate`)}
               onDelete={standardOnly ? undefined : handleDelete}
               onToggleStandard={standardOnly ? undefined : (show) => standardMutation.mutate(show)}
@@ -482,17 +518,7 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
                   show={s}
                   onOpen={handleOpenDetail}
                   onEdit={standardOnly ? undefined : handleEdit}
-                  onDuplicate={standardOnly ? undefined : (s) => {
-                    const newName = window.prompt("请输入副本名称", `${s.name} - 副本`);
-                    if (newName?.trim()) {
-                      api(`/api/shows/${s.id}/duplicate`, { method: "POST", json: { name: newName.trim() } })
-                        .then(() => {
-                          toast.success("副本已创建");
-                          queryClient.invalidateQueries({ queryKey: ["shows"] });
-                        })
-                        .catch((err: Error) => toast.error(err.message || "创建副本失败"));
-                    }
-                  }}
+                  onDuplicate={standardOnly ? undefined : handleDuplicate}
                   onIterate={standardOnly ? undefined : () => navigate(`/shows/${s.id}/iterate`)}
                   onDelete={standardOnly ? undefined : handleDelete}
                   onToggleStandard={standardOnly ? undefined : (show) => standardMutation.mutate(show)}
@@ -600,6 +626,35 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {singleDeleteTarget && (
+        <ConfirmDialog
+          open={singleDeleteTarget !== null}
+          onOpenChange={(open) => { if (!open) setSingleDeleteTarget(null); }}
+          title="删除放映"
+          description={`确定要删除放映「${singleDeleteTarget.name}」吗？此操作不可恢复。`}
+          confirmLabel="删除放映"
+          destructive
+          loading={deleteMutation.isPending}
+          onConfirm={() => {
+            const target = singleDeleteTarget;
+            deleteMutation.mutate({ id: target.id, scope: "latest" }, { onSuccess: () => setSingleDeleteTarget(null) });
+          }}
+        />
+      )}
+
+      <PromptDialog
+        open={duplicateTarget !== null}
+        onOpenChange={(open) => { if (!open && !duplicatePending) setDuplicateTarget(null); }}
+        title="创建放映副本"
+        description="副本会复制当前放映的页面顺序和版本配置，创建后可继续编辑。"
+        label="副本名称"
+        value={duplicateName}
+        onValueChange={setDuplicateName}
+        confirmLabel="创建副本"
+        loading={duplicatePending}
+        onConfirm={() => void submitDuplicate()}
+      />
 
       <DeleteScopeDialog
         open={deleteTarget != null}

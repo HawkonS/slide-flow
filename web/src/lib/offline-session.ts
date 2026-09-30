@@ -19,9 +19,26 @@ let channel: BroadcastChannel | null = null;
 let syncUsers = 0;
 let storageReadable = true;
 
-function newEpoch(): string {
-  return globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+/**
+ * Generate a browser-safe identifier without relying on an optional UUID API.
+ * Older WebViews and some installed app shells expose getRandomValues but
+ * omit that API, so playback must keep working in those environments too.
+ */
+export function createClientId(): string {
+  const cryptoApi = globalThis.crypto;
+  try {
+    if (typeof cryptoApi?.getRandomValues === 'function') {
+      const bytes = new Uint8Array(16);
+      cryptoApi.getRandomValues(bytes);
+      return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+    }
+  } catch {
+    // Some embedded app shells expose Web Crypto but reject calls from their context.
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
 }
+
+function newEpoch(): string { return createClientId(); }
 
 function snapshotUser(user: CurrentUser, sessionVersion: number): CurrentUser {
   // A local snapshot never carries management roles, grants, tags or secrets.

@@ -3,32 +3,46 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft,
-  ClipboardList,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Download,
   Eye,
   GitBranch,
   HardDriveDownload,
+  Link2,
+  LayoutGrid,
+  Loader2,
   Lock,
   Maximize,
   MonitorPlay,
+  Play,
 } from "lucide-react";
 
 import { ShowDownloadDialog } from "@/components/show/ShowDownloadDialog";
 import ShowOfflineCacheDialog from "@/components/show/ShowOfflineCacheDialog";
-import { ShowResourcePrepDialog } from "@/components/show/ShowResourcePrepDialog";
+import { ShowResourceRemarks } from "@/components/show/ShowResourceRemarks";
+import { ShowShareDialog } from "@/components/show/ShowShareDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { RESOURCE_SCOPE_LABEL } from "@/lib/constants";
 import { api, getShowVersions } from "@/lib/api";
-import { parseTags } from "@/lib/types";
-import type {
-  Show,
-  ShowResource,
-  ShowResourceAccessible,
-  ShowResourceInaccessible,
-  UpdateInfo,
-} from "@/lib/types";
+import { parseTags, type Show, type ShowResource, type ShowResourceAccessible, type ShowResourceInaccessible, type UpdateInfo } from "@/lib/types";
+import { createClientId } from "@/lib/offline-session";
 
 function formatDate(value: string | null | undefined) {
   if (!value) return "-";
@@ -48,191 +62,157 @@ function InfoItem({ label, value }: { label: string; value: string }) {
   );
 }
 
+function PageThumb({ resource, index, active, onClick, compact = false }: {
+  resource: ShowResource;
+  index: number;
+  active: boolean;
+  onClick: () => void;
+  compact?: boolean;
+}) {
+  const thumb = isAccessible(resource) ? resource.preview_url || resource.original_preview_url : null;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={`第 ${index + 1} 页${resource.name ? `：${resource.name}` : ""}`}
+      aria-pressed={active}
+      className={[
+        "group relative overflow-hidden rounded-md border bg-muted text-left transition",
+        compact ? "w-20 shrink-0 sm:w-24" : "w-full",
+        active ? "border-primary ring-2 ring-primary/25" : "border-border/70 hover:border-primary/50",
+      ].join(" ")}
+    >
+      <div className="relative aspect-video overflow-hidden">
+        {thumb ? (
+          <img src={thumb} alt={resource.name} loading="lazy" decoding="async" className="absolute inset-0 h-full w-full object-cover transition-transform group-hover:scale-[1.02]" />
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center text-muted-foreground"><Lock className="h-4 w-4" /></div>
+        )}
+        <span className="absolute left-1.5 top-1.5 rounded bg-black/65 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-white">{index + 1}</span>
+      </div>
+      {!compact && <div className="truncate px-2 py-1.5 text-[11px] font-medium" title={resource.name}>{resource.name}</div>}
+    </button>
+  );
+}
+
+function PageRail({ resources, activeIndex, onSelect, onOpenAll }: {
+  resources: ShowResource[];
+  activeIndex: number;
+  onSelect: (index: number) => void;
+  onOpenAll: () => void;
+}) {
+  const railRef = React.useRef<HTMLDivElement>(null);
+  const [visibleCount, setVisibleCount] = React.useState(1);
+  React.useEffect(() => {
+    const rail = railRef.current;
+    if (!rail) return;
+    const measure = () => {
+      const thumbWidth = window.matchMedia("(min-width: 640px)").matches ? 96 : 80;
+      setVisibleCount(Math.max(1, Math.min(5, Math.floor((rail.clientWidth + 6) / (thumbWidth + 6)))));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(rail);
+    return () => observer.disconnect();
+  }, [resources.length]);
+  if (!resources.length) return null;
+  const start = Math.max(0, Math.min(activeIndex - Math.floor(visibleCount / 2), resources.length - visibleCount));
+  const visible = resources.slice(start, start + visibleCount);
+  return (
+    <div className="flex items-center gap-2 border-t bg-background/90 px-3 py-2.5 sm:px-4">
+      <Button type="button" variant="outline" size="icon" className="h-8 w-8 shrink-0" disabled={activeIndex === 0} aria-label="上一页" onClick={() => onSelect(Math.max(0, activeIndex - 1))}><ChevronLeft className="h-4 w-4" /></Button>
+      <div ref={railRef} className="flex min-w-0 flex-1 items-center justify-center gap-1.5 overflow-hidden">
+        {visible.map((resource, offset) => {
+          const index = start + offset;
+          return <PageThumb key={`${resource.id}-${index}`} resource={resource} index={index} active={index === activeIndex} onClick={() => onSelect(index)} compact />;
+        })}
+      </div>
+      <Button type="button" variant="outline" size="icon" className="h-8 w-8 shrink-0" disabled={activeIndex === resources.length - 1} aria-label="下一页" onClick={() => onSelect(Math.min(resources.length - 1, activeIndex + 1))}><ChevronRight className="h-4 w-4" /></Button>
+      <Button type="button" variant="outline" size="sm" className="h-8 shrink-0 gap-1.5 px-2.5 text-xs" aria-label="全部页面" onClick={onOpenAll}><LayoutGrid className="h-3.5 w-3.5" /><span className="hidden sm:inline">全部页面</span></Button>
+    </div>
+  );
+}
+
+function AllPagesDialog({ open, onOpenChange, resources, activeIndex, onSelect }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  resources: ShowResource[];
+  activeIndex: number;
+  onSelect: (index: number) => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[90vh] max-w-5xl overflow-hidden p-0">
+        <DialogHeader className="border-b px-6 py-4 pr-12"><DialogTitle className="flex items-center gap-2 text-base"><LayoutGrid className="h-4 w-4 text-muted-foreground" />全部页面</DialogTitle><DialogDescription>点击页面即可快速切换当前预览。</DialogDescription></DialogHeader>
+        <div className="max-h-[calc(90vh-86px)] overflow-y-auto p-5">
+          {resources.length ? <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">{resources.map((resource, index) => <PageThumb key={`${resource.id}-${index}`} resource={resource} index={index} active={index === activeIndex} onClick={() => { onSelect(index); onOpenChange(false); }} />)}</div> : <div className="rounded-lg border border-dashed px-4 py-10 text-center text-sm text-muted-foreground">暂无放映页面</div>}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ShowRemarksPanel({ show, resource }: { show: Show; resource: ShowResource | null }) {
+  return (
+    <section className="rounded-lg border bg-card p-3 shadow-sm">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold">资源准备</h2>
+        <span className="text-[10px] text-muted-foreground">点击卡片编辑</span>
+      </div>
+      {resource && isAccessible(resource) ? (
+        <div className="space-y-3">
+          <ShowResourceRemarks showId={show.id} resource={resource} />
+        </div>
+      ) : (
+        <div className="flex items-start gap-2 text-xs leading-5 text-muted-foreground">
+          <Lock className="mt-0.5 h-4 w-4 shrink-0" />当前页面的资源不可访问，无法查看或编辑备注。
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function ShowDetailPage() {
   const navigate = useNavigate();
   const { id } = useParams();
   const showId = Number(id);
   const validId = Number.isInteger(showId) && showId > 0;
   const [activeIndex, setActiveIndex] = React.useState(0);
-  const [prepOpen, setPrepOpen] = React.useState(false);
+  const [allPagesOpen, setAllPagesOpen] = React.useState(false);
   const [downloadOpen, setDownloadOpen] = React.useState(false);
   const [offlineCacheOpen, setOfflineCacheOpen] = React.useState(false);
+  const [shareOpen, setShareOpen] = React.useState(false);
 
-  const { data, isLoading, error } = useQuery({
-    queryKey: ["show-detail", showId],
-    queryFn: () => api<{ show: Show }>(`/api/shows/${showId}`),
-    enabled: validId,
-    retry: false,
-  });
+  const { data, isLoading, error } = useQuery({ queryKey: ["show-detail", showId], queryFn: () => api<{ show: Show }>(`/api/shows/${showId}`), enabled: validId, retry: false });
   const show = data?.show ?? null;
+  const { data: versionsData } = useQuery({ queryKey: ["shows", showId, "versions"], queryFn: () => getShowVersions(showId), enabled: validId && !!show, staleTime: 30_000 });
+  const { data: updatesData } = useQuery({ queryKey: ["shows", showId, "check-updates"], queryFn: () => api<{ updates: UpdateInfo[] }>(`/api/shows/${showId}/check-updates`), enabled: validId && !!show, staleTime: 30_000 });
+  React.useEffect(() => { setActiveIndex(0); }, [showId]);
 
-  const { data: versionsData } = useQuery({
-    queryKey: ["shows", showId, "versions"],
-    queryFn: () => getShowVersions(showId),
-    enabled: validId && !!show,
-    staleTime: 30_000,
-  });
-
-  const { data: updatesData } = useQuery({
-    queryKey: ["shows", showId, "check-updates"],
-    queryFn: () => api<{ updates: UpdateInfo[] }>(`/api/shows/${showId}/check-updates`),
-    enabled: validId && !!show,
-    staleTime: 30_000,
-  });
-
-  React.useEffect(() => {
-    setActiveIndex(0);
-  }, [showId]);
-
-  if (!validId) {
-    return <ErrorState title="放映不存在" onBack={() => navigate("/manage/shows")} />;
-  }
-  if (isLoading) {
-    return <div className="flex h-full items-center justify-center text-sm text-muted-foreground">加载放映详情…</div>;
-  }
-  if (!show) {
-    const status = (error as { status?: number } | null)?.status;
-    return <ErrorState title={status === 403 ? "没有查看权限" : "放映不存在或加载失败"} onBack={() => navigate("/manage/shows")} />;
-  }
+  if (!validId) return <ErrorState title="放映不存在" onBack={() => navigate("/manage/shows")} />;
+  if (isLoading) return <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin" />加载放映详情…</div>;
+  if (!show) { const status = (error as { status?: number } | null)?.status; return <ErrorState title={status === 403 ? "没有查看权限" : "放映不存在或加载失败"} onBack={() => navigate("/manage/shows")} />; }
 
   const resources = show.resources ?? [];
   const activeResource = resources[activeIndex] ?? null;
-  const previewUrl = activeResource && isAccessible(activeResource)
-    ? activeResource.original_preview_url || activeResource.preview_url
-    : null;
+  const previewUrl = activeResource && isAccessible(activeResource) ? activeResource.original_preview_url || activeResource.preview_url : null;
   const versions = [...(versionsData?.versions ?? [])].sort((a, b) => b.version_no - a.version_no);
+  const versionOptions = versions.length ? versions : [{ id: show.id, version_no: show.version_no, name: show.name, change_note: show.change_note || "", resource_count: resources.length, created_at: show.created_at, owner: show.owner || { id: show.owner_id, username: "", name: null } }];
   const updates = updatesData?.updates ?? [];
-  const updateByResourceId = new Map(updates.map((item) => [item.resource_id, item]));
+  const tags = parseTags(show.tags);
+  const openFullscreen = () => window.open(`/shows/${show.id}/fullscreen`, "_blank", "popup=yes,width=1920,height=1080");
+  const openPresenter = () => {
+    const session = createClientId();
+    const params = new URLSearchParams({ playback_session: session });
+    window.open(`/shows/${show.id}/display?${params.toString()}`, `slideflow-display-${session}`, "popup=yes,width=1920,height=1080");
+    navigate(`/shows/${show.id}/present?${params.toString()}`);
+  };
 
   return (
-    <div className="mx-auto min-h-full w-full max-w-[1600px] pb-10">
-      <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b px-1 py-2 sm:px-2">
-        <div className="flex min-w-0 items-center gap-2.5">
-          <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0" title="返回放映库" aria-label="返回放映库" onClick={() => navigate(-1)}>
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-          <div className="min-w-0">
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
-              <h1 className="max-w-full truncate text-xl font-semibold tracking-tight sm:text-2xl">{show.name}</h1>
-              <Badge variant="outline" className="h-5 px-1.5 text-[10px]">v{show.version_no}</Badge>
-              {show.is_standard && <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">标准放映</Badge>}
-            </div>
-          </div>
-        </div>
-        <div className="flex w-full flex-wrap items-center gap-1.5 sm:w-auto">
-          <Button variant="outline" size="sm" className="h-8 gap-1.5 px-2.5" onClick={() => window.open(`/shows/${show.id}/fullscreen`, "_blank", "popup=yes,width=1920,height=1080")}>
-            <Maximize className="h-4 w-4" />全屏放映
-          </Button>
-          <Button variant="outline" size="sm" className="h-8 gap-1.5 px-2.5" onClick={() => { window.open(`/shows/${show.id}/display`, "slideflow-display", "popup=yes,width=1920,height=1080"); navigate(`/shows/${show.id}/present`); }}>
-            <MonitorPlay className="h-4 w-4" />讲演模式
-          </Button>
-        </div>
-      </header>
-
-      <main className="min-w-0 pb-16 pt-5">
-        <div className="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,1fr)_340px]">
-          <section className="min-w-0 overflow-hidden rounded-xl border bg-card shadow-sm">
-            <div className="flex min-h-10 flex-wrap items-center justify-between gap-2 border-b px-3 py-2 sm:px-4">
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <Eye className="h-4 w-4" />
-                <span className="font-medium text-foreground">高清预览</span>
-                <span>第 {resources.length ? activeIndex + 1 : 0} / {resources.length} 页</span>
-              </div>
-            </div>
-            <div className="relative aspect-video w-full overflow-hidden bg-slate-100">
-              {activeResource ? (
-                isAccessible(activeResource) ? (
-                  previewUrl ? <img src={previewUrl} alt={activeResource.name} decoding="async" className="absolute inset-0 h-full w-full object-contain" /> : <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">暂无预览图</div>
-                ) : (
-                  <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-muted text-muted-foreground">
-                    <Lock className="h-10 w-10" />
-                    <p className="text-sm font-medium">资源 #{activeResource.id} 无权限</p>
-                    <p className="text-xs">管理者：{(activeResource as ShowResourceInaccessible).managers.map((manager) => manager.name || manager.username).join("、")}</p>
-                  </div>
-                )
-              ) : <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">暂无放映页面</div>}
-            </div>
-          </section>
-
-          <aside className="flex min-w-0 flex-col gap-3">
-            {versions.length > 1 && (
-              <section className="rounded-lg border bg-card p-3 shadow-sm">
-                <div className="flex items-center justify-between gap-2">
-                  <h2 className="text-sm font-semibold">版本</h2>
-                  <span className="rounded-full bg-muted px-2 py-1 text-[10px] font-medium text-muted-foreground">共 {versions.length} 个版本</span>
-                </div>
-                <Select value={String(show.id)} onValueChange={(value) => navigate(`/shows/${value}`)}>
-                  <SelectTrigger className="mt-3 h-10 w-full border-border/70 bg-muted/30 px-3 text-sm font-medium" aria-label="切换放映版本"><SelectValue /></SelectTrigger>
-                  <SelectContent>{versions.map((version) => <SelectItem key={version.id} value={String(version.id)}>v{version.version_no}{version.id === show.id ? "（当前）" : ""}{version.change_note ? ` · ${version.change_note}` : ""}</SelectItem>)}</SelectContent>
-                </Select>
-              </section>
-            )}
-            <section className="rounded-lg border bg-card p-3 shadow-sm">
-              <div className="flex items-center justify-between gap-2">
-                <h2 className="text-xs font-semibold">放映信息</h2>
-                <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">{show.can_manage ? "可管理" : "只读"}</span>
-              </div>
-              <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-3">
-                <InfoItem label="主体" value={show.subject || "未设置"} />
-                <InfoItem label="状态" value={show.status || "-"} />
-                <InfoItem label="标签" value={parseTags(show.tags).join("、") || "-"} />
-                <InfoItem label="可见范围" value={RESOURCE_SCOPE_LABEL[show.visibility_scope] || show.visibility_scope} />
-                <InfoItem label="管理范围" value={RESOURCE_SCOPE_LABEL[show.management_scope] || show.management_scope} />
-                <InfoItem label="创建者" value={show.owner?.name || show.owner?.username || "-"} />
-                <InfoItem label="资源数" value={`${resources.length} 页`} />
-              </dl>
-              {show.change_note && <p className="mt-3 border-t pt-3 text-xs leading-5 text-muted-foreground">变更说明：{show.change_note}</p>}
-              <p className="mt-3 text-[10px] text-muted-foreground">更新于 {formatDate(show.updated_at)}</p>
-            </section>
-          </aside>
-        </div>
-
-        {updates.length > 0 && (
-          <section className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300/70 bg-amber-50 px-4 py-3 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100">
-            <div className="min-w-0">
-              <p className="text-sm font-medium">有 {updates.length} 页资源可以升级</p>
-              <p className="mt-1 text-xs text-amber-800/80 dark:text-amber-200/80">当前放映引用的资源存在更新版本，创建新版本后即可选择升级。</p>
-            </div>
-            {show.can_manage && <Button size="sm" className="shrink-0" onClick={() => navigate(`/shows/${show.id}/iterate?tab=upgrade`)}>查看并升级</Button>}
-          </section>
-        )}
-
-        <section className="mt-8 border-t pt-6">
-          <div className="mb-4 flex items-center justify-between gap-2">
-            <div>
-              <h2 className="text-base font-semibold">放映页面</h2>
-              <p className="mt-1 text-xs text-muted-foreground">选择页面查看高清预览</p>
-            </div>
-            <span className="text-xs text-muted-foreground">{resources.length} 页</span>
-          </div>
-          {resources.length ? (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-              {resources.map((resource, index) => {
-                const thumb = isAccessible(resource) ? resource.preview_url || resource.original_preview_url : null;
-                return <button key={`${resource.id}-${index}`} type="button" onClick={() => { setActiveIndex(index); window.scrollTo({ top: 0, behavior: "smooth" }); }} className={`group overflow-hidden rounded-lg border bg-card text-left shadow-sm transition hover:border-primary/50 hover:shadow-md ${index === activeIndex ? "border-primary ring-2 ring-primary/20" : ""}`}>
-                  <div className="relative aspect-video overflow-hidden bg-muted">
-                    {thumb ? <img src={thumb} alt={resource.name} loading="lazy" className="h-full w-full object-cover transition-transform group-hover:scale-[1.015]" /> : <div className="flex h-full items-center justify-center text-xs text-muted-foreground"><Lock className="mr-1 h-3.5 w-3.5" />无权限</div>}
-                    <span className="absolute left-2 top-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white">{index + 1}</span>
-                    {updateByResourceId.has(resource.id) && <span className="absolute right-2 top-2 rounded bg-amber-500 px-1.5 py-0.5 text-[10px] font-medium text-white">可升级</span>}
-                  </div>
-                  <div className="truncate px-3 py-2 text-xs font-medium" title={resource.name}>{resource.name}</div>
-                </button>;
-              })}
-            </div>
-          ) : <div className="rounded-lg border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">暂无放映页面</div>}
-        </section>
-
-        <div className="mt-6 flex flex-wrap gap-2 border-t pt-4">
-          <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setPrepOpen(true)}><ClipboardList className="h-4 w-4" />资源准备</Button>
-          <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setDownloadOpen(true)}><Download className="h-4 w-4" />下载</Button>
-          <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setOfflineCacheOpen(true)}><HardDriveDownload className="h-4 w-4" />离线缓存</Button>
-          {show.can_manage && <Button variant="outline" size="sm" className="gap-1.5" onClick={() => navigate(`/shows/${show.id}/iterate`)}><GitBranch className="h-4 w-4" />版本迭代{updates.length > 0 && <Badge variant="secondary" className="ml-0.5 h-5 px-1.5 text-[10px]">{updates.length}</Badge>}</Button>}
-        </div>
-      </main>
-
-      <ShowResourcePrepDialog open={prepOpen} onOpenChange={setPrepOpen} show={show} />
-      <ShowDownloadDialog open={downloadOpen} onOpenChange={setDownloadOpen} show={show} />
-      <ShowOfflineCacheDialog open={offlineCacheOpen} onOpenChange={setOfflineCacheOpen} show={show} />
+    <div className="min-h-full w-full pb-10">
+      <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b px-1 py-2 sm:px-2"><div className="flex min-w-0 items-center gap-2.5"><Button variant="ghost" size="icon" className="h-9 w-9 shrink-0" title="返回放映库" aria-label="返回放映库" onClick={() => navigate(-1)}><ArrowLeft className="h-4 w-4" /></Button><div className="min-w-0"><div className="flex min-w-0 flex-wrap items-center gap-2"><h1 className="max-w-full truncate text-xl font-semibold tracking-tight sm:text-2xl">{show.name}</h1><Badge variant="outline" className="h-5 px-1.5 text-[10px]">v{show.version_no}</Badge>{show.is_standard && <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">标准放映</Badge>}</div></div></div><div className="flex w-full flex-wrap items-center gap-1.5 sm:w-auto"><div className="flex items-stretch"><Button size="sm" className="h-8 gap-1.5 rounded-r-none px-3" onClick={openFullscreen}><Play className="h-4 w-4" />放映</Button><DropdownMenu><DropdownMenuTrigger asChild><Button size="icon" className="h-8 w-8 rounded-l-none border-l border-primary-foreground/25 px-0" aria-label="选择放映模式"><ChevronDown className="h-4 w-4" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-36"><DropdownMenuItem onClick={openFullscreen}><Maximize className="h-4 w-4" />全屏放映</DropdownMenuItem><DropdownMenuItem onClick={openPresenter}><MonitorPlay className="h-4 w-4" />讲演放映</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div><Button variant="outline" size="sm" className="h-8 gap-1.5 px-2.5" onClick={() => setShareOpen(true)}><Link2 className="h-4 w-4" />分享</Button><Button variant="outline" size="sm" className="h-8 gap-1.5 px-2.5" onClick={() => setDownloadOpen(true)}><Download className="h-4 w-4" />资源下载</Button><Button variant="outline" size="sm" className="h-8 gap-1.5 px-2.5" onClick={() => setOfflineCacheOpen(true)}><HardDriveDownload className="h-4 w-4" />离线缓存</Button>{show.can_manage && <Button variant="outline" size="sm" className="h-8 gap-1.5 px-2.5" onClick={() => navigate(`/shows/${show.id}/iterate`)}><GitBranch className="h-4 w-4" />版本迭代{updates.length > 0 && <Badge variant="secondary" className="ml-0.5 h-5 px-1.5 text-[10px]">{updates.length}</Badge>}</Button>}</div></header>
+      <main className="min-w-0 pb-16 pt-5"><div className="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,1fr)_340px]"><section className="min-w-0 overflow-hidden rounded-xl border bg-card shadow-sm"><div className="flex min-h-10 flex-wrap items-center justify-between gap-2 border-b px-3 py-2 sm:px-4"><div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground"><Eye className="h-4 w-4" /><span className="font-medium text-foreground">预览</span>{tags.map((tag) => <Badge key={tag} variant="outline" className="h-5 px-1.5 text-[10px] font-normal">{tag}</Badge>)}</div><span className="shrink-0 text-xs tabular-nums text-muted-foreground">第 <strong className="font-semibold text-foreground">{resources.length ? activeIndex + 1 : 0}</strong> / {resources.length} 页</span></div><div className="relative aspect-video w-full overflow-hidden bg-slate-100">{activeResource ? isAccessible(activeResource) ? previewUrl ? <img src={previewUrl} alt={activeResource.name} decoding="async" className="absolute inset-0 h-full w-full object-contain" /> : <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">暂无预览图</div> : <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-muted text-muted-foreground"><Lock className="h-10 w-10" /><p className="text-sm font-medium">资源 #{activeResource.id} 无权限</p><p className="text-xs">管理者：{(activeResource as ShowResourceInaccessible).managers.map((manager) => manager.name || manager.username).join("、")}</p></div> : <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">暂无放映页面</div>}</div><PageRail resources={resources} activeIndex={activeIndex} onSelect={setActiveIndex} onOpenAll={() => setAllPagesOpen(true)} /></section><aside className="flex min-w-0 flex-col gap-3"><section className="rounded-lg border bg-card p-3 shadow-sm"><div className="flex items-center justify-between gap-2"><h2 className="text-sm font-semibold">版本</h2><span className="rounded-full bg-muted px-2 py-1 text-[10px] font-medium text-muted-foreground">共 {versionOptions.length} 个版本</span></div><Select value={String(show.id)} onValueChange={(value) => navigate(`/shows/${value}`)}><SelectTrigger className="mt-3 h-10 w-full border-border/70 bg-muted/30 px-3 text-sm font-medium hover:bg-muted/60" aria-label="切换放映版本"><SelectValue /></SelectTrigger><SelectContent>{versionOptions.map((version) => <SelectItem key={version.id} value={String(version.id)}>v{version.version_no}{version.id === show.id ? "（当前）" : ""}{version.change_note ? ` · ${version.change_note}` : ""}</SelectItem>)}</SelectContent></Select></section><section className="rounded-lg border bg-card p-3 shadow-sm"><div className="flex items-center justify-between gap-2"><h2 className="text-xs font-semibold">放映信息</h2><span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">{show.can_manage ? "可管理" : "只读"}</span></div><dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-3"><InfoItem label="主体" value={show.subject || "未设置"} /><InfoItem label="状态" value={show.status || "-"} /><InfoItem label="可见范围" value={RESOURCE_SCOPE_LABEL[show.visibility_scope] || show.visibility_scope} /><InfoItem label="管理范围" value={RESOURCE_SCOPE_LABEL[show.management_scope] || show.management_scope} /><InfoItem label="创建者" value={show.owner?.name || show.owner?.username || "-"} /><InfoItem label="页面数" value={`${resources.length} 页`} /></dl>{show.change_note && <p className="mt-3 border-t pt-3 text-xs leading-5 text-muted-foreground">变更说明：{show.change_note}</p>}<p className="mt-3 text-[10px] text-muted-foreground">更新于 {formatDate(show.updated_at)}</p></section><ShowRemarksPanel show={show} resource={activeResource} /></aside></div>{updates.length > 0 && <section className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300/70 bg-amber-50 px-4 py-3 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100"><div className="min-w-0"><p className="text-sm font-medium">有 {updates.length} 页资源可以升级</p><p className="mt-1 text-xs text-amber-800/80 dark:text-amber-200/80">当前放映引用的资源存在更新版本，创建新版本后即可选择升级。</p></div>{show.can_manage && <Button size="sm" className="shrink-0" onClick={() => navigate(`/shows/${show.id}/iterate?tab=upgrade`)}>查看并升级</Button>}</section>}</main>
+      <AllPagesDialog open={allPagesOpen} onOpenChange={setAllPagesOpen} resources={resources} activeIndex={activeIndex} onSelect={setActiveIndex} /><ShowShareDialog open={shareOpen} onOpenChange={setShareOpen} show={show} /><ShowDownloadDialog open={downloadOpen} onOpenChange={setDownloadOpen} show={show} /><ShowOfflineCacheDialog open={offlineCacheOpen} onOpenChange={setOfflineCacheOpen} show={show} />
     </div>
   );
 }

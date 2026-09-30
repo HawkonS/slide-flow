@@ -4,18 +4,38 @@ from __future__ import annotations
 
 from app.config import settings
 from app.core.oss import public_asset_origin
+from app.core.origins import require_browser_origin
+from fastapi import HTTPException, Request
+from starlette.responses import JSONResponse
 import logging
 import re
 import time
 
 logger = logging.getLogger(__name__)
 
-_SHARE_PATH_RE = re.compile(r"(/(?:api/resource-shares|share/resources)/)[^/?#]+")
+_SHARE_PATH_RE = re.compile(r"(/(?:api/resource-shares|share/resources|api/show-shares|share/shows)/)[^/?#]+")
 
 
 def _redact_sensitive_path(path: str) -> str:
     """Keep opaque share tokens out of application request logs."""
     return _SHARE_PATH_RE.sub(r"\1<redacted>", path)
+
+
+class BrowserOriginMiddleware:
+    """Reject cross-site browser mutations before multipart bodies are read."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope.get("path", "").startswith("/api/") and scope.get("method") not in {"GET", "HEAD", "OPTIONS"}:
+            try:
+                require_browser_origin(Request(scope))
+            except HTTPException as exc:
+                response = JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers={"Cache-Control": "no-store"})
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
 
 
 class SlowRequestLogger:
@@ -49,18 +69,7 @@ class SlowRequestLogger:
 
 
 class ResponseCacheMiddleware:
-    """为 GET API 请求添加 Cache-Control 头，减少前端重复请求"""
-
-    # 不缓存的路径前缀（需要实时性的接口）
-    _NO_CACHE_PATHS = (
-        "/api/tasks",
-        "/api/me",
-        "/api/auth",
-        "/api/admin",
-        "/api/user",
-        "/api/downloads",
-        "/api/resource-shares",
-    )
+    """Keep authenticated API data out of persistent browser HTTP caches."""
 
     def __init__(self, app):
         self.app = app
@@ -78,7 +87,6 @@ class ResponseCacheMiddleware:
         if not is_get_api:
             await self.app(scope, receive, send)
             return
-        no_store = any(path.startswith(p) for p in self._NO_CACHE_PATHS)
 
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
@@ -89,10 +97,10 @@ class ResponseCacheMiddleware:
                 if b"cache-control" in headers:
                     await send(message)
                     return
-                # 添加 5 秒私有缓存，或对敏感接口彻底禁止缓存。
+                # In-session response reuse is handled by the frontend query cache.
                 raw_headers = list(message.get("headers", []))
                 raw_headers.append(
-                    (b"cache-control", b"private, no-store" if no_store else b"private, max-age=5")
+                    (b"cache-control", b"private, no-store")
                 )
                 message = {**message, "headers": raw_headers}
             await send(message)
@@ -118,6 +126,7 @@ class SecurityHeadersMiddleware:
             f"connect-src {connect_sources}; font-src 'self' data:"
         ).encode("ascii")
         self._no_store_prefixes = (
+            "/share/",
             "/api/auth",
             "/api/admin",
             "/api/me",
@@ -125,6 +134,9 @@ class SecurityHeadersMiddleware:
             "/api/tasks",
             "/api/downloads",
             "/api/resource-shares",
+            "/api/show-shares",
+            "/api/resource-share-links",
+            "/api/show-share-links",
         )
 
     async def __call__(self, scope, receive, send):
@@ -136,7 +148,8 @@ class SecurityHeadersMiddleware:
             if message["type"] == "http.response.start":
                 raw_headers = list(message.get("headers", []))
                 raw_headers.append((b"x-content-type-options", b"nosniff"))
-                raw_headers.append((b"referrer-policy", b"strict-origin-when-cross-origin"))
+                if not any(key.lower() == b"referrer-policy" for key, _ in raw_headers):
+                    raw_headers.append((b"referrer-policy", b"no-referrer" if scope.get("path", "").startswith(("/share/", "/api/show-shares/", "/api/resource-shares/")) else b"strict-origin-when-cross-origin"))
                 raw_headers.append((b"x-xss-protection", b"1; mode=block"))
                 raw_headers.append((b"x-frame-options", b"SAMEORIGIN"))
                 raw_headers.append(

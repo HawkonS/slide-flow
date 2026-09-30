@@ -8,12 +8,10 @@ import {
   Eraser,
   FileText,
   GitBranch,
-  GripVertical,
   Loader2,
   MessageSquareDiff,
   Save,
   Shuffle,
-  X,
 } from "lucide-react";
 import {
   useMutation,
@@ -38,13 +36,12 @@ import { Label } from "@/components/ui/label";
 import { RichTextEditor } from "@/components/resource/RichTextEditor";
 import { ResourcePicker, PickerResource } from "./ResourcePicker";
 import { cn } from "@/lib/utils";
-import { api, fetchResourceDiff, iterateShow, iterateUpgradeShow } from "@/lib/api";
+import { api, fetchResourceDiff, iterateShow, iterateUpgradeShow, updateShowResources } from "@/lib/api";
 import {
   CheckUpdatesResponse,
   IterateUpgradeRequest,
   ResourceDiff,
   Show,
-  ShowResource,
   UpdateInfo,
 } from "@/lib/types";
 
@@ -114,7 +111,7 @@ export function ShowUpgradeDialog({
   onOpenChange,
   show,
   page = false,
-  initialTab = "reorganize",
+  initialTab = "upgrade",
   onSuccess,
 }: ShowUpgradeDialogProps) {
   const queryClient = useQueryClient();
@@ -138,7 +135,6 @@ export function ShowUpgradeDialog({
 
   // ── 重新组织状态 ──
   const [organizedResources, setOrganizedResources] = React.useState<OrganizedResource[]>([]);
-  const [draggingId, setDraggingId] = React.useState<number | null>(null);
 
   // ── 草稿状态 ──
   const [hasDraft, setHasDraft] = React.useState(false);
@@ -152,7 +148,10 @@ export function ShowUpgradeDialog({
     if (open && show) {
       setView("list");
       setDetailResourceId(null);
-      setDraggingId(null);
+
+      const accessible = show.resources
+        .map((r) => ({ id: r.id, name: r.name, preview_url: r.accessible ? r.preview_url : null }));
+      initialOrganizedRef.current = accessible;
 
       const draft = loadDraft(show.id);
       if (draft) {
@@ -165,17 +164,11 @@ export function ShowUpgradeDialog({
         setHasDraft(true);
         setDraftSavedAt(draft.savedAt);
         // 根据保存的 ID 列表从当前资源重建 organizedResources
-        const resourceMap = new Map<number, OrganizedResource>();
-        for (const r of show.resources) {
-          if (r.accessible === true) {
-            resourceMap.set(r.id, { id: r.id, name: r.name, preview_url: r.preview_url });
-          }
-        }
+        const resourceMap = new Map<number, OrganizedResource>(accessible.map((resource) => [resource.id, resource]));
         const restored = draft.organizedResourceIds
           .map((id) => resourceMap.get(id))
           .filter((r): r is OrganizedResource => r != null);
         setOrganizedResources(restored);
-        initialOrganizedRef.current = restored;
       } else {
         // 无草稿：重置
         setSelectedIds(new Set());
@@ -185,11 +178,7 @@ export function ShowUpgradeDialog({
         setActiveTab(initialTab);
         setHasDraft(false);
         setDraftSavedAt(null);
-        const accessible = show.resources
-          .filter((r): r is Extract<ShowResource, { accessible: true }> => r.accessible === true)
-          .map((r) => ({ id: r.id, name: r.name, preview_url: r.preview_url }));
         setOrganizedResources(accessible);
-        initialOrganizedRef.current = accessible;
       }
     }
   }, [open, show, initialTab]);
@@ -284,19 +273,42 @@ export function ShowUpgradeDialog({
       }
       return iterateShow(show.id, payload);
     },
-    onSuccess: (newShow) => {
+    onSuccess: (result) => {
       onOpenChange(false);
       if (show) clearDraft(show.id);
       setHasDraft(false);
       setDraftSavedAt(null);
       toast.success("迭代成功，新版本已创建");
       queryClient.invalidateQueries({ queryKey: ["shows"] });
-      onSuccess?.(newShow);
+      onSuccess?.(result.show);
     },
     onError: (err: Error) => toast.error(err.message || "迭代失败"),
   });
 
   const isPending = upgradeMutation.isPending || iterateMutation.isPending;
+
+  // 只调整顺序时直接更新当前放映，不创建新的版本。
+  const reorderMutation = useMutation({
+    mutationFn: async (resourceIds: number[]) => {
+      if (!show) throw new Error("无放映信息");
+      return updateShowResources(show.id, resourceIds);
+    },
+    onSuccess: (result) => {
+      onOpenChange(false);
+      if (show) clearDraft(show.id);
+      setHasDraft(false);
+      setDraftSavedAt(null);
+      toast.success("播放顺序已保存，未创建新版本");
+      queryClient.invalidateQueries({ queryKey: ["shows"] });
+      if (show) {
+        queryClient.invalidateQueries({ queryKey: ["show-detail", show.id] });
+      }
+      onSuccess?.(result.show);
+    },
+    onError: (err: Error) => toast.error(err.message || "保存播放顺序失败"),
+  });
+
+  const isAnyPending = isPending || reorderMutation.isPending;
 
   // ── 操作函数 ──
   const toggleSelect = (id: number) => {
@@ -326,110 +338,85 @@ export function ShowUpgradeDialog({
     setDetailResourceId(null);
   };
 
-  // ── 重新组织：判断是否有变化 ──
-  const hasOrganizeChange = React.useMemo(() => {
-    const initial = initialOrganizedRef.current;
-    if (organizedResources.length !== initial.length) return true;
-    return organizedResources.some((r, i) => r.id !== initial[i].id);
-  }, [organizedResources]);
+  // ── 变更判断 ──
+  const initialOrganizedIds = React.useMemo(
+    () => initialOrganizedRef.current.map((resource) => resource.id),
+    [organizedResources],
+  );
+  const organizedIds = React.useMemo(
+    () => organizedResources.map((resource) => resource.id),
+    [organizedResources],
+  );
+  const hasResourceSetChange = React.useMemo(() => {
+    if (organizedIds.length !== initialOrganizedIds.length) return true;
+    const initialSet = new Set(initialOrganizedIds);
+    return organizedIds.some((id) => !initialSet.has(id));
+  }, [organizedIds, initialOrganizedIds]);
+  const hasOrderChange = React.useMemo(
+    () => organizedIds.length === initialOrganizedIds.length && organizedIds.some((id, index) => id !== initialOrganizedIds[index]),
+    [organizedIds, initialOrganizedIds],
+  );
+  const hasUpgradeChange = activeTab === "upgrade" && selectedIds.size > 0;
+  const hasVersionChange = hasResourceSetChange || hasUpgradeChange;
+  const hasAction = activeTab === "upgrade" ? hasUpgradeChange : hasVersionChange || hasOrderChange;
 
   // ── 提交逻辑 ──
   const handleSubmit = () => {
-    if (!changeNote.trim()) return;
-
     if (activeTab === "upgrade") {
-      if (selectedIds.size > 0) {
-        const ids = Array.from(selectedIds);
-        const remarks: Record<string, string> = {};
-        for (const [key, val] of Object.entries(remarkDrafts)) {
-          if (selectedIds.has(Number(key))) {
-            remarks[key] = val;
-          }
-        }
-        upgradeMutation.mutate({
-          resource_ids: ids,
-          remarks,
-          change_note: changeNote.trim(),
-        });
-      } else {
-        iterateMutation.mutate(undefined);
+      if (!changeNote.trim() || selectedIds.size === 0) return;
+      const ids = Array.from(selectedIds);
+      const remarks: Record<string, string> = {};
+      for (const [key, val] of Object.entries(remarkDrafts)) {
+        if (selectedIds.has(Number(key))) remarks[key] = val;
       }
-    } else {
-      // 重新组织 Tab
-      if (hasOrganizeChange) {
-        const resourceIds = organizedResources.map((r) => r.id);
-        iterateMutation.mutate(resourceIds);
-      } else {
-        iterateMutation.mutate(undefined);
-      }
+      upgradeMutation.mutate({
+        resource_ids: ids,
+        remarks,
+        change_note: changeNote.trim(),
+        ...(name.trim() ? { name: name.trim() } : {}),
+      });
+      return;
     }
+    if (hasOrderChange && !hasResourceSetChange) {
+      reorderMutation.mutate(organizedIds);
+      return;
+    }
+    if (!changeNote.trim() || !hasResourceSetChange) return;
+    iterateMutation.mutate(organizedIds);
   };
 
   // ── 提交按钮文案 ──
   const getSubmitLabel = () => {
     if (activeTab === "upgrade") {
-      if (selectedIds.size > 0) {
+      if (selectedIds.size === 0) {
         return (
           <>
             <ArrowUpCircle className="mr-1.5 h-4 w-4" />
-            创建新版本并升级 {selectedIds.size} 个资源
+            选择资源后创建版本
           </>
         );
       }
       return (
         <>
-          <GitBranch className="mr-1.5 h-4 w-4" />
-          创建新版本
+          <ArrowUpCircle className="mr-1.5 h-4 w-4" />
+          创建新版本并升级 {selectedIds.size} 个资源
         </>
       );
     }
-    // reorganize tab
-    if (hasOrganizeChange) {
+    if (hasResourceSetChange) {
       return (
         <>
-          <Shuffle className="mr-1.5 h-4 w-4" />
-          创建新版本（已调整资源）
+          <GitBranch className="mr-1.5 h-4 w-4" />
+          创建新版本并应用资源调整
         </>
       );
     }
     return (
       <>
-        <GitBranch className="mr-1.5 h-4 w-4" />
-        创建新版本
+        <Shuffle className="mr-1.5 h-4 w-4" />
+        保存播放顺序（不创建新版本）
       </>
     );
-  };
-
-  // ── 拖拽逻辑 ──
-  const handleDragStart = (id: number) => (e: React.DragEvent) => {
-    setDraggingId(id);
-    e.dataTransfer.effectAllowed = "move";
-    try {
-      e.dataTransfer.setData("text/plain", String(id));
-    } catch { /* ignore */ }
-  };
-
-  const handleDragOver = (overId: number) => (e: React.DragEvent) => {
-    if (draggingId === null || draggingId === overId) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    setOrganizedResources((prev) => {
-      const from = prev.findIndex((r) => r.id === draggingId);
-      const to = prev.findIndex((r) => r.id === overId);
-      if (from < 0 || to < 0 || from === to) return prev;
-      const next = prev.slice();
-      const [moved] = next.splice(from, 1);
-      next.splice(to, 0, moved);
-      return next;
-    });
-  };
-
-  const handleDragEnd = () => {
-    setDraggingId(null);
-  };
-
-  const removeResource = (id: number) => {
-    setOrganizedResources((prev) => prev.filter((r) => r.id !== id));
   };
 
   // ResourcePicker 集成
@@ -439,28 +426,17 @@ export function ShowUpgradeDialog({
   );
 
   const handlePickerChange = (ids: number[]) => {
-    // 找出新增的 id（在 ids 中但不在当前 organizedResources 中的）
-    const currentSet = new Set(organizedResources.map((r) => r.id));
-    const newIds = ids.filter((id) => !currentSet.has(id));
-    // 找出被移除的 id（在当前中但不在 ids 中的）
-    const newSet = new Set(ids);
-    const remaining = organizedResources.filter((r) => newSet.has(r.id));
-    // 对于新增 id，从缓存中查找完整信息（名称、预览图）
-    if (newIds.length > 0) {
-      setOrganizedResources([
-        ...remaining,
-        ...newIds.map((id) => {
-          const res = resourceCacheRef.current.get(id);
-          return {
-            id,
-            name: res?.name ?? `资源 #${id}`,
-            preview_url: res?.preview_url ?? null,
-          };
-        }),
-      ]);
-    } else {
-      setOrganizedResources(remaining);
-    }
+    const currentMap = new Map(organizedResources.map((resource) => [resource.id, resource]));
+    setOrganizedResources(ids.map((id) => {
+      const current = currentMap.get(id);
+      if (current) return current;
+      const cached = resourceCacheRef.current.get(id);
+      return {
+        id,
+        name: cached?.name ?? `资源 #${id}`,
+        preview_url: cached?.preview_url ?? null,
+      };
+    }));
   };
 
   // ── 清除草稿 ──
@@ -478,8 +454,7 @@ export function ShowUpgradeDialog({
     setView("list");
     setDetailResourceId(null);
     const accessible = show.resources
-      .filter((r): r is Extract<ShowResource, { accessible: true }> => r.accessible === true)
-      .map((r) => ({ id: r.id, name: r.name, preview_url: r.preview_url }));
+      .map((r) => ({ id: r.id, name: r.name, preview_url: r.accessible ? r.preview_url : null }));
     setOrganizedResources(accessible);
     initialOrganizedRef.current = accessible;
     toast.success("草稿已清除");
@@ -513,11 +488,14 @@ export function ShowUpgradeDialog({
         const resourcesChanged =
           currentIds.length !== initialIds.length ||
           currentIds.some((id, i) => id !== initialIds[i]);
+        const selectionChanged =
+          selectedIds.size !== updates.length ||
+          updates.some((update) => !selectedIds.has(update.resource_id));
 
         const hasUserChanges =
           changeNote.trim() !== "" ||
           name.trim() !== "" ||
-          selectedIds.size > 0 ||
+          selectionChanged ||
           Object.keys(remarkDrafts).length > 0 ||
           resourcesChanged;
         if (hasUserChanges) {
@@ -538,7 +516,7 @@ export function ShowUpgradeDialog({
       }
       onOpenChange(nextOpen);
     },
-    [show, onOpenChange, activeTab, selectedIds, remarkDrafts, changeNote, name, organizedResources],
+    [show, onOpenChange, activeTab, selectedIds, updates, remarkDrafts, changeNote, name, organizedResources],
   );
 
   if (!show) return null;
@@ -574,60 +552,73 @@ export function ShowUpgradeDialog({
           {page ? <p className="sr-only">创建放映的新版本，可选升级资源或重新组织资源</p> : <DialogDescription className="sr-only">创建放映的新版本，可选升级资源或重新组织资源</DialogDescription>}
         </DialogHeader>
 
-        {/* 顶部表单区（紧凑，shrink-0，不滚动） */}
-        <div className="shrink-0 border-b px-6 py-4 space-y-3">
-          {/* 表单行：变更说明和名称水平排列 */}
-          <div className="flex gap-4">
-            <div className="flex-1 space-y-1.5">
-              <Label>
-                变更说明 <span className="text-destructive">*</span>
-              </Label>
+        {/* 顶部表单区 */}
+        <div className="shrink-0 space-y-4 border-b bg-muted/20 px-6 py-5">
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,460px)]">
+            <div className="space-y-1.5">
+              <Label>变更说明</Label>
               <Textarea
-                placeholder="描述本次迭代的变更内容..."
+                placeholder="创建新版本时说明新增、删除或升级了什么；仅调整顺序无需填写。"
                 value={changeNote}
                 onChange={(e) => setChangeNote(e.target.value)}
-                className="resize-none"
-                rows={1}
+                className="min-h-[88px] resize-y bg-background"
+                rows={3}
               />
+              <p className="text-xs text-muted-foreground">
+                只有资源新增、删除或升级才会创建版本，播放顺序单独调整会直接保存。
+              </p>
             </div>
-            <div className="w-64 space-y-1.5">
+            <div className="space-y-1.5">
               <Label>名称</Label>
               <Input
                 placeholder={show.name}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
+                className="h-11 bg-background text-base"
               />
               <p className="text-xs text-muted-foreground">留空则继承当前名称</p>
             </div>
           </div>
 
-          {/* 模式切换：内联按钮组 */}
-          <div className="flex gap-1 rounded-lg bg-muted p-1 w-fit">
-            <button
-              type="button"
-              onClick={() => handleTabChange("reorganize")}
-              className={cn(
-                "px-4 py-1.5 text-sm rounded-md transition",
-                activeTab === "reorganize"
-                  ? "bg-background shadow-sm font-medium"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              重新组织
-            </button>
+          {/* 两步工作区 */}
+          <nav aria-label="版本迭代步骤" className="grid gap-2 sm:grid-cols-2">
             <button
               type="button"
               onClick={() => handleTabChange("upgrade")}
               className={cn(
-                "px-4 py-1.5 text-sm rounded-md transition",
+                "flex items-center gap-3 rounded-lg border px-4 py-3 text-left transition",
                 activeTab === "upgrade"
-                  ? "bg-background shadow-sm font-medium"
-                  : "text-muted-foreground hover:text-foreground",
+                  ? "border-primary/40 bg-background shadow-sm"
+                  : "border-transparent bg-muted/50 text-muted-foreground hover:border-border hover:bg-background",
               )}
+              aria-current={activeTab === "upgrade" ? "step" : undefined}
             >
-              资源升级
+              <span className={cn("flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold", activeTab === "upgrade" ? "bg-primary text-primary-foreground" : "bg-muted")}>1</span>
+              <span className="min-w-0">
+                <span className="block text-sm font-medium text-foreground">资源升级</span>
+                <span className="mt-0.5 block text-xs">先确认需要带入新版本的资源</span>
+              </span>
+              <Badge variant="secondary" className="ml-auto shrink-0">{updates.length}</Badge>
             </button>
-          </div>
+            <button
+              type="button"
+              onClick={() => handleTabChange("reorganize")}
+              className={cn(
+                "flex items-center gap-3 rounded-lg border px-4 py-3 text-left transition",
+                activeTab === "reorganize"
+                  ? "border-primary/40 bg-background shadow-sm"
+                  : "border-transparent bg-muted/50 text-muted-foreground hover:border-border hover:bg-background",
+              )}
+              aria-current={activeTab === "reorganize" ? "step" : undefined}
+            >
+              <span className={cn("flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold", activeTab === "reorganize" ? "bg-primary text-primary-foreground" : "bg-muted")}>2</span>
+              <span className="min-w-0">
+                <span className="block text-sm font-medium text-foreground">组织页面</span>
+                <span className="mt-0.5 block text-xs">添加、移除资源并确认播放顺序</span>
+              </span>
+              <Badge variant="secondary" className="ml-auto shrink-0">{organizedResources.length}</Badge>
+            </button>
+          </nav>
         </div>
 
         {/* 内容区（flex-1, overflow） */}
@@ -663,11 +654,6 @@ export function ShowUpgradeDialog({
           ) : (
             <ReorganizeContent
               organizedResources={organizedResources}
-              draggingId={draggingId}
-              onDragStart={handleDragStart}
-              onDragOver={handleDragOver}
-              onDragEnd={handleDragEnd}
-              onRemoveResource={removeResource}
               pickerValue={pickerValue}
               onPickerChange={handlePickerChange}
               onResourcesLoaded={handleResourcesLoaded}
@@ -677,19 +663,28 @@ export function ShowUpgradeDialog({
 
         {/* 底部操作栏 */}
         <div className="flex shrink-0 items-center justify-between border-t px-6 py-3">
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isPending}>
-            取消
-          </Button>
+          <div className="min-w-0 text-xs text-muted-foreground">
+            {activeTab === "upgrade"
+              ? (hasUpgradeChange ? `已选择 ${selectedIds.size} 个资源升级` : "请选择要升级的资源")
+              : hasResourceSetChange
+                ? "资源集合已变化，将创建新版本"
+                : hasOrderChange
+                  ? "仅播放顺序变化，不创建新版本"
+                  : "尚未产生资源变更"}
+          </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" onClick={handleSaveDraft} disabled={isPending}>
+            <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isAnyPending}>
+              取消
+            </Button>
+            <Button variant="outline" onClick={handleSaveDraft} disabled={isAnyPending}>
               <Save className="mr-1.5 h-4 w-4" />
               暂存
             </Button>
             <Button
-              disabled={!changeNote.trim() || isPending}
+              disabled={!hasAction || (hasVersionChange && !changeNote.trim()) || isAnyPending}
               onClick={handleSubmit}
             >
-              {isPending && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+              {isAnyPending && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
               {getSubmitLabel()}
             </Button>
           </div>
@@ -699,7 +694,7 @@ export function ShowUpgradeDialog({
 
   if (page) {
     return (
-      <div className="mx-auto flex min-h-[min(860px,calc(100vh-5rem))] w-full max-w-6xl flex-col overflow-hidden rounded-xl border bg-card shadow-sm">
+      <div className="mx-auto flex min-h-[min(860px,calc(100vh-5rem))] w-full max-w-7xl flex-col overflow-hidden rounded-xl border bg-card shadow-sm">
         {content}
       </div>
     );
@@ -707,7 +702,7 @@ export function ShowUpgradeDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="flex h-[min(860px,92vh)] max-w-6xl flex-col gap-0 overflow-hidden p-0">
+      <DialogContent className="flex h-[min(860px,92vh)] max-w-7xl flex-col gap-0 overflow-hidden p-0">
         {content}
       </DialogContent>
     </Dialog>
@@ -790,145 +785,52 @@ function UpgradeContent({
 }
 
 /* ═══════════════════════════════════════════
-   内容：重新组织（左右两半布局，卡片网格）
+   内容：组织页面
    ═══════════════════════════════════════════ */
 
 function ReorganizeContent({
   organizedResources,
-  draggingId,
-  onDragStart,
-  onDragOver,
-  onDragEnd,
-  onRemoveResource,
   pickerValue,
   onPickerChange,
   onResourcesLoaded,
 }: {
   organizedResources: OrganizedResource[];
-  draggingId: number | null;
-  onDragStart: (id: number) => (e: React.DragEvent) => void;
-  onDragOver: (id: number) => (e: React.DragEvent) => void;
-  onDragEnd: () => void;
-  onRemoveResource: (id: number) => void;
   pickerValue: number[];
   onPickerChange: (ids: number[]) => void;
   onResourcesLoaded?: (resources: PickerResource[]) => void;
 }) {
-  // ── 拖拽自动滚动 ──
-  const scrollContainerRef = React.useRef<HTMLDivElement>(null);
-
-  const handleContainerDragOver = (e: React.DragEvent) => {
-    const container = scrollContainerRef.current;
-    if (!container) return;
-    const rect = container.getBoundingClientRect();
-    const y = e.clientY;
-    const threshold = 60;
-    const speed = 8;
-
-    if (y - rect.top < threshold) {
-      container.scrollTop -= speed;
-    } else if (rect.bottom - y < threshold) {
-      container.scrollTop += speed;
-    }
-  };
-
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-2 gap-0">
-      {/* 左半：当前资源 - 卡片网格 */}
-      <div className="flex flex-col border-r p-4 overflow-hidden">
-        <div className="mb-3 flex shrink-0 items-center justify-between">
-          <h4 className="text-sm font-medium">
-            当前资源
-            <span className="ml-1.5 text-xs font-normal text-muted-foreground">
-              ({organizedResources.length} 个)
-            </span>
-          </h4>
-          <span className="text-xs text-muted-foreground">拖拽排序</span>
+    <section className="flex min-h-0 flex-1 flex-col gap-3 p-5">
+      <div className="flex shrink-0 flex-wrap items-end justify-between gap-3">
+        <div>
+          <h3 className="text-base font-semibold">组织放映页面</h3>
+          <p className="mt-1 text-sm text-muted-foreground">在左侧清单中拖动调整顺序，右侧筛选并添加或移除资源。</p>
         </div>
-        <div
-          ref={scrollContainerRef}
-          onDragOver={handleContainerDragOver}
-          className="min-h-0 flex-1 overflow-y-auto">
-          {organizedResources.length === 0 ? (
-            <div className="flex items-center justify-center rounded-lg border border-dashed px-4 py-12 text-muted-foreground">
-              <span className="text-sm">暂无资源，请从右侧添加</span>
-            </div>
-          ) : (
-            <div className="grid grid-cols-3 gap-2">
-              {organizedResources.map((r, idx) => {
-                const isDragging = r.id === draggingId;
-                return (
-                  <div
-                    key={r.id}
-                    draggable
-                    onDragStart={onDragStart(r.id)}
-                    onDragOver={onDragOver(r.id)}
-                    onDragEnd={onDragEnd}
-                    className={cn(
-                      "group relative cursor-grab rounded-md border bg-background transition active:cursor-grabbing",
-                      isDragging && "opacity-40",
-                    )}
-                  >
-                    {/* 缩略图 */}
-                    <div className="relative aspect-[16/9] w-full overflow-hidden rounded-t-md bg-muted">
-                      {r.preview_url ? (
-                        <img
-                          src={r.preview_url}
-                          alt={r.name}
-                          className="h-full w-full object-cover"
-                          loading="lazy"
-                        />
-                      ) : (
-                        <div className="flex h-full w-full items-center justify-center text-[10px] text-muted-foreground">
-                          无预览
-                        </div>
-                      )}
-                      {/* 序号（左上角） */}
-                      <span className="absolute left-1 top-1 z-10 flex h-5 min-w-[20px] items-center justify-center rounded bg-black/60 px-1 text-[10px] font-medium text-white">
-                        {idx + 1}
-                      </span>
-                      {/* 删除按钮（右上角，hover 显示） */}
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onRemoveResource(r.id);
-                        }}
-                        className="absolute right-1 top-1 z-10 hidden h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white transition hover:bg-destructive group-hover:flex"
-                        title="移除"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </div>
-                    {/* 名称 */}
-                    <div className="truncate px-1.5 py-1 text-xs">{r.name}</div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+        <div className="rounded-md border bg-muted/30 px-3 py-2 text-right">
+          <div className="text-lg font-semibold leading-none">{organizedResources.length}</div>
+          <div className="mt-1 text-xs text-muted-foreground">当前页面</div>
         </div>
       </div>
-
-      {/* 右半：ResourcePicker */}
-      <div className="flex flex-col p-4 overflow-hidden">
-        <div className="mb-3 flex shrink-0 items-center justify-between">
-          <h4 className="text-sm font-medium">添加资源</h4>
-          <span className="text-xs text-muted-foreground">
-            共 {pickerValue.length} 条
-          </span>
-        </div>
-        <div className="min-h-0 flex-1">
-          <ResourcePicker
-            value={pickerValue}
-            onChange={onPickerChange}
-            onResourcesLoaded={onResourcesLoaded}
-            showSelectedSidebar={false}
-            className="h-full"
-          />
-        </div>
+      <div className="min-h-0 flex-1">
+        <ResourcePicker
+          value={pickerValue}
+          onChange={onPickerChange}
+          onResourcesLoaded={onResourcesLoaded}
+          selectedResources={organizedResources.map((resource) => ({
+            id: resource.id,
+            name: resource.name,
+            tags: "",
+            preview_url: resource.preview_url,
+          }))}
+          showSelectedSidebar
+          selectedSidebarPosition="left"
+          showViewModeSwitch
+          showDensitySwitch={false}
+          className="h-full"
+        />
       </div>
-    </div>
+      <p className="shrink-0 text-xs text-muted-foreground">仅调整顺序会直接保存当前放映；新增或删除资源会创建新版本。</p>
+    </section>
   );
 }
 

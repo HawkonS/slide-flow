@@ -22,7 +22,13 @@ const enableHttps = ["true", "1", "yes", "on"].includes(
 // 多个域名用逗号分隔，例如：slide-flow.example.com,example.com
 const allowedHostRaw = process.env.SLIDE_FLOW_ALLOWED_HOST || "";
 const allowedHosts = allowedHostRaw
-  ? allowedHostRaw.split(",").map(h => h.trim()).filter(h => h)
+  ? allowedHostRaw.split(",").map(h => {
+      const value = h.trim();
+      if (value.includes("://")) {
+        try { return new URL(value).hostname; } catch { return ""; }
+      }
+      return value;
+    }).filter(h => h && h !== "*")
   : [];
 
 // https://vitejs.dev/config/
@@ -37,7 +43,7 @@ export default defineConfig({
     host: "0.0.0.0",
     port: webPort,
     https: enableHttps ? {} : undefined,
-    allowedHosts: allowedHosts.length > 0 ? allowedHosts : true,
+    allowedHosts,
     proxy: {
       "/api": {
         target: backend,

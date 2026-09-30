@@ -5,7 +5,6 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
-  FolderOpen,
   Layers,
   Loader2,
   Maximize,
@@ -14,6 +13,8 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
+  ShieldCheck,
+  Smartphone,
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -42,13 +43,13 @@ import { useResponsiveGrid } from "@/lib/use-grid-layout";
 import { useUrlPage } from "@/lib/use-url-page";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/common/PageHeader";
-import { getDirectoryHandle, readLegacyManifest, type LegacyShow } from "@/lib/offline-cache";
+import { checkPwaUpdate, ensureOfflineShellReady, requestPwaInstall, usePwaStatus, type PwaStatusSnapshot } from "@/lib/pwa";
 import {
   listCachedShows, getCachedAsset, downloadShow, deleteCachedShow, invalidateCachedShow,
   type CachedShow, type CacheProgress,
 } from "@/lib/pwa-cache";
 import {
-  assertOfflineIdentity, offlineOwnerKey, readOfflineIdentity, OFFLINE_SESSION_EVENT,
+  assertOfflineIdentity, createClientId, offlineOwnerKey, readOfflineIdentity, OFFLINE_SESSION_EVENT,
   type OfflineIdentity, type PwaChange,
 } from "@/lib/offline-session";
 
@@ -96,6 +97,64 @@ function unavailableReason(entry: CachedShow, now: number): string | null {
 }
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : "操作失败，请重试";
+}
+
+function PwaDeploymentCard({ status }: { status: PwaStatusSnapshot }) {
+  const [busy, setBusy] = useState(false);
+  const tone = status.status === "deployed"
+    ? "border-emerald-200/80 bg-emerald-50/60 dark:border-emerald-900/60 dark:bg-emerald-950/20"
+    : status.status === "update-available"
+      ? "border-amber-200/80 bg-amber-50/70 dark:border-amber-900/60 dark:bg-amber-950/20"
+      : status.status === "error" || status.status === "unsupported"
+        ? "border-destructive/30 bg-destructive/5"
+        : "border-sky-200/80 bg-sky-50/60 dark:border-sky-900/60 dark:bg-sky-950/20";
+  const iconTone = status.status === "deployed" ? "text-emerald-600" : status.status === "update-available" ? "text-amber-600" : "text-sky-600";
+  const run = async (action: () => Promise<unknown>, success: string) => {
+    setBusy(true);
+    try { await action(); toast.success(success); }
+    catch (error) { toast.error(errorText(error)); }
+    finally { setBusy(false); }
+  };
+  const title = status.status === "development"
+    ? "开发环境未部署本地应用"
+    : status.status === "deployed"
+      ? "本地应用已部署"
+      : status.status === "update-available"
+        ? "本地应用有更新"
+        : status.status === "checking"
+          ? "正在检查本地应用"
+          : status.status === "unsupported"
+            ? "当前环境无法部署本地应用"
+            : status.status === "error" ? "本地应用需要维护" : "本地应用尚未部署";
+  return (
+    <section className={cn("rounded-lg border p-4", tone)} aria-label="本地应用部署状态">
+      <div className="flex flex-wrap items-start gap-3">
+        <div className={cn("mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-background/80", iconTone)}>
+          {status.status === "deployed" ? <ShieldCheck className="h-5 w-5" /> : <Smartphone className="h-5 w-5" />}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-sm font-semibold">{title}</h2>
+            {status.standalone && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">已安装到设备</span>}
+            {status.controlled && <span className="rounded-full bg-background/80 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">当前页面已接管</span>}
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">{status.message}</p>
+          {status.environment === "development" && <p className="mt-1 text-xs text-muted-foreground">开发服务器只提供调试页面；发布构建后访问应用服务，才会部署可离线运行的本地应用。</p>}
+        </div>
+        <div className="flex shrink-0 flex-wrap gap-2">
+          {status.installable && <Button size="sm" variant="outline" disabled={busy} onClick={() => void run(requestPwaInstall, "已提交本地应用安装")}>安装应用</Button>}
+          {status.environment === "production" && status.status !== "unsupported" && (
+            <Button size="sm" variant="outline" disabled={busy || status.status === "checking"} onClick={() => void run(checkPwaUpdate, "已检查本地应用更新")}>
+              {busy ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1.5 h-3.5 w-3.5" />}检查更新
+            </Button>
+          )}
+          {status.environment === "production" && (status.status === "error" || status.status === "not-deployed") && (
+            <Button size="sm" disabled={busy} onClick={() => void run(ensureOfflineShellReady, "本地应用已准备就绪")}>重新部署</Button>
+          )}
+        </div>
+      </div>
+    </section>
+  );
 }
 
 /* ---------- Filter Types ---------- */
@@ -393,7 +452,7 @@ function CacheCard({
 
         {/* Top-right dropdown menu (delete) - appears on hover */}
         {(
-          <div className="absolute right-2 top-2 opacity-0 transition group-hover:opacity-100 focus-within:opacity-100">
+          <div className="absolute right-2 top-2 opacity-100 transition">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
@@ -484,6 +543,7 @@ function CacheCard({
 export default function OfflineCachePage() {
   const navTitle = "离线缓存";
   const auth = useAuth();
+  const pwaStatus = usePwaStatus();
   const ownerKey = auth.identity ? offlineOwnerKey(auth.identity) : "";
   const [supported] = useState(() => window.isSecureContext && "serviceWorker" in navigator && "indexedDB" in window && "caches" in window);
   const [online, setOnline] = useState(navigator.onLine);
@@ -498,16 +558,10 @@ export default function OfflineCachePage() {
   const [deleting, setDeleting] = useState<string | null>(null);
   const [updatesDialogOpen, setUpdatesDialogOpen] = useState(false);
   const [filters, setFilters] = useState<OfflineFilters>(DEFAULT_FILTERS);
-  const [legacyHandle, setLegacyHandle] = useState<FileSystemDirectoryHandle | null>(null);
-  const [legacyShows, setLegacyShows] = useState<LegacyShow[]>([]);
-  const [legacyOwner, setLegacyOwner] = useState("");
-  const [legacyNeedsPermission, setLegacyNeedsPermission] = useState(false);
-  const [legacyNotice, setLegacyNotice] = useState<string | null>(null);
   const mounted = React.useRef(false);
   const ownerRef = React.useRef(ownerKey);
   ownerRef.current = ownerKey;
   const listRequest = React.useRef(0);
-  const legacyRequest = React.useRef(0);
   const batchRequest = React.useRef(0);
   const bulkRequest = React.useRef(0);
   const allChecking = React.useRef(false);
@@ -550,54 +604,19 @@ export default function OfflineCachePage() {
     } finally { if (isCurrent(identity) && request === listRequest.current) setLoading(false); }
   }, [isCurrent]);
 
-  const loadLegacyDirectory = useCallback(async (handle: FileSystemDirectoryHandle, requestPermission = false) => {
-    const identity = readOfflineIdentity();
-    const request = ++legacyRequest.current;
-    const active = () => isCurrent(identity) && request === legacyRequest.current;
-    if (!active()) return;
-    setLegacyOwner(offlineOwnerKey(identity!)); setLegacyHandle(handle); setLegacyShows([]); setLegacyNotice(null);
-    try {
-      let granted = typeof handle.queryPermission !== "function" || await handle.queryPermission({ mode: "read" }) === "granted";
-      if (!granted && requestPermission) granted = await handle.requestPermission({ mode: "read" }) === "granted";
-      if (!active()) return;
-      setLegacyNeedsPermission(!granted);
-      if (!granted) { setLegacyNotice("读取旧目录需要只读授权。"); return; }
-      const entries = await readLegacyManifest(handle);
-      if (!active()) return;
-      setLegacyShows(entries);
-      if (!entries.length) setLegacyNotice("旧目录中没有可迁移的放映清单。");
-    } catch (error) { if (active()) setLegacyNotice(errorText(error)); }
-  }, [isCurrent]);
-  const handlePickDirectory = useCallback(async () => {
-    try {
-      const identity = readOfflineIdentity();
-      if (!isCurrent(identity)) return;
-      const handle = await window.showDirectoryPicker({ mode: "read" });
-      if (isCurrent(identity)) await loadLegacyDirectory(handle, true);
-    } catch (error) {
-      if (!(error instanceof DOMException && error.name === "AbortError")) toast.error("读取旧目录失败：" + errorText(error));
-    }
-  }, [isCurrent, loadLegacyDirectory]);
-
   useEffect(() => {
     mounted.current = true;
     abortWork(); invalidPackages.current.clear();
     setCacheState({ owner: ownerKey, entries: [] }); setShowUpdates({}); setUpdateStatus("idle");
     setDeleteConfirm(null); setDeleting(null); setUpdatesDialogOpen(false); setListError(null); setLoading(supported);
-    setLegacyHandle(null); setLegacyShows([]); setLegacyOwner(""); setLegacyNotice(null); setLegacyNeedsPermission(false);
     if (supported && ownerKey) {
       void refreshCaches();
-      const identity = readOfflineIdentity();
-      const request = legacyRequest.current;
-      void getDirectoryHandle().then(handle => {
-        if (handle && isCurrent(identity) && request === legacyRequest.current) void loadLegacyDirectory(handle);
-      }).catch(() => { /* The old directory is optional. */ });
     } else setLoading(false);
     const sessionChanged = () => {
       const identity = readOfflineIdentity();
       if (!identity || offlineOwnerKey(identity) !== ownerRef.current) {
-        abortWork(); listRequest.current++; legacyRequest.current++;
-        setCacheState({ owner: "", entries: [] }); setShowUpdates({}); setLegacyShows([]); setLegacyOwner("");
+        abortWork(); listRequest.current++;
+        setCacheState({ owner: "", entries: [] }); setShowUpdates({});
         setUpdateStatus("idle"); setDeleteConfirm(null); setUpdatesDialogOpen(false);
       } else void refreshCaches();
     };
@@ -620,13 +639,13 @@ export default function OfflineCachePage() {
     window.addEventListener("online", connectionChanged); window.addEventListener("offline", connectionChanged);
     window.addEventListener("focus", clockChanged);
     return () => {
-      mounted.current = false; listRequest.current++; legacyRequest.current++; abortWork();
+      mounted.current = false; listRequest.current++; abortWork();
       window.removeEventListener(OFFLINE_SESSION_EVENT, sessionChanged);
       window.removeEventListener("slideflow-pwa-change", cacheChanged);
       window.removeEventListener("online", connectionChanged); window.removeEventListener("offline", connectionChanged);
       window.removeEventListener("focus", clockChanged);
     };
-  }, [ownerKey, auth.epoch, supported, abortWork, isCurrent, refreshCaches, loadLegacyDirectory]);
+  }, [ownerKey, auth.epoch, supported, abortWork, isCurrent, refreshCaches]);
   useEffect(() => {
     const nextExpiry = Math.min(...cachedShows.map(entry => Date.parse(entry.expires_at)).filter(expiry => expiry > now));
     if (!Number.isFinite(nextExpiry)) return;
@@ -727,7 +746,7 @@ export default function OfflineCachePage() {
       if (!active()) return;
       setShowUpdates(previous => ({ ...previous, [key]: { ...previous[key], hasUpdate: false, updating: false, cancelling: false, error: undefined, notice: undefined } }));
       await refreshCaches();
-      if (active()) toast.success("「" + entry.name + "」缓存完成" + (key !== String(showId) && !key.startsWith("legacy:") ? "，旧版本仍保留" : ""));
+      if (active()) toast.success("「" + entry.name + "」缓存完成");
     } catch (failure) {
       if (!active()) return;
       let error = failure;
@@ -781,7 +800,7 @@ export default function OfflineCachePage() {
       window.open("/shows/" + entry.show_id + "/fullscreen?" + params.toString(), "_blank", "popup=yes,width=1920,height=1080");
       return;
     }
-    const session = crypto.randomUUID();
+    const session = createClientId();
     params.set("playback_session", session);
     // Keep this synchronous with the click so the paired display retains user activation.
     window.open("/shows/" + entry.show_id + "/display?" + params.toString(), "slideflow-display-" + session, "popup=yes,width=1920,height=1080");
@@ -791,7 +810,6 @@ export default function OfflineCachePage() {
   const shows = useMemo<Array<[string, CachedShow]>>(() => cachedShows.map(entry => [String(entry.show_id), entry]), [cachedShows]);
   const entriesMap = useMemo(() => Object.fromEntries(shows), [shows]);
   const cachedBytes = cachedShows.reduce((sum, entry) => sum + entry.total_bytes, 0);
-  const pendingLegacy = legacyOwner === ownerKey ? legacyShows.filter(entry => !entriesMap[String(entry.show_id)]) : [];
   const anyDownloading = Object.values(showUpdates).some(info => info.updating);
 
   // Extract subjects and tags from manifest data
@@ -907,7 +925,8 @@ export default function OfflineCachePage() {
           ? " · 此站点可用空间约 " + formatBytes(Math.max(0, storage.quota - (storage.usage || 0)))
           : " · 浏览器暂未提供容量估计") + "。缓存受授权有效期限制，退出账号后不可使用。"}
       />
-      {!canDownload && <p role="status" className="text-xs text-amber-700">{!online ? "当前设备已离线，可播放仍在有效期内的完整缓存；连接网络后可检查、更新和迁移。" : "当前为离线登录状态，请联网重新验证登录后下载或检查更新。"}</p>}
+      <PwaDeploymentCard status={pwaStatus} />
+      {!canDownload && <p role="status" className="text-xs text-amber-700">{!online ? "当前设备已离线，可播放仍在有效期内的完整缓存；连接网络后可检查和更新。" : "当前为离线登录状态，请联网重新验证登录后下载或检查更新。"}</p>}
       {listError && <div role="alert" className="flex items-center justify-between gap-3 rounded-md border border-destructive/30 p-3 text-sm text-destructive">
         <span>读取缓存失败：{listError}</span><Button variant="outline" size="sm" onClick={() => void refreshCaches()}>重新读取</Button>
       </div>}
@@ -976,39 +995,11 @@ export default function OfflineCachePage() {
           {shows.length > 0 && <Button variant="outline" size="sm" onClick={() => void checkAllUpdates()} disabled={!canDownload || updateStatus === "checking" || anyDownloading} className="h-8 gap-1.5 px-3 text-sm">
             <RefreshCw className={cn("h-3.5 w-3.5", updateStatus === "checking" && "animate-spin")} />检查全部更新
           </Button>}
-          {typeof window.showDirectoryPicker === "function" && <Button variant="outline" size="sm" onClick={() => void handlePickDirectory()} className="h-8 gap-1.5 px-3 text-sm">
-            <FolderOpen className="h-3.5 w-3.5" />迁移旧目录
-          </Button>}
         </div>
       </div>
 
       {/* Content area */}
       <div ref={contentRef} className="min-h-0 flex-1 overflow-auto">
-        {legacyOwner === ownerKey && (pendingLegacy.length > 0 || legacyNotice || legacyNeedsPermission) && (
-          <section className="mb-4 space-y-3 rounded-lg border bg-muted/20 p-3" aria-label="旧目录迁移">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h2 className="text-sm font-medium">旧目录迁移{legacyHandle ? " · " + legacyHandle.name : ""}</h2>
-              {legacyNeedsPermission && legacyHandle && <Button size="sm" variant="outline" onClick={() => void loadLegacyDirectory(legacyHandle, true)}>允许只读访问</Button>}
-            </div>
-            <p className="text-xs text-muted-foreground">旧目录仅提供放映名称与编号。联网重新验证权限后下载完整缓存；不会运行旧脚本或导入旧图片。</p>
-            {legacyNotice && <p role="status" className="text-xs text-amber-700">{legacyNotice}</p>}
-            {pendingLegacy.map(entry => {
-              const key = "legacy:" + entry.show_id;
-              const info = showUpdates[key];
-              return <div key={key} className="flex items-center justify-between gap-3 rounded-md border bg-background p-3">
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{entry.name}</p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">旧目录 v{entry.version_no} · 重新下载后才可播放</p>
-                  {info?.progress && info.updating && <p role="status" className="mt-1 text-xs text-muted-foreground">{PHASE_LABELS[info.progress.phase]} · {info.progress.completed}/{info.progress.total} · {formatBytes(info.progress.bytes)}</p>}
-                  {info?.error && <p role="alert" className="mt-1 text-xs text-destructive">{info.error}</p>}
-                  {info?.notice && <p role="status" className="mt-1 text-xs text-muted-foreground">{info.notice}</p>}
-                </div>
-                {info?.updating ? <Button variant="outline" size="sm" disabled={info.cancelling} onClick={() => cancelDownload(key)}>{info.cancelling ? "正在取消…" : "取消下载"}</Button>
-                  : <Button variant="outline" size="sm" disabled={!canDownload} onClick={() => void downloadItem(key, entry.show_id)}>{info?.error ? "重试下载" : "重新下载"}</Button>}
-              </div>;
-            })}
-          </section>
-        )}
         {loading ? <div role="status" className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin" />正在读取缓存…</div>
           : filtered.length === 0 ? (
             <div className="rounded-md border border-dashed py-16 text-center text-sm text-muted-foreground">

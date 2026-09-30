@@ -665,19 +665,19 @@ export function PresenterPage() {
   return (
     <div className="flex h-screen flex-col bg-gray-900 text-white overflow-hidden">
       {/* ── Top bar ── */}
-      <header className="flex shrink-0 items-center justify-between border-b border-gray-700 bg-gray-800 px-4 py-2">
+      <header className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-gray-700 bg-gray-800 px-3 py-2 sm:px-4">
         <div className="flex items-center gap-6 text-sm font-mono tabular-nums">
           <span>{clock}</span>
-          <span className="text-gray-400">已演讲 {elapsed}</span>
+          <span className="hidden text-gray-400 sm:inline">已演讲 {elapsed}</span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <button
             onClick={openDisplay}
             className="rounded bg-gray-700 px-3 py-1.5 text-sm hover:bg-gray-600 transition flex items-center gap-1.5"
             title="打开用户视图窗口"
           >
             <MonitorPlay className="inline h-4 w-4" />
-            <span>用户视图</span>
+            <span className="hidden sm:inline">用户视图</span>
           </button>
           <button
             onClick={() => {
@@ -692,12 +692,12 @@ export function PresenterPage() {
             {imageFit === "contain" ? (
               <>
                 <Monitor className="inline h-4 w-4" />
-                <span>固定比例</span>
+                <span className="hidden sm:inline">固定比例</span>
               </>
             ) : (
               <>
                 <Maximize className="inline h-4 w-4" />
-                <span>自适应</span>
+                <span className="hidden sm:inline">自适应</span>
               </>
             )}
           </button>
@@ -706,7 +706,7 @@ export function PresenterPage() {
             className="rounded bg-red-700 px-3 py-1.5 text-sm hover:bg-red-600 transition"
           >
             <SquareSlash className="mr-1 inline h-4 w-4" />
-            结束放映
+            <span className="hidden sm:inline">结束放映</span>
           </button>
           <Popover>
             <PopoverTrigger asChild>
@@ -891,10 +891,10 @@ export function PresenterPage() {
       </header>
 
       {/* ── Main area ── */}
-      <div className="flex min-h-0 flex-1">
+      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         {/* Left: main display + toolbar */}
         <div
-          className="flex min-w-0 flex-col"
+          className="presenter-main-panel flex min-h-0 min-w-0 flex-1 flex-col md:flex-none"
           style={{ flex: `0 0 ${panelRatio}%` }}
         >
           {/* Main display */}
@@ -956,7 +956,7 @@ export function PresenterPage() {
           </div>
 
           {/* Toolbar */}
-          <div className="flex shrink-0 items-center gap-3 border-t border-gray-700 bg-gray-800 px-4 py-2">
+          <div className="flex shrink-0 flex-wrap items-center gap-3 overflow-x-auto border-t border-gray-700 bg-gray-800 px-3 py-2 sm:px-4">
             {/* Drawing tools */}
             <button
               onClick={() =>
@@ -1083,13 +1083,13 @@ export function PresenterPage() {
 
         {/* Draggable splitter */}
         <div
-          className="shrink-0 cursor-col-resize bg-gray-700 hover:bg-blue-500 transition-colors"
+          className="hidden shrink-0 cursor-col-resize bg-gray-700 transition-colors hover:bg-blue-500 md:block"
           style={{ width: 4 }}
           onMouseDown={handleSplitterMouseDown}
         />
 
         {/* Right: next preview + resource list + remarks */}
-        <aside ref={rightPanelRef} className="flex min-w-0 flex-1 flex-col border-l border-gray-700 bg-gray-800">
+        <aside ref={rightPanelRef} className="flex min-h-[min(28vh,260px)] min-w-0 flex-1 flex-col border-t border-gray-700 bg-gray-800 md:min-h-0 md:border-l md:border-t-0">
           {/* Next preview (moved to top) */}
           <div className="shrink-0 border-b border-gray-700 p-3">
             <div className="mb-1.5 text-xs text-gray-400">下一张预览</div>

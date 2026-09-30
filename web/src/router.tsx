@@ -5,7 +5,7 @@ import { Loader2 } from "lucide-react";
 import { AppShell } from "@/components/layout/AppShell";
 import { PlaceholderPage } from "@/components/common/PlaceholderPage";
 import { RequireAdmin, RequireAuth, RequireSystemAdmin } from "@/lib/auth";
-import { getChunkErrorMessage, isChunkLoadError, reloadAfterChunkError } from "@/lib/chunk-recovery";
+import { isChunkLoadError, reloadAfterChunkError } from "@/lib/chunk-recovery";
 
 // 路由级代码分割：各页面按需加载，登录页与主应用不再打入同一 bundle
 const LoginPage = lazy(() => import("@/pages/auth/LoginPage").then((m) => ({ default: m.LoginPage })));
@@ -20,6 +20,7 @@ const TemplateImportPage = lazy(() => import("@/pages/templates/TemplateImportPa
 const FontsPage = lazy(() => import("@/pages/fonts/FontsPage").then((m) => ({ default: m.FontsPage })));
 const ShowsPage = lazy(() => import("@/pages/shows/ShowsPage").then((m) => ({ default: m.ShowsPage })));
 const ShowDetailPage = lazy(() => import("@/pages/shows/ShowDetailPage").then((m) => ({ default: m.ShowDetailPage })));
+const ShowSharePage = lazy(() => import("@/pages/shows/ShowSharePage").then((m) => ({ default: m.ShowSharePage })));
 const ShowIterationPage = lazy(() => import("@/pages/shows/ShowIterationPage").then((m) => ({ default: m.ShowIterationPage })));
 const ShowCreatePage = lazy(() => import("@/pages/shows/ShowCreatePage").then((m) => ({ default: m.ShowCreatePage })));
 const StandardShowsPage = lazy(() => import("@/pages/shows/StandardShowsPage").then((m) => ({ default: m.StandardShowsPage })));
@@ -46,7 +47,6 @@ function PageLoader() {
 function RouteErrorPage() {
   const error = useRouteError();
   const chunkLoadFailed = isChunkLoadError(error);
-  const message = getChunkErrorMessage(error);
 
   useEffect(() => {
     if (chunkLoadFailed) reloadAfterChunkError(error);
@@ -64,11 +64,6 @@ function RouteErrorPage() {
             ? "检测到页面资源已更新；若未自动恢复，请手动刷新。"
             : "页面运行时发生错误，请刷新后重试。"}
         </p>
-        {!chunkLoadFailed && message && (
-          <p className="break-words rounded-md bg-muted p-3 text-left text-xs text-muted-foreground">
-            {message}
-          </p>
-        )}
         <div className="flex justify-center gap-2">
           <button
             type="button"
@@ -96,6 +91,7 @@ export const router = createBrowserRouter([
   { path: "/setup", element: <SetupPage />, errorElement: <RouteErrorPage /> },
   { path: "/login", element: <LoginPage />, errorElement: <RouteErrorPage /> },
   { path: "/share/resources/:token", element: <ResourceSharePage />, errorElement: <RouteErrorPage /> },
+  { path: "/share/shows/:token", element: <ShowSharePage />, errorElement: <RouteErrorPage /> },
   {
     path: "/shows/:id/fullscreen",
     errorElement: <RouteErrorPage />,

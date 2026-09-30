@@ -10,6 +10,7 @@ from app.routers.dependencies import (
     db_dep,
     db_read_dep,
 )
+from app.services.tasks.runtime import _pending_task_futures, _task_cancel_flags
 from app.services.downloads.tracking import (
     _record_download,
 )
@@ -36,6 +37,7 @@ import asyncio
 import json
 import logging
 import sqlite3
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -96,9 +98,10 @@ async def create_download_task(
     task_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
     db.commit()
 
-    # 启动后台任务
+    # Register cancellation before the coroutine can queue behind its semaphore.
     from app.core.download_tasks import execute_download_task
 
+    _task_cancel_flags[task_id] = threading.Event()
     future = asyncio.ensure_future(execute_download_task(task_id, int(user["id"])))
 
     def _on_done(f: asyncio.Future) -> None:  # type: ignore[type-arg]
@@ -106,8 +109,11 @@ async def create_download_task(
             f.result()
         except Exception as e:
             logger.error("Download task %d failed with unhandled error: %s", task_id, e)
+        except asyncio.CancelledError:
+            pass
         finally:
             _pending_task_futures.pop(task_id, None)
+            _task_cancel_flags.pop(task_id, None)
 
     future.add_done_callback(_on_done)
     _pending_task_futures[task_id] = future

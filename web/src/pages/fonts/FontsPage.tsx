@@ -21,6 +21,7 @@ import { toast } from "sonner";
 import { FontUploadDialog } from "@/components/font/FontUploadDialog";
 import { PageMetrics } from "@/components/common/PageMetrics";
 import { PageHeader } from "@/components/common/PageHeader";
+import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -145,6 +146,8 @@ export function FontsPage() {
   const [query, setQuery] = React.useState("");
   const [selected, setSelected] = React.useState<Set<number>>(new Set());
   const [uploadOpen, setUploadOpen] = React.useState(false);
+  const [fontDeleteTarget, setFontDeleteTarget] = React.useState<FontItem | null>(null);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
   const fonts = data?.fonts ?? [];
 
   const filtered = React.useMemo(() => {
@@ -305,11 +308,7 @@ export function FontsPage() {
               size="sm"
               className="h-8 gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive"
               disabled={bulkDeleteMut.isPending}
-              onClick={() => {
-                if (window.confirm(`确认删除选中的 ${selected.size} 个字体？`)) {
-                  bulkDeleteMut.mutate(Array.from(selected));
-                }
-              }}
+              onClick={() => setBulkDeleteOpen(true)}
             >
               <Trash2 className="h-3.5 w-3.5" />批量删除
             </Button>
@@ -381,9 +380,7 @@ export function FontsPage() {
                                 <DropdownMenuItem
                                   className="text-destructive focus:text-destructive"
                                   disabled={deleteFontMut.isPending}
-                                  onClick={() => {
-                                    if (window.confirm(`确认删除字体 ${font.family}？`)) deleteFontMut.mutate(font.id);
-                                  }}
+                                  onClick={() => setFontDeleteTarget(font)}
                                 >
                                   <Trash2 className="mr-2 h-3.5 w-3.5" />删除字体
                                 </DropdownMenuItem>
@@ -413,6 +410,31 @@ export function FontsPage() {
       )}
 
       {isAdmin && <FontUploadDialog open={uploadOpen} onOpenChange={setUploadOpen} onSuccess={() => queryClient.invalidateQueries({ queryKey: ["fonts"] })} />}
+      <ConfirmDialog
+        open={bulkDeleteOpen}
+        onOpenChange={setBulkDeleteOpen}
+        title="批量删除字体"
+        description={`确定删除选中的 ${selected.size} 个字体吗？删除后，依赖这些字体的后续渲染可能需要重新上传字体。`}
+        confirmLabel="删除字体"
+        destructive
+        loading={bulkDeleteMut.isPending}
+        onConfirm={() => {
+          bulkDeleteMut.mutate(Array.from(selected), { onSuccess: () => setBulkDeleteOpen(false) });
+        }}
+      />
+      <ConfirmDialog
+        open={fontDeleteTarget !== null}
+        onOpenChange={(open) => { if (!open) setFontDeleteTarget(null); }}
+        title="删除字体"
+        description={fontDeleteTarget ? `确定删除字体「${fontDeleteTarget.family}」吗？已上传的素材文件不会被删除。` : ""}
+        confirmLabel="删除字体"
+        destructive
+        loading={deleteFontMut.isPending}
+        onConfirm={() => {
+          const target = fontDeleteTarget;
+          if (target) deleteFontMut.mutate(target.id, { onSuccess: () => setFontDeleteTarget(null) });
+        }}
+      />
     </div>
   );
 }

@@ -1,5 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
 
+function createPlaybackSessionId(): string {
+  const cryptoApi = globalThis.crypto;
+  try {
+    if (typeof cryptoApi?.getRandomValues === 'function') {
+      const bytes = new Uint8Array(16);
+      cryptoApi.getRandomValues(bytes);
+      return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+    }
+  } catch {
+    // Some embedded app shells expose Web Crypto but reject calls from their context.
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+}
+
 export type PresentMessage =
   | { type: 'slide-change'; resourceId: number; index: number }
   | { type: 'pen-draw'; points: { x: number; y: number }[]; color: string; width: number }
@@ -60,7 +74,7 @@ export function usePlaybackSessionId(required = false): string {
   return useState(() => {
     const value = new URLSearchParams(window.location.search).get('playback_session');
     if (value && /^[a-zA-Z0-9_-]{16,80}$/.test(value)) return value;
-    return required ? '' : crypto.randomUUID().replace(/-/g, '');
+    return required ? '' : createPlaybackSessionId();
   })[0];
 }
 

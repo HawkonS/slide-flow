@@ -15,6 +15,7 @@ import '@/styles/globals.css';
 // Only routing and test controls are specialized. Product UI, authentication,
 // cache storage, offline identity, players and the service worker remain real.
 const Management = lazy(() => import('@/pages/manage/OfflineCachePage'));
+const ShowDetail = lazy(() => import('@/pages/shows/ShowDetailPage'));
 const Fullscreen = lazy(() => import('@/pages/present/FullscreenPage').then(module => ({ default: module.FullscreenPage })));
 const Presenter = lazy(() => import('@/pages/present/PresenterPage').then(module => ({ default: module.PresenterPage })));
 const Display = lazy(() => import('@/pages/present/DisplayPage').then(module => ({ default: module.DisplayPage })));
@@ -46,6 +47,7 @@ createRoot(document.getElementById('root')!).render(
     <main className="flex h-screen min-h-0 flex-col"><Suspense fallback={<p>加载中…</p>}><Routes>
       <Route path="/test/cache/:id" element={<RequireAuth><DownloadFixture /></RequireAuth>} />
       <Route path="/manage/offline-cache" element={<RequireAuth><Management /></RequireAuth>} />
+      <Route path="/shows/:id" element={<RequireAuth><ShowDetail /></RequireAuth>} />
       <Route path="/shows/:id/fullscreen" element={<RequireAuth><Fullscreen /></RequireAuth>} />
       <Route path="/shows/:id/present" element={<RequireAuth><Presenter /></RequireAuth>} />
       <Route path="/shows/:id/display" element={<RequireAuth><Display /></RequireAuth>} />

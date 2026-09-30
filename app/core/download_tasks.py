@@ -17,6 +17,7 @@ import logging
 import shutil
 import sqlite3
 import tempfile
+import threading
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -40,6 +41,7 @@ from app.core.ppt import (
 )
 from app.db import get_db
 from app.core.task_events import append_task_event
+from app.services.tasks.runtime import _task_cancel_flags
 from app.services.downloads.cache import _get_cached_download, _save_to_cache, _show_download_cache_key
 from app.services.downloads.access import _download_task_owner
 from app.services.downloads.embed_fonts import FontEmbeddingError, embed_fonts_in_pptx
@@ -60,6 +62,32 @@ _DOWNLOAD_TASKS_DIR = settings.downloads_dir / "tasks"
 
 # 允许的 download_type
 ALLOWED_DOWNLOAD_TYPES = {"pdf", "pptx_images", "pptx", "pptx_pages", "zip"}
+
+
+class DownloadTaskCancelled(Exception):
+    """Raised between page operations after a user or administrator cancels a download."""
+
+
+def cleanup_download_task_output(task_id: int) -> None:
+    """Remove only generated output files for this task, never shared cache entries."""
+    try:
+        root = _DOWNLOAD_TASKS_DIR.resolve()
+        for path in root.glob(f"task_{int(task_id)}.*"):
+            if path.resolve(strict=False).parent == root:
+                path.unlink(missing_ok=True)
+    except (OSError, ValueError):
+        logger.warning("Could not remove temporary output for download task %s", task_id, exc_info=True)
+
+
+def request_download_cancel(task_id: int) -> None:
+    event = _task_cancel_flags.get(int(task_id))
+    if event is not None:
+        event.set()
+
+
+def _check_download_cancelled(event: threading.Event) -> None:
+    if event.is_set():
+        raise DownloadTaskCancelled()
 
 
 def _now_db_ts() -> str:
@@ -642,6 +670,14 @@ async def execute_download_task(task_id: int, owner_id: int) -> None:
     - 在线程池中执行真正的文件生成
     - 成功/失败时原子更新 DB 状态与待推送事件
     """
+    cancel_event = _task_cancel_flags.setdefault(task_id, threading.Event())
+    try:
+        await _execute_download_task(task_id, owner_id, cancel_event)
+    finally:
+        _task_cancel_flags.pop(task_id, None)
+
+
+async def _execute_download_task(task_id: int, owner_id: int, cancel_event: threading.Event) -> None:
     async with _download_semaphore:
         # 读取任务参数
         db = get_db()
@@ -678,52 +714,53 @@ async def execute_download_task(task_id: int, owner_id: int) -> None:
         _progress_broadcast: dict[str, Any] = {"progress": 10, "message": "正在生成文件..."}
 
         def _progress_cb(progress: int, message: str) -> None:
+            _check_download_cancelled(cancel_event)
             _progress_broadcast["progress"] = progress
             _progress_broadcast["message"] = message
 
         async def _broadcast_progress_loop() -> None:
-            """定期检查进度变化并广播 + 更新 DB。"""
+            """Persist progress and notice cancellations issued by another worker."""
             last_progress = 10
             while not _progress_broadcast.get("done"):
                 try:
                     cur = _progress_broadcast.get("progress", 10)
-                    if cur != last_progress:
-                        last_progress = cur
-                        msg = _progress_broadcast.get("message", "")
-                        try:
-                            _db = get_db()
-                            try:
-                                updated = _update_task(
-                                    _db,
-                                    task_id,
-                                    progress=cur,
-                                    message=msg,
-                                    total=100,
-                                    event_owner_id=owner_id,
-                                    event_message={
-                                        "type": "download_progress",
-                                        "task_id": task_id,
-                                        "status": "processing",
-                                        "progress": cur,
-                                        "message": msg,
-                                    },
-                                )
-                            finally:
-                                _db.close()
+                    msg = _progress_broadcast.get("message", "")
+                    _db = get_db()
+                    try:
+                        state = _db.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+                        if state is None or state["status"] == "cancelled":
+                            cancel_event.set()
+                            _progress_broadcast["done"] = True
+                            return
+                        if cur != last_progress:
+                            updated = _update_task(
+                                _db,
+                                task_id,
+                                progress=cur,
+                                message=msg,
+                                total=100,
+                                event_owner_id=owner_id,
+                                event_message={
+                                    "type": "download_progress",
+                                    "task_id": task_id,
+                                    "status": "processing",
+                                    "progress": cur,
+                                    "message": msg,
+                                },
+                            )
                             if not updated:
+                                cancel_event.set()
                                 _progress_broadcast["done"] = True
                                 return
-                        except Exception:
-                            logger.warning(
-                                "Download task %d progress event persist failed",
-                                task_id,
-                                exc_info=True,
-                            )
+                            last_progress = cur
+                    finally:
+                        _db.close()
                     await asyncio.sleep(1)
                 except asyncio.CancelledError:
                     return
                 except Exception:
-                    break
+                    logger.warning("Download task %d progress event persist failed", task_id, exc_info=True)
+                    await asyncio.sleep(1)
 
         progress_task = asyncio.create_task(_broadcast_progress_loop())
 
@@ -731,6 +768,17 @@ async def execute_download_task(task_id: int, owner_id: int) -> None:
             result = await asyncio.to_thread(
                 _generate_download_file_sync, task_id, params, progress_callback=_progress_cb
             )
+            _check_download_cancelled(cancel_event)
+        except DownloadTaskCancelled:
+            _progress_broadcast["done"] = True
+            progress_task.cancel()
+            try:
+                await progress_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            cleanup_download_task_output(task_id)
+            logger.info("Download task %d cancelled", task_id)
+            return
         except Exception as exc:
             logger.exception("Download task %d failed", task_id)
             _progress_broadcast["done"] = True
@@ -739,6 +787,9 @@ async def execute_download_task(task_id: int, owner_id: int) -> None:
                 await progress_task
             except (asyncio.CancelledError, Exception):
                 pass
+            cleanup_download_task_output(task_id)
+            if cancel_event.is_set():
+                return
             db = get_db()
             try:
                 _update_task(
@@ -790,6 +841,7 @@ async def execute_download_task(task_id: int, owner_id: int) -> None:
         finally:
             db.close()
         if not completed:
+            cleanup_download_task_output(task_id)
             logger.info("Download task %d was cancelled before completion", task_id)
             return
 

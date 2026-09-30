@@ -778,11 +778,11 @@ export function ShowCreatePage() {
         </DialogContent>
       </Dialog>
 
-      <footer className="sticky bottom-0 z-20 flex shrink-0 items-center justify-between gap-2 border-t bg-background py-3">
+      <footer className="sticky bottom-0 z-20 flex shrink-0 flex-wrap items-center justify-between gap-2 border-t bg-background py-3">
         <span className="text-xs text-muted-foreground">
           第 {step + 1} / {STEPS.length} 步 · {STEPS[step]} · 共 {resourceIds.length} 页
         </span>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap justify-end gap-2">
           {step > 0 && (
             <Button
               type="button"

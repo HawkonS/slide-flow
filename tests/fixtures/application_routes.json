@@ -796,6 +796,70 @@
     ]
   },
   {
+    "path": "/api/shows/{show_id}/share-links",
+    "name": "create_show_share_link",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/shows/{show_id}/share-links",
+    "name": "list_show_share_links",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/shows/{show_id}/share-links/{link_id}",
+    "name": "revoke_show_share_link",
+    "kind": "http",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/show-share-links",
+    "name": "list_managed_show_share_links",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/show-share-links/ids",
+    "name": "list_managed_show_share_link_ids",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/show-share-links/bulk-revoke",
+    "name": "bulk_revoke_show_share_links",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/show-shares/{token}",
+    "name": "get_shared_show",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/show-shares/{token}/preview/{resource_id}",
+    "name": "shared_show_preview",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
     "path": "/api/resources",
     "name": "list_resources",
     "kind": "http",

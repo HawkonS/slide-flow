@@ -256,6 +256,7 @@ export interface IterateUpgradeRequest {
   resource_ids: number[];
   remarks: Record<string, string>;
   change_note: string;
+  name?: string;
 }
 
 // 迭代升级响应

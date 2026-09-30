@@ -22,6 +22,30 @@ export function parseRetryAfter(value: string | null, now = Date.now()): number 
   return Number.isFinite(delay) ? Math.max(0, Math.min(30_000, delay)) : undefined;
 }
 
+/** Translate transport/validation failures without echoing rejected inputs or server internals. */
+export function responseErrorMessage(status: number, data?: unknown): string {
+  const fallback: Record<number, string> = {
+    400: "操作未完成，请检查填写内容后重试", 401: "登录已过期，请重新登录",
+    403: "你没有权限执行此操作", 404: "内容不存在或已被删除", 409: "内容已发生变化，请刷新后重试",
+    413: "文件或提交内容过大，请缩小后重试", 422: "填写内容不符合要求，请检查后重试",
+    429: "操作过于频繁，请稍后再试", 502: "服务暂时无法连接，请稍后重试", 503: "服务正在维护，请稍后重试",
+    504: "请求等待时间过长，请稍后重试",
+  };
+  const defaultMessage = fallback[status] ?? (status >= 500 ? "服务暂时出现问题，请稍后重试" : "操作未完成，请稍后重试");
+  if (status >= 500 || !data || typeof data !== "object" || !("detail" in data)) return defaultMessage;
+  const detail = (data as { detail: unknown }).detail;
+  if (typeof detail === "string" && detail.trim()) return detail.slice(0, 400);
+  if (Array.isArray(detail)) {
+    const labels: Record<string, string> = { name: "名称", username: "用户名", password: "密码", new_password: "新密码", old_password: "原密码", resource_ids: "页面列表", remarks: "放映备注", change_note: "版本说明", subject: "主体", tags: "标签", expires_in_days: "分享有效期", file: "文件" };
+    const fields = [...new Set(detail.flatMap((issue: unknown) => {
+      if (!issue || typeof issue !== "object" || !("loc" in issue) || !Array.isArray(issue.loc)) return [];
+      return issue.loc.filter((part: unknown): part is string => typeof part === "string" && Boolean(labels[part])).map((part: string) => labels[part]);
+    }))];
+    return fields.length ? `请检查${fields.slice(0, 3).join("、")}的填写内容和长度` : defaultMessage;
+  }
+  return defaultMessage;
+}
+
 export interface FetchOptions extends RequestInit {
   json?: unknown;
   params?: Record<string, string | number | boolean | undefined | null>;
@@ -75,24 +99,15 @@ export async function api<T = unknown>(
   } catch (error) {
     if (error instanceof TypeError || (error instanceof DOMException &&
         (error.name === "NetworkError" || error.name === "TimeoutError"))) {
-      throw new ApiTransportError(error.message);
+      throw new ApiTransportError("无法连接服务，请检查网络后重试");
     }
     throw error;
   }
 
   if (!res.ok) {
     let data: unknown = null;
-    let detail =
-      res.status === 401 ? "未登录或会话已过期" : `${res.status} ${res.statusText}`;
-    try {
-      data = await res.json();
-      if (data && typeof data === "object" && "detail" in data) {
-        const d = (data as { detail?: unknown }).detail;
-        if (d != null) detail = typeof d === "string" ? d : JSON.stringify(d);
-      }
-    } catch {
-      // ignore
-    }
+    try { data = await res.json(); } catch { /* Non-JSON error pages use the status fallback. */ }
+    const detail = responseErrorMessage(res.status, data);
     if (res.status === 401 && !path.startsWith("/api/auth/")
         && requestGeneration === sessionGeneration && requestUnauthorizedHandler === unauthorizedHandler) {
       requestUnauthorizedHandler?.();
@@ -226,6 +241,7 @@ export async function updateUserPreferences(prefs: Record<string, string>): Prom
  * 预检失败时解析响应 JSON 的 detail 字段并抛出 ApiError，解析失败时按状态码兜底文案。
  */
 export async function downloadFile(path: string, fileName?: string): Promise<void> {
+  const requestGeneration = sessionGeneration;
   let res: Response;
   try {
     res = await fetch(path, {
@@ -237,28 +253,10 @@ export async function downloadFile(path: string, fileName?: string): Promise<voi
   }
 
   if (!res.ok) {
-    const fallbackDetail =
-      res.status === 410
-        ? "下载文件已过期或被清理，请重新发起下载"
-        : res.status === 403
-          ? "无权访问此任务"
-          : res.status === 404
-            ? "任务不存在"
-            : res.status === 400
-              ? "任务文件尚未生成"
-              : `${res.status} ${res.statusText}`;
     let data: unknown = null;
-    let detail = res.status === 401 ? "未登录或会话已过期" : fallbackDetail;
-    try {
-      data = await res.json();
-      if (data && typeof data === "object" && "detail" in data) {
-        const d = (data as { detail?: unknown }).detail;
-        if (d != null) detail = typeof d === "string" ? d : JSON.stringify(d);
-      }
-    } catch {
-      // 响应体非 JSON，按状态码兜底文案
-    }
-    if (res.status === 401 && !path.startsWith("/api/auth/")) {
+    try { data = await res.json(); } catch { /* Use the status fallback. */ }
+    const detail = res.status === 410 ? "下载文件已过期，请重新发起下载" : responseErrorMessage(res.status, data);
+    if (res.status === 401 && requestGeneration === sessionGeneration && !path.startsWith("/api/auth/")) {
       unauthorizedHandler?.();
     }
     throw new ApiError(res.status, detail, data);
@@ -300,6 +298,7 @@ export function apiUploadWithProgress<T = unknown>(
   method: string = "POST",
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
+    const requestGeneration = sessionGeneration;
     const xhr = new XMLHttpRequest();
     xhr.open(method, path);
     xhr.withCredentials = true;
@@ -331,13 +330,8 @@ export function apiUploadWithProgress<T = unknown>(
         return;
       }
 
-      let detail =
-        xhr.status === 401 ? "未登录或会话已过期" : `${xhr.status} ${xhr.statusText}`;
-      if (data && typeof data === "object" && "detail" in (data as Record<string, unknown>)) {
-        const d = (data as { detail?: unknown }).detail;
-        if (d != null) detail = typeof d === "string" ? d : JSON.stringify(d);
-      }
-      if (xhr.status === 401 && !path.startsWith("/api/auth/")) {
+      const detail = responseErrorMessage(xhr.status, data);
+      if (xhr.status === 401 && requestGeneration === sessionGeneration && !path.startsWith("/api/auth/")) {
         unauthorizedHandler?.();
       }
       reject(new ApiError(xhr.status, detail, data));
@@ -353,9 +347,17 @@ export function apiUploadWithProgress<T = unknown>(
 /** ---------- Show Version API ---------- */
 
 export async function iterateShow(showId: number, payload: { change_note: string; name?: string; resource_ids?: number[] }) {
-  return api<import("./types").Show>(`/api/shows/${showId}/iterate`, {
+  return api<{ show: import("./types").Show }>(`/api/shows/${showId}/iterate`, {
     method: "POST",
     json: payload,
+  });
+}
+
+/** 更新放映中的资源集合和播放顺序，不创建新的放映版本。 */
+export async function updateShowResources(showId: number, resourceIds: number[]) {
+  return api<{ show: import("./types").Show }>(`/api/shows/${showId}/resources`, {
+    method: "PUT",
+    json: { resource_ids: resourceIds },
   });
 }
 

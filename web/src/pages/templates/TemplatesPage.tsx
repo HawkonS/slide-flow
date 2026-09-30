@@ -24,6 +24,7 @@ import { toast } from "sonner";
 import { TemplateFormDialog, TemplateSortDialog } from "@/pages/admin/AdminTemplatesPage";
 import { PageMetrics } from "@/components/common/PageMetrics";
 import { PageHeader } from "@/components/common/PageHeader";
+import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -80,6 +81,8 @@ export function TemplatesPage() {
   const [platformFilter, setPlatformFilter] = React.useState("all");
   const [typeFilter, setTypeFilter] = React.useState("all");
   const [selected, setSelected] = React.useState<Set<number>>(new Set());
+  const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
+  const [deleteTarget, setDeleteTarget] = React.useState<TemplateItem | null>(null);
 
   // 列数由共享 hook 按容器宽度连续计算
   // widthOffset:16 用于补偿 grid 上层 `pl-4` 造成的实际可用宽度 -16 偏差，避免临界宽度下列数抖动
@@ -389,9 +392,7 @@ export function TemplatesPage() {
               size="sm"
               className="h-8 gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive"
               disabled={bulkDelete.isPending}
-              onClick={() => {
-                if (window.confirm("确认删除选中的 " + selected.size + " 个模板？")) bulkDelete.mutate(Array.from(selected));
-              }}
+              onClick={() => setBulkDeleteOpen(true)}
             >
               <Trash2 className="h-3.5 w-3.5" />批量删除
             </Button>
@@ -456,9 +457,7 @@ export function TemplatesPage() {
                               onClick={() => setDetail(t)}
                               onDownload={() => void handleSingleDownload(t)}
                               onEdit={() => setEditing(t)}
-                              onDelete={() => {
-                                if (window.confirm("确认删除模板「" + t.name + "」？")) deleteTemplate.mutate(t.id);
-                              }}
+                              onDelete={() => setDeleteTarget(t)}
                             />
                           ))}
                         </div>
@@ -490,6 +489,31 @@ export function TemplatesPage() {
           <TemplateSortDialog open={sortOpen} onOpenChange={setSortOpen} templates={templates} />
         </>
       )}
+      <ConfirmDialog
+        open={bulkDeleteOpen}
+        onOpenChange={setBulkDeleteOpen}
+        title="批量删除模板"
+        description={`确定删除选中的 ${selected.size} 个模板吗？删除后无法恢复。`}
+        confirmLabel="删除模板"
+        destructive
+        loading={bulkDelete.isPending}
+        onConfirm={() => {
+          bulkDelete.mutate(Array.from(selected), { onSuccess: () => setBulkDeleteOpen(false) });
+        }}
+      />
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
+        title="删除模板"
+        description={deleteTarget ? `确定删除模板「${deleteTarget.name}」吗？删除后无法恢复。` : ""}
+        confirmLabel="删除模板"
+        destructive
+        loading={deleteTemplate.isPending}
+        onConfirm={() => {
+          const target = deleteTarget;
+          if (target) deleteTemplate.mutate(target.id, { onSuccess: () => setDeleteTarget(null) });
+        }}
+      />
     </div>
   );
 }

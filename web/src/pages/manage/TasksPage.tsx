@@ -29,6 +29,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { FilterChip as ResourceFilterChip, type ChipOption } from "@/components/resource/filter-chips";
 import { PageHeader } from "@/components/common/PageHeader";
+import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import {
   Dialog,
   DialogContent,
@@ -1005,6 +1006,7 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
   const { user } = useAuth();
 
   const [cancelTarget, setCancelTarget] = React.useState<Task | null>(null);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
   const [detailTask, setDetailTask] = React.useState<Task | null>(null);
   const [filter, setFilter] = React.useState<"all" | TaskStatus>("all");
   const [selected, setSelected] = React.useState<Set<number>>(new Set());
@@ -1134,8 +1136,7 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
         selectedCount={selected.size}
         bulkDeletePending={bulkDelMut.isPending}
         onBulkDelete={() => {
-          if (!window.confirm(`确认删除选中的 ${selected.size} 个任务记录？`)) return;
-          bulkDelMut.mutate(Array.from(selected));
+          setBulkDeleteOpen(true);
         }}
       />
 
@@ -1261,6 +1262,18 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <ConfirmDialog
+        open={bulkDeleteOpen}
+        onOpenChange={setBulkDeleteOpen}
+        title="批量删除任务记录"
+        description={`确定删除选中的 ${selected.size} 条任务记录吗？未完成的任务将停止，临时文件会清理；已导入的素材不受影响。`}
+        confirmLabel="删除记录"
+        destructive
+        loading={bulkDelMut.isPending}
+        onConfirm={() => {
+          bulkDelMut.mutate(Array.from(selected), { onSuccess: () => setBulkDeleteOpen(false) });
+        }}
+      />
     </div>
   );
 }
@@ -1297,6 +1310,7 @@ function DownloadTasksTab({ canManage }: { canManage: boolean }) {
   const { user } = useAuth();
   const [filter, setFilter] = React.useState<"all" | TaskStatus>("all");
   const [selected, setSelected] = React.useState<Set<number>>(new Set());
+  const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
   // 用户维度筛选："all" = 所有用户；"self" = 仅自己；其他为某个用户 id 的字符串形式
   const [ownerFilter, setOwnerFilter] = React.useState<string>("all");
   // 搜索输入值与防抖后的实际查询值分开
@@ -1412,8 +1426,7 @@ function DownloadTasksTab({ canManage }: { canManage: boolean }) {
         selectedCount={selected.size}
         bulkDeletePending={bulkDelMut.isPending}
         onBulkDelete={() => {
-          if (!window.confirm(`确认删除选中的 ${selected.size} 个任务记录？`)) return;
-          bulkDelMut.mutate(Array.from(selected));
+          setBulkDeleteOpen(true);
         }}
       />
 
@@ -1488,6 +1501,18 @@ function DownloadTasksTab({ canManage }: { canManage: boolean }) {
           onChange={setPage}
         />
       )}
+      <ConfirmDialog
+        open={bulkDeleteOpen}
+        onOpenChange={setBulkDeleteOpen}
+        title="批量删除任务记录"
+        description={`确定删除选中的 ${selected.size} 条下载任务记录吗？未完成的任务将停止，删除后无法再从此记录下载文件；已保存到你设备的文件不受影响。`}
+        confirmLabel="删除记录"
+        destructive
+        loading={bulkDelMut.isPending}
+        onConfirm={() => {
+          bulkDelMut.mutate(Array.from(selected), { onSuccess: () => setBulkDeleteOpen(false) });
+        }}
+      />
     </div>
   );
 }

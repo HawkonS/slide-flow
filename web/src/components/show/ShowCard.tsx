@@ -50,10 +50,12 @@ export function ShowCard({ show, onOpen, onEdit, onDuplicate, onIterate, onDelet
 
   const hasResources = show.resources.length > 0;
   const hasAccessible = accessibleResources.length > 0;
+  const pageCount = show.all_resource_ids?.length || show.resources.length;
   const canManage = show.can_manage;
+  const hasManageActions = canManage && Boolean(onEdit || onDuplicate || onIterate || onDelete);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
-    if (event.key === "Enter" || event.key === " ") {
+    if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
       event.preventDefault();
       onOpen?.(show);
     }
@@ -132,13 +134,14 @@ export function ShowCard({ show, onOpen, onEdit, onDuplicate, onIterate, onDelet
           </span>
         )}
 
-        {show.is_standard && (
-          <span className="absolute bottom-2 left-2 inline-flex items-center gap-1 rounded bg-primary/90 px-1.5 py-0.5 text-[11px] font-medium text-primary-foreground">
-            <Star className="h-3 w-3 fill-current" /> 标准放映
-          </span>
-        )}
+        <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-slate-900/60 px-3 py-2 text-[11px] font-medium text-white backdrop-blur-[1px]">
+          {show.is_standard ? (
+            <span className="inline-flex min-w-0 items-center gap-1 truncate"><Star className="h-3 w-3 shrink-0 fill-current" />标准放映</span>
+          ) : <span />}
+          <span className="shrink-0 tabular-nums">共 {pageCount} 页</span>
+        </div>
 
-        <div className="absolute right-2 top-2 opacity-0 transition group-hover:opacity-100 focus-within:opacity-100">
+        <div className="absolute right-2 top-2 opacity-100 transition">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
@@ -176,16 +179,16 @@ export function ShowCard({ show, onOpen, onEdit, onDuplicate, onIterate, onDelet
                   )}
                 </DropdownMenuItem>
               )}
-              {canManage && (
+              {hasManageActions && (
                 <>
                   <DropdownMenuSeparator />
                   {onEdit && (
-                    <DropdownMenuItem onSelect={() => onEdit(show)}>
+                    <DropdownMenuItem onSelect={() => window.setTimeout(() => onEdit(show), 0)}>
                       <Pencil className="mr-2 h-4 w-4" /> 编辑信息
                     </DropdownMenuItem>
                   )}
                   {onDuplicate && (
-                    <DropdownMenuItem onSelect={() => onDuplicate(show)}>
+                    <DropdownMenuItem onSelect={() => window.setTimeout(() => onDuplicate(show), 0)}>
                       <Copy className="mr-2 h-4 w-4" /> 创建副本
                     </DropdownMenuItem>
                   )}
@@ -196,7 +199,7 @@ export function ShowCard({ show, onOpen, onEdit, onDuplicate, onIterate, onDelet
                   )}
                   {onDelete && (
                     <DropdownMenuItem
-                      onSelect={() => onDelete(show)}
+                      onSelect={() => window.setTimeout(() => onDelete(show), 0)}
                       className="text-destructive focus:text-destructive"
                     >
                       <Trash2 className="mr-2 h-4 w-4" /> 删除

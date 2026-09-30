@@ -6,13 +6,16 @@ import {
   CheckCircle2,
   HardDrive,
   Loader2,
+  RefreshCw,
   ShieldAlert,
+  Smartphone,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
 import { listCachedShows } from "@/lib/pwa-cache";
 import { OFFLINE_SESSION_EVENT, offlineOwnerKey, readOfflineIdentity } from "@/lib/offline-session";
+import { usePwaStatus } from "@/lib/pwa";
 
 type BannerState =
   | { kind: "loading" }
@@ -26,6 +29,7 @@ const TARGET = "/manage/offline-cache";
 /** 当前账号在此浏览器中的离线缓存状态。 */
 export function OfflineCacheBanner() {
   const auth = useAuth();
+  const pwaStatus = usePwaStatus();
   const ownerKey = auth.identity && auth.identity.user.id === auth.user?.id ? offlineOwnerKey(auth.identity) : "";
   const ownerRef = React.useRef(ownerKey);
   ownerRef.current = ownerKey;
@@ -98,8 +102,8 @@ export function OfflineCacheBanner() {
   if (state.kind === "unsupported") {
     const text =
       state.reason === "insecure"
-        ? "当前为非安全连接，离线缓存功能不可用（需通过 HTTPS 或 localhost 访问）"
-        : "当前浏览器无法使用离线缓存，需要启用 Service Worker 和浏览器本地存储。";
+        ? "当前为非安全连接，本地应用无法部署（需通过 HTTPS 或 localhost 访问）"
+        : "当前浏览器无法部署本地应用，需要启用 Service Worker 和浏览器本地存储。";
     return (
       <div className="flex items-center gap-3 rounded-lg border border-dashed bg-muted/40 p-3 text-xs text-muted-foreground">
         <AlertCircle className="h-4 w-4 shrink-0" />
@@ -108,15 +112,63 @@ export function OfflineCacheBanner() {
     );
   }
 
+  if (pwaStatus.status === "development") {
+    return (
+      <BannerLink
+        to={TARGET}
+        toneClass="border-sky-200/80 bg-sky-50/70 hover:border-sky-300 dark:border-sky-900/50 dark:bg-sky-950/20"
+        iconWrapClass="bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300"
+        icon={<Smartphone className="h-5 w-5" />}
+        title="开发环境未部署本地应用"
+        badge={<span className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-medium text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">发布构建后可用</span>}
+        description={pwaStatus.message}
+        actionLabel="查看维护"
+        actionToneClass="bg-sky-600 text-white hover:bg-sky-700 dark:bg-sky-500 dark:hover:bg-sky-600"
+      />
+    );
+  }
+
+  if (pwaStatus.status === "update-available") {
+    return (
+      <BannerLink
+        to={TARGET}
+        toneClass="border-amber-200/80 bg-amber-50/70 hover:border-amber-300 dark:border-amber-900/50 dark:bg-amber-950/20"
+        iconWrapClass="bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300"
+        icon={<RefreshCw className="h-5 w-5" />}
+        title="本地应用有更新"
+        badge={<span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">待维护</span>}
+        description={pwaStatus.message}
+        actionLabel="检查更新"
+        actionToneClass="bg-amber-600 text-white hover:bg-amber-700 dark:bg-amber-500 dark:hover:bg-amber-600"
+      />
+    );
+  }
+
+  if (pwaStatus.status === "error" || pwaStatus.status === "not-deployed") {
+    return (
+      <BannerLink
+        to={TARGET}
+        toneClass="border-rose-200/80 bg-rose-50/70 hover:border-rose-300 dark:border-rose-900/50 dark:bg-rose-950/20"
+        iconWrapClass="bg-rose-100 text-rose-700 dark:bg-rose-900/50 dark:text-rose-300"
+        icon={<ShieldAlert className="h-5 w-5" />}
+        title="本地应用需要维护"
+        badge={<span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-medium text-rose-700 dark:bg-rose-900/40 dark:text-rose-300">未就绪</span>}
+        description={pwaStatus.message}
+        actionLabel="打开维护"
+        actionToneClass="bg-rose-600 text-white hover:bg-rose-700 dark:bg-rose-500 dark:hover:bg-rose-600"
+      />
+    );
+  }
+
   if (state.kind === "empty" || (state.kind === "configured" && state.validCount === 0)) {
     const stale = state.kind === "configured";
     return (
       <BannerLink
         to={TARGET}
-        toneClass="border-amber-200/80 bg-gradient-to-r from-amber-50 via-amber-50/60 to-orange-50/30 hover:border-amber-300 dark:border-amber-900/50 dark:from-amber-950/30 dark:via-amber-950/20 dark:to-orange-950/10"
+        toneClass="border-amber-200/80 bg-amber-50/70 hover:border-amber-300 dark:border-amber-900/50 dark:bg-amber-950/20"
         iconWrapClass="bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300"
         icon={<HardDrive className="h-5 w-5" />}
-        title={stale ? "离线缓存需要更新" : "此浏览器尚未缓存放映"}
+        title={stale ? "本地应用已部署 · 缓存需要更新" : "本地应用已部署 · 尚未缓存放映"}
         badge={
           <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
             {stale ? "暂无有效缓存" : "尚未缓存"}
@@ -135,10 +187,10 @@ export function OfflineCacheBanner() {
     return (
       <BannerLink
         to={TARGET}
-        toneClass="border-sky-200/80 bg-gradient-to-r from-sky-50 via-sky-50/60 to-indigo-50/30 hover:border-sky-300 dark:border-sky-900/50 dark:from-sky-950/30 dark:via-sky-950/20 dark:to-indigo-950/10"
+        toneClass="border-sky-200/80 bg-sky-50/70 hover:border-sky-300 dark:border-sky-900/50 dark:bg-sky-950/20"
         iconWrapClass="bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300"
         icon={<ShieldAlert className="h-5 w-5" />}
-        title="离线缓存暂不可用"
+        title="本地应用维护中"
         description={`账号「${accountName}」 · ${state.message}`}
         actionLabel="查看管理"
         actionToneClass="bg-sky-600 text-white hover:bg-sky-700 dark:bg-sky-500 dark:hover:bg-sky-600"
@@ -150,10 +202,10 @@ export function OfflineCacheBanner() {
   return (
     <BannerLink
       to={TARGET}
-      toneClass="border-emerald-200/70 bg-gradient-to-r from-emerald-50/80 via-emerald-50/40 to-teal-50/20 hover:border-emerald-300 dark:border-emerald-900/40 dark:from-emerald-950/30 dark:via-emerald-950/20 dark:to-teal-950/10"
+      toneClass="border-emerald-200/70 bg-emerald-50/60 hover:border-emerald-300 dark:border-emerald-900/40 dark:bg-emerald-950/20"
       iconWrapClass="bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300"
       icon={<HardDrive className="h-5 w-5" />}
-      title="离线缓存已就绪"
+      title="本地应用已部署 · 离线缓存已就绪"
       badge={
         <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-inset ring-emerald-200/60 dark:bg-emerald-900/30 dark:text-emerald-300 dark:ring-emerald-800/60">
           <CheckCircle2 className="h-3 w-3" />

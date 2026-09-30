@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.core.permissions import can_manage_show
+from app.core.permissions import can_view_resource
 from app.core.permissions import can_view_show
 from app.core.permissions import is_system_admin
 from app.core.permissions import require_admin
@@ -249,7 +250,8 @@ def create_show(
     if management_scope == "partial" and not payload.manage_user_ids and not manage_user_tags:
         raise HTTPException(400, "管理范围为部分时请至少选择一位用户或一个用户标签")
     for rid in payload.resource_ids:
-        _resource_row(db, rid)
+        if not can_view_resource(db, _resource_row(db, rid), user):
+            raise HTTPException(403, "部分素材不可访问，请重新选择")
     ts = now_iso()
     series_id = uuid.uuid4().hex[:10]
     db.execute(
@@ -431,8 +433,6 @@ def update_show_resources(
     row = _show_row(db, show_id)
     if not can_manage_show(db, row, user):
         raise HTTPException(403, "无管理权限")
-    for rid in payload.resource_ids:
-        _resource_row(db, rid)
     existing = {
         int(r["resource_id"]): int(r["version_no"])
         for r in db.execute("SELECT resource_id, version_no FROM show_resources WHERE show_id = ?", (show_id,)).fetchall()
@@ -441,6 +441,9 @@ def update_show_resources(
         int(r["resource_id"]): int(r["is_hidden"])
         for r in db.execute("SELECT resource_id, is_hidden FROM show_resources WHERE show_id = ?", (show_id,)).fetchall()
     }
+    for rid in set(payload.resource_ids) - existing.keys():
+        if not can_view_resource(db, _resource_row(db, rid), user):
+            raise HTTPException(403, "部分新增素材不可访问，请重新选择")
     db.execute("DELETE FROM show_resources WHERE show_id = ?", (show_id,))
     for index, rid in enumerate(payload.resource_ids):
         version_no = existing.get(rid)
@@ -467,7 +470,8 @@ def append_show_resource(
     row = _show_row(db, show_id)
     if not can_manage_show(db, row, user):
         raise HTTPException(403, "无管理权限")
-    _resource_row(db, payload.resource_id)
+    if not can_view_resource(db, _resource_row(db, payload.resource_id), user):
+        raise HTTPException(403, "该素材不可访问，请重新选择")
     max_order_row = db.execute(
         "SELECT COALESCE(MAX(sort_order), -1) AS max_order FROM show_resources WHERE show_id = ?",
         (show_id,),

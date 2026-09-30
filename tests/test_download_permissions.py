@@ -20,7 +20,7 @@ from app.config import settings
 from app.core import download_tasks
 from app.core.permissions import SESSION_COOKIE, _auth_db_dep
 from app.core.security import create_session_token
-from app.routers import downloads
+from app.routers import downloads, tasks
 from app.routers.dependencies import db_dep, db_read_dep
 from app.routers.shows import downloads as show_downloads
 from app.services.downloads import cache
@@ -90,6 +90,7 @@ class DownloadPermissionTests(unittest.TestCase):
         self.db.commit()
         app = FastAPI()
         app.include_router(downloads.router)
+        app.include_router(tasks.router)
         app.include_router(show_downloads.router)
 
         def db_override():
@@ -100,6 +101,45 @@ class DownloadPermissionTests(unittest.TestCase):
         self.client = TestClient(app)
         self.addCleanup(self.client.close)
         self.authenticate(2)
+
+    def test_bulk_task_delete_cancels_download_and_only_removes_its_output(self):
+        from app.schemas.tasks import TaskDeletePayload
+        from app.routers.tasks import bulk_delete_tasks
+        import threading
+
+        self.authenticate(4)
+        task_id, _ = self.add_task()
+        other_id, _ = self.add_task()
+        active_output = download_tasks._output_path(task_id, "zip")
+        other_output = download_tasks._output_path(other_id, "zip")
+        active_output.write_bytes(b"generated")
+        other_output.write_bytes(b"keep")
+        event = threading.Event()
+        download_tasks._task_cancel_flags[task_id] = event
+        try:
+            response = self.client.post("/api/admin/tasks/bulk-delete", json={"task_ids": [task_id]})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertTrue(event.is_set())
+            self.assertFalse(active_output.exists())
+            self.assertTrue(other_output.exists())
+            self.assertIsNone(self.db.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)).fetchone())
+            self.assertIsNotNone(self.db.execute("SELECT id FROM tasks WHERE id = ?", (other_id,)).fetchone())
+        finally:
+            download_tasks._task_cancel_flags.pop(task_id, None)
+
+    def test_download_output_cleanup_is_confined_to_task_output_directory(self):
+        task_id, _ = self.add_task()
+        task_output = download_tasks._output_path(task_id, "zip")
+        task_output.write_bytes(b"owned")
+        unrelated = self.output / f"task_{task_id}.txt"
+        unrelated.write_bytes(b"also task-owned")
+        shared_cache = self.output / "cache" / f"task_{task_id}.zip"
+        shared_cache.parent.mkdir(parents=True, exist_ok=True)
+        shared_cache.write_bytes(b"shared cache")
+        download_tasks.cleanup_download_task_output(task_id)
+        self.assertFalse(task_output.exists())
+        self.assertTrue(unrelated.exists())
+        self.assertTrue(shared_cache.exists())
 
     def connect(self):
         db = sqlite3.connect(self.db_path, check_same_thread=False)

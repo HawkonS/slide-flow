@@ -9,7 +9,7 @@ export interface OfflineSlideData {
   revokeAll(): void;
 }
 
-/** Reads authenticated PWA packages; never opens legacy directory/JSONP exports. */
+/** Reads authenticated PWA packages from the current application store. */
 export async function loadOfflineShowData(showId: string | number, packageId?: string): Promise<OfflineSlideData> {
   const showInfo = await getCachedShow(Number(showId), packageId);
   const release = await pinCachedShow(showInfo.package_id);

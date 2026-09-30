@@ -13,7 +13,7 @@ export function ShowIterationPage() {
   const navigate = useNavigate();
   const { id } = useParams();
   const [searchParams] = useSearchParams();
-  const initialTab = searchParams.get("tab") === "upgrade" ? "upgrade" : "reorganize";
+  const initialTab = searchParams.get("tab") === "reorganize" ? "reorganize" : "upgrade";
   const showId = Number(id);
   const validId = Number.isInteger(showId) && showId > 0;
 
@@ -40,7 +40,7 @@ export function ShowIterationPage() {
 
   return (
     <div className="min-h-full w-full px-1 pb-10 sm:px-2">
-      <header className="mx-auto flex w-full max-w-6xl items-center justify-between gap-3 border-b py-3">
+      <header className="mx-auto flex w-full max-w-7xl items-center justify-between gap-3 border-b py-3">
         <div className="flex min-w-0 items-center gap-2.5">
           <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0" title="返回放映详情" aria-label="返回放映详情" onClick={() => navigate(`/shows/${show.id}`)}>
             <ArrowLeft className="h-4 w-4" />
@@ -56,7 +56,7 @@ export function ShowIterationPage() {
         <GitBranch className="hidden h-5 w-5 shrink-0 text-primary sm:block" />
       </header>
 
-      <main className="mx-auto mt-5 w-full max-w-6xl">
+      <main className="mx-auto mt-5 w-full max-w-7xl">
         <ShowUpgradeDialog
           open
           page

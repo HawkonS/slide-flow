@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import {
   Eraser,
   Loader2,
@@ -16,6 +16,7 @@ import { usePresentChannel, usePlaybackSessionId } from "@/lib/present-channel";
 import { cn } from "@/lib/utils";
 import type { Show, ShowResource, ShowResourceAccessible } from "@/lib/types";
 import { useShowPlayback } from "@/lib/use-show-playback";
+import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 
 /* ---------- helpers ---------- */
 
@@ -28,6 +29,13 @@ function isAccessible(r: ShowResource): r is ShowResourceAccessible {
 export function FullscreenPage() {
   const { id } = useParams<{ id: string }>();
   const showId = Number(id);
+  const navigate = useNavigate();
+  const closePlayback = () => {
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+    // Script-opened windows can close; direct visits need a usable exit too.
+    if (window.opener || window.history.length <= 1) window.close();
+    navigate(`/shows/${showId}`, { replace: true });
+  };
 
   /* ---- slide state ---- */
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -46,6 +54,7 @@ export function FullscreenPage() {
   const [started, setStarted] = useState(false);
   const [pageJumpOpen, setPageJumpOpen] = useState(false);
   const [pageJumpValue, setPageJumpValue] = useState("");
+  const [confirmEnd, setConfirmEnd] = useState(false);
   const pageJumpInputRef = useRef<HTMLInputElement>(null);
 
   /* ---- refs ---- */
@@ -149,6 +158,7 @@ export function FullscreenPage() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (confirmEnd) return;
       // 当页码跳转输入框打开时，只处理输入框内的按键
       if (pageJumpOpen) {
         if (e.key === "Escape") {
@@ -189,7 +199,7 @@ export function FullscreenPage() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [prevSlide, nextSlide, drawingMode, pageJumpOpen, openPageJump]);
+  }, [prevSlide, nextSlide, drawingMode, pageJumpOpen, openPageJump, confirmEnd]);
 
   /* ========== Toolbar auto-hide (mouse movement) ========== */
 
@@ -314,23 +324,6 @@ export function FullscreenPage() {
     };
   }, [nextSlide, prevSlide, showThumbBar]);
 
-  /* ========== Fullscreen exit confirmation ========== */
-
-  useEffect(() => {
-    const handleFullscreenChange = () => {
-      // When user exits fullscreen (via ESC), confirm if they want to close
-      if (!document.fullscreenElement && isFullscreen) {
-        const shouldClose = window.confirm("是否结束放映？");
-        if (shouldClose) {
-          window.close();
-        }
-      }
-    };
-
-    document.addEventListener("fullscreenchange", handleFullscreenChange);
-    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
-  }, [isFullscreen]);
-
   /* ========== Drawing mode toggle ========== */
 
   const toggleMode = useCallback(
@@ -414,13 +407,7 @@ export function FullscreenPage() {
   /* ========== Exit handler ========== */
 
   const handleExit = useCallback(() => {
-    const shouldClose = window.confirm("是否结束放映？");
-    if (shouldClose) {
-      if (document.fullscreenElement) {
-        document.exitFullscreen().catch(() => {});
-      }
-      window.close();
-    }
+    setConfirmEnd(true);
   }, []);
 
   /* ========== Render: Loading ========== */
@@ -438,7 +425,7 @@ export function FullscreenPage() {
       <div className="fixed inset-0 flex flex-col items-center justify-center gap-4 bg-black text-white">
         <p className="text-lg">{error || "加载失败"}</p>
         <button
-          onClick={() => window.close()}
+          onClick={closePlayback}
           className="rounded bg-white/20 px-4 py-2 text-sm hover:bg-white/30"
         >
           关闭
@@ -452,7 +439,7 @@ export function FullscreenPage() {
       <div className="fixed inset-0 flex flex-col items-center justify-center gap-4 bg-black text-white">
         <p className="text-lg">没有可访问的资源</p>
         <button
-          onClick={() => window.close()}
+          onClick={closePlayback}
           className="rounded bg-white/20 px-4 py-2 text-sm hover:bg-white/30"
         >
           关闭
@@ -465,13 +452,14 @@ export function FullscreenPage() {
 
   if (!started) {
     return (
-      <div
-        className="fixed inset-0 flex flex-col items-center justify-center gap-6 bg-black text-white cursor-pointer"
+      <button
+        type="button"
+        className="fixed inset-0 flex w-full flex-col items-center justify-center gap-6 bg-black text-white cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-white"
         onClick={handleStart}
       >
         <p className="text-2xl font-light">点击开始放映</p>
-        <p className="text-sm text-white/50">点击后将进入全屏模式</p>
-      </div>
+        <p className="text-sm text-white/50">点击或按回车开始，支持左右滑动翻页</p>
+      </button>
     );
   }
 
@@ -701,6 +689,18 @@ export function FullscreenPage() {
           </div>
         )}
       </div>
+      <ConfirmDialog
+        open={confirmEnd}
+        onOpenChange={setConfirmEnd}
+        title="结束放映"
+        description="确定结束当前放映吗？结束后将关闭播放窗口或返回放映详情。"
+        confirmLabel="结束放映"
+        destructive
+        onConfirm={() => {
+          setConfirmEnd(false);
+          closePlayback();
+        }}
+      />
     </div>
   );
 }

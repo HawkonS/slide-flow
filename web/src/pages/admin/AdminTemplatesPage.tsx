@@ -67,6 +67,7 @@ import { TemplateItem, VisibilityScope } from "@/lib/types";
 import { useUrlPage } from "@/lib/use-url-page";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/common/PageHeader";
+import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 
 interface TemplateListResponse {
   items: TemplateItem[];
@@ -85,6 +86,8 @@ export function AdminTemplatesPage() {
   const [createOpen, setCreateOpen] = React.useState(false);
   const [sortOpen, setSortOpen] = React.useState(false);
   const [selected, setSelected] = React.useState<Set<number>>(new Set());
+  const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
+  const [deleteTarget, setDeleteTarget] = React.useState<TemplateItem | null>(null);
 
   const templates = data?.items ?? [];
   const filtered = React.useMemo(() => {
@@ -219,10 +222,7 @@ export function AdminTemplatesPage() {
             size="sm"
             className="h-8 gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
             disabled={selected.size === 0 || bulkDelMut.isPending}
-            onClick={() => {
-              if (!window.confirm(`确认删除选中的 ${selected.size} 个模板？`)) return;
-              bulkDelMut.mutate(Array.from(selected));
-            }}
+            onClick={() => setBulkDeleteOpen(true)}
           >
             <Trash2 className="h-3.5 w-3.5" />
             批量删除
@@ -397,11 +397,7 @@ export function AdminTemplatesPage() {
                           variant="ghost"
                           size="sm"
                           className="text-destructive hover:text-destructive"
-                          onClick={() => {
-                            if (window.confirm(`确认删除模板「${t.name}」？`)) {
-                              delMut.mutate(t.id);
-                            }
-                          }}
+                          onClick={() => setDeleteTarget(t)}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </Button>
@@ -462,6 +458,31 @@ export function AdminTemplatesPage() {
         open={sortOpen}
         onOpenChange={setSortOpen}
         templates={templates}
+      />
+      <ConfirmDialog
+        open={bulkDeleteOpen}
+        onOpenChange={setBulkDeleteOpen}
+        title="批量删除模板"
+        description={`确定删除选中的 ${selected.size} 个模板吗？删除后无法恢复。`}
+        confirmLabel="删除模板"
+        destructive
+        loading={bulkDelMut.isPending}
+        onConfirm={() => {
+          bulkDelMut.mutate(Array.from(selected), { onSuccess: () => setBulkDeleteOpen(false) });
+        }}
+      />
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
+        title="删除模板"
+        description={deleteTarget ? `确定删除模板「${deleteTarget.name}」吗？删除后无法恢复。` : ""}
+        confirmLabel="删除模板"
+        destructive
+        loading={delMut.isPending}
+        onConfirm={() => {
+          const target = deleteTarget;
+          if (target) delMut.mutate(target.id, { onSuccess: () => setDeleteTarget(null) });
+        }}
       />
     </div>
   );

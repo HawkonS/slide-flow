@@ -1099,6 +1099,7 @@ def transfer_and_delete_user(
             ("resources", "updated_by"),
             ("resource_versions", "created_by"),
             ("resource_share_tokens", "created_by"),
+            ("show_share_tokens", "created_by"),
             ("templates", "owner_id"),
             ("fonts", "uploaded_by"),
             ("shows", "owner_id"),

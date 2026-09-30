@@ -1,3 +1,4 @@
+import { copyText } from "@/lib/clipboard";
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -64,21 +65,6 @@ function formatDate(value: string | null | undefined) {
   return value ? new Date(value).toLocaleString("zh-CN") : "-";
 }
 
-async function copyText(value: string, success = "已复制到剪贴板") {
-  try {
-    await navigator.clipboard.writeText(value);
-  } catch {
-    const textarea = document.createElement("textarea");
-    textarea.value = value;
-    textarea.style.position = "fixed";
-    textarea.style.opacity = "0";
-    document.body.appendChild(textarea);
-    textarea.select();
-    document.execCommand("copy");
-    textarea.remove();
-  }
-  toast.success(success);
-}
 
 function ScopeLine({ label, value }: { label: string; value: string }) {
   return (
@@ -90,7 +76,6 @@ function ScopeLine({ label, value }: { label: string; value: string }) {
 }
 
 function RecommendedResourceCard({ resource }: { resource: Resource }) {
-  const tags = parseTags(resource.tags);
   return (
     <Link
       to={`/resources/${resource.detail_token}`}
@@ -109,20 +94,8 @@ function RecommendedResourceCard({ resource }: { resource: Resource }) {
           <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">暂无预览</div>
         )}
       </div>
-      <div className="p-3">
+      <div className="flex min-h-[48px] items-center border-t bg-[hsl(var(--surface-subtle))] px-3 py-2.5">
         <div className="truncate text-sm font-medium" title={resource.name}>{resource.name}</div>
-        <div className="mt-2 flex min-h-5 items-center gap-1 overflow-hidden">
-          {tags.length > 0 ? (
-            <>
-              {tags.slice(0, 2).map((tag) => (
-                <span key={tag} className="max-w-24 truncate rounded-md bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{tag}</span>
-              ))}
-              {tags.length > 2 && <span className="text-[10px] text-muted-foreground">+{tags.length - 2}</span>}
-            </>
-          ) : (
-            <span className="truncate text-[11px] text-muted-foreground">{resource.subject || "未分类"}</span>
-          )}
-        </div>
       </div>
     </Link>
   );
@@ -132,7 +105,7 @@ function ShareLinksPanel({ resource, open }: { resource: Resource; open: boolean
   const queryClient = useQueryClient();
   const [days, setDays] = React.useState("7");
   const [createdLink, setCreatedLink] = React.useState<string | null>(null);
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["resource", resource.id, "share-links"],
     queryFn: () => api<{ items: ShareLinkItem[] }>(`/api/resources/${resource.id}/share-links`),
     enabled: open,
@@ -164,7 +137,7 @@ function ShareLinksPanel({ resource, open }: { resource: Resource; open: boolean
       <div className="flex items-start justify-between gap-3">
         <div>
           <h2 className="flex items-center gap-2 text-sm font-semibold"><Link2 className="h-4 w-4 text-foreground/70" />分享链接</h2>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">链接只展示预览和元数据，不授予 PPT 下载权限；你创建的链接可随时撤销。</p>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">对方无需登录即可查看素材预览和基本信息，无法下载源文件。链接可随时撤销。</p>
         </div>
       </div>
       <div className="mt-4 flex flex-col gap-2 sm:flex-row">
@@ -189,7 +162,7 @@ function ShareLinksPanel({ resource, open }: { resource: Resource; open: boolean
         </div>
       )}
       <div className="mt-4 space-y-2">
-        {isLoading ? <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />加载分享链接…</div> : data?.items?.length ? data.items.map((item) => {
+        {isLoading ? <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />加载分享链接…</div> : isError ? <div role="alert" className="flex items-center justify-between gap-2 text-sm text-destructive">分享记录加载失败<Button variant="outline" size="sm" onClick={() => void refetch()}>重试</Button></div> : data?.items?.length ? data.items.map((item) => {
           const expired = item.revoked_at || new Date(item.expires_at).getTime() <= Date.now();
           return <div key={item.id} className="flex items-center justify-between gap-3 border-t py-2 text-xs">
             <div className="min-w-0"><div className="font-medium">{item.revoked_at ? "已撤销" : expired ? "已过期" : "有效分享链接"}</div><div className="text-muted-foreground">到期：{formatDate(item.expires_at)} · 创建：{formatDate(item.created_at)}</div></div>
@@ -405,7 +378,7 @@ export function ResourceDetailPage() {
   }
 
   return (
-    <div className="mx-auto min-h-full w-full max-w-[1600px] pb-8">
+    <div className="min-h-full w-full pb-8">
       <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b px-1 py-2 sm:px-2">
         <div className="flex min-w-0 items-center gap-2.5">
           <Button

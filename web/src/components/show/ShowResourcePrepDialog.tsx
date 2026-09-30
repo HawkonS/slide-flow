@@ -222,7 +222,7 @@ export function ShowResourcePrepDialog({
           <DialogTitle className="flex flex-wrap items-center gap-x-3 gap-y-1 pr-8 text-base font-semibold">
             <span>资源准备</span>
             {activeResource && (
-              <span className="text-xs font-normal text-muted-foreground">
+              <span className="min-w-0 truncate text-xs font-normal text-muted-foreground">
                 第 {activeIdx + 1} / {orderedResources.length} 个
                 <span className="mx-1">·</span>
                 <span className="text-foreground">{activeResource.name}</span>
@@ -235,9 +235,9 @@ export function ShowResourcePrepDialog({
         </DialogHeader>
 
         {/* 主体 */}
-        <div className="flex min-h-0 flex-1 overflow-hidden">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
           {/* 左栏：资源缩略图 */}
-          <aside className="flex w-72 shrink-0 flex-col border-r bg-muted/20">
+          <aside className="flex max-h-[34vh] w-full shrink-0 flex-col border-b bg-muted/20 md:max-h-none md:w-72 md:border-b-0 md:border-r">
             <div className="flex shrink-0 items-center justify-between border-b bg-background/60 px-3 py-2">
               <span className="text-xs text-muted-foreground">
                 共 {orderedResources.length} 个
@@ -435,7 +435,7 @@ export function ShowResourcePrepDialog({
           </aside>
 
           {/* 右栏：预览图 + 备注 Tabs */}
-          <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             {activeResource ? (
               isInaccessible(activeResource) ? (
                 <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">

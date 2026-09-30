@@ -30,6 +30,8 @@ def read_properties(path: Path = PROPERTIES_FILE) -> dict[str, str]:
     # settings/secrets or require deletion of its properties file.
     for key, default in DEFAULT_PROPERTIES.items():
         values.setdefault(key, default)
+    if path == PROPERTIES_FILE:
+        _migrate_known_default_secret(values, path)
     return values
 
 
@@ -43,7 +45,7 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
             {"key": "server.port", "label": "后端服务端口", "default": "8088", "type": "int", "hot_reload": False, "desc": "主 API 服务端口，修改后需重启"},
             {"key": "server.web_port", "label": "前端服务端口", "default": "5173", "type": "int", "hot_reload": False, "desc": "前端开发端口，仅 --dev 开发模式启动 Vite 时生效；生产模式前端由后端静态托管，访问入口为 server.port"},
             {"key": "server.workers", "label": "工作进程数", "default": "4", "type": "int", "hot_reload": False, "desc": "Gunicorn/Uvicorn ASGI worker 数量；任务事件通过 SQLite 跨进程分发"},
-            {"key": "server.allowed_host", "label": "允许的访问域名", "default": "", "type": "str", "hot_reload": False, "desc": "Vite 开发服务器允许访问的域名，多个域名用逗号分隔"},
+            {"key": "server.allowed_host", "label": "允许的访问来源", "default": "", "type": "str", "hot_reload": False, "desc": "多个来源用逗号分隔。域名用于 Vite 开发访问；完整 Origin（例如 https://app.example.com）同时允许跨域 API 访问。留空仅允许同源 API；不支持通配符授权"},
             {"key": "server.db_pool_size", "label": "数据库连接池大小", "default": "10", "type": "int", "hot_reload": False, "desc": "每个 worker 进程的数据库连接池容量"},
             {"key": "server.thread_pool_size", "label": "线程池大小", "default": "20", "type": "int", "hot_reload": False, "desc": "处理并发同步请求的默认线程池容量"},
             {"key": "server.response_cache", "label": "启用响应缓存", "default": "true", "type": "bool", "hot_reload": True, "desc": "为 GET API 请求添加 Cache-Control 头以减少重复请求"},
@@ -229,11 +231,14 @@ def _validate_properties(values: dict[str, str]) -> None:
         errors.append(f"缺少配置项: {', '.join(missing)}")
     if unknown:
         errors.append(f"包含未知配置项: {', '.join(unknown)}")
+    effective_secret = os.getenv("SLIDE_FLOW_SECRET", "").strip() or values.get("security.secret_key", "")
+    if len(effective_secret) < 32 or effective_secret == DEFAULT_PROPERTIES["security.secret_key"]:
+        errors.append("security.secret_key 必须设置为至少 32 个字符的随机密钥（可通过 SLIDE_FLOW_SECRET 提供）")
     if errors:
         raise ValueError(
             "slide_flow.properties 不符合当前版本配置格式；"
             + "；".join(errors)
-            + "。请修正文件，或删除后重新启动以生成新配置。"
+            + "。请修正配置后重新启动；不要删除现有配置文件。"
         )
 
 
@@ -265,6 +270,20 @@ def _write_text_atomic(path: Path, content: str) -> None:
                 pass
     finally:
         temp_path.unlink(missing_ok=True)
+
+
+def _migrate_known_default_secret(values: dict[str, str], path: Path) -> None:
+    """Rotate the publicly documented development key when upgrading old installs."""
+    secret_key = "security.secret_key"
+    if values.get(secret_key) != DEFAULT_PROPERTIES[secret_key]:
+        return
+    migrated = dict(values)
+    migrated[secret_key] = secrets.token_urlsafe(48)
+    if path.exists():
+        backup = path.with_suffix(path.suffix + ".bak")
+        _write_text_atomic(backup, path.read_text(encoding="utf-8"))
+    _write_text_atomic(path, _render_properties(migrated))
+    values[secret_key] = migrated[secret_key]
 
 
 def ensure_properties_file(path: Path = PROPERTIES_FILE) -> bool:
@@ -380,7 +399,7 @@ class Settings:
     response_cache_enabled: bool = _parse_bool(DEFAULT_PROPERTIES["server.response_cache"])
 
     # 安全配置
-    secret_key: str = DEFAULT_PROPERTIES["security.secret_key"]
+    secret_key: str = field(default=DEFAULT_PROPERTIES["security.secret_key"], repr=False)
     session_ttl_hours: int = int(DEFAULT_PROPERTIES["security.session_ttl_hours"])
     show_token_ttl_seconds: int = int(DEFAULT_PROPERTIES["security.show_token_ttl_seconds"])
 
@@ -435,7 +454,7 @@ class Settings:
     # 飞书 SSO
     feishu_sso_enabled: bool = _parse_bool(DEFAULT_PROPERTIES["feishu.sso_enabled"])
     feishu_app_id: str = DEFAULT_PROPERTIES["feishu.app_id"]
-    feishu_app_secret: str = DEFAULT_PROPERTIES["feishu.app_secret"]
+    feishu_app_secret: str = field(default=DEFAULT_PROPERTIES["feishu.app_secret"], repr=False)
 
     # 数据库路径（派生）
     db_path: Path = field(default_factory=lambda: ROOT_DIR / "data" / "db" / "slide_flow.db")
@@ -545,6 +564,7 @@ def write_properties(updates: dict[str, str]) -> None:
     if unknown:
         raise ValueError(f"不支持的配置项: {', '.join(unknown)}")
     values.update(updates)
+    _validate_properties(values)
     _write_text_atomic(path, _render_properties(values))
 
 

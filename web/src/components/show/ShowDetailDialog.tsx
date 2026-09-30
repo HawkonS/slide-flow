@@ -209,8 +209,8 @@ export function ShowDetailDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[90vh] max-w-5xl flex-col gap-4 overflow-hidden">
         <DialogHeader className="pr-10">
-          <div className="flex items-center gap-3">
-            <DialogTitle className="text-lg">{show.name}</DialogTitle>
+          <div className="flex min-w-0 flex-wrap items-center gap-3">
+            <DialogTitle className="min-w-0 max-w-full truncate text-lg">{show.name}</DialogTitle>
             <span className="inline-flex items-center rounded bg-muted px-1.5 py-0.5 text-sm font-medium text-muted-foreground">
               v{show.version_no}
             </span>
@@ -232,7 +232,7 @@ export function ShowDetailDialog({
         </DialogHeader>
 
         {/* 主内容区：左右两栏 */}
-        <div className="flex min-h-0 flex-1 gap-4 overflow-hidden">
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden md:flex-row">
           {/* 左侧：大图 + 缩略图 */}
           <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
             {/* 大预览图 */}
@@ -312,7 +312,7 @@ export function ShowDetailDialog({
           </div>
 
           {/* 右侧：元数据面板 */}
-          <div className="w-72 shrink-0 overflow-y-auto">
+          <div className="max-h-[32vh] w-full shrink-0 overflow-y-auto border-t pt-3 md:max-h-none md:w-72 md:border-t-0 md:pt-0">
             {/* 版本选择器 */}
             {onSwitchVersion && hasMultipleVersions && (
               <div className="mb-3">

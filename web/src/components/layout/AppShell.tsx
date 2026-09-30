@@ -3,11 +3,13 @@ import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   FolderOpen,
   Home,
+  AlertCircle,
   LayoutTemplate,
   ListTodo,
   LogOut,
   Menu,
   MonitorPlay,
+  RefreshCw,
   Settings,
   ScrollText,
   Server,
@@ -23,6 +25,7 @@ import { useSiteConfig } from "@/stores/site-config";
 import { useDownloadManager } from "@/stores/download-manager";
 import { useAuth } from "@/lib/auth";
 import { ForceChangePassword } from "@/components/common/ForceChangePassword";
+import { usePwaStatus } from "@/lib/pwa";
 import {
   SheetRoot,
   SheetTrigger,
@@ -170,6 +173,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
 export function AppShell() {
   const location = useLocation();
   const { user, logout, offline } = useAuth();
+  const pwaStatus = usePwaStatus();
   const [sheetOpen, setSheetOpen] = useState(false);
 
   useEffect(() => {
@@ -197,6 +201,7 @@ export function AppShell() {
 
   const siteName = useSiteConfig((s) => s.siteName);
   const logoSvgPath = useSiteConfig((s) => s.logoSvgPath);
+  const pwaNeedsAttention = pwaStatus.status === "development" || pwaStatus.status === "update-available" || pwaStatus.status === "error" || pwaStatus.status === "not-deployed";
         
   return (
     <div className="flex h-screen flex-col bg-background">
@@ -221,11 +226,7 @@ export function AppShell() {
               <div className="flex h-full flex-col">
                 {/* 移动端 Sheet 顶部 logo */}
                 <div className="flex items-center gap-2 border-b px-4 py-3">
-                  <img
-                    src={logoSvgPath}
-                    alt="logo"
-                    className="h-6 w-6"
-                  />
+                  {logoSvgPath && <img src={logoSvgPath} alt="" className="h-6 w-6" onError={(event) => { event.currentTarget.hidden = true; }} />}
                   <span className="text-sm font-semibold">{siteName}</span>
                 </div>
                 <div className="flex-1 overflow-y-auto py-2">
@@ -238,22 +239,31 @@ export function AppShell() {
 
         {/* Logo + 应用名（桌面端左侧，移动端居中） */}
         <div className="flex items-center gap-2 md:mr-auto">
-          <img
-            src={logoSvgPath}
-            alt="logo"
-            className="hidden h-7 w-7 md:block"
-          />
-          <span className="text-[15px] font-semibold md:ml-0">{siteName}</span>
+          {logoSvgPath && <img src={logoSvgPath} alt="" className="hidden h-7 w-7 md:block" onError={(event) => { event.currentTarget.hidden = true; }} />}
+          <span className="min-w-0 max-w-[45vw] truncate text-[15px] font-semibold md:ml-0">{siteName}</span>
         </div>
 
         {/* 右侧用户信息 */}
         <div className="ml-auto flex items-center gap-3 text-sm md:gap-5">
+          {!offline && <NavLink
+            to="/manage/offline-cache"
+            aria-label={pwaStatus.message}
+            title={pwaStatus.message}
+            className={cn(
+              "inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs transition hover:bg-accent",
+              pwaNeedsAttention ? "border-amber-300/80 bg-amber-50/70 text-amber-700 dark:border-amber-800/70 dark:bg-amber-950/30 dark:text-amber-300" : "border-border text-muted-foreground",
+            )}
+          >
+            {pwaStatus.status === "update-available" ? <RefreshCw className="h-3.5 w-3.5" /> : pwaNeedsAttention ? <AlertCircle className="h-3.5 w-3.5" /> : <MonitorPlay className="h-3.5 w-3.5" />}
+            <span className="hidden lg:inline">{pwaStatus.status === "development" ? "开发环境" : pwaStatus.status === "update-available" ? "应用有更新" : pwaNeedsAttention ? "应用需维护" : "本地应用"}</span>
+            {pwaNeedsAttention && <span className="h-1.5 w-1.5 rounded-full bg-current" />}
+          </NavLink>}
           {user && (
-            <span className="inline-flex items-center gap-2 text-foreground/80">
-              {user.avatar_url ? <img src={user.avatar_url} alt="" className="h-7 w-7 rounded-full object-cover" referrerPolicy="no-referrer" /> : <span className="flex h-7 w-7 items-center justify-center rounded-full bg-muted text-xs text-muted-foreground">{userDisplayName.slice(0, 1).toUpperCase()}</span>}
-              {userDisplayName}
-              <span className="mx-1 text-muted-foreground">·</span>
-              {userRoleText}
+            <span className="inline-flex min-w-0 items-center gap-2 text-foreground/80">
+              {user.avatar_url ? <img src={user.avatar_url} alt="" className="h-7 w-7 shrink-0 rounded-full object-cover" referrerPolicy="no-referrer" /> : <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-muted text-xs text-muted-foreground">{userDisplayName.slice(0, 1).toUpperCase()}</span>}
+              <span className="hidden max-w-28 truncate sm:inline">{userDisplayName}</span>
+              <span className="mx-1 hidden text-muted-foreground sm:inline">·</span>
+              <span className="hidden max-w-20 truncate md:inline">{userRoleText}</span>
             </span>
           )}
           {user && (
@@ -280,7 +290,7 @@ export function AppShell() {
         </aside>
 
         {/* 主内容 */}
-        <main className="flex flex-1 flex-col min-h-0 overflow-x-hidden overflow-y-auto px-4 py-4 md:px-6 md:py-5">
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto px-3 py-3 sm:px-4 sm:py-4 md:px-6 md:py-5">
           <Outlet />
         </main>
       </div>

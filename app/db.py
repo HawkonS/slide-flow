@@ -584,6 +584,29 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_show_management_tags_name
                 ON show_management_tags(tag_name, show_id);
 
+            CREATE TABLE IF NOT EXISTS show_share_tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                show_id INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
+                token_hash TEXT NOT NULL UNIQUE,
+                token_ciphertext TEXT,
+                created_by INTEGER NOT NULL REFERENCES users(id),
+                expires_at TEXT NOT NULL,
+                revoked_at TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_show_share_tokens_show
+                ON show_share_tokens(show_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_show_share_tokens_active
+                ON show_share_tokens(token_hash, expires_at, revoked_at);
+
+            CREATE TABLE IF NOT EXISTS show_share_pages (
+                share_id INTEGER NOT NULL REFERENCES show_share_tokens(id) ON DELETE CASCADE,
+                version_id INTEGER NOT NULL REFERENCES resource_versions(id) ON DELETE CASCADE,
+                sort_order INTEGER NOT NULL,
+                PRIMARY KEY (share_id, version_id)
+            );
+
             CREATE TABLE IF NOT EXISTS show_resources (
                 show_id INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
                 resource_id INTEGER NOT NULL REFERENCES resources(id) ON DELETE CASCADE,

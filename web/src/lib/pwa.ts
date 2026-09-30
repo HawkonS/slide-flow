@@ -1,4 +1,5 @@
 import { toast } from "sonner";
+import { useSyncExternalStore } from "react";
 
 const UPDATE_NOTICE = "slideflow-pwa-update";
 const INSTALL_NOTICE = "slideflow-pwa-install";
@@ -9,6 +10,43 @@ let installEvent: BeforeInstallPromptEvent | null = null;
 let updateNoticeShown = false;
 let installNoticeShown = false;
 const observedRegistrations = new WeakSet<ServiceWorkerRegistration>();
+
+export type PwaDeploymentStatus = "unsupported" | "development" | "checking" | "not-deployed" | "deployed" | "update-available" | "error";
+export interface PwaStatusSnapshot {
+  status: PwaDeploymentStatus;
+  environment: "development" | "production";
+  supported: boolean;
+  secureContext: boolean;
+  controlled: boolean;
+  active: boolean;
+  waiting: boolean;
+  installable: boolean;
+  standalone: boolean;
+  message: string;
+}
+const statusListeners = new Set<() => void>();
+const environment = import.meta.env.PROD ? "production" : "development";
+const initialSupport = typeof window !== "undefined" && window.isSecureContext && "serviceWorker" in navigator && "caches" in window;
+let pwaStatus: PwaStatusSnapshot = {
+  status: !initialSupport ? "unsupported" : environment === "development" ? "development" : "checking",
+  environment,
+  supported: initialSupport,
+  secureContext: typeof window !== "undefined" && window.isSecureContext,
+  controlled: typeof navigator !== "undefined" && !!navigator.serviceWorker?.controller,
+  active: false,
+  waiting: false,
+  installable: false,
+  standalone: typeof window !== "undefined" && !!(window.matchMedia?.("(display-mode: standalone)").matches || (navigator as Navigator & { standalone?: boolean }).standalone === true),
+  message: !initialSupport ? "当前浏览器或连接不支持本地应用" : environment === "development" ? "开发环境不会部署本地应用，请访问构建后的应用服务" : "正在检查本地应用部署状态…",
+};
+function publishPwaStatus(next: Partial<PwaStatusSnapshot>): void {
+  pwaStatus = { ...pwaStatus, ...next };
+  for (const listener of statusListeners) listener();
+  if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("slideflow-pwa-status-change", { detail: pwaStatus }));
+}
+export function getPwaStatus(): PwaStatusSnapshot { return pwaStatus; }
+export function subscribePwaStatus(listener: () => void): () => void { statusListeners.add(listener); return () => statusListeners.delete(listener); }
+export function usePwaStatus(): PwaStatusSnapshot { return useSyncExternalStore(subscribePwaStatus, getPwaStatus, getPwaStatus); }
 
 interface BeforeInstallPromptEvent extends Event {
   prompt(): Promise<void>;
@@ -23,11 +61,33 @@ export function isPlaybackWindow(): boolean {
 function supportError(): string | null {
   if (!window.isSecureContext) return "离线播放需要安全连接，请使用 HTTPS 访问本站（本机 localhost 除外）。";
   if (!("serviceWorker" in navigator) || !("caches" in window)) return "当前浏览器不支持离线应用，请使用支持 Service Worker 的浏览器。";
-  if (!import.meta.env.PROD) return "开发服务器不安装离线应用，请先运行前端构建，再从应用服务器访问。";
   return null;
 }
 
+function standaloneMode(): boolean {
+  return window.matchMedia?.("(display-mode: standalone)").matches
+    || (navigator as Navigator & { standalone?: boolean }).standalone === true;
+}
+
+function publishRegistrationStatus(registration?: ServiceWorkerRegistration): void {
+  const active = !!registration?.active && isOurWorker(registration.active);
+  const waiting = !!registration?.waiting && isOurWorker(registration.waiting);
+  const controlled = !!navigator.serviceWorker.controller && isOurWorker(navigator.serviceWorker.controller);
+  publishPwaStatus({
+    status: waiting ? "update-available" : active ? "deployed" : "not-deployed",
+    active, waiting, controlled, standalone: standaloneMode(),
+    message: waiting
+      ? "本地应用有新版本，完成当前工作后重新打开即可更新"
+      : active && controlled
+        ? "本地应用已部署并接管当前页面"
+        : active
+          ? "本地应用已部署，重新打开页面后即可接管"
+          : "本地应用尚未完成部署，请联网后重试",
+  });
+}
+
 function showNotices(registration?: ServiceWorkerRegistration): void {
+  if (registration) publishRegistrationStatus(registration);
   if (isPlaybackWindow() || document.hidden) {
     toast.dismiss(UPDATE_NOTICE);
     toast.dismiss(INSTALL_NOTICE);
@@ -47,13 +107,7 @@ function showNotices(registration?: ServiceWorkerRegistration): void {
       description: "从桌面直接打开，已下载的放映可以断网播放。",
       action: {
         label: "安装",
-        onClick: () => {
-          const event = installEvent;
-          installEvent = null;
-          if (event) void event.prompt().catch(() => {
-            if (!isPlaybackWindow()) toast.error("未能打开安装提示，请使用浏览器菜单中的安装应用功能。");
-          });
-        },
+        onClick: () => { void requestPwaInstall().then(accepted => { if (!accepted && !isPlaybackWindow()) toast.error("未能打开安装提示，请使用浏览器菜单中的安装应用功能。"); }); },
       },
     });
   }
@@ -70,7 +124,7 @@ function observeRegistration(registration: ServiceWorkerRegistration): void {
     const worker = registration.installing;
     if (!worker) return;
     worker.addEventListener("statechange", () => {
-      if (worker.state === "installed") showNotices(registration);
+      if (worker.state === "installed" || worker.state === "activated") showNotices(registration);
     });
   };
   registration.addEventListener("updatefound", observe);
@@ -85,6 +139,7 @@ function observeRegistration(registration: ServiceWorkerRegistration): void {
   window.addEventListener("online", check);
   window.addEventListener("focus", check);
   document.addEventListener("visibilitychange", check);
+  navigator.serviceWorker.addEventListener("controllerchange", check);
   let previousPath = window.location.pathname;
   // React Router navigation does not emit popstate for every transition. This
   // inexpensive check also removes a notice before it can linger in a show.
@@ -97,11 +152,14 @@ function observeRegistration(registration: ServiceWorkerRegistration): void {
 function getRegistration(): Promise<ServiceWorkerRegistration> {
   const error = supportError();
   if (error) return Promise.reject(new Error(error));
+  if (!import.meta.env.PROD) return Promise.reject(new Error("开发环境不会部署本地应用，请从发布构建的应用服务访问。"));
   if (!registrationPromise) {
+    publishPwaStatus({ status: "checking", message: "正在部署本地应用…" });
     registrationPromise = navigator.serviceWorker.register("/sw.js", { scope: "/", updateViaCache: "none" })
       .then(registration => { observeRegistration(registration); return registration; })
       .catch(() => {
         registrationPromise = null;
+        publishPwaStatus({ status: "error", message: "本地应用部署失败，请检查网络与浏览器存储权限" });
         throw new Error("离线应用注册失败，请检查网络、浏览器存储权限及 HTTPS 配置后重试。");
       });
   }
@@ -180,17 +238,48 @@ export async function ensureOfflineShellReady(): Promise<void> {
   }
 }
 
+/** Ask the browser to install the local application when it is available. */
+export async function requestPwaInstall(): Promise<boolean> {
+  const event = installEvent;
+  if (!event) return false;
+  installEvent = null;
+  try {
+    await event.prompt();
+    const choice = await event.userChoice;
+    publishPwaStatus({ installable: false, standalone: standaloneMode() });
+    return choice.outcome === "accepted";
+  } catch {
+    return false;
+  }
+}
+
+/** Trigger a background update check for the currently deployed worker. */
+export async function checkPwaUpdate(): Promise<void> {
+  const registration = await getRegistration();
+  await registration.update();
+  publishRegistrationStatus(registration);
+}
+
 /** Register after initial rendering; callers may explicitly await readiness. */
 export function registerPwa(): void {
   if (registered) return;
   registered = true;
-  if (supportError()) return;
+  const unsupported = supportError();
+  if (unsupported) {
+    publishPwaStatus({ status: "unsupported", supported: false, message: unsupported });
+    return;
+  }
+  if (!import.meta.env.PROD) {
+    publishPwaStatus({ status: "development", supported: true, message: "开发环境不会部署本地应用，请访问构建后的应用服务" });
+    return;
+  }
   window.addEventListener("beforeinstallprompt", event => {
     event.preventDefault();
     installEvent = event as BeforeInstallPromptEvent;
+    publishPwaStatus({ installable: true });
     showNotices();
   });
-  window.addEventListener("appinstalled", () => { installEvent = null; toast.dismiss(INSTALL_NOTICE); });
+  window.addEventListener("appinstalled", () => { installEvent = null; publishPwaStatus({ installable: false, standalone: true }); toast.dismiss(INSTALL_NOTICE); });
   const start = () => { void getRegistration().catch(() => { /* An explicit offline download reports errors. */ }); };
   if (document.readyState === "complete") window.setTimeout(start, 500);
   else window.addEventListener("load", () => window.setTimeout(start, 500), { once: true });

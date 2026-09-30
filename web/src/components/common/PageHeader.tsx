@@ -23,7 +23,7 @@ export function PageHeader({ title, count, titleExtra, description, actions, cla
         </div>
         {description ? <p className="mt-1 text-sm leading-5 text-muted-foreground">{description}</p> : null}
       </div>
-      {actions ? <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div> : null}
+      {actions ? <div className="flex w-full min-w-0 flex-wrap items-center gap-2 sm:w-auto sm:shrink-0">{actions}</div> : null}
     </header>
   );
 }

@@ -2,6 +2,7 @@ import { api, ApiError, type FetchOptions } from "./api";
 import { ensureOfflineShellReady } from "./pwa";
 import {
   assertOfflineIdentity,
+  createClientId,
   grantOfflineLease,
   lockOfflineIdentity,
   notifyPwaChange,
@@ -177,7 +178,7 @@ export async function getCachedAsset(packageId: string, index: number, kind: "im
 
 export async function pinCachedShow(packageId: string): Promise<() => void> {
   const identity = currentIdentity();
-  const id = crypto.randomUUID();
+  const id = createClientId();
   let released = false;
   const touch = async () => transaction(["packages", "active", "leases"], "readwrite", async (tx) => {
     const entry = await request<CachedShow | undefined>(tx.objectStore("packages").get(packageId));

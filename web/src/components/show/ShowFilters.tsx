@@ -24,9 +24,11 @@ export interface ShowFiltersProps {
   tags: string[];
   /** 右侧插槽：如"创建放映"按钮 */
   actions?: React.ReactNode;
+  /** 标准放映是精选目录，不显示与用户管理相关的权限筛选。 */
+  hidePermission?: boolean;
 }
 
-export function ShowFilters({ subjects, tags, actions }: ShowFiltersProps) {
+export function ShowFilters({ subjects, tags, actions, hidePermission = false }: ShowFiltersProps) {
   const s = useShowFilters();
   const { options: statusTags } = useMetadataTagOptions("status");
   const statusOptions = React.useMemo<ChipOption[]>(
@@ -44,29 +46,27 @@ export function ShowFilters({ subjects, tags, actions }: ShowFiltersProps) {
     return [{ value: "all", label: "全部" }, ...sorted.map((x) => ({ value: x, label: x }))];
   }, [subjects]);
 
-  const groups = React.useMemo<FilterGroup[]>(
-    () => [
-      {
-        key: "status",
-        label: "状态",
-        options: statusOptions,
-        value: s.status,
-        onChange: (v) => s.setStatus(v as typeof s.status),
-      },
-      {
-        key: "permission",
-        label: "权限",
-        options: RESOURCE_PERMISSION_OPTIONS,
-        value: s.permission,
-        onChange: (v) => s.setPermission(v as typeof s.permission),
-      },
-    ],
-    [s.status, s.permission, s, statusOptions],
-  );
+  const groups = React.useMemo<FilterGroup[]>(() => {
+    const result: FilterGroup[] = [{
+      key: "status",
+      label: "状态",
+      options: statusOptions,
+      value: s.status,
+      onChange: (v) => s.setStatus(v as typeof s.status),
+    }];
+    if (!hidePermission) result.push({
+      key: "permission",
+      label: "权限",
+      options: RESOURCE_PERMISSION_OPTIONS,
+      value: s.permission,
+      onChange: (v) => s.setPermission(v as typeof s.permission),
+    });
+    return result;
+  }, [hidePermission, s.status, s.permission, s, statusOptions]);
 
   const filterDirtyCount = [
     s.status !== "all",
-    s.permission !== "all",
+    !hidePermission && s.permission !== "all",
   ].filter(Boolean).length;
 
   const isDirty =

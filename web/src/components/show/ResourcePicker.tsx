@@ -73,6 +73,8 @@ export interface ResourcePickerProps {
   showSelectedSidebar?: boolean;
   /** 已选清单的位置，创建放映时置于左侧 */
   selectedSidebarPosition?: "left" | "right";
+  /** 用于在跨页选择时立即显示已选资源的名称和预览。 */
+  selectedResources?: PickerResource[];
   /** 是否显示卡片/表格切换（默认关闭，创建放映页开启） */
   showViewModeSwitch?: boolean;
   /** 是否显示卡片密度切换（默认开启） */
@@ -99,6 +101,7 @@ export function ResourcePicker({
   onResourcesLoaded,
   showSelectedSidebar = true,
   selectedSidebarPosition = "right",
+  selectedResources,
   showViewModeSwitch = false,
   showDensitySwitch = true,
   viewMode: controlledViewMode,
@@ -178,6 +181,21 @@ export function ResourcePicker({
 
   // 已选资源的元数据缓存（用于侧栏展示，跨页/跨筛选保留）
   const [resourceCache, setResourceCache] = React.useState<Map<number, PickerResource>>(new Map());
+  React.useEffect(() => {
+    if (!selectedResources || selectedResources.length === 0) return;
+    setResourceCache((prev) => {
+      const next = new Map(prev);
+      let changed = false;
+      for (const resource of selectedResources) {
+        const old = next.get(resource.id);
+        if (!old || old.name !== resource.name || old.preview_url !== resource.preview_url) {
+          next.set(resource.id, resource);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [selectedResources]);
   React.useEffect(() => {
     if (items.length === 0) return;
     setResourceCache((prev) => {
