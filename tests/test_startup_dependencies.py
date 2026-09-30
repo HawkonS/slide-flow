@@ -133,19 +133,18 @@ def install_distribution(name, version):
     (target / "METADATA").write_text("Metadata-Version: 2.1\nName: " + name + "\nVersion: " + version + "\n")
 
 if kind == "pip":
-    production = "requirements-production.txt" in args
-    behavior = os.environ.get("FAKE_PRODUCTION_BEHAVIOR" if production else "FAKE_PIP_BEHAVIOR", "install")
+    behavior = os.environ.get("FAKE_PIP_BEHAVIOR", "install")
     if behavior == "damage":
+        # Exit 0 so the post-install verification catches the damaged base env.
         for target in (root / "site").glob("sf_startup_core-*.dist-info"):
             shutil.rmtree(target)
-        raise SystemExit(9)
+        raise SystemExit(0)
     if behavior == "fail":
         raise SystemExit(9)
     if behavior == "incomplete":
         raise SystemExit(0)
     install_distribution("sf-startup-core", "2.5.0")
-    if production:
-        install_distribution("sf-startup-worker", "2.1.0")
+    install_distribution("sf-startup-worker", "2.1.0")
     raise SystemExit(0)
 
 if args[0] == "ls":
@@ -211,8 +210,7 @@ class StartupDependencyBehaviorTests(unittest.TestCase):
         self.site = self.root / "site"
         self.site.mkdir()
         (self.root / "tools").symlink_to(ROOT / "tools", target_is_directory=True)
-        (self.root / "requirements.txt").write_text("sf-startup-core>=2,<3\n")
-        (self.root / "requirements-production.txt").write_text("sf-startup-worker>=2,<3\n")
+        (self.root / "requirements.txt").write_text("sf-startup-core>=2,<3\nsf-startup-worker>=2,<3\n")
         for module in ("gunicorn", "uvicorn_worker"):
             (self.site / f"{module}.py").write_text("# isolated import smoke-test fixture\n")
         distribution(self.site, "sf-startup-core", "2.0.0")
@@ -383,26 +381,26 @@ class StartupDependencyBehaviorTests(unittest.TestCase):
         self.assertEqual(self.installations()[0]["args"][0], "install")
         self.assertTrue((self.web / "node_modules/.slideflow-dependencies.json").exists())
 
-    def test_outdated_optional_production_dependencies_are_upgraded(self):
+    def test_outdated_production_dependency_is_upgraded_once(self):
         distribution(self.site, "sf-startup-worker", "1.0.0")
         result = self.run_startup(production=True)
         self.assert_success(result)
         self.assertIn("BACKEND_SERVER=gunicorn", result.stdout)
-        self.assertEqual(self.installations()[0]["args"], ["-r", "requirements.txt", "-r", "requirements-production.txt"])
+        self.assertEqual(self.installations(), [{"kind": "pip", "args": ["-r", "requirements.txt"]}])
 
-    def test_optional_production_failure_retains_uvicorn_fallback(self):
+    def test_production_install_failure_stops_startup(self):
         distribution(self.site, "sf-startup-worker", "1.0.0")
         for behavior in ("fail", "incomplete"):
             with self.subTest(behavior=behavior):
-                result = self.run_startup(production=True, FAKE_PRODUCTION_BEHAVIOR=behavior)
-                self.assert_success(result)
-                self.assertIn("BACKEND_SERVER=uvicorn", result.stdout)
+                result = self.run_startup(production=True, FAKE_PIP_BEHAVIOR=behavior)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn("BACKEND_SERVER=", result.stdout)
 
-    def test_optional_install_cannot_leave_broken_base_dependencies(self):
+    def test_damaging_install_cannot_leave_broken_base_dependencies(self):
         distribution(self.site, "sf-startup-worker", "1.0.0")
-        result = self.run_startup(production=True, FAKE_PRODUCTION_BEHAVIOR="damage")
+        result = self.run_startup(production=True, FAKE_PIP_BEHAVIOR="damage")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("基础 Python 依赖不完整", result.stdout)
+        self.assertIn("安装后 Python 依赖仍未满足要求", result.stdout)
 
     def test_production_restart_reuses_build_and_does_not_install(self):
         self.assert_success(self.run_startup(production=True, build=True))

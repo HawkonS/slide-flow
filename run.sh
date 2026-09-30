@@ -4,8 +4,8 @@
 # 适用于 Mac / Linux 环境，自动检测依赖并启动前后端服务
 #
 # 运行模式：
-#   生产模式（默认）：构建前端产物并优先使用 Gunicorn + Uvicorn Worker；
-#                     生产服务器安装或启动失败时回退原生 Uvicorn。
+#   生产模式（默认）：构建前端产物并使用 Gunicorn + Uvicorn Worker；
+#                     Gunicorn 启动或健康检查失败时回退原生 Uvicorn。
 #   开发模式：设置 SLIDEFLOW_DEV=1 或传入 --dev 参数，使用 Uvicorn + Vite。
 #
 # 环境变量：
@@ -522,34 +522,16 @@ else
   log_info "Python 依赖安装完成"
 fi
 
-# 生产模式优先使用 Gunicorn 管理 worker 进程，Uvicorn Worker 原生承载
-# FastAPI、WebSocket 和 lifespan；安装失败时保留原生 Uvicorn 兜底。
+# Gunicorn + Uvicorn Worker 已并入 requirements.txt，属于必装依赖，缺失即停止
+# 启动；Gunicorn 启动或健康检查失败时仍会回退原生 Uvicorn。
 BACKEND_SERVER="uvicorn"
 if [ "$DEV_MODE" = "false" ]; then
-  if "$PYTHON_BIN" "$ROOT_DIR/tools/check_python_dependencies.py" requirements.txt requirements-production.txt \
-    && "$PYTHON_BIN" -c 'import gunicorn, uvicorn_worker' >/dev/null 2>&1
-  then
-    BACKEND_SERVER="gunicorn"
-    log_info "Gunicorn 生产运行环境已就绪"
-  else
-    PRODUCTION_CHECK_STATUS=$?
-    log_warn "Gunicorn 生产依赖未就绪，正在检查自动安装条件..."
-    # 同时约束基础依赖，避免可选生产包的解析把基础运行环境降级。
-    if [ "$PRODUCTION_CHECK_STATUS" -eq 1 ] \
-      && "${PIP_INSTALL[@]}" -r requirements.txt -r requirements-production.txt \
-      && "$PYTHON_BIN" "$ROOT_DIR/tools/check_python_dependencies.py" requirements.txt requirements-production.txt \
-      && "$PYTHON_BIN" -c 'import gunicorn, uvicorn_worker' >/dev/null 2>&1
-    then
-      BACKEND_SERVER="gunicorn"
-      log_info "Gunicorn 生产运行环境安装完成"
-    else
-      log_warn "Gunicorn 自动安装失败，将使用 Uvicorn 作为兜底"
-    fi
-    if ! "$PYTHON_BIN" "$ROOT_DIR/tools/check_python_dependencies.py" requirements.txt; then
-      log_error "可选生产依赖安装后基础 Python 依赖不完整，停止启动"
-      exit 1
-    fi
+  if ! "$PYTHON_BIN" -c 'import gunicorn, uvicorn_worker' >/dev/null 2>&1; then
+    log_error "Gunicorn 生产运行环境不可用，请检查 requirements.txt 的安装结果"
+    exit 1
   fi
+  BACKEND_SERVER="gunicorn"
+  log_info "Gunicorn 生产运行环境已就绪"
 fi
 
 # ===========================================================
@@ -822,11 +804,7 @@ elif [ "$BACKEND_SERVER" = "gunicorn" ]; then
   log_info "生产服务器: Gunicorn + Uvicorn Worker (workers: $WORKERS)"
   start_gunicorn_backend
 else
-  if [ "$DEV_MODE" = "true" ]; then
-    log_info "开发服务器: Uvicorn (workers: $WORKERS)"
-  else
-    log_warn "生产服务器: Uvicorn 兜底模式 (workers: $WORKERS)"
-  fi
+  log_info "开发服务器: Uvicorn (workers: $WORKERS)"
   start_uvicorn_backend
 fi
 

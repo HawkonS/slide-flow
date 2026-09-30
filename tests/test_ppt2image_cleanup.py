@@ -26,7 +26,6 @@ _RETIRED_TERMS = re.compile(
 )
 _MANIFEST_NAMES = {
     "requirements.txt",
-    "requirements-production.txt",
     "pyproject.toml",
     "setup.py",
     "setup.cfg",
