@@ -203,6 +203,21 @@ def prepare_initial_admin(db: sqlite3.Connection, legacy_passwords: Iterable[str
         if generated_token is not None:
             _write_setup_file(token=generated_token, username=setup_username)
         db.commit()
+
+        # The setup file is only valid while the database carries a pending
+        # bootstrap state.  Older versions of the launcher used the file as
+        # their warning signal, so a successful setup could leave an orphaned
+        # file behind and make every subsequent startup report a false alarm.
+        # Remove that stale artifact after the committed state is visible.
+        if _state(db) is None:
+            try:
+                remove_initial_setup_file()
+            except OSError:
+                # A deployment may run the application under a different OS
+                # user than the one that created an old setup file.  The
+                # database is still authoritative, so a cleanup permission
+                # error must not prevent the service from starting.
+                pass
     except Exception:
         db.rollback()
         if generated_token is not None:

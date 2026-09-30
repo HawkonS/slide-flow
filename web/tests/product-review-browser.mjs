@@ -89,6 +89,93 @@ for (const width of [1440, 390, 320]) {
   });
 }
 
+for (const width of [1440, 390, 320]) {
+  test(`show thumbnail arrows scroll independently of the preview at ${width}px`, { timeout: 30_000 }, async t => {
+    const context = await browser.newContext({ viewport: { width, height: 1000 }, serviceWorkers: 'block', reducedMotion: width === 320 ? 'reduce' : 'no-preference' });
+    t.after(() => context.close());
+    const page = await context.newPage();
+    page.setDefaultTimeout(5000);
+    const resources = Array.from({ length: 24 }, (_, index) => ({
+      ...show.resources[0], id: index + 1, name: `介绍第 ${index + 1} 页`,
+      preview_url: `/fixture.png?slide=${index + 1}`, original_preview_url: `/fixture.png?slide=${index + 1}`,
+    }));
+    await page.route('**/api/shows/1', route => route.fulfill({ json: { show: { ...show, resources } } }));
+    await page.route('**/fixture.png?slide=*', route => {
+      const number = Number(new URL(route.request().url()).searchParams.get('slide'));
+      const dark = number % 3 === 1;
+      return route.fulfill({ contentType: 'image/svg+xml', body: `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720"><rect width="1280" height="720" fill="${dark ? '#24364f' : '#f1f4f8'}"/><circle cx="1090" cy="210" r="250" fill="${dark ? '#304763' : '#e1e8f0'}"/><rect x="96" y="230" width="64" height="8" rx="4" fill="#7596ba"/><text x="96" y="180" font-family="sans-serif" font-size="24" letter-spacing="5" fill="#7596ba">SLIDE FLOW</text><text x="96" y="350" font-family="sans-serif" font-size="62" fill="${dark ? '#ffffff' : '#24364f'}">客户介绍 · ${String(number).padStart(2, '0')}</text><text x="96" y="420" font-family="sans-serif" font-size="26" fill="#8597ad">产品与解决方案</text></svg>` });
+    });
+    await page.goto(origin + '/shows/1');
+    const navigation = page.getByRole('navigation', { name: '放映页面导航' });
+    const rail = navigation.getByRole('group', { name: '页面缩略图' });
+    const left = navigation.getByRole('button', { name: '向左滚动缩略图' });
+    const right = navigation.getByRole('button', { name: '向右滚动缩略图' });
+    const preview = navigation.locator('..').locator('img').first();
+    await rail.waitFor();
+    await page.locator('button[aria-label="向右滚动缩略图"]:enabled').waitFor();
+    const firstPreview = await preview.getAttribute('src');
+    assert.equal(await left.isDisabled(), true);
+    await right.click();
+    await page.waitForFunction(() => document.querySelector('[aria-label="页面缩略图"]').scrollLeft > 10);
+    assert.equal(await preview.getAttribute('src'), firstPreview, 'scrolling right must not change the preview');
+    assert.equal(await rail.getByRole('button', { pressed: true }).getAttribute('aria-label'), '第 1 页：介绍第 1 页');
+
+    // Native scrolling and arrow scrolling must share the same boundary state.
+    await rail.evaluate(element => element.scrollTo({ left: element.scrollWidth, behavior: 'instant' }));
+    await page.locator('button[aria-label="向右滚动缩略图"]:disabled').waitFor();
+    assert.equal(await left.isDisabled(), false);
+    const end = await rail.evaluate(element => element.scrollLeft);
+    await left.click();
+    await page.waitForFunction(end => document.querySelector('[aria-label="页面缩略图"]').scrollLeft < end - 10, end);
+    assert.equal(await preview.getAttribute('src'), firstPreview, 'scrolling left must not change the preview');
+
+    await rail.evaluate(element => element.scrollTo({ left: element.scrollWidth, behavior: 'instant' }));
+    await rail.getByRole('button', { name: '第 24 页：介绍第 24 页', exact: true }).click();
+    assert.equal(await preview.getAttribute('src'), '/fixture.png?slide=24');
+    await navigation.getByRole('button', { name: '全部页面', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: '全部页面', exact: true });
+    await dialog.getByRole('button', { name: '第 12 页：介绍第 12 页', exact: true }).click();
+    await dialog.waitFor({ state: 'hidden' });
+    assert.equal(await preview.getAttribute('src'), '/fixture.png?slide=12');
+    const selection = await rail.evaluate(element => {
+      const container = element.getBoundingClientRect();
+      const selected = element.querySelector('[aria-pressed="true"]').getBoundingClientRect();
+      return { left: selected.left - container.left, right: container.right - selected.right };
+    });
+    assert.ok(selection.left >= -1 && selection.right >= -1, `the selected thumbnail must be visible: ${JSON.stringify(selection)}`);
+    const beforeWheel = await rail.evaluate(element => element.scrollLeft);
+    await rail.hover();
+    await page.mouse.wheel(160, 0);
+    await page.waitForFunction(previous => document.querySelector('[aria-label="页面缩略图"]').scrollLeft > previous + 10, beforeWheel);
+    assert.equal(await preview.getAttribute('src'), '/fixture.png?slide=12', 'horizontal wheel scrolling must not change the preview');
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'the rail must not widen the page');
+    if (process.env.REVIEW_SCREENSHOTS) {
+      await mkdir(process.env.REVIEW_SCREENSHOTS, { recursive: true });
+      await navigation.locator('..').screenshot({ path: path.join(process.env.REVIEW_SCREENSHOTS, `${width}-show-page-rail.png`) });
+    }
+  });
+}
+
+test('show thumbnail arrows reflect overflow after resizing and handle an empty show', { timeout: 15_000 }, async t => {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, serviceWorkers: 'block' });
+  t.after(() => context.close());
+  const page = await context.newPage();
+  page.setDefaultTimeout(5000);
+  await page.goto(origin + '/shows/1');
+  const navigation = page.getByRole('navigation', { name: '放映页面导航' });
+  await navigation.waitFor();
+  assert.equal(await navigation.getByRole('button', { name: '向左滚动缩略图' }).isDisabled(), true);
+  assert.equal(await navigation.getByRole('button', { name: '向右滚动缩略图' }).isDisabled(), true);
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.locator('button[aria-label="向右滚动缩略图"]:enabled').waitFor();
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.locator('button[aria-label="向右滚动缩略图"]:disabled').waitFor();
+  await page.route('**/api/shows/1', route => route.fulfill({ json: { show: { ...show, resources: [] } } }));
+  await page.reload();
+  await page.getByText('暂无放映页面', { exact: true }).waitFor();
+  assert.equal(await navigation.count(), 0);
+});
+
 test('show deletion supports keyboard cancellation and prevents repeat submits', { timeout: 30_000 }, async t => {
   const context = await browser.newContext({ serviceWorkers: 'block' }); t.after(() => context.close());
   const page = await context.newPage(); page.setDefaultTimeout(5000); await page.goto(origin + '/manage/shows'); await page.waitForLoadState('networkidle');

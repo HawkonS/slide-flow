@@ -76,21 +76,28 @@ function PageThumb({ resource, index, active, onClick, compact = false }: {
       onClick={onClick}
       aria-label={`第 ${index + 1} 页${resource.name ? `：${resource.name}` : ""}`}
       aria-pressed={active}
+      title={resource.name}
       className={[
-        "group relative overflow-hidden rounded-md border bg-muted text-left transition",
-        compact ? "w-20 shrink-0 sm:w-24" : "w-full",
-        active ? "border-primary ring-2 ring-primary/25" : "border-border/70 hover:border-primary/50",
+        "group relative text-left transition-colors",
+        compact
+          ? `w-24 shrink-0 rounded-lg p-1 sm:w-28 ${active ? "bg-primary/5" : "hover:bg-muted"}`
+          : `w-full overflow-hidden rounded-md border bg-muted ${active ? "border-primary ring-2 ring-primary/25" : "border-border/70 hover:border-primary/50"}`,
       ].join(" ")}
     >
-      <div className="relative aspect-video overflow-hidden">
+      <div className={[
+        "relative aspect-video overflow-hidden",
+        compact ? `rounded-md border bg-background shadow-sm ${active ? "border-primary ring-1 ring-primary" : "border-border/80 group-hover:border-primary/40"}` : "",
+      ].join(" ")}>
         {thumb ? (
-          <img src={thumb} alt={resource.name} loading="lazy" decoding="async" className="absolute inset-0 h-full w-full object-cover transition-transform group-hover:scale-[1.02]" />
+          <img src={thumb} alt={resource.name} loading="lazy" decoding="async" draggable={false} className={`absolute inset-0 h-full w-full ${compact ? "object-contain" : "object-cover transition-transform group-hover:scale-[1.02]"}`} />
         ) : (
           <div className="absolute inset-0 flex items-center justify-center text-muted-foreground"><Lock className="h-4 w-4" /></div>
         )}
-        <span className="absolute left-1.5 top-1.5 rounded bg-black/65 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-white">{index + 1}</span>
+        {!compact && <span className="absolute left-1.5 top-1.5 rounded bg-black/65 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-white">{index + 1}</span>}
       </div>
-      {!compact && <div className="truncate px-2 py-1.5 text-[11px] font-medium" title={resource.name}>{resource.name}</div>}
+      {compact
+        ? <span className={`block pt-1.5 text-center text-[11px] leading-4 tabular-nums ${active ? "font-semibold text-foreground" : "text-muted-foreground"}`}>{index + 1}</span>
+        : <div className="truncate px-2 py-1.5 text-[11px] font-medium" title={resource.name}>{resource.name}</div>}
     </button>
   );
 }
@@ -102,34 +109,68 @@ function PageRail({ resources, activeIndex, onSelect, onOpenAll }: {
   onOpenAll: () => void;
 }) {
   const railRef = React.useRef<HTMLDivElement>(null);
-  const [visibleCount, setVisibleCount] = React.useState(1);
+  const railId = React.useId();
+  const [scrollable, setScrollable] = React.useState({ left: false, right: false });
+
   React.useEffect(() => {
     const rail = railRef.current;
     if (!rail) return;
-    const measure = () => {
-      const thumbWidth = window.matchMedia("(min-width: 640px)").matches ? 96 : 80;
-      setVisibleCount(Math.max(1, Math.min(5, Math.floor((rail.clientWidth + 6) / (thumbWidth + 6)))));
+    const updateScrollState = () => {
+      const left = rail.scrollLeft > 1;
+      const right = rail.scrollLeft + rail.clientWidth < rail.scrollWidth - 1;
+      setScrollable((previous) => previous.left === left && previous.right === right ? previous : { left, right });
     };
-    measure();
-    const observer = new ResizeObserver(measure);
+    updateScrollState();
+    rail.addEventListener("scroll", updateScrollState, { passive: true });
+    const observer = new ResizeObserver(updateScrollState);
     observer.observe(rail);
-    return () => observer.disconnect();
+    return () => {
+      rail.removeEventListener("scroll", updateScrollState);
+      observer.disconnect();
+    };
   }, [resources.length]);
+
+  React.useEffect(() => {
+    const rail = railRef.current;
+    const selected = rail?.querySelector<HTMLButtonElement>('[aria-pressed="true"]');
+    if (!rail || !selected) return;
+    const viewport = rail.getBoundingClientRect();
+    const thumbnail = selected.getBoundingClientRect();
+    // Reveal selections from the page picker without moving the document vertically.
+    if (thumbnail.left < viewport.left + 4) {
+      rail.scrollBy({ left: thumbnail.left - viewport.left - 4, behavior: "instant" });
+    } else if (thumbnail.right > viewport.right - 4) {
+      rail.scrollBy({ left: thumbnail.right - viewport.right + 4, behavior: "instant" });
+    }
+  }, [activeIndex, resources]);
+
+  const scrollRail = (direction: -1 | 1) => {
+    const rail = railRef.current;
+    if (!rail) return;
+    rail.scrollBy({
+      left: direction * Math.max(96, rail.clientWidth * 0.8),
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth",
+    });
+  };
+
   if (!resources.length) return null;
-  const start = Math.max(0, Math.min(activeIndex - Math.floor(visibleCount / 2), resources.length - visibleCount));
-  const visible = resources.slice(start, start + visibleCount);
   return (
-    <div className="flex items-center gap-2 border-t bg-background/90 px-3 py-2.5 sm:px-4">
-      <Button type="button" variant="outline" size="icon" className="h-8 w-8 shrink-0" disabled={activeIndex === 0} aria-label="上一页" onClick={() => onSelect(Math.max(0, activeIndex - 1))}><ChevronLeft className="h-4 w-4" /></Button>
-      <div ref={railRef} className="flex min-w-0 flex-1 items-center justify-center gap-1.5 overflow-hidden">
-        {visible.map((resource, offset) => {
-          const index = start + offset;
-          return <PageThumb key={`${resource.id}-${index}`} resource={resource} index={index} active={index === activeIndex} onClick={() => onSelect(index)} compact />;
-        })}
+    <nav aria-label="放映页面导航" className="flex items-center gap-1.5 border-t bg-muted/25 px-2 py-2.5 sm:gap-3 sm:px-4">
+      <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0 rounded-full text-muted-foreground hover:bg-background hover:text-foreground disabled:opacity-25" disabled={!scrollable.left} aria-label="向左滚动缩略图" aria-controls={railId} title="向左滚动缩略图" onClick={() => scrollRail(-1)}><ChevronLeft className="h-4 w-4" /></Button>
+      <div className="relative min-w-0 flex-1">
+        <div ref={railRef} id={railId} role="group" aria-label="页面缩略图" className="scrollbar-hide flex gap-2 overflow-x-auto overscroll-x-contain p-1">
+          {resources.map((resource, index) => (
+            <PageThumb key={`${resource.id}-${index}`} resource={resource} index={index} active={index === activeIndex} onClick={() => onSelect(index)} compact />
+          ))}
+        </div>
+        {scrollable.left && <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 left-0 w-3 bg-gradient-to-r from-card to-transparent" />}
+        {scrollable.right && <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 right-0 w-3 bg-gradient-to-l from-card to-transparent" />}
       </div>
-      <Button type="button" variant="outline" size="icon" className="h-8 w-8 shrink-0" disabled={activeIndex === resources.length - 1} aria-label="下一页" onClick={() => onSelect(Math.min(resources.length - 1, activeIndex + 1))}><ChevronRight className="h-4 w-4" /></Button>
-      <Button type="button" variant="outline" size="sm" className="h-8 shrink-0 gap-1.5 px-2.5 text-xs" aria-label="全部页面" onClick={onOpenAll}><LayoutGrid className="h-3.5 w-3.5" /><span className="hidden sm:inline">全部页面</span></Button>
-    </div>
+      <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0 rounded-full text-muted-foreground hover:bg-background hover:text-foreground disabled:opacity-25" disabled={!scrollable.right} aria-label="向右滚动缩略图" aria-controls={railId} title="向右滚动缩略图" onClick={() => scrollRail(1)}><ChevronRight className="h-4 w-4" /></Button>
+      <div className="flex shrink-0 items-center self-stretch border-l pl-1.5 sm:pl-3">
+        <Button type="button" variant="ghost" size="sm" className="h-auto flex-col gap-1.5 rounded-lg px-2 py-2 text-muted-foreground hover:bg-background hover:text-foreground" aria-label="全部页面" title="全部页面" onClick={onOpenAll}><LayoutGrid className="h-4 w-4" /><span className="hidden text-[10px] sm:inline">全部页面</span></Button>
+      </div>
+    </nav>
   );
 }
 

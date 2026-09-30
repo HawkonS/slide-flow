@@ -196,6 +196,26 @@ class PasswordBootstrapTests(unittest.TestCase):
                     password="another-secure-password",
                 )
 
+    def test_completed_setup_removes_orphaned_setup_file(self):
+        db = _db()
+        self.addCleanup(db.close)
+        _insert_user(
+            db,
+            username="owner",
+            password="correct-horse-battery-staple",
+            role="system_admin",
+        )
+        with patch.object(settings, "root_dir", self.root):
+            setup_path = initial_setup_file()
+            setup_path.parent.mkdir(parents=True, exist_ok=True)
+            setup_path.write_text(
+                json.dumps({"setup_token": "stale-token"}), encoding="utf-8"
+            )
+
+            self.assertFalse(prepare_initial_admin(db))
+            self.assertFalse(setup_path.exists())
+            self.assertEqual(initial_setup_status(db), {"required": False})
+
     def test_localhost_setup_uses_http_only_cookie_without_manual_token(self):
         db = _db()
         self.addCleanup(db.close)

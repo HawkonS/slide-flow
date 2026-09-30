@@ -781,6 +781,24 @@ except Exception:
 ' "$PORT" >/dev/null 2>&1
 }
 
+initial_admin_setup_pending() {
+  # Read the authoritative state from the running backend.  The local setup
+  # file is deliberately not used here: it is a one-time credential artifact
+  # and may remain after a completed setup when upgrading older deployments.
+  "$PYTHON_BIN" -c '
+import json
+import sys
+import urllib.request
+
+try:
+    with urllib.request.urlopen(f"http://127.0.0.1:{sys.argv[1]}/api/auth/setup", timeout=2) as response:
+        status = json.load(response)
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if status.get("required") is True else 1)
+' "$PORT" >/dev/null 2>&1
+}
+
 wait_for_backend() {
   local attempt
   for attempt in $(seq 1 12); do
@@ -840,7 +858,7 @@ if [ "$REUSE_BACKEND" != "true" ] && ! wait_for_backend; then
   exit 1
 fi
 log_info "后端服务启动成功 ($ACTIVE_BACKEND_SERVER, PID: $BACKEND_PID)"
-if [ -f ".secrets/initial-admin-setup.json" ]; then
+if initial_admin_setup_pending; then
   log_warn "系统管理员尚未完成安全初始化"
   log_warn "请在服务器本机访问 http://127.0.0.1:${PORT}/setup，直接设置管理员账号和密码"
 fi
