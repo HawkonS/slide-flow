@@ -68,7 +68,6 @@ const STATUS_TONE: Record<ShareStatus, "success" | "warning" | "destructive" | "
 
 const TAB_CONFIG: Record<ShareKind, {
   label: string;
-  description: string;
   searchPlaceholder: string;
   listPath: string;
   idsPath: string;
@@ -77,7 +76,6 @@ const TAB_CONFIG: Record<ShareKind, {
 }> = {
   resources: {
     label: "单页素材分享",
-    description: "管理单页素材的临时预览链接。",
     searchPlaceholder: "搜索素材或创建人",
     listPath: "/api/resource-share-links",
     idsPath: "/api/resource-share-links/ids",
@@ -86,7 +84,6 @@ const TAB_CONFIG: Record<ShareKind, {
   },
   shows: {
     label: "放映资源分享",
-    description: "管理标准放映的页面预览链接。",
     searchPlaceholder: "搜索放映、主体或创建人",
     listPath: "/api/show-share-links",
     idsPath: "/api/show-share-links/ids",
@@ -210,11 +207,6 @@ function ShareLinksTab({ kind, isAdmin }: { kind: ShareKind; isAdmin: boolean })
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4">
-      <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
-        {kind === "resources" ? <FileKey2 className="h-3.5 w-3.5" /> : <MonitorPlay className="h-3.5 w-3.5" />}
-        <span>{config.description}</span>
-        <Badge variant="outline" className="ml-auto hidden h-5 px-1.5 text-[10px] sm:inline-flex">仅预览，不提供下载</Badge>
-      </div>
       <PageMetrics ariaLabel={`${config.label}统计`} items={[
         { label: "分享链接", value: data?.stats.total ?? 0, icon: FileKey2 },
         { label: "有效", value: data?.stats.active ?? 0, icon: CheckCircle2, tone: "success" },

@@ -176,6 +176,7 @@ export function AdminConfigPage() {
     <div className="page-shell">
       <PageHeader
         title="配置管理"
+        description="管理系统配置参数，按分类查看和调整各项设置。"
         titleExtra={dirtyKeys.length > 0 ? (
           <span className="page-count bg-primary-weak text-foreground">
             已修改 {dirtyKeys.length} 项

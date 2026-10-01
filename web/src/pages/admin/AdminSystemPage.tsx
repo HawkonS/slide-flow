@@ -890,38 +890,14 @@ function LogTab() {
     });
   };
 
-  if (logsQuery.isLoading && !logsQuery.data) {
-    return (
-      <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground">
-        <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 加载日志列表…
-      </div>
-    );
-  }
-
-  if (logsQuery.isError && !logsQuery.data) {
-    return (
-      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
-        <XCircle className="h-8 w-8 text-destructive" />
-        <p>日志列表加载失败：{logsQuery.error.message}</p>
-        <Button variant="outline" size="sm" onClick={() => logsQuery.refetch()}>
-          <RefreshCw className="mr-2 h-4 w-4" />重试
-        </Button>
-      </div>
-    );
-  }
-
   const isRefreshing = logsQuery.isFetching || tailQuery.isFetching;
-  const refreshError = logsQuery.isError
-    ? `日志列表刷新失败：${logsQuery.error.message}`
-    : tailQuery.isError
-      ? `日志内容刷新失败：${tailQuery.error.message}`
-      : null;
-
-  return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4">
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 rounded-lg border bg-card px-4 py-3">
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
-          <div className="flex items-center gap-2">
+  const pageHeader = (
+    <PageHeader
+      title="日志管理"
+      description="查看和筛选服务日志，定位运行异常与系统问题。"
+      actions={
+        <>
+          <div className="flex h-9 items-center gap-2 text-sm">
             <Switch
               id="log-follow-tail"
               checked={followTail}
@@ -932,20 +908,50 @@ function LogTab() {
               自动跟随最新
             </label>
           </div>
-          <span className={cn("flex items-center gap-1.5 text-xs", refreshError ? "text-destructive" : "text-muted-foreground")} aria-live="polite">
-            <span className={cn("h-2 w-2 rounded-full", refreshError ? "bg-red-500" : followTail ? "bg-emerald-500" : "bg-slate-400")} />
-            {refreshError ?? (followTail ? "每 3 秒刷新并跟随" : "按需加载，自动跟随已关闭")}
-            {isRefreshing && <Loader2 className="h-3 w-3 animate-spin" />}
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={handleRefresh} disabled={isRefreshing}>
-            <RefreshCw className={cn("mr-1.5 h-4 w-4", isRefreshing && "animate-spin")} />
+          <Button variant="outline" size="sm" className="h-9 gap-1.5" onClick={handleRefresh} disabled={isRefreshing}>
+            <RefreshCw className={cn("h-3.5 w-3.5", isRefreshing && "animate-spin")} />
             刷新
           </Button>
-        </div>
-      </div>
+        </>
+      }
+    />
+  );
 
+  if (logsQuery.isLoading && !logsQuery.data) {
+    return (
+      <>
+        {pageHeader}
+        <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground">
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 加载日志列表…
+        </div>
+      </>
+    );
+  }
+
+  if (logsQuery.isError && !logsQuery.data) {
+    return (
+      <>
+        {pageHeader}
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+          <XCircle className="h-8 w-8 text-destructive" />
+          <p>日志列表加载失败：{logsQuery.error.message}</p>
+          <Button variant="outline" size="sm" onClick={() => logsQuery.refetch()}>
+            <RefreshCw className="mr-2 h-4 w-4" />重试
+          </Button>
+        </div>
+      </>
+    );
+  }
+
+  const refreshError = logsQuery.isError
+    ? `日志列表刷新失败：${logsQuery.error.message}`
+    : tailQuery.isError
+      ? `日志内容刷新失败：${tailQuery.error.message}`
+      : null;
+
+  return (
+    <>
+      {pageHeader}
       <div className="grid min-h-0 flex-1 grid-rows-[minmax(140px,0.35fr)_minmax(300px,1fr)] gap-4 lg:grid-cols-[260px_minmax(0,1fr)] lg:grid-rows-1">
         <Card className="flex min-h-0 flex-col overflow-hidden">
           <CardHeader className="shrink-0 border-b pb-4">
@@ -1054,6 +1060,11 @@ function LogTab() {
                 显示 {visibleLines.length} / {tailQuery.data?.line_count ?? 0} 行
                 {tailQuery.data?.truncated ? " · 内容已安全截断" : ""}
               </span>
+              <span className={cn("flex items-center gap-1.5 text-xs", refreshError ? "text-destructive" : "text-muted-foreground")} aria-live="polite">
+                <span className={cn("h-2 w-2 rounded-full", refreshError ? "bg-red-500" : followTail ? "bg-emerald-500" : "bg-slate-400")} />
+                {refreshError ?? (followTail ? "每 3 秒刷新并跟随" : "按需加载，自动跟随已关闭")}
+                {isRefreshing && <Loader2 className="h-3 w-3 animate-spin" />}
+              </span>
               <button
                 type="button"
                 onClick={handleJumpToLatest}
@@ -1111,7 +1122,7 @@ function LogTab() {
           </CardContent>
         </Card>
       </div>
-    </div>
+    </>
   );
 }
 
@@ -1124,15 +1135,14 @@ export function AdminSystemPage({ section = "runtime" }: { section?: SystemSecti
     return <AdminConfigPage />;
   }
 
-  const title = section === "logs" ? "日志管理" : "运行管理";
-  const description = section === "logs"
-    ? "查看和筛选服务日志，定位运行异常与系统问题。"
-    : "查看服务、存储和 Windows 渲染子进程状态，并执行系统维护操作。每 5 秒自动刷新。";
+  if (section === "logs") {
+    return <div className="page-shell"><LogTab /></div>;
+  }
 
   return (
     <div className="page-shell">
-      <PageHeader title={title} description={description} />
-      {section === "logs" ? <LogTab /> : <RuntimeTab />}
+      <PageHeader title="运行管理" description="查看服务、存储和 Windows 渲染子进程状态，并执行系统维护操作。每 5 秒自动刷新。" />
+      <RuntimeTab />
     </div>
   );
 }
