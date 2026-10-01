@@ -30,6 +30,7 @@ SERVICE_STOPPED=0
 UPGRADE_RESTART_SUBMITTED=0
 restore_service_on_failure() {
   local code=$?
+  trap - EXIT
   if (( SERVICE_STOPPED == 1 && UPGRADE_RESTART_SUBMITTED == 0 )); then
     echo "[SlideFlow] ERROR: upgrade aborted; attempting to start the previous service" >&2
     if (( SYSTEMD_AVAILABLE == 1 )); then
@@ -43,6 +44,19 @@ restore_service_on_failure() {
     fi
   fi
   exit "$code"
+}
+
+wait_for_inactive() {
+  local attempts=0 state
+  while (( attempts < 60 )); do
+    state="$(systemctl show --property=ActiveState --value "$SERVICE_NAME" 2>/dev/null || true)"
+    case "$state" in
+      inactive|failed) return 0 ;;
+    esac
+    sleep 1
+    attempts=$((attempts + 1))
+  done
+  return 1
 }
 
 ALIGN_HISTORY=0
@@ -159,7 +173,7 @@ if [[ "${SLIDEFLOW_UPGRADE_DRY_RUN:-0}" == 1 ]]; then
   exit 0
 fi
 
-trap restore_service_on_failure ERR
+trap restore_service_on_failure EXIT
 info "stopping production service"
 SYSTEMD_AVAILABLE=0
 if command -v systemctl >/dev/null 2>&1 &&
@@ -171,8 +185,7 @@ if command -v systemctl >/dev/null 2>&1 &&
     sudo systemctl stop "$SERVICE_NAME"
   fi
   SERVICE_STOPPED=1
-  [[ "$(systemctl show --property=ActiveState --value "$SERVICE_NAME")" == "inactive" ]] ||
-    die "service did not stop: $SERVICE_NAME"
+  wait_for_inactive || die "service did not stop within 60 seconds: $SERVICE_NAME"
 else
   [[ -x tools/stop.sh ]] || die "systemd service not found and tools/stop.sh is missing"
   bash tools/stop.sh
@@ -239,4 +252,4 @@ info "reconciled update succeeded"
 info "commit=$FINAL_COMMIT"
 info "backup=$BACKUP"
 info "api=http://127.0.0.1:$PORT/api/config"
-trap - ERR
+trap - EXIT
