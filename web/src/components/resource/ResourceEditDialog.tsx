@@ -26,11 +26,7 @@ import { MetadataTagSelect } from "@/components/resource/MetadataTagSelect";
 import { UserPicker } from "@/components/resource/UserPicker";
 import { FilePickerCard } from "@/components/resource/FilePickerCard";
 import { RichTextEditor } from "@/components/resource/RichTextEditor";
-import {
-  DeleteScopeDialog,
-  type DeleteScope,
-} from "@/components/common/DeleteScopeDialog";
-import { ConfirmDialog } from "@/components/common/ConfirmDialog";
+import { ResourceDeletionDialog } from "@/components/resource/ResourceDeletionDialog";
 import {
   DEFAULT_RESOURCE_SUBJECT,
   MANAGEMENT_SCOPE_OPTIONS,
@@ -114,8 +110,8 @@ export function ResourceEditDialog({
 }: ResourceEditDialogProps) {
   const isCreate = resource == null;
   const [form, setForm] = React.useState<FormState>(() => defaultForm(resource));
-  const [confirmAction, setConfirmAction] = React.useState<"rollback" | "delete" | null>(null);
-  const [deleteScopeOpen, setDeleteScopeOpen] = React.useState(false);
+  const [deletionOpen, setDeletionOpen] = React.useState(false);
+  const [deletionMode, setDeletionMode] = React.useState<"delete" | "rollback">("delete");
   const queryClient = useQueryClient();
   const { user } = useAuth();
 
@@ -196,57 +192,8 @@ export function ResourceEditDialog({
     },
   });
 
-  // 删除 / 回退：仅编辑模式下可用，且当前用户具备管理权限
-  const deleteMutation = useMutation({
-    mutationFn: async (kind: "rollback" | DeleteScope) => {
-      if (!resource) throw new Error("资源不存在");
-      if (kind === "rollback") {
-        return api(`/api/resources/${resource.id}/versions/rollback`, {
-          method: "POST",
-        });
-      }
-      if (kind === "latest") {
-        return api(`/api/resources/${resource.id}?scope=latest`, {
-          method: "DELETE",
-        });
-      }
-      return api(`/api/resources/${resource.id}`, { method: "DELETE" });
-    },
-    onSuccess: (_data, kind) => {
-      toast.success(
-        kind === "rollback"
-          ? "已回退到上一版本"
-          : kind === "latest"
-            ? "最新版本已删除"
-            : "资源已删除",
-      );
-      queryClient.invalidateQueries({ queryKey: ["resources"] });
-      queryClient.invalidateQueries({ queryKey: ["me", "personal-remarks", "summary"] });
-      // 首页置顶卡片与统计也依赖资源数据，删除后需同步失效
-      queryClient.invalidateQueries({ queryKey: ["home", "pins"] });
-      queryClient.invalidateQueries({ queryKey: ["home", "stats"] });
-      setDeleteScopeOpen(false);
-      onOpenChange(false);
-    },
-    onError: (err: Error) => {
-      toast.error(err.message || "操作失败");
-    },
-  });
-
-  const handleRollback = () => {
-    if (!resource) return;
-    setConfirmAction("rollback");
-  };
-
-  const handleDelete = () => {
-    if (!resource) return;
-    // 多版本资源：弹窗让用户选择删除范围
-    if (resource.current_version > 1) {
-      setDeleteScopeOpen(true);
-      return;
-    }
-    setConfirmAction("delete");
-  };
+  const handleRollback = () => { setDeletionMode("rollback"); setDeletionOpen(true); };
+  const handleDelete = () => { setDeletionMode("delete"); setDeletionOpen(true); };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -490,10 +437,10 @@ export function ResourceEditDialog({
                   size="sm"
                   className="h-8 px-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
                   disabled={
-                    resource.current_version <= 1 || deleteMutation.isPending
+                    (resource.version_count ?? resource.versions?.length ?? 1) <= 1 || deletionOpen
                   }
                   title={
-                    resource.current_version <= 1
+                    (resource.version_count ?? resource.versions?.length ?? 1) <= 1
                       ? "仅剩 1 个版本，无法回退；如需清空请使用删除资源"
                       : undefined
                   }
@@ -507,7 +454,7 @@ export function ResourceEditDialog({
                   variant="ghost"
                   size="sm"
                   className="h-8 px-2 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                  disabled={deleteMutation.isPending}
+                  disabled={deletionOpen}
                   onClick={handleDelete}
                 >
                   删除资源
@@ -521,13 +468,13 @@ export function ResourceEditDialog({
                 type="button"
                 variant="outline"
                 onClick={() => onOpenChange(false)}
-                disabled={deleteMutation.isPending}
+                disabled={deletionOpen}
               >
                 取消
               </Button>
               <Button
                 type="submit"
-                disabled={mutation.isPending || deleteMutation.isPending}
+                disabled={mutation.isPending || deletionOpen}
               >
                 {mutation.isPending ? "提交中…" : isCreate ? "创建" : "保存"}
               </Button>
@@ -537,36 +484,10 @@ export function ResourceEditDialog({
       </DialogContent>
     </Dialog>
 
-    {resource && (
-      <ConfirmDialog
-        open={confirmAction !== null}
-        onOpenChange={(open) => { if (!open) setConfirmAction(null); }}
-        title={confirmAction === "rollback" ? "回退资源版本" : "删除资源"}
-        description={confirmAction === "rollback"
-          ? `确定将「${resource.name}」回退到上一版本吗？当前 v${resource.current_version} 及其文件会被永久删除。`
-          : `确定彻底删除「${resource.name}」吗？所有版本、备注和访问配置都会被清除。`}
-        confirmLabel={confirmAction === "rollback" ? "确认回退" : "删除资源"}
-        destructive
-        loading={deleteMutation.isPending}
-        onConfirm={() => {
-          const action = confirmAction;
-          if (action) deleteMutation.mutate(action === "rollback" ? "rollback" : "all", { onSuccess: () => setConfirmAction(null) });
-        }}
-      />
-    )}
-
-    {resource && (
-      <DeleteScopeDialog
-        open={deleteScopeOpen}
-        onOpenChange={setDeleteScopeOpen}
-        entityLabel="资源"
-        name={resource.name}
-        versionCount={resource.current_version}
-        latestVersionNo={resource.current_version}
-        loading={deleteMutation.isPending}
-        onDelete={(scope) => deleteMutation.mutate(scope)}
-      />
-    )}
+    {resource && <ResourceDeletionDialog open={deletionOpen} onOpenChange={setDeletionOpen}
+      resourceIds={[resource.id]} name={resource.name} mode={deletionMode}
+      versionCount={resource.version_count ?? resource.versions?.length ?? 1}
+      onSuccess={() => onOpenChange(false)} />}
     </>
   );
 }

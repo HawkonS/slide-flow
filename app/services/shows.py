@@ -98,11 +98,15 @@ def _serialize_show_resource(db: sqlite3.Connection, resource_id: int, version_n
             "LEFT JOIN resource_versions v ON v.resource_id = r.id AND v.version_no = ? WHERE r.id = ?",
             (version_no, resource_id),
         ).fetchone()
-    if resource is None:
-        return None
+    if resource is None or resource["id"] is None:
+        return {"id": resource_id, "accessible": False, "name": f"资源 #{resource_id}",
+                "version_no": version_no, "unavailable_reason": "missing_resource", "managers": [], "hidden": bool(is_hidden)}
     if can_view_resource(db, resource, user):
         latest_version_no = int(resource["current_version"])
         version_id = resource["preview_version_id"]
+        if version_id is None:
+            return {"id": resource_id, "accessible": False, "name": resource["name"],
+                    "version_no": version_no, "unavailable_reason": "missing_version", "managers": [], "hidden": bool(is_hidden)}
         png_path = resource["preview_png"]
         return {
             "id": resource_id,
@@ -167,7 +171,7 @@ def _serialize_show(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row)
     manage_user_ids = _show_scope_user_ids(db, "show_management", int(row["id"]))
     sr_rows = db.execute(
         "SELECT r.*, sr.resource_id, sr.version_no, sr.is_hidden, v.id AS preview_version_id, v.png_path AS preview_png "
-        "FROM show_resources sr JOIN resources r ON r.id = sr.resource_id "
+        "FROM show_resources sr LEFT JOIN resources r ON r.id = sr.resource_id "
         "LEFT JOIN resource_versions v ON v.resource_id = r.id AND v.version_no = sr.version_no "
         "WHERE sr.show_id = ? ORDER BY sr.sort_order",
         (row["id"],),
@@ -224,7 +228,7 @@ def _serialize_show_lite(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3
     owner = db.execute("SELECT id, name, username FROM users WHERE id = ?", (row["owner_id"],)).fetchone()
     sr_rows = db.execute(
         "SELECT r.*, sr.resource_id, sr.version_no, sr.is_hidden, v.id AS preview_version_id, v.png_path AS preview_png "
-        "FROM show_resources sr JOIN resources r ON r.id = sr.resource_id "
+        "FROM show_resources sr LEFT JOIN resources r ON r.id = sr.resource_id "
         "LEFT JOIN resource_versions v ON v.resource_id = r.id AND v.version_no = sr.version_no "
         "WHERE sr.show_id = ? ORDER BY sr.sort_order LIMIT 2",
         (row["id"],),
@@ -275,6 +279,11 @@ def _collect_show_accessible_resources(
     db: sqlite3.Connection, show_id: int, user: sqlite3.Row
 ) -> list[dict[str, Any]]:
     """按当前用户权限，返回放映下可见资源的固定版本信息（按 sort_order）。"""
+    if db.execute('''SELECT 1 FROM show_resources sr
+        LEFT JOIN resources r ON r.id = sr.resource_id
+        LEFT JOIN resource_versions v ON v.resource_id = sr.resource_id AND v.version_no = sr.version_no
+        WHERE sr.show_id = ? AND (r.id IS NULL OR v.resource_id IS NULL) LIMIT 1''', (show_id,)).fetchone():
+        raise HTTPException(409, '放映包含失效页面，请先清理失效页后重试')
     sr_rows = db.execute(
         """
         SELECT r.*, sr.resource_id, sr.version_no, sr.is_hidden, v.ppt_path, v.png_path, v.font_names, v.missing_fonts

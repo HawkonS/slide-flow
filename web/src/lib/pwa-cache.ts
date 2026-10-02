@@ -51,6 +51,7 @@ export interface CachedShow extends OfflineManifestV3 {
   owner_key: string;
   state: "staging" | "ready";
   revoked?: boolean;
+  needs_update?: boolean;
 }
 
 export interface CacheProgress {
@@ -126,6 +127,7 @@ function checkPackage(entry: CachedShow | undefined, identity: OfflineIdentity, 
   if (entry.owner_key !== offlineOwnerKey(identity) || entry.user_id !== identity.user.id || entry.session_version !== identity.sessionVersion) {
     throw new Error("此缓存不属于当前登录会话，请重新下载");
   }
+  if (entry.needs_update) throw new Error("放映页面已变更，请联网更新缓存后再播放");
   if (active?.revoked || entry.revoked) throw new Error("此放映的离线授权已失效，请联网重新获取");
   if (!Number.isFinite(Date.parse(entry.expires_at)) || Date.parse(entry.expires_at) <= Date.now()) {
     throw new Error("离线授权已到期，请联网更新缓存");
@@ -199,7 +201,7 @@ export async function pinCachedShow(packageId: string): Promise<() => void> {
 export async function invalidateCachedShow(
   showId: number,
   identity: OfflineIdentity | null,
-  reason: "revoked" | "deleted" = "revoked",
+  reason: "revoked" | "deleted" | "changed" = "revoked",
 ): Promise<void> {
   if (!identity) return;
   assertOfflineIdentity(identity);
@@ -218,7 +220,7 @@ export async function invalidateCachedShow(
       // A later authorized package must never revive an older revoked snapshot.
       for (const entry of packages) {
         if (entry.owner_key === owner && entry.show_id === showId) {
-          tx.objectStore("packages").put({ ...entry, revoked: true }, entry.package_id);
+          tx.objectStore("packages").put({ ...entry, revoked: true, needs_update: reason === "changed" }, entry.package_id);
         }
       }
     });

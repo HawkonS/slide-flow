@@ -117,7 +117,7 @@ def _build_resource_query_sql(
         else "ut.tag_name = rmt.tag_name"
     )
 
-    where_parts = [vis_cond]
+    where_parts = [vis_cond, "r.deleted_at IS NULL"]
 
     # ── 标量筛选 ──
     if status and status != "all":

@@ -102,7 +102,7 @@ function broadcast(message: object): void {
 
 export interface PwaChange {
   ownerKey?: string;
-  reason?: 'revoked' | 'deleted';
+  reason?: 'revoked' | 'deleted' | 'changed';
 }
 
 function safePwaChange(value: unknown): PwaChange & { showId?: number } {
@@ -111,7 +111,7 @@ function safePwaChange(value: unknown): PwaChange & { showId?: number } {
   const detail: PwaChange & { showId?: number } = {};
   if (typeof input.showId === 'number' && Number.isSafeInteger(input.showId) && input.showId > 0) detail.showId = input.showId;
   if (typeof input.ownerKey === 'string' && input.ownerKey.length > 0 && input.ownerKey.length <= 256) detail.ownerKey = input.ownerKey;
-  if (input.reason === 'revoked' || input.reason === 'deleted') detail.reason = input.reason;
+  if (input.reason === 'revoked' || input.reason === 'deleted' || input.reason === 'changed') detail.reason = input.reason;
   return detail;
 }
 

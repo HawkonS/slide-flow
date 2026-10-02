@@ -29,7 +29,7 @@ _HTML_TAG_RE = re.compile(r"<[^>]*>")
 
 def _resource_row(db: sqlite3.Connection, resource_id: int) -> sqlite3.Row:
     """获取资源行，不存在则抛出 404"""
-    row = db.execute("SELECT * FROM resources WHERE id = ?", (resource_id,)).fetchone()
+    row = db.execute("SELECT * FROM resources WHERE id = ? AND deleted_at IS NULL", (resource_id,)).fetchone()
     if row is None:
         raise HTTPException(404, "资源不存在")
     return row
@@ -164,7 +164,10 @@ def my_personal_remark_summary(
 ) -> dict[str, Any]:
     """当前用户有非空个人备注的资源 id 汇总（前端筛选用）。"""
     rows = db.execute(
-        "SELECT DISTINCT resource_id, content_html FROM personal_remarks WHERE user_id = ?",
+        """SELECT DISTINCT pr.resource_id, pr.content_html FROM personal_remarks pr
+        JOIN resources r ON r.id = pr.resource_id AND r.deleted_at IS NULL
+        JOIN resource_versions v ON v.id = pr.version_id AND v.deleted_at IS NULL
+        WHERE pr.user_id = ?""",
         (int(user["id"]),),
     ).fetchall()
     ids: set[int] = set()
@@ -254,7 +257,7 @@ def list_my_pins(
         """
         SELECT r.* FROM user_pinned_resources p
         JOIN resources r ON r.id = p.resource_id
-        WHERE p.user_id = ?
+        WHERE p.user_id = ? AND r.deleted_at IS NULL
         ORDER BY p.pinned_at DESC
         """,
         (int(user["id"]),),
@@ -345,8 +348,9 @@ def my_home_stats(
         "resource_visibility",
         "resource_id",
         tag_table="resource_visibility_tags",
+        where_extra="t.deleted_at IS NULL",
     )
-    resources_mine = _mine_count("resources")
+    resources_mine = _mine_count("resources", where_extra="deleted_at IS NULL")
 
     shows_total = _visible_count(
         "shows",

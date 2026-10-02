@@ -67,10 +67,10 @@ def resource_preview(
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_read_dep),
 ) -> FileResponse:
-    row = _resource_row(db, resource_id)
+    row = _resource_row(db, resource_id, include_deleted=version_id is not None)
     if not can_view_resource(db, row, user):
         raise HTTPException(403, "无可见权限")
-    version = _version_row(db, resource_id, version_id)
+    version = _version_row(db, resource_id, version_id, include_deleted=version_id is not None)
     if is_oss_ref(version["png_path"]):
         url = asset_preview_url(version["png_path"])
         if not url:
@@ -89,10 +89,10 @@ def resource_preview_thumb(
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_read_dep),
 ) -> FileResponse:
-    row = _resource_row(db, resource_id)
+    row = _resource_row(db, resource_id, include_deleted=version_id is not None)
     if not can_view_resource(db, row, user):
         raise HTTPException(403, "无可见权限")
-    version = _version_row(db, resource_id, version_id)
+    version = _version_row(db, resource_id, version_id, include_deleted=version_id is not None)
     if is_oss_ref(version["png_path"]):
         url = asset_preview_url(version["png_path"], thumb=True)
         if not url:
@@ -119,10 +119,10 @@ def download_resource(
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_read_dep),
 ):
-    row = _resource_row(db, resource_id)
+    row = _resource_row(db, resource_id, include_deleted=version_id is not None)
     if not can_manage_resource(db, row, user):
         raise HTTPException(403, "无管理权限，不能下载素材")
-    version = _version_row(db, resource_id, version_id)
+    version = _version_row(db, resource_id, version_id, include_deleted=version_id is not None)
 
     download_format = format or ("zip" if with_fonts else "pptx")
     filename_base = f"{row['name']}_v{version['version_no']}"

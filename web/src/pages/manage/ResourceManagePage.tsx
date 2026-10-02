@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useNavigate } from "react-router-dom";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Check,
   ChevronDown,
@@ -24,13 +24,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+
 import { FilterGroupChip, SubjectFilterChip, TagFilterChip, type ChipOption, type FilterGroup } from "@/components/resource/filter-chips";
 import { useMetadataTagOptions } from "@/components/resource/MetadataTagSelect";
 import {
@@ -49,6 +43,7 @@ import {
 import { parseTags, Resource, serializeTags } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useManageResourceFilters, markManageResourceFiltersUrlRestored } from "@/stores/manage-resource-filters";
+import { ResourceDeletionDialog } from "@/components/resource/ResourceDeletionDialog";
 import { BatchEditDialog } from "@/components/manage/BatchEditDialog";
 import { usePaginatedQuery } from "@/lib/use-paginated-query";
 import { useEncodedUrlState } from "@/lib/use-encoded-url-state";
@@ -321,21 +316,6 @@ export default function ResourceManagePage() {
 
   /* ---- Batch delete ---- */
   const [deleteDialogOpen, setDeleteDialogOpen] = React.useState(false);
-  const deleteMutation = useMutation({
-    mutationFn: async (ids: number[]) =>
-      api("/api/resources/batch", {
-        method: "DELETE",
-        json: { resource_ids: ids },
-      }),
-    onSuccess: () => {
-      toast.success("批量删除成功");
-      clearSelection();
-      queryClient.invalidateQueries({ queryKey: ["manage-resources"] });
-      setDeleteDialogOpen(false);
-    },
-    onError: (err: Error) => toast.error(err.message || "删除失败"),
-  });
-
   const allPageSelected =
     resources.length > 0 && resources.every((r) => selectedIds.has(r.id));
   const somePageSelected =
@@ -662,36 +642,8 @@ export default function ResourceManagePage() {
         }}
       />
 
-      {/* 批量删除确认对话框 */}
-      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>确认批量删除</DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            确定要删除选中的 <span className="font-semibold text-foreground">{selectedIds.size}</span> 项资源吗？此操作不可撤销。
-          </p>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setDeleteDialogOpen(false)}
-              disabled={deleteMutation.isPending}
-            >
-              取消
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={() => deleteMutation.mutate(Array.from(selectedIds))}
-              disabled={deleteMutation.isPending}
-            >
-              {deleteMutation.isPending && (
-                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-              )}
-              确认删除
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ResourceDeletionDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}
+        resourceIds={Array.from(selectedIds)} onSuccess={clearSelection} />
 
     </div>
   );

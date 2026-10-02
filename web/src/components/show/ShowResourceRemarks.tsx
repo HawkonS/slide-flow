@@ -28,8 +28,8 @@ export function ShowResourceRemarks({ showId, resource }: { showId: number; reso
   const [editing, setEditing] = React.useState<RemarkKind | null>(null);
   React.useEffect(() => { setEditing(null); }, [resource.id, resource.version_no]);
   const detail = useQuery({
-    queryKey: ["resource", resource.id, "detail"],
-    queryFn: async () => (await api<{ resource: Resource }>(`/api/resources/${resource.id}`)).resource,
+    queryKey: ["resource", resource.id, "detail", "include-archived"],
+    queryFn: async () => (await api<{ resource: Resource }>("/api/resources/" + resource.id + "?include_archived=true")).resource,
     staleTime: 30_000,
   });
   // A show pins version_no, whereas the remark APIs expect the version row ID.
@@ -49,13 +49,13 @@ export function ShowResourceRemarks({ showId, resource }: { showId: number; reso
   const versionUnavailable = detail.isError || (!detail.isPending && !version);
   const cards: RemarkCard[] = [
     {
-      kind: "common", title: "通用备注", description: detail.data?.can_manage ? "可维护" : "仅查看",
-      html: version?.common_remark_html || "", editable: !!detail.data?.can_manage,
+      kind: "common", title: "通用备注", description: version?.archived ? "归档版本 · 只读" : detail.data?.can_manage ? "可维护" : "仅查看",
+      html: version?.common_remark_html || "", editable: !!detail.data?.can_manage && !version?.archived,
       loading: detail.isPending, failed: versionUnavailable, retry: () => { void detail.refetch(); },
     },
     {
-      kind: "personal", title: "个人备注", description: "仅自己可见",
-      html: personal.data?.content_html || "", editable: true,
+      kind: "personal", title: "个人备注", description: version?.archived ? "归档版本 · 仅自己可见" : "仅自己可见",
+      html: personal.data?.content_html || "", editable: !!version && !version.archived,
       loading: detail.isPending || (!!version && personal.isPending), failed: versionUnavailable || personal.isError,
       retry: () => { if (!version) void detail.refetch(); else void personal.refetch(); },
     },
@@ -170,7 +170,7 @@ function RemarkEditorDialog({ card, resourceId, resourceName, versionId, version
           </div>
         )}
         <DialogFooter>
-          {!card.editable && <span className="mr-auto flex items-center gap-1.5 text-xs text-muted-foreground"><Lock className="h-3.5 w-3.5" />仅素材管理者可编辑</span>}
+          {!card.editable && <span className="mr-auto flex items-center gap-1.5 text-xs text-muted-foreground"><Lock className="h-3.5 w-3.5" />此备注仅供查看（权限不足或版本已归档）</span>}
           <Button variant="outline" onClick={onClose} disabled={mutation.isPending}>{card.editable ? "取消" : "关闭"}</Button>
           {card.editable && <Button onClick={() => mutation.mutate()} disabled={mutation.isPending || draft === card.html}>{mutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}保存</Button>}
         </DialogFooter>

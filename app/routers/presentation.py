@@ -33,6 +33,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from PIL import Image
 from app.core.oss import is_oss_ref, oss_key, storage as oss_storage
 from app.services.files import asset_preview_url
+from app.services.tagging import table_has_column
 from typing import Any, Literal
 from datetime import datetime, timezone
 from collections import OrderedDict
@@ -370,14 +371,17 @@ def get_show_offline_version(
     latest_show_id = int(latest_row["id"])
     # Report separately that a resource can be upgraded. The show remains
     # pinned to show_resources.version_no until an explicit show iteration.
+    resource_deleted = " AND r.deleted_at IS NULL" if table_has_column(db, "resources", "deleted_at") else ""
+    version_deleted = " AND rv.deleted_at IS NULL" if table_has_column(db, "resource_versions", "deleted_at") else ""
     upgrades = db.execute(
-        """
+        f"""
         SELECT sr.resource_id, r.current_version
         FROM show_resources sr
         JOIN resources r ON r.id = sr.resource_id
         JOIN resource_versions rv
           ON rv.resource_id = r.id AND rv.version_no = r.current_version
         WHERE sr.show_id = ? AND r.current_version > sr.version_no
+          {resource_deleted}{version_deleted}
           AND rv.png_path IS NOT NULL AND TRIM(rv.png_path) != ''
         """,
         (latest_show_id,),

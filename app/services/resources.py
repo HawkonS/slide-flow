@@ -135,15 +135,15 @@ def _scope_tag_names(db: sqlite3.Connection, table: str, resource_id: int) -> li
     return [str(row["tag_name"]) for row in rows]
 
 
-def _resource_row(db: sqlite3.Connection, resource_id: int) -> sqlite3.Row:
+def _resource_row(db: sqlite3.Connection, resource_id: int, *, include_deleted: bool = False) -> sqlite3.Row:
     row = db.execute("SELECT * FROM resources WHERE id = ?", (resource_id,)).fetchone()
-    if row is None:
-        raise HTTPException(404, "资源不存在")
+    if row is None or (not include_deleted and "deleted_at" in row.keys() and row["deleted_at"]):
+        raise HTTPException(404, "资源不存在或已删除")
     return row
 
 
 def _resource_row_by_detail_token(
-    db: sqlite3.Connection, detail_token: str
+    db: sqlite3.Connection, detail_token: str, *, include_deleted: bool = False
 ) -> sqlite3.Row:
     if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", detail_token):
         raise HTTPException(404, "资源不存在")
@@ -151,12 +151,12 @@ def _resource_row_by_detail_token(
         "SELECT * FROM resources WHERE detail_token = ?",
         (detail_token,),
     ).fetchone()
-    if row is None:
-        raise HTTPException(404, "资源不存在")
+    if row is None or (not include_deleted and "deleted_at" in row.keys() and row["deleted_at"]):
+        raise HTTPException(404, "资源不存在或已删除")
     return row
 
 
-def _version_row(db: sqlite3.Connection, resource_id: int, version_id: int | None = None) -> sqlite3.Row:
+def _version_row(db: sqlite3.Connection, resource_id: int, version_id: int | None = None, *, include_deleted: bool = False) -> sqlite3.Row:
     if version_id:
         row = db.execute(
             "SELECT * FROM resource_versions WHERE id = ? AND resource_id = ?",
@@ -171,8 +171,8 @@ def _version_row(db: sqlite3.Connection, resource_id: int, version_id: int | Non
             """,
             (resource_id,),
         ).fetchone()
-    if row is None:
-        raise HTTPException(404, "版本不存在")
+    if row is None or (not include_deleted and "deleted_at" in row.keys() and row["deleted_at"]):
+        raise HTTPException(404, "版本不存在或已删除")
     return row
 
 
@@ -181,6 +181,7 @@ def _serialize_version(resource_id: int, version: sqlite3.Row, db: sqlite3.Conne
     return {
         "id": version["id"],
         "version_no": version["version_no"],
+        "archived": bool(version["deleted_at"]) if "deleted_at" in version.keys() else False,
         "font_names": font_names,
         "font_aliases": _font_alias_map(font_names, db),
         "missing_fonts": _json_loads(version["missing_fonts"], []),
@@ -225,16 +226,21 @@ def _is_resource_pinned(db: sqlite3.Connection, resource_id: int, user_id: int) 
     ).fetchone() is not None
 
 
-def _serialize_resource(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row) -> dict[str, Any]:
+def _serialize_resource(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.Row, *, include_deleted: bool = False) -> dict[str, Any]:
     owner = db.execute("SELECT id, name, username FROM users WHERE id = ?", (row["owner_id"],)).fetchone()
     updated_by_user = None
     if row["updated_by"]:
         updated_by_user = db.execute("SELECT id, name, username FROM users WHERE id = ?", (row["updated_by"],)).fetchone()
-    current_version = _version_row(db, int(row["id"]))
     version_rows = db.execute(
         "SELECT * FROM resource_versions WHERE resource_id = ? ORDER BY version_no DESC, id DESC",
         (row["id"],),
     ).fetchall()
+    version_rows = [v for v in version_rows if include_deleted or not ("deleted_at" in v.keys() and v["deleted_at"])]
+    current_version = next((v for v in version_rows if v["version_no"] == row["current_version"]), None)
+    if current_version is None and include_deleted and version_rows:
+        current_version = version_rows[0]
+    if current_version is None:
+        raise HTTPException(404, "版本不存在或已删除")
     versions = [_serialize_version(int(row["id"]), item, db) for item in version_rows]
     current = next((item for item in versions if int(item["id"]) == int(current_version["id"])), None)
     if current is None:
@@ -243,7 +249,7 @@ def _serialize_resource(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.
     # Keep the legacy database column private. Secrecy is no longer resource
     # metadata exposed by the platform.
     payload.pop("secrecy_level", None)
-    can_manage = can_manage_resource(db, row, user)
+    can_manage = can_manage_resource(db, row, user) and not ("deleted_at" in row.keys() and row["deleted_at"])
     payload.update(
         {
             # The normalized relation is authoritative; ``resources.tags``
@@ -268,6 +274,7 @@ def _serialize_resource(db: sqlite3.Connection, row: sqlite3.Row, user: sqlite3.
             "visible_user_tags": _scope_tag_names(db, "resource_visibility_tags", int(row["id"])) if can_manage else [],
             "manage_user_tags": _scope_tag_names(db, "resource_management_tags", int(row["id"])) if can_manage else [],
             "current": current,
+            "version_count": db.execute("SELECT COUNT(*) FROM resource_versions WHERE resource_id = ? AND deleted_at IS NULL", (row["id"],)).fetchone()[0],
             "versions": versions,
             "has_personal_remark": _has_personal_remark(
                 db, int(row["id"]), int(user["id"])
@@ -311,6 +318,7 @@ def _serialize_resource_lite(db: sqlite3.Connection, row: sqlite3.Row, user: sql
             "owner": _row_to_dict(owner) if owner else None,
             "can_manage": can_manage_resource(db, row, user),
             "current": current,
+            "version_count": db.execute("SELECT COUNT(*) FROM resource_versions WHERE resource_id = ? AND deleted_at IS NULL", (row["id"],)).fetchone()[0],
             "has_personal_remark": _has_personal_remark(db, int(row["id"]), int(user["id"])),
             "is_pinned": _is_resource_pinned(db, int(row["id"]), int(user["id"])),
         }
@@ -359,33 +367,17 @@ def _insert_version(
         ),
     )
     version_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+    db.execute("UPDATE resources SET next_version_no = MAX(next_version_no, ?) WHERE id = ?", (version_no + 1, resource_id))
     return _version_row(db, resource_id, version_id)
 
 
-def _delete_latest_resource_version(
-    db: sqlite3.Connection, resource_id: int
-) -> tuple[list[Path | None], list[int]]:
-    """删除资源最新版本并回退 current_version，返回待清理的 (物理文件路径, 版本ID)。
-
-    供“回退上一版”与“仅删除最新版本”共用；仅剩 1 个版本时拒绝。
-    """
-    versions = db.execute(
-        "SELECT id, version_no, ppt_path, png_path FROM resource_versions "
-        "WHERE resource_id = ? ORDER BY version_no DESC",
-        (resource_id,),
-    ).fetchall()
-    if len(versions) <= 1:
-        raise HTTPException(400, "仅剩 1 个版本，无法继续回退；如需清空请使用删除资源")
-    latest = versions[0]
-    prev_version_no = int(versions[1]["version_no"])
-    latest_version_id = int(latest["id"])
-    db.execute("DELETE FROM resource_versions WHERE id = ?", (latest_version_id,))
-    db.execute(
-        "UPDATE resources SET current_version = ?, updated_at = ? WHERE id = ?",
-        (prev_version_no, now_iso(), resource_id),
-    )
-    db.commit()
-    return (
-        [latest["ppt_path"], latest["png_path"]],
-        [latest_version_id],
-    )
+def _allocate_version_number(db: sqlite3.Connection, resource_id: int) -> int:
+    """Allocate under the writer lock; rollbacks/deletions never reuse a number."""
+    if not db.in_transaction:
+        db.execute("BEGIN IMMEDIATE")
+    row = _resource_row(db, resource_id)
+    maximum = db.execute("SELECT MAX(version_no) FROM resource_versions WHERE resource_id = ?", (resource_id,)).fetchone()[0] or 0
+    pinned = db.execute("SELECT MAX(version_no) FROM show_resources WHERE resource_id = ?", (resource_id,)).fetchone()[0] or 0
+    number = max(int(row["next_version_no"]), int(row["current_version"]) + 1, maximum + 1, pinned + 1)
+    db.execute("UPDATE resources SET next_version_no = ? WHERE id = ?", (number + 1, resource_id))
+    return number

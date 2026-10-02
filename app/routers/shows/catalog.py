@@ -35,6 +35,8 @@ from app.services.resource_queries import (
 from app.services.resources import (
     _resource_row,
 )
+from app.schemas.resources import MissingResourceCleanupPayload
+from app.services.resource_deletion import cleanup_missing_resources, maintain_archives
 from app.services.shows import (
     _serialize_show,
     _serialize_show_lite,
@@ -240,6 +242,8 @@ def create_show(
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
+    if not db.in_transaction:
+        db.execute("BEGIN IMMEDIATE")
     visibility_scope = _validate_scope(payload.visibility_scope)
     management_scope = _validate_scope(payload.management_scope)
     status = _validate_resource_status(payload.status)
@@ -340,6 +344,7 @@ def update_show(
     _set_show_scope_users(db, "show_management", show_id, payload.manage_user_ids)
     _set_show_scope_tags(db, show_id, manage_user_tags, "show_management_tags")
     db.commit()
+    maintain_archives(db)
     return {"show": _serialize_show(db, _show_row(db, show_id), user)}
 
 
@@ -357,6 +362,7 @@ def update_show_standard(
         (1 if payload.standard else 0, now_iso(), row["series_id"]),
     )
     db.commit()
+    maintain_archives(db)
     return {"ok": True, "standard": bool(payload.standard), "series_id": row["series_id"]}
 
 
@@ -395,6 +401,7 @@ def delete_show(
     for target in target_rows:
         db.execute("DELETE FROM shows WHERE id = ?", (int(target["id"]),))
     db.commit()
+    maintain_archives(db)
     return {"ok": True, "scope": scope, "deleted": len(target_rows)}
 
 
@@ -420,6 +427,7 @@ def update_show_resource_hidden(
         (1 if payload.hidden else 0, show_id, resource_id),
     )
     db.commit()
+    maintain_archives(db)
     return {"ok": True}
 
 
@@ -430,6 +438,8 @@ def update_show_resources(
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
+    if not db.in_transaction:
+        db.execute("BEGIN IMMEDIATE")
     row = _show_row(db, show_id)
     if not can_manage_show(db, row, user):
         raise HTTPException(403, "无管理权限")
@@ -457,6 +467,7 @@ def update_show_resources(
         )
     db.execute("UPDATE shows SET updated_by = ?, updated_at = ? WHERE id = ?", (user["id"], now_iso(), show_id))
     db.commit()
+    maintain_archives(db)
     return {"show": _serialize_show(db, _show_row(db, show_id), user)}
 
 
@@ -467,6 +478,8 @@ def append_show_resource(
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
+    if not db.in_transaction:
+        db.execute("BEGIN IMMEDIATE")
     row = _show_row(db, show_id)
     if not can_manage_show(db, row, user):
         raise HTTPException(403, "无管理权限")
@@ -492,6 +505,7 @@ def append_show_resource(
             (user["id"], now_iso(), show_id),
         )
     db.commit()
+    maintain_archives(db)
     return {"show": _serialize_show(db, _show_row(db, show_id), user), "added": added}
 
 
@@ -502,6 +516,8 @@ def duplicate_show(
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
+    if not db.in_transaction:
+        db.execute("BEGIN IMMEDIATE")
     row = _show_row(db, show_id)
     if not can_view_show(db, row, user):
         raise HTTPException(403, "无可见权限")
@@ -547,4 +563,15 @@ def duplicate_show(
             (new_show_id, sr["resource_id"], sr["version_no"], sr["sort_order"], sr["is_hidden"]),
         )
     db.commit()
+    maintain_archives(db)
     return {"show": _serialize_show(db, _show_row(db, new_show_id), user)}
+
+
+@router.post("/api/shows/{show_id}/cleanup-missing-resources")
+def cleanup_show_missing_resources(
+    show_id: int,
+    payload: MissingResourceCleanupPayload,
+    user: sqlite3.Row = Depends(require_user),
+    db: sqlite3.Connection = Depends(db_dep),
+) -> dict[str, Any]:
+    return cleanup_missing_resources(db, show_id, user, preview=payload.preview, token=payload.confirmation_token)

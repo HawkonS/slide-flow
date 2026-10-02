@@ -232,7 +232,7 @@ def materialization_scope():
         cleanup_materialized(list(owned))
 
 
-def _delete_resource_files(paths: list[Path | str | None], version_ids: list[int]) -> None:
+def _delete_resource_files(paths: list[Path | str | None], version_ids: list[int], *, strict: bool = False) -> None:
     parents: set[Path] = set()
     for path in paths:
         if path is None:
@@ -242,6 +242,8 @@ def _delete_resource_files(paths: list[Path | str | None], version_ids: list[int
                 oss_storage.delete(path)
             except Exception:
                 logger.exception("删除 OSS 资源失败，等待对象存储生命周期策略清理: %s", path)
+                if strict:
+                    raise
             continue
         if isinstance(path, str):
             local_path = settings.abs_path(path)
@@ -253,6 +255,8 @@ def _delete_resource_files(paths: list[Path | str | None], version_ids: list[int
                 oss_storage.delete(object_ref)
             except Exception:
                 logger.exception("删除 OSS 资源失败，等待对象存储生命周期策略清理: %s", object_ref)
+                if strict:
+                    raise
         if isinstance(path, Path):
             parents.add(path.parent)
         if isinstance(path, Path):

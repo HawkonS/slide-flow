@@ -55,7 +55,7 @@ def iterate_show(
     if payload.resource_ids is None or set(payload.resource_ids) == existing_ids:
         raise HTTPException(400, "页面内容未变化；调整顺序请使用保存播放顺序")
     for resource_id in set(payload.resource_ids) - existing_ids:
-        resource = db.execute("SELECT * FROM resources WHERE id = ?", (resource_id,)).fetchone()
+        resource = db.execute("SELECT * FROM resources WHERE id = ? AND deleted_at IS NULL", (resource_id,)).fetchone()
         if resource is None or not can_view_resource(db, resource, user):
             raise HTTPException(403, "部分新增素材不可访问，请重新选择")
     series_id = row["series_id"]
@@ -176,7 +176,7 @@ def check_show_updates(
         JOIN resources r ON r.id = sr.resource_id
         LEFT JOIN resource_versions latest ON latest.resource_id = r.id AND latest.version_no = r.current_version
         LEFT JOIN resource_versions current ON current.resource_id = r.id AND current.version_no = sr.version_no
-        WHERE sr.show_id = ? AND r.current_version > sr.version_no
+        WHERE sr.show_id = ? AND r.deleted_at IS NULL AND latest.deleted_at IS NULL AND r.current_version > sr.version_no
         ORDER BY sr.sort_order
         """,
         (show_id,),
@@ -232,8 +232,12 @@ def upgrade_show_resources(
     selected = [sr for sr in sr_rows if not target_ids or int(sr["resource_id"]) in target_ids]
     if target_ids and any(not can_view_resource(db, sr, user) for sr in selected):
         raise HTTPException(403, "部分升级素材不可访问，请重新选择")
+    if target_ids and any(sr["deleted_at"] for sr in selected):
+        raise HTTPException(400, "素材已从库中移除，只能保留原页面")
     upgraded = []
     for sr in selected:
+        if sr["deleted_at"]:
+            continue
         if not can_view_resource(db, sr, user):
             continue
         rid = int(sr["resource_id"])
@@ -284,6 +288,8 @@ def iterate_upgrade_show(
         raise HTTPException(400, "放映备注对应的资源无效") from None
     if not remark_resource_ids.issubset(requested_resource_ids):
         raise HTTPException(400, "请仅修改本次升级素材的放映备注")
+    if any(r["deleted_at"] for r in resource_rows if int(r["resource_id"]) in requested_resource_ids):
+        raise HTTPException(400, "素材已从库中移除，只能保留原页面")
     for resource in resource_rows:
         if int(resource["resource_id"]) in requested_resource_ids and not can_view_resource(db, resource, user):
             raise HTTPException(403, "部分升级素材不可访问，请重新选择")

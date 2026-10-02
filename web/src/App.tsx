@@ -1,13 +1,21 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
-import { AuthProvider } from "@/lib/auth";
+import { subscribeResourceDeletions } from "@/lib/resource-deletion";
+import { AuthProvider, useAuth } from "@/lib/auth";
 import { AppRouter } from "@/router";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/toaster";
 import { useResourceFilters } from "@/stores/resource-filters";
 import { useManageResourceFilters } from "@/stores/manage-resource-filters";
 import { useSiteConfig } from "@/stores/site-config";
+
+function ResourceDeletionSync() {
+  const client = useQueryClient();
+  const { identity } = useAuth();
+  useEffect(() => subscribeResourceDeletions(client, identity), [client, identity]);
+  return null;
+}
 
 export function App() {
   const [client] = useState(
@@ -72,6 +80,7 @@ export function App() {
   return (
     <QueryClientProvider client={client}>
       <AuthProvider>
+        <ResourceDeletionSync />
         <TooltipProvider delayDuration={200}>
           <AppRouter />
           <Toaster />

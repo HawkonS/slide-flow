@@ -161,7 +161,7 @@ test('malformed cross-window cache signals cannot forward invalid revocation fie
   const stop = s.installOfflineSessionSync(); t.after(stop);
   const changes = []; target.addEventListener('slideflow-pwa-change', event => changes.push(event.detail));
   for (const payload of [
-    { showId: '17', ownerKey: 'x'.repeat(257), reason: 'changed' },
+    { showId: '17', ownerKey: 'x'.repeat(257), reason: 'invalid' },
     { showId: -1, ownerKey: {}, reason: ['revoked'] },
     { showId: Number.MAX_SAFE_INTEGER + 1, ownerKey: '', reason: null },
   ]) {

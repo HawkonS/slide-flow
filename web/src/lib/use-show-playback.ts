@@ -5,6 +5,7 @@ import { cachedPlaybackShow, loadOfflineShowData, type OfflineSlideData } from '
 import { getCachedShow, invalidateCachedShow, type CachedShow, type OfflineManifestV3 } from './pwa-cache';
 import { PlaybackAssets, isPlaybackAccessError, isPlaybackTransportError, playbackSnapshot } from './playback-assets';
 import type { Show, ShowResource } from './types';
+import { RESOURCE_DELETION_EVENT, type DeletionResult } from './resource-deletion';
 
 interface PlaybackOptions {
   enabled?: boolean;
@@ -100,6 +101,10 @@ export function useShowPlayback(showId: number, currentIndex: number, options: P
     };
     failureRef.current = fail;
     const assertSnapshot = (show: Show) => {
+      if (!show.resources.length) throw new Error('放映没有可播放页面，请返回详情页处理');
+      if (show.resources.some(resource => !resource.accessible && (resource.unavailable_reason === 'missing_resource' || resource.unavailable_reason === 'missing_version'))) {
+        throw new Error('放映包含已删除的素材或版本，请返回详情页清理失效页');
+      }
       if (options.expectedSnapshot && playbackSnapshot(show) !== options.expectedSnapshot) throw new Error('放映版本与主控不一致，请从主控重新打开用户视图');
     };
     const authorizeCache = async (data: OfflineSlideData) => {
@@ -176,6 +181,7 @@ export function useShowPlayback(showId: number, currentIndex: number, options: P
         if (results[0].status === 'fulfilled') {
           const knownShow = results[0].value.show;
           if (!knownShow || !Array.isArray(knownShow.resources)) throw new Error('播放数据不完整');
+          assertSnapshot(knownShow);
           if (knownShow.resources.some(resource => !resource.accessible)) {
             await revokeCache();
             throw new Error('此放映中有素材已无权访问，不能使用旧缓存播放');
@@ -216,8 +222,9 @@ export function useShowPlayback(showId: number, currentIndex: number, options: P
     };
     const onPwaChange = (event: Event) => {
       if (!isCurrent() || terminalError) return;
-      const detail = (event as CustomEvent<{ showId?: number; ownerKey?: string; reason?: 'revoked' | 'deleted' }>).detail;
+      const detail = (event as CustomEvent<{ showId?: number; ownerKey?: string; reason?: 'revoked' | 'deleted' | 'changed' }>).detail;
       if (detail?.showId === showId && detail.ownerKey === ownerKey) {
+        if (detail.reason === 'changed') { fail(new Error('放映页面已变更，请重新打开或更新缓存')); return; }
         if (detail.reason === 'revoked') {
           fail(new Error(current?.source === 'online'
             ? '此放映的访问授权已撤销，请重新打开'
@@ -231,6 +238,12 @@ export function useShowPlayback(showId: number, currentIndex: number, options: P
       }
       checkAuthorization();
     };
+    const onResourceDeletion = (event: Event) => {
+      const result = (event as CustomEvent<DeletionResult>).detail;
+      if (result?.deleted_show_ids.includes(showId)) fail(new Error('此放映已因页面清空而删除，请返回放映列表'));
+      else if (result?.reference_action === 'remove' && result.affected_show_ids.includes(showId)) fail(new Error('放映页面已变更，请重新打开'));
+    };
+    window.addEventListener(RESOURCE_DELETION_EVENT, onResourceDeletion);
     const checkTimer = setInterval(checkAuthorization, 10_000);
     window.addEventListener('storage', checkAuthorization);
     window.addEventListener('slideflow-pwa-change', onPwaChange);
@@ -238,6 +251,7 @@ export function useShowPlayback(showId: number, currentIndex: number, options: P
     return () => {
       cancelled = true; controller.abort(); unsubscribe?.();
       clearInterval(checkTimer); clearTimeout(expiryTimer);
+      window.removeEventListener(RESOURCE_DELETION_EVENT, onResourceDeletion);
       window.removeEventListener('storage', checkAuthorization);
       window.removeEventListener('slideflow-pwa-change', onPwaChange);
       document.removeEventListener('visibilitychange', checkAuthorization);

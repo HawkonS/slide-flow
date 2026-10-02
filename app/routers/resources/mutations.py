@@ -20,6 +20,7 @@ from app.routers.dependencies import (
 )
 from app.schemas.resources import (
     MetadataPayload,
+    ResourceDeleteOptions, ResourceDeletePreviewPayload, ResourceBatchDeletePayload,
 )
 from app.services.common import (
     DEFAULT_RESOURCE_SUBJECT,
@@ -51,7 +52,7 @@ from app.services.resource_import.validation import (
     _validate_import_ppt_package,
 )
 from app.services.resources import (
-    _delete_latest_resource_version,
+    _allocate_version_number,
     _insert_version,
     _normalise_scope_tags,
     _normalise_scope_user_ids,
@@ -65,6 +66,7 @@ from app.services.resources import (
     _version_row,
 )
 from app.services.tagging import set_entity_tags
+from app.services.resource_deletion import delete_resources, preview_resource_deletion
 from fastapi import APIRouter
 from fastapi import Body
 from fastapi import Depends
@@ -197,25 +199,27 @@ async def create_resource(
 @router.get("/api/resources/{resource_id}")
 def get_resource(
     resource_id: int,
+    include_archived: bool = Query(False),
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
-    row = _resource_row(db, resource_id)
+    row = _resource_row(db, resource_id, include_deleted=include_archived)
     if not can_view_resource(db, row, user):
         raise HTTPException(403, "无可见权限")
-    return {"resource": _serialize_resource(db, row, user)}
+    return {"resource": _serialize_resource(db, row, user, include_deleted=include_archived)}
 
 
 @router.get("/api/resources/by-key/{detail_token}")
 def get_resource_by_detail_token(
     detail_token: str,
+    include_archived: bool = Query(False),
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
-    row = _resource_row_by_detail_token(db, detail_token)
+    row = _resource_row_by_detail_token(db, detail_token, include_deleted=include_archived)
     if not can_view_resource(db, row, user):
         raise HTTPException(403, "无可见权限")
-    return {"resource": _serialize_resource(db, row, user)}
+    return {"resource": _serialize_resource(db, row, user, include_deleted=include_archived)}
 
 
 @router.put("/api/resources/{resource_id}/metadata")
@@ -225,6 +229,8 @@ def update_resource_metadata(
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
+    if not db.in_transaction:
+        db.execute('BEGIN IMMEDIATE')
     row = _resource_row(db, resource_id)
     if not can_manage_resource(db, row, user):
         raise HTTPException(403, "无管理权限")
@@ -339,6 +345,14 @@ async def create_resource_version(
                     png_path = _compress_hd_image(png_path)
                     png_ref = persist_asset(png_path, "resources/png")
                     uploaded_refs.append(png_ref)
+                if not db.in_transaction:
+                    db.execute('BEGIN IMMEDIATE')
+                fresh = _resource_row(db, resource_id)
+                if not can_manage_resource(db, fresh, user):
+                    raise HTTPException(403, '无管理权限')
+                fresh_version = _version_row(db, resource_id)
+                if dict(fresh_version) != dict(latest):
+                    raise HTTPException(409, '素材版本已发生变化，请刷新后重新上传')
                 db.execute(
                     """
                     UPDATE resource_versions
@@ -361,7 +375,7 @@ async def create_resource_version(
         _delete_resource_files(old_paths, [int(latest["id"])] if has_png else [])
         return {"resource": _serialize_resource(db, _resource_row(db, resource_id), user)}
 
-    version_no = int(row["current_version"]) + 1
+    version_no = _allocate_version_number(db, resource_id)
     if not has_ppt:
         raise HTTPException(400, "迭代模式请上传新版 PPTX")
     assert ppt_file is not None
@@ -432,16 +446,15 @@ async def create_resource_version(
 @router.post("/api/resources/{resource_id}/versions/rollback")
 def rollback_resource_version(
     resource_id: int,
+    payload: ResourceDeleteOptions | None = Body(None),
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
-    """删除当前最新版本，回退到上一版本；仅剩 1 个版本时拒绝。"""
-    row = _resource_row(db, resource_id)
-    if not can_manage_resource(db, row, user):
-        raise HTTPException(403, "无管理权限")
-    paths, version_ids = _delete_latest_resource_version(db, resource_id)
-    _delete_resource_files(paths, version_ids)
-    return {"resource": _serialize_resource(db, _resource_row(db, resource_id), user)}
+    """回退当前版本；被放映引用时必须先确认引用处理策略。"""
+    options = payload or ResourceDeleteOptions()
+    result = delete_resources(db, [resource_id], "latest", user, options.reference_action, options.confirmation_token, rollback=True)
+    result["resource"] = _serialize_resource(db, _resource_row(db, resource_id), user)
+    return result
 
 
 @router.put("/api/resources/batch")
@@ -451,6 +464,8 @@ def batch_update_resources(
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict:
     """批量编辑资源元数据。"""
+    if not db.in_transaction:
+        db.execute("BEGIN IMMEDIATE")
     resource_ids_raw = body.get("resource_ids", [])
     fields_raw = body.get("fields", {})
     if not isinstance(resource_ids_raw, list) or any(type(value) is not int for value in resource_ids_raw):
@@ -642,85 +657,33 @@ def batch_update_resources(
     return {"updated": updated}
 
 
+@router.post("/api/resources/delete-preview")
+def resource_delete_preview(
+    payload: ResourceDeletePreviewPayload,
+    user: sqlite3.Row = Depends(require_user),
+    db: sqlite3.Connection = Depends(db_read_dep),
+) -> dict[str, Any]:
+    return preview_resource_deletion(db, payload.resource_ids, payload.scope, user)
+
+
 @router.delete("/api/resources/batch")
 def batch_delete_resources(
-    body: dict = Body(...),
+    body: ResourceBatchDeletePayload,
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
-) -> dict:
-    """批量删除资源及其全部版本（含物理文件与缩略图）。"""
-    resource_ids = body.get("resource_ids", [])
-    if not resource_ids:
-        raise HTTPException(400, "resource_ids 不能为空")
-
-    deleted = 0
-    all_paths: list[Path | str | None] = []
-    all_version_ids: list[int] = []
-
-    for rid in resource_ids:
-        row = _resource_row(db, rid)
-        if not can_manage_resource(db, row, user):
-            raise HTTPException(403, f"资源 {rid} 无管理权限")
-
-        versions = db.execute(
-            "SELECT id, ppt_path, png_path FROM resource_versions WHERE resource_id = ?",
-            (rid,),
-        ).fetchall()
-        for v in versions:
-            all_paths.append(v["ppt_path"])
-            all_paths.append(v["png_path"])
-            all_version_ids.append(int(v["id"]))
-
-        # ON DELETE CASCADE 会自动清理 resource_versions / resource_visibility /
-        # resource_management / personal_remarks 四张关联表
-        db.execute("DELETE FROM resources WHERE id = ?", (rid,))
-        deleted += 1
-
-    db.commit()
-    _delete_resource_files(all_paths, all_version_ids)
-    return {"deleted": deleted}
+) -> dict[str, Any]:
+    """批量确认引用处理后原子删除素材。"""
+    return delete_resources(db, body.resource_ids, body.scope, user, body.reference_action, body.confirmation_token)
 
 
 @router.delete("/api/resources/{resource_id}")
 def delete_resource(
     resource_id: int,
     scope: str = Query("all"),
+    payload: ResourceDeleteOptions | None = Body(None),
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
-    """删除资源。
-
-    scope=all：删除资源及其全部版本（默认，原有行为）；
-    scope=latest：仅删除最新版本并回退到上一版本（仅剩 1 个版本时等同于全部删除）。
-    """
-    row = _resource_row(db, resource_id)
-    if not can_manage_resource(db, row, user):
-        raise HTTPException(403, "无管理权限")
-    if scope not in {"all", "latest"}:
-        raise HTTPException(400, "删除范围不正确")
-    if scope == "latest":
-        version_count = db.execute(
-            "SELECT COUNT(*) FROM resource_versions WHERE resource_id = ?",
-            (resource_id,),
-        ).fetchone()[0]
-        if version_count > 1:
-            paths, version_ids = _delete_latest_resource_version(db, resource_id)
-            _delete_resource_files(paths, version_ids)
-            return {"ok": True, "scope": "latest", "deleted_versions": 1}
-        # 仅剩 1 个版本：删除最新版本即删除整个资源，落入全量删除
-    versions = db.execute(
-        "SELECT id, ppt_path, png_path FROM resource_versions WHERE resource_id = ?",
-        (resource_id,),
-    ).fetchall()
-    paths: list[Path | str | None] = []
-    version_ids: list[int] = []
-    for v in versions:
-        paths.append(v["ppt_path"])
-        paths.append(v["png_path"])
-        version_ids.append(int(v["id"]))
-    # ON DELETE CASCADE 会自动清理 resource_versions / resource_visibility /
-    # resource_management / personal_remarks 四张关联表
-    db.execute("DELETE FROM resources WHERE id = ?", (resource_id,))
-    db.commit()
-    _delete_resource_files(paths, version_ids)
-    return {"ok": True, "scope": "all", "deleted": 1, "deleted_versions": len(version_ids)}
+    """删除全部或最新版本；被引用时须确认保留页面或同步移除。"""
+    options = payload or ResourceDeleteOptions()
+    return delete_resources(db, [resource_id], scope, user, options.reference_action, options.confirmation_token)

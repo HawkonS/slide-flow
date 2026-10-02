@@ -198,7 +198,7 @@ class DatabaseUpgradeTests(unittest.TestCase):
         for table in LEGACY_SCOPE_TABLES:
             self.assertNotIn('tag_id', self.columns(table))
         database.init_db()
-        self.assertEqual(self.db.execute('PRAGMA user_version').fetchone()[0], 26)
+        self.assertEqual(self.db.execute('PRAGMA user_version').fetchone()[0], database.DB_SCHEMA_VERSION)
         resources = self.members('resource_tags', 'resource_id', 20)
         shows = self.members('show_tags', 'show_id', 10)
         self.assertEqual([(name, position) for _, name, position in resources],
@@ -237,12 +237,19 @@ class DatabaseUpgradeTests(unittest.TestCase):
                      'show_remarks', 'resource_visibility', 'resource_management',
                      'template_visibility', 'template_management', 'show_visibility', 'show_management')
         before = self.snapshot(preserved)
+        legacy_columns = {table: [row['name'] for row in self.db.execute(f'PRAGMA table_info({table})')] for table in preserved}
         entities = {(table, entity_id): dict(self.row(table, entity_id))
                     for table, ids in (('resources', (20, 21)), ('shows', (10, 11))) for entity_id in ids}
         database.init_db()
-        self.assertEqual(self.snapshot(preserved), before)
+        migrated = {table: [tuple(row) for row in self.db.execute(
+            f"SELECT {', '.join(legacy_columns[table])} FROM {table} ORDER BY rowid")] for table in preserved}
+        self.assertEqual(migrated, before)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM resource_versions WHERE deleted_at IS NOT NULL').fetchone()[0], 0)
         for (table, entity_id), original in entities.items():
             current = dict(self.row(table, entity_id))
+            if table == 'resources':
+                self.assertIsNone(current.pop('deleted_at'))
+                self.assertGreater(current.pop('next_version_no'), original['current_version'])
             self.assertEqual(current.pop('secrecy_level'), '')
             original.pop('secrecy_level')
             current.pop('tags')
@@ -253,6 +260,21 @@ class DatabaseUpgradeTests(unittest.TestCase):
         self.assertEqual(self.rows('show_resources'), [(10, 20, 1, 0, 0), (10, 21, 1, 1, 1), (11, 20, 2, 0, 0)])
         self.assertEqual(self.row('subject_tag_definitions', 1)['name'], '旧主体')
         self.assertEqual(self.row('status_tag_definitions', 1)['name'], '已发布')
+        self.assert_healthy()
+
+    def test_archive_upgrade_reserves_dangling_versions_and_keeps_historical_empty_shows(self):
+        self.db.execute('UPDATE show_resources SET version_no = 70 WHERE show_id = 10 AND resource_id = 20')
+        self.db.execute('DELETE FROM show_resources WHERE show_id = 11')
+        self.db.commit()
+        database.init_db()
+        self.assertEqual(self.row('resources', 20)['next_version_no'], 71)
+        self.assertIsNotNone(self.row('shows', 11))
+        self.assertIsNone(self.row('resources', 20)['deleted_at'])
+        self.db.execute('UPDATE resources SET next_version_no = 89 WHERE id = 20')
+        self.db.commit()
+        database.init_db()
+        self.assertEqual(self.row('resources', 20)['next_version_no'], 89)
+        self.assertIsNotNone(self.row('shows', 11))
         self.assert_healthy()
 
     def test_repeated_startup_preserves_normalized_relations_over_stale_csv(self):
@@ -303,7 +325,7 @@ class DatabaseUpgradeTests(unittest.TestCase):
         self.assertEqual(self.members('resource_tags', 'resource_id', 20), [(12, '备用内容', 7)])
         self.assertEqual(self.members('show_tags', 'show_id', 10), [(11, '放映-开场', 3)])
         self.assertEqual(self.db.execute('SELECT tag_id FROM resource_visibility_tags').fetchone()[0], 40)
-        self.assertEqual(self.db.execute('PRAGMA user_version').fetchone()[0], 26)
+        self.assertEqual(self.db.execute('PRAGMA user_version').fetchone()[0], database.DB_SCHEMA_VERSION)
         self.assertEqual(self.db.execute('SELECT count(*) FROM tags').fetchone()[0], 4)
         self.assert_healthy()
 
@@ -330,7 +352,7 @@ class DatabaseUpgradeTests(unittest.TestCase):
         self.assertEqual(self.rows('show_tags'), [])
         self.assert_healthy()
         database.init_db()
-        self.assertEqual(self.db.execute('PRAGMA user_version').fetchone()[0], 26)
+        self.assertEqual(self.db.execute('PRAGMA user_version').fetchone()[0], database.DB_SCHEMA_VERSION)
         self.assertEqual(len(self.members('resource_tags', 'resource_id', 20)), 3)
         self.assertEqual(self.db.execute('SELECT count(*) FROM tags').fetchone()[0], 7)
         self.assertEqual(self.rows('show_resources'), before['show_resources'])

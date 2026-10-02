@@ -91,6 +91,7 @@ function progressPercent(progress: CacheProgress): number {
   return progress.total > 0 ? Math.min(100, Math.round(progress.completed / progress.total * 100)) : 0;
 }
 function unavailableReason(entry: CachedShow, now: number): string | null {
+  if (entry.needs_update) return "放映页面已变更，请联网更新缓存";
   if (entry.revoked) return "离线授权已撤销，请联网重新下载";
   const expires = Date.parse(entry.expires_at);
   return !Number.isFinite(expires) || expires <= now ? "离线授权已到期，请联网重新下载" : null;
@@ -567,7 +568,7 @@ export default function OfflineCachePage() {
   const allChecking = React.useRef(false);
   const checks = React.useRef(new Map<string, AbortController>());
   const downloads = React.useRef(new Map<string, AbortController>());
-  const invalidPackages = React.useRef(new Map<string, "revoked" | "deleted">());
+  const invalidPackages = React.useRef(new Map<string, "revoked" | "deleted" | "changed">());
   const cachedShows = useMemo(() => cacheState.owner === ownerKey ? cacheState.entries : [], [cacheState, ownerKey]);
   const entriesRef = React.useRef(cachedShows);
   entriesRef.current = cachedShows;
@@ -597,7 +598,7 @@ export default function OfflineCachePage() {
       if (!isCurrent(identity) || request !== listRequest.current) return;
       setCacheState({ owner: offlineOwnerKey(identity), entries: entries
         .filter(entry => invalidPackages.current.get(entry.package_id) !== "deleted")
-        .map(entry => ({ ...entry, revoked: entry.revoked || invalidPackages.current.get(entry.package_id) === "revoked" })) });
+        .map(entry => ({ ...entry, revoked: entry.revoked || invalidPackages.current.get(entry.package_id) === "revoked", needs_update: entry.needs_update || invalidPackages.current.get(entry.package_id) === "changed" })) });
       setStorage(estimate ?? null); setListError(null); setNow(Date.now());
     } catch (error) {
       if (isCurrent(identity) && request === listRequest.current) setListError(errorText(error));
@@ -627,7 +628,7 @@ export default function OfflineCachePage() {
         for (const entry of entriesRef.current) if (entry.show_id === detail.showId) invalidPackages.current.set(entry.package_id, detail.reason);
         setCacheState(previous => ({ ...previous, entries: previous.entries
           .filter(entry => invalidPackages.current.get(entry.package_id) !== "deleted")
-          .map(entry => ({ ...entry, revoked: entry.revoked || invalidPackages.current.get(entry.package_id) === "revoked" })) }));
+          .map(entry => ({ ...entry, revoked: entry.revoked || invalidPackages.current.get(entry.package_id) === "revoked", needs_update: entry.needs_update || invalidPackages.current.get(entry.package_id) === "changed" })) }));
       }
       setUpdateStatus(previous => previous === "checking" ? previous : "idle");
       void refreshCaches();

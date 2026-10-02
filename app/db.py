@@ -18,7 +18,7 @@ from app.config import (
 from app.core.bootstrap import prepare_initial_admin
 from app.core.fonts import normalize_font_name
 
-DB_SCHEMA_VERSION = 26
+DB_SCHEMA_VERSION = 27
 
 
 def is_sqlite_busy_error(exc: BaseException) -> bool:
@@ -762,6 +762,24 @@ def init_db() -> None:
 
 def _migrate_schema(db: sqlite3.Connection, schema_version: int) -> None:
     """Apply additive, idempotent migrations without requiring data deletion."""
+    for table in ("resources", "resource_versions"):
+        columns = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
+        if "deleted_at" not in columns:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN deleted_at TEXT")
+    columns = {row["name"] for row in db.execute("PRAGMA table_info(resources)")}
+    if "next_version_no" not in columns:
+        db.execute("ALTER TABLE resources ADD COLUMN next_version_no INTEGER NOT NULL DEFAULT 2")
+        db.execute("""UPDATE resources SET next_version_no = MAX(
+            current_version,
+            COALESCE((SELECT MAX(version_no) FROM resource_versions v WHERE v.resource_id = resources.id), 0),
+            COALESCE((SELECT MAX(version_no) FROM show_resources sr WHERE sr.resource_id = resources.id), 0)
+        ) + 1""")
+    db.execute("""CREATE TABLE IF NOT EXISTS resource_file_gc (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        paths_json TEXT NOT NULL, version_ids_json TEXT NOT NULL, created_at TEXT NOT NULL
+    )""")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_resource_versions_deleted ON resource_versions(deleted_at)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_show_resources_version ON show_resources(resource_id, version_no)")
     resource_columns = {
         row["name"]
         for row in db.execute("PRAGMA table_info(resources)").fetchall()

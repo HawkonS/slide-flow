@@ -1,7 +1,7 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "SlideFlow",
+    "title": "Timecho 资源放映平台",
     "version": "0.1.0"
   },
   "paths": {
@@ -4161,6 +4161,417 @@
         }
       }
     },
+    "/api/shows/{show_id}/share-links": {
+      "post": {
+        "summary": "Create Show Share Link",
+        "operationId": "create_show_share_link_api_shows__show_id__share_links_post",
+        "parameters": [
+          {
+            "name": "show_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Show Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShareLinkPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create Show Share Link Api Shows  Show Id  Share Links Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "List Show Share Links",
+        "operationId": "list_show_share_links_api_shows__show_id__share_links_get",
+        "parameters": [
+          {
+            "name": "show_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Show Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": true
+                    }
+                  },
+                  "title": "Response List Show Share Links Api Shows  Show Id  Share Links Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/shows/{show_id}/share-links/{link_id}": {
+      "delete": {
+        "summary": "Revoke Show Share Link",
+        "operationId": "revoke_show_share_link_api_shows__show_id__share_links__link_id__delete",
+        "parameters": [
+          {
+            "name": "show_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Show Id"
+            }
+          },
+          {
+            "name": "link_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Link Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Revoke Show Share Link Api Shows  Show Id  Share Links  Link Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/show-share-links": {
+      "get": {
+        "summary": "List Managed Show Share Links",
+        "operationId": "list_managed_show_share_links_api_show_share_links_get",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1,
+              "title": "Page"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Page Size"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 100,
+              "default": "",
+              "title": "Search"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "all",
+              "title": "Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response List Managed Show Share Links Api Show Share Links Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/show-share-links/ids": {
+      "get": {
+        "summary": "List Managed Show Share Link Ids",
+        "operationId": "list_managed_show_share_link_ids_api_show_share_links_ids_get",
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 100,
+              "default": "",
+              "title": "Search"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "all",
+              "title": "Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer"
+                    }
+                  },
+                  "title": "Response List Managed Show Share Link Ids Api Show Share Links Ids Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/show-share-links/bulk-revoke": {
+      "post": {
+        "summary": "Bulk Revoke Show Share Links",
+        "operationId": "bulk_revoke_show_share_links_api_show_share_links_bulk_revoke_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShareLinksBulkPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "type": "object",
+                  "title": "Response Bulk Revoke Show Share Links Api Show Share Links Bulk Revoke Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/show-shares/{token}": {
+      "get": {
+        "summary": "Get Shared Show",
+        "operationId": "get_shared_show_api_show_shares__token__get",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Shared Show Api Show Shares  Token  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/show-shares/{token}/preview/{resource_id}": {
+      "get": {
+        "summary": "Shared Show Preview",
+        "operationId": "shared_show_preview_api_show_shares__token__preview__resource_id__get",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Token"
+            }
+          },
+          {
+            "name": "resource_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Resource Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/resources": {
       "get": {
         "summary": "List Resources",
@@ -4769,6 +5180,16 @@
               "type": "integer",
               "title": "Resource Id"
             }
+          },
+          {
+            "name": "include_archived",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Archived"
+            }
           }
         ],
         "responses": {
@@ -4798,7 +5219,7 @@
       },
       "delete": {
         "summary": "Delete Resource",
-        "description": "删除资源。\n\nscope=all：删除资源及其全部版本（默认，原有行为）；\nscope=latest：仅删除最新版本并回退到上一版本（仅剩 1 个版本时等同于全部删除）。",
+        "description": "删除全部或最新版本；被引用时须确认保留页面或同步移除。",
         "operationId": "delete_resource_api_resources__resource_id__delete",
         "parameters": [
           {
@@ -4821,6 +5242,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ResourceDeleteOptions"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -4859,6 +5297,16 @@
             "schema": {
               "type": "string",
               "title": "Detail Token"
+            }
+          },
+          {
+            "name": "include_archived",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Archived"
             }
           }
         ],
@@ -4992,7 +5440,7 @@
     "/api/resources/{resource_id}/versions/rollback": {
       "post": {
         "summary": "Rollback Resource Version",
-        "description": "删除当前最新版本，回退到上一版本；仅剩 1 个版本时拒绝。",
+        "description": "回退当前版本；被放映引用时必须先确认引用处理策略。",
         "operationId": "rollback_resource_version_api_resources__resource_id__versions_rollback_post",
         "parameters": [
           {
@@ -5005,6 +5453,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ResourceDeleteOptions"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -5075,15 +5540,13 @@
       },
       "delete": {
         "summary": "Batch Delete Resources",
-        "description": "批量删除资源及其全部版本（含物理文件与缩略图）。",
+        "description": "批量确认引用处理后原子删除素材。",
         "operationId": "batch_delete_resources_api_resources_batch_delete",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "additionalProperties": true,
-                "type": "object",
-                "title": "Body"
+                "$ref": "#/components/schemas/ResourceBatchDeletePayload"
               }
             }
           },
@@ -5098,6 +5561,46 @@
                   "additionalProperties": true,
                   "type": "object",
                   "title": "Response Batch Delete Resources Api Resources Batch Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/resources/delete-preview": {
+      "post": {
+        "summary": "Resource Delete Preview",
+        "operationId": "resource_delete_preview_api_resources_delete_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResourceDeletePreviewPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Resource Delete Preview Api Resources Delete Preview Post"
                 }
               }
             }
@@ -6535,6 +7038,57 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Duplicate Show Api Shows  Show Id  Duplicate Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/shows/{show_id}/cleanup-missing-resources": {
+      "post": {
+        "summary": "Cleanup Show Missing Resources",
+        "operationId": "cleanup_show_missing_resources_api_shows__show_id__cleanup_missing_resources_post",
+        "parameters": [
+          {
+            "name": "show_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Show Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MissingResourceCleanupPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Cleanup Show Missing Resources Api Shows  Show Id  Cleanup Missing Resources Post"
                 }
               }
             }
@@ -8661,417 +9215,6 @@
           }
         }
       }
-    },
-    "/api/show-share-links": {
-      "get": {
-        "operationId": "list_managed_show_share_links_api_show_share_links_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "page",
-            "required": false,
-            "schema": {
-              "default": 1,
-              "minimum": 1,
-              "title": "Page",
-              "type": "integer"
-            }
-          },
-          {
-            "in": "query",
-            "name": "page_size",
-            "required": false,
-            "schema": {
-              "default": 20,
-              "maximum": 100,
-              "minimum": 1,
-              "title": "Page Size",
-              "type": "integer"
-            }
-          },
-          {
-            "in": "query",
-            "name": "search",
-            "required": false,
-            "schema": {
-              "default": "",
-              "maxLength": 100,
-              "title": "Search",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "status",
-            "required": false,
-            "schema": {
-              "default": "all",
-              "title": "Status",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response List Managed Show Share Links Api Show Share Links Get",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "List Managed Show Share Links"
-      }
-    },
-    "/api/show-share-links/bulk-revoke": {
-      "post": {
-        "operationId": "bulk_revoke_show_share_links_api_show_share_links_bulk_revoke_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ShareLinksBulkPayload"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": {
-                    "type": "integer"
-                  },
-                  "title": "Response Bulk Revoke Show Share Links Api Show Share Links Bulk Revoke Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Bulk Revoke Show Share Links"
-      }
-    },
-    "/api/show-share-links/ids": {
-      "get": {
-        "operationId": "list_managed_show_share_link_ids_api_show_share_links_ids_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "search",
-            "required": false,
-            "schema": {
-              "default": "",
-              "maxLength": 100,
-              "title": "Search",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "status",
-            "required": false,
-            "schema": {
-              "default": "all",
-              "title": "Status",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": {
-                    "items": {
-                      "type": "integer"
-                    },
-                    "type": "array"
-                  },
-                  "title": "Response List Managed Show Share Link Ids Api Show Share Links Ids Get",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "List Managed Show Share Link Ids"
-      }
-    },
-    "/api/show-shares/{token}": {
-      "get": {
-        "operationId": "get_shared_show_api_show_shares__token__get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "token",
-            "required": true,
-            "schema": {
-              "title": "Token",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Get Shared Show Api Show Shares  Token  Get",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Shared Show"
-      }
-    },
-    "/api/show-shares/{token}/preview/{resource_id}": {
-      "get": {
-        "operationId": "shared_show_preview_api_show_shares__token__preview__resource_id__get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "token",
-            "required": true,
-            "schema": {
-              "title": "Token",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "resource_id",
-            "required": true,
-            "schema": {
-              "title": "Resource Id",
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Shared Show Preview"
-      }
-    },
-    "/api/shows/{show_id}/share-links": {
-      "get": {
-        "operationId": "list_show_share_links_api_shows__show_id__share_links_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "show_id",
-            "required": true,
-            "schema": {
-              "title": "Show Id",
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": {
-                    "items": {
-                      "additionalProperties": true,
-                      "type": "object"
-                    },
-                    "type": "array"
-                  },
-                  "title": "Response List Show Share Links Api Shows  Show Id  Share Links Get",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "List Show Share Links"
-      },
-      "post": {
-        "operationId": "create_show_share_link_api_shows__show_id__share_links_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "show_id",
-            "required": true,
-            "schema": {
-              "title": "Show Id",
-              "type": "integer"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ShareLinkPayload"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Create Show Share Link Api Shows  Show Id  Share Links Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Create Show Share Link"
-      }
-    },
-    "/api/shows/{show_id}/share-links/{link_id}": {
-      "delete": {
-        "operationId": "revoke_show_share_link_api_shows__show_id__share_links__link_id__delete",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "show_id",
-            "required": true,
-            "schema": {
-              "title": "Show Id",
-              "type": "integer"
-            }
-          },
-          {
-            "in": "path",
-            "name": "link_id",
-            "required": true,
-            "schema": {
-              "title": "Link Id",
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": {
-                    "type": "boolean"
-                  },
-                  "title": "Response Revoke Show Share Link Api Shows  Show Id  Share Links  Link Id  Delete",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Revoke Show Share Link"
-      }
     }
   },
   "components": {
@@ -10058,6 +10201,30 @@
         ],
         "title": "MetadataPayload"
       },
+      "MissingResourceCleanupPayload": {
+        "properties": {
+          "preview": {
+            "type": "boolean",
+            "title": "Preview",
+            "default": true
+          },
+          "confirmation_token": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmation Token"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "MissingResourceCleanupPayload"
+      },
       "OfflineVerifyPayload": {
         "properties": {
           "username": {
@@ -10140,6 +10307,125 @@
         ],
         "title": "RenderedPage"
       },
+      "ResourceBatchDeletePayload": {
+        "properties": {
+          "reference_action": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "preserve",
+                  "remove"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Action"
+          },
+          "confirmation_token": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmation Token"
+          },
+          "resource_ids": {
+            "items": {
+              "type": "integer",
+              "exclusiveMinimum": 0.0
+            },
+            "type": "array",
+            "maxItems": 1000,
+            "minItems": 1,
+            "title": "Resource Ids"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "all",
+              "latest"
+            ],
+            "title": "Scope",
+            "default": "all"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "resource_ids"
+        ],
+        "title": "ResourceBatchDeletePayload"
+      },
+      "ResourceDeleteOptions": {
+        "properties": {
+          "reference_action": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "preserve",
+                  "remove"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Action"
+          },
+          "confirmation_token": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmation Token"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ResourceDeleteOptions"
+      },
+      "ResourceDeletePreviewPayload": {
+        "properties": {
+          "resource_ids": {
+            "items": {
+              "type": "integer",
+              "exclusiveMinimum": 0.0
+            },
+            "type": "array",
+            "maxItems": 1000,
+            "minItems": 1,
+            "title": "Resource Ids"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "all",
+              "latest"
+            ],
+            "title": "Scope",
+            "default": "all"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "resource_ids"
+        ],
+        "title": "ResourceDeletePreviewPayload"
+      },
       "ShareLinkPayload": {
         "properties": {
           "expires_in_days": {
@@ -10179,21 +10465,21 @@
         "properties": {
           "name": {
             "type": "string",
-            "title": "Name",
             "maxLength": 200,
-            "minLength": 1
+            "minLength": 1,
+            "title": "Name"
           },
           "subject": {
             "type": "string",
+            "maxLength": 500,
             "title": "Subject",
-            "default": "",
-            "maxLength": 500
+            "default": ""
           },
           "tags": {
             "type": "string",
+            "maxLength": 2000,
             "title": "Tags",
-            "default": "",
-            "maxLength": 2000
+            "default": ""
           },
           "status": {
             "type": "string",
@@ -10244,14 +10530,14 @@
               "exclusiveMinimum": 0.0
             },
             "type": "array",
-            "title": "Resource Ids",
-            "maxItems": 1000
+            "maxItems": 1000,
+            "title": "Resource Ids"
           },
           "change_note": {
             "type": "string",
+            "maxLength": 5000,
             "title": "Change Note",
-            "default": "",
-            "maxLength": 5000
+            "default": ""
           }
         },
         "additionalProperties": false,
@@ -10265,9 +10551,9 @@
         "properties": {
           "name": {
             "type": "string",
-            "title": "Name",
             "maxLength": 200,
-            "minLength": 1
+            "minLength": 1,
+            "title": "Name"
           }
         },
         "additionalProperties": false,
@@ -10281,9 +10567,9 @@
         "properties": {
           "change_note": {
             "type": "string",
+            "maxLength": 5000,
             "title": "Change Note",
-            "default": "",
-            "maxLength": 5000
+            "default": ""
           },
           "name": {
             "anyOf": [
@@ -10327,8 +10613,8 @@
               "exclusiveMinimum": 0.0
             },
             "type": "array",
-            "title": "Resource Ids",
-            "maxItems": 1000
+            "maxItems": 1000,
+            "title": "Resource Ids"
           },
           "remarks": {
             "additionalProperties": {
@@ -10336,21 +10622,21 @@
               "maxLength": 100000
             },
             "type": "object",
-            "title": "Remarks",
-            "maxProperties": 1000
+            "maxProperties": 1000,
+            "title": "Remarks"
           },
           "change_note": {
             "type": "string",
+            "maxLength": 5000,
             "title": "Change Note",
-            "default": "",
-            "maxLength": 5000
+            "default": ""
           },
           "name": {
             "anyOf": [
               {
+                "type": "string",
                 "maxLength": 200,
-                "minLength": 1,
-                "type": "string"
+                "minLength": 1
               },
               {
                 "type": "null"
@@ -10367,9 +10653,9 @@
         "properties": {
           "content_html": {
             "type": "string",
+            "maxLength": 100000,
             "title": "Content Html",
-            "default": "",
-            "maxLength": 100000
+            "default": ""
           }
         },
         "additionalProperties": false,
@@ -10380,8 +10666,8 @@
         "properties": {
           "resource_id": {
             "type": "integer",
-            "title": "Resource Id",
-            "exclusiveMinimum": 0.0
+            "exclusiveMinimum": 0.0,
+            "title": "Resource Id"
           }
         },
         "additionalProperties": false,
@@ -10413,8 +10699,8 @@
               "exclusiveMinimum": 0.0
             },
             "type": "array",
-            "title": "Resource Ids",
-            "maxItems": 1000
+            "maxItems": 1000,
+            "title": "Resource Ids"
           }
         },
         "additionalProperties": false,
@@ -10439,21 +10725,21 @@
         "properties": {
           "name": {
             "type": "string",
-            "title": "Name",
             "maxLength": 200,
-            "minLength": 1
+            "minLength": 1,
+            "title": "Name"
           },
           "subject": {
             "type": "string",
+            "maxLength": 500,
             "title": "Subject",
-            "default": "",
-            "maxLength": 500
+            "default": ""
           },
           "tags": {
             "type": "string",
+            "maxLength": 2000,
             "title": "Tags",
-            "default": "",
-            "maxLength": 2000
+            "default": ""
           },
           "status": {
             "type": "string",
@@ -10514,8 +10800,8 @@
               "exclusiveMinimum": 0.0
             },
             "type": "array",
-            "title": "Resource Ids",
-            "maxItems": 1000
+            "maxItems": 1000,
+            "title": "Resource Ids"
           }
         },
         "additionalProperties": false,

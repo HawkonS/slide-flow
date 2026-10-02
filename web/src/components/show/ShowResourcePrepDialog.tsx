@@ -47,15 +47,16 @@ function isInaccessible(r: ShowResource): r is ShowResourceInaccessible {
 /** 获取资源详情（用于通用备注与大图预览） */
 async function fetchResourceDetail(resourceId: number): Promise<Resource> {
   const res = await api<{ resource: Resource }>(
-    `/api/resources/${resourceId}`,
+    `/api/resources/${resourceId}?include_archived=true`,
   );
   return res.resource;
 }
 
 /** 获取个人备注 */
-function fetchPersonalRemark(resourceId: number) {
+function fetchPersonalRemark(resourceId: number, versionId: number) {
   return api<{ content_html: string | null }>(
     `/api/resources/${resourceId}/personal-remark`,
+    { params: { version_id: versionId } },
   );
 }
 
@@ -447,8 +448,9 @@ export function ShowResourcePrepDialog({
                   {/* 预览图：宽度填满容器，保持 16:9 */}
                   <div className="relative aspect-[16/9] w-full shrink-0 overflow-hidden rounded-md border bg-muted shadow-sm">
                     <ResourcePreviewImage
-                      key={`preview-${activeResource.id}`}
+                      key={`preview-${activeResource.id}-${activeResource.version_no}`}
                       resourceId={activeResource.id}
+                    versionNo={activeResource.version_no}
                       fallbackPreviewUrl={
                         activeResource.preview_url ||
                         activeResource.original_preview_url ||
@@ -459,20 +461,22 @@ export function ShowResourcePrepDialog({
 
                   {/* 通用备注 */}
                   <CommonRemarkEditor
-                    key={`common-${activeResource.id}`}
+                    key={`common-${activeResource.id}-${activeResource.version_no}`}
                     resourceId={activeResource.id}
+                      versionNo={activeResource.version_no}
                     queryClient={queryClient}
                   />
 
                   {/* 个人 + 放映 */}
                   <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 md:grid-cols-2">
                     <PersonalRemarkSection
-                      key={`personal-${activeResource.id}`}
+                      key={`personal-${activeResource.id}-${activeResource.version_no}`}
                       resourceId={activeResource.id}
+                      versionNo={activeResource.version_no}
                       queryClient={queryClient}
                     />
                     <ShowRemarkSection
-                      key={`show-${show.id}-${activeResource.id}`}
+                      key={`show-${show.id}-${activeResource.id}-${activeResource.version_no}`}
                       showId={show.id}
                       resourceId={activeResource.id}
                       queryClient={queryClient}
@@ -495,32 +499,38 @@ export function ShowResourcePrepDialog({
 /** 大图预览：仅负责预览图本身（导入合并后由父级容器给定尺寸） */
 function ResourcePreviewImage({
   resourceId,
+  versionNo,
   fallbackPreviewUrl,
 }: {
   resourceId: number;
+  versionNo: number;
   fallbackPreviewUrl: string | null;
 }) {
-  const { data } = useQuery({
-    queryKey: ["resource", resourceId, "detail"],
+  const { data, isError } = useQuery({
+    queryKey: ["resource", resourceId, "detail", "include-archived"],
     queryFn: () => fetchResourceDetail(resourceId),
     enabled: resourceId > 0,
     staleTime: 60_000,
     placeholderData: keepPreviousData,
   });
+  const version = data?.versions?.find(item => item.version_no === versionNo);
   const previewUrl =
-    data?.current?.preview_url ||
-    data?.current?.original_preview_url ||
+    version?.preview_url ||
+    version?.original_preview_url ||
     fallbackPreviewUrl ||
     null;
-  return previewUrl ? (
+  const [failed, setFailed] = React.useState(false);
+  React.useEffect(() => setFailed(false), [previewUrl]);
+  return previewUrl && !failed ? (
     <img
       src={previewUrl}
+      onError={() => setFailed(true)}
       alt="资源预览"
       className="absolute inset-0 h-full w-full object-contain"
     />
   ) : (
     <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
-      {data ? "无预览" : "加载中…"}
+      {isError || failed ? "预览加载失败，请重试" : data ? "无预览" : "加载中…"}
     </div>
   );
 }
@@ -528,21 +538,24 @@ function ResourcePreviewImage({
 /** 通用备注编辑区（有管理权限可编辑，否则只读） */
 function CommonRemarkEditor({
   resourceId,
+  versionNo,
   queryClient,
 }: {
   resourceId: number;
+  versionNo: number;
   queryClient: ReturnType<typeof useQueryClient>;
 }) {
   const { data } = useQuery({
-    queryKey: ["resource", resourceId, "detail"],
+    queryKey: ["resource", resourceId, "detail", "include-archived"],
     queryFn: () => fetchResourceDetail(resourceId),
     enabled: resourceId > 0,
     staleTime: 60_000,
     placeholderData: keepPreviousData,
   });
 
-  const serverHtml = data?.current?.common_remark_html || "";
-  const canManage = data?.can_manage ?? false;
+  const version = data?.versions?.find(item => item.version_no === versionNo);
+  const serverHtml = version?.common_remark_html || "";
+  const canManage = !!data?.can_manage && !!version && !version.archived;
 
   const [draft, setDraft] = React.useState(serverHtml);
   const syncedRef = React.useRef(false);
@@ -554,15 +567,17 @@ function CommonRemarkEditor({
   }, [data, serverHtml]);
 
   const mutation = useMutation({
-    mutationFn: async () =>
-      api(`/api/resources/${resourceId}/common-remark`, {
+    mutationFn: async () => {
+      if (!canManage || !version) throw new Error("此版本只读或已失效");
+      return api(`/api/resources/${resourceId}/common-remark`, {
         method: "POST",
-        json: { content_html: draft, apply_scope: "latest" },
-      }),
+        json: { content_html: draft, apply_scope: "selected", version_id: version!.id },
+      });
+    },
     onSuccess: () => {
       toast.success("通用备注已保存");
       queryClient.invalidateQueries({
-        queryKey: ["resource", resourceId, "detail"],
+        queryKey: ["resource", resourceId, "detail", "include-archived"],
       });
       queryClient.invalidateQueries({ queryKey: ["resources"] });
     },
@@ -577,7 +592,7 @@ function CommonRemarkEditor({
         <h4 className="text-sm font-medium">
           通用备注{" "}
           <span className="text-xs font-normal text-muted-foreground">
-            {canManage ? "（仅管理者可编辑，仅作用于当前版本）" : "（只读）"}
+            {version?.archived ? "（归档版本，只读）" : canManage ? "（仅管理者可编辑，仅作用于当前版本）" : "（只读）"}
           </span>
         </h4>
         {canManage && (
@@ -621,15 +636,23 @@ function CommonRemarkEditor({
 /** 个人备注（可编辑） */
 function PersonalRemarkSection({
   resourceId,
+  versionNo,
   queryClient,
 }: {
   resourceId: number;
+  versionNo: number;
   queryClient: ReturnType<typeof useQueryClient>;
 }) {
+  const detail = useQuery({
+    queryKey: ["resource", resourceId, "detail", "include-archived"],
+    queryFn: () => fetchResourceDetail(resourceId),
+    staleTime: 60_000,
+  });
+  const version = detail.data?.versions?.find(item => item.version_no === versionNo);
   const { data } = useQuery({
-    queryKey: ["resource", resourceId, "personal-remark"],
-    queryFn: () => fetchPersonalRemark(resourceId),
-    enabled: resourceId > 0,
+    queryKey: ["resource", resourceId, "personal-remark", version?.id],
+    queryFn: () => fetchPersonalRemark(resourceId, version!.id),
+    enabled: !!version,
     staleTime: 30_000,
     placeholderData: keepPreviousData,
   });
@@ -645,15 +668,17 @@ function PersonalRemarkSection({
   }, [data, serverHtml]);
 
   const mutation = useMutation({
-    mutationFn: async () =>
-      api(`/api/resources/${resourceId}/personal-remark`, {
+    mutationFn: async () => {
+      if (!version || version.archived) throw new Error("此版本只读或已失效");
+      return api(`/api/resources/${resourceId}/personal-remark`, {
         method: "PUT",
-        json: { content_html: draft },
-      }),
+        json: { content_html: draft, version_id: version.id },
+      });
+    },
     onSuccess: () => {
       toast.success("个人备注已保存");
       queryClient.invalidateQueries({
-        queryKey: ["resource", resourceId, "personal-remark"],
+        queryKey: ["resource", resourceId, "personal-remark", version?.id],
       });
     },
     onError: (err: Error) => toast.error(err.message || "保存失败"),
@@ -667,11 +692,11 @@ function PersonalRemarkSection({
         <h4 className="text-sm font-medium">
           个人备注{" "}
           <span className="text-xs font-normal text-muted-foreground">
-            （仅自己可见）
+            {version?.archived ? "（归档版本，只读）" : "（仅自己可见）"}
           </span>
         </h4>
         <InlineSaveButton
-          dirty={dirty}
+          dirty={dirty && !!version && !version.archived}
           pending={mutation.isPending}
           onClick={() => mutation.mutate()}
         />
@@ -680,6 +705,7 @@ function PersonalRemarkSection({
         <RichTextEditor
           className="h-full"
           bordered={false}
+          disabled={!version || version.archived || mutation.isPending}
           value={draft}
           onChange={setDraft}
           placeholder="输入个人备注…"

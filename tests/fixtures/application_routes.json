@@ -948,6 +948,14 @@
     ]
   },
   {
+    "path": "/api/resources/delete-preview",
+    "name": "resource_delete_preview",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
     "path": "/api/resources/batch",
     "name": "batch_delete_resources",
     "kind": "http",
@@ -1166,6 +1174,14 @@
   {
     "path": "/api/shows/{show_id}/duplicate",
     "name": "duplicate_show",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/shows/{show_id}/cleanup-missing-resources",
+    "name": "cleanup_show_missing_resources",
     "kind": "http",
     "methods": [
       "POST"

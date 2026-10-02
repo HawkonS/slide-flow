@@ -35,6 +35,7 @@ export type VisibilityScope = "public" | "partial" | "private";
 export type ResourceStatus = string;
 
 export interface ResourceVersion {
+  archived?: boolean;
   id: number;
   version_no: number;
   font_names: string[];
@@ -61,6 +62,7 @@ export interface Resource {
   visibility_scope: VisibilityScope;
   management_scope: VisibilityScope;
   current_version: number;
+  version_count?: number;
   created_at: string;
   updated_at: string;
 
@@ -175,6 +177,8 @@ export interface ShowResourceAccessible {
 
 /** 放映中的资源项（不可访问时） */
 export interface ShowResourceInaccessible {
+  unavailable_reason?: "missing_resource" | "missing_version";
+  version_no?: number;
   id: number;
   accessible: false;
   name: string;

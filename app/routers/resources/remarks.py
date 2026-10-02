@@ -37,6 +37,8 @@ def update_common_remark(
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
+    if not db.in_transaction:
+        db.execute('BEGIN IMMEDIATE')
     row = _resource_row(db, resource_id)
     if not can_manage_resource(db, row, user):
         raise HTTPException(403, "无管理权限")
@@ -44,7 +46,7 @@ def update_common_remark(
         raise HTTPException(400, "应用范围不正确")
     if payload.apply_scope == "all":
         db.execute(
-            "UPDATE resource_versions SET common_remark_html = ? WHERE resource_id = ?",
+            "UPDATE resource_versions SET common_remark_html = ? WHERE resource_id = ? AND deleted_at IS NULL",
             (sanitize_html(payload.content_html), resource_id),
         )
     elif payload.apply_scope == "selected":
@@ -73,10 +75,10 @@ def get_personal_remark(
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
-    row = _resource_row(db, resource_id)
+    row = _resource_row(db, resource_id, include_deleted=version_id is not None)
     if not can_view_resource(db, row, user):
         raise HTTPException(403, "无可见权限")
-    version = _version_row(db, resource_id, version_id)
+    version = _version_row(db, resource_id, version_id, include_deleted=version_id is not None)
     remark = db.execute(
         """
         SELECT * FROM personal_remarks
@@ -97,6 +99,8 @@ def update_personal_remark(
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, bool]:
+    if not db.in_transaction:
+        db.execute('BEGIN IMMEDIATE')
     row = _resource_row(db, resource_id)
     if not can_view_resource(db, row, user):
         raise HTTPException(403, "无可见权限")

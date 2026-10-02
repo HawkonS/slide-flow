@@ -33,6 +33,7 @@ from app.services.resource_import.remote_fonts import sha256_file
 from app.services.resource_import.rendering import RESOURCE_IMPORT_RENDERER_VERSION
 from app.services.resources import (
     _insert_version,
+    _allocate_version_number,
     _resource_row,
     _set_scope_tags,
     _set_scope_users,
@@ -100,10 +101,12 @@ def _commit_resource_iteration_sync(
     if not isinstance(inherit_personal, bool):
         raise HTTPException(400, "个人备注继承选项不正确")
 
-    latest = _version_row(db, resource_id)
-    version_no = int(resource["current_version"]) + 1
     uploaded_refs: list[str] = []
     try:
+        version_no = _allocate_version_number(db, resource_id)
+        if not can_manage_resource(db, _resource_row(db, resource_id), user):
+            raise HTTPException(403, "无管理权限")
+        latest = _version_row(db, resource_id)
         ppt_ref = persist_asset(ppt_path, "resources/ppt")
         uploaded_refs.append(ppt_ref)
         png_ref = persist_asset(png_path, "resources/png")
