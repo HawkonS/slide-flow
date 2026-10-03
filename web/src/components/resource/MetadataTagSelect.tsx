@@ -68,6 +68,9 @@ export function MetadataTagSelect({
       <Select
         value={value || undefined}
         onValueChange={(nextValue) => {
+          // Radix's form bridge can emit an empty value while options mount.
+          // Intentional clearing uses __empty_tag__, so ignore that transient event.
+          if (!nextValue) return;
           if (nextValue === createValue) {
             navigate(`/manage/tags?tab=${encodeURIComponent(domain)}`);
             return;

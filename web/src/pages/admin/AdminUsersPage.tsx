@@ -1,3 +1,4 @@
+import { useSceneFilters } from "@/lib/tag-defaults";
 import { copyText } from "@/lib/clipboard";
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -42,7 +43,6 @@ import {
 import { api } from "@/lib/api";
 import { USER_ROLE_LABEL, USER_ROLE_OPTIONS } from "@/lib/constants";
 import { AdminUser, AdminUsersResponse, UserRole } from "@/lib/types";
-import { useUrlPage } from "@/lib/use-url-page";
 import { cn } from "@/lib/utils";
 import { TableTags, TableText } from "@/components/common/TableContent";
 import { PageHeader } from "@/components/common/PageHeader";
@@ -286,32 +286,17 @@ function LoginSortChip({ value, onChange }: { value: LoginSort; onChange: (value
   );
 }
 
-interface PublicConfigResponse {
-  default_filters?: {
-    user_tags?: string[];
-  };
-}
+const USER_FILTER_BASE = { q: "", sub: "all", sta: "all", tags: [] as string[], tm: "any", p: 1, role: "all", login: "desc" };
 
 export function AdminUsersPage() {
   const qc = useQueryClient();
   const { user: currentUser, setUser } = useAuth();
-  const [tagFilters, setTagFilters] = React.useState<string[]>([]);
-  const [tagFilterMode, setTagFilterMode] = React.useState<"any" | "all">("any");
-  const [roleFilter, setRoleFilter] = React.useState<UserRole | "all">("all");
-  const [loginSort, setLoginSort] = React.useState<LoginSort>("desc");
-  const defaultUserTagsApplied = React.useRef(false);
-  const userTagFiltersTouched = React.useRef(false);
-  const { data: publicConfig } = useQuery({
-    queryKey: ["config"],
-    queryFn: () => api<PublicConfigResponse>("/api/config"),
-    staleTime: 60_000,
-  });
-  React.useEffect(() => {
-    if (!publicConfig || defaultUserTagsApplied.current) return;
-    defaultUserTagsApplied.current = true;
-    if (userTagFiltersTouched.current) return;
-    setTagFilters(Array.from(new Set(publicConfig.default_filters?.user_tags ?? [])));
-  }, [publicConfig]);
+  const { state: userFilterState, setState: setUserFilterState, filters: defaultFilters } = useSceneFilters("user_list", USER_FILTER_BASE);
+  const { tags: tagFilters, tagsMode: tagFilterMode, setTags: setTagFilters, setTagsMode: setTagFilterMode } = defaultFilters;
+  const roleFilter = userFilterState.role as UserRole | "all";
+  const loginSort = userFilterState.login as LoginSort;
+  const setRoleFilter = (role: UserRole | "all") => setUserFilterState((prev) => ({ ...prev, role, p: 1 }));
+  const setLoginSort = (login: LoginSort) => setUserFilterState((prev) => ({ ...prev, login, p: 1 }));
 
   const [editing, setEditing] = React.useState<AdminUser | null>(null);
   const [createOpen, setCreateOpen] = React.useState(false);
@@ -323,8 +308,9 @@ export function AdminUsersPage() {
   const [resetConfirmUser, setResetConfirmUser] = React.useState<AdminUser | null>(null);
   const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
   const [deleteTarget, setDeleteTarget] = React.useState<AdminUser | null>(null);
-  const [queryInput, setQueryInput] = React.useState("");
-  const [query, setQuery] = React.useState("");
+  const queryInput = defaultFilters.query;
+  const setQueryInput = defaultFilters.setQuery;
+  const [query, setQuery] = React.useState(queryInput);
   React.useEffect(() => {
     const timer = window.setTimeout(() => setQuery(queryInput.trim()), 300);
     return () => window.clearTimeout(timer);
@@ -435,7 +421,10 @@ export function AdminUsersPage() {
   });
 
   const [pageSize, setPageSize] = React.useState(20);
-  const [page, setPage] = useUrlPage();
+  const page = userFilterState.p;
+  const setPage = React.useCallback((action: React.SetStateAction<number>) => {
+    setUserFilterState((prev) => ({ ...prev, p: typeof action === "function" ? action(prev.p) : action }));
+  }, [setUserFilterState]);
   const { data, isLoading, isError, error, dataUpdatedAt, isFetching } = useQuery({
     queryKey: ["admin", "users", page, pageSize, query, tagFilters, tagFilterMode, roleFilter, loginSort],
     queryFn: () => api<AdminUsersResponse>("/api/admin/users", {
@@ -479,12 +468,9 @@ export function AdminUsersPage() {
     if (data && page > totalPages) setPage(totalPages);
   }, [data, page, pageSize, totalPages, setPage]);
   React.useEffect(() => {
-    // useUrlPage 的 setter 可能随 URL searchParams 更新而改变引用。
-    // 仅在筛选条件的实际值发生变化时回到第一页，避免翻页后该 effect
-    // 因 setter 引用变化再次执行并把刚设置的页码重置为 1。
+    // Filter setters already reset the page; selection is cleared only when values change.
     if (previousFiltersKey.current === filtersKey) return;
     previousFiltersKey.current = filtersKey;
-    setPage(1);
     setSelected(new Set());
     setFilterSelectionIds(null);
   }, [filtersKey, setPage]);
@@ -583,13 +569,9 @@ export function AdminUsersPage() {
           selected={tagFilters}
           mode={tagFilterMode}
           onToggle={(tag) => {
-            userTagFiltersTouched.current = true;
-            setTagFilters((previous) =>
-              previous.includes(tag) ? previous.filter((item) => item !== tag) : [...previous, tag],
-            );
+            defaultFilters.toggleTag(tag);
           }}
           onClear={() => {
-            userTagFiltersTouched.current = true;
             setTagFilters([]);
           }}
           onChangeMode={setTagFilterMode}
@@ -598,22 +580,20 @@ export function AdminUsersPage() {
           value={loginSort}
           onChange={(value) => {
             setLoginSort(value);
-            setPage(1);
           }}
         />
-        {(tagFilters.length > 0 || roleFilter !== "all") && (
+        <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => { defaultFilters.reset(); }}>恢复默认</Button>
+        {hasActiveFilters && (
           <Button
             variant="ghost"
             size="sm"
             className="h-8 px-2 text-xs text-muted-foreground"
             onClick={() => {
-              userTagFiltersTouched.current = true;
-              setTagFilters([]);
-              setRoleFilter("all");
+              defaultFilters.clear();
             }}
           >
             <X className="mr-1 h-3.5 w-3.5" />
-            清除筛选
+            清空筛选
           </Button>
         )}
         <div className="ml-auto flex items-center gap-2">

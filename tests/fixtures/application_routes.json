@@ -444,6 +444,22 @@
     ]
   },
   {
+    "path": "/api/admin/tag-defaults",
+    "name": "admin_get_tag_defaults",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/admin/tag-defaults",
+    "name": "admin_patch_tag_defaults",
+    "kind": "http",
+    "methods": [
+      "PATCH"
+    ]
+  },
+  {
     "path": "/api/tags",
     "name": "list_tags",
     "kind": "http",

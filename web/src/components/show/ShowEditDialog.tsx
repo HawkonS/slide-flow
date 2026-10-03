@@ -1,4 +1,5 @@
 import * as React from "react";
+import { usePublicConfig } from "@/lib/tag-defaults";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
@@ -108,19 +109,25 @@ export function ShowEditDialog({
   const queryClient = useQueryClient();
   const { user } = useAuth();
   const { options: statusOptions } = useMetadataTagOptions("status");
+  const config = usePublicConfig();
+  const defaultsInitialized = React.useRef(false);
+  const formTouched = React.useRef(false);
 
   React.useEffect(() => {
-    if (open) setForm(defaultForm(show));
+    if (open) {
+      setForm(defaultForm(show));
+      defaultsInitialized.current = false;
+      formTouched.current = false;
+    }
   }, [open, show]);
 
   React.useEffect(() => {
-    if (!open) return;
-    setForm((current) => {
-      const status = current.status || statusOptions[0]?.value || "";
-      if (status === current.status) return current;
-      return { ...current, status };
-    });
-  }, [open, statusOptions]);
+    if (!open || !isCreate || config.isPending || config.isFetching || defaultsInitialized.current) return;
+    defaultsInitialized.current = true;
+    if (formTouched.current) return;
+    const defaults = config.data?.tag_defaults?.show_create;
+    setForm((current) => ({ ...current, subject: defaults?.subject || "", status: defaults?.status || "", tagList: defaults?.resource_tags ?? [] }));
+  }, [open, show, isCreate, config.isPending, config.isFetching, config.data]);
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -254,6 +261,9 @@ export function ShowEditDialog({
 
         <form
           id="show-edit-form"
+          onChangeCapture={() => { formTouched.current = true; }}
+          onPointerDownCapture={() => { formTouched.current = true; }}
+          onKeyDownCapture={() => { formTouched.current = true; }}
           onSubmit={handleSubmit}
           className="grid min-h-0 flex-1 gap-4 overflow-y-auto px-0.5 pb-1"
         >

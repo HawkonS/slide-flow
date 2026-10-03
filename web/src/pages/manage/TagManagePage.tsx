@@ -1,4 +1,5 @@
 import * as React from "react";
+import { TagDefaultsDialog, type DefaultTagTarget } from "@/components/manage/TagDefaultsDialog";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Check,
@@ -50,6 +51,7 @@ interface AdminTag {
   sort_order: number;
   usage_count: number;
   default_filter: boolean;
+  default_scopes?: string[];
   created_at: string | null;
 }
 
@@ -138,6 +140,7 @@ function tagNameFromEditorValue(
 const TAG_DOMAINS: TagDomain[] = ["resource", "subject", "status", "user"];
 
 export default function TagManagePage() {
+  const [defaultsOpen, setDefaultsOpen] = React.useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedDomain = searchParams.get("tab") as TagDomain | null;
   const domain: TagDomain = requestedDomain && TAG_DOMAINS.includes(requestedDomain) ? requestedDomain : "resource";
@@ -153,9 +156,11 @@ export default function TagManagePage() {
     <div className="page-shell">
       <PageHeader
         title="标签管理"
+        actions={<Button variant="outline" onClick={() => setDefaultsOpen(true)}><ListFilter className="mr-1 h-4 w-4" />默认设置</Button>}
         description="分类、主体、状态与用户标签分别维护，互不混用。"
       />
 
+      {defaultsOpen && <TagDefaultsDialog onClose={() => setDefaultsOpen(false)} />}
       <Tabs value={domain} onValueChange={handleTabChange} className="flex min-h-0 flex-1 flex-col">
         <TabsList className="w-fit border bg-muted/40">
           {TAG_DOMAINS.map((item) => (
@@ -180,6 +185,7 @@ export default function TagManagePage() {
 }
 
 function TagDomainPanel({ domain }: { domain: TagDomain }) {
+  const [defaultTarget, setDefaultTarget] = React.useState<DefaultTagTarget | null>(null);
   const qc = useQueryClient();
   const copy = domainCopy[domain];
   const endpoint = domainEndpoint(domain);
@@ -268,28 +274,14 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
     mutationFn: (id: number) => api(`${endpoint}/${id}`, { method: "DELETE" }),
     onSuccess: () => {
       toast.success(`${copy.label}已删除`);
+      qc.invalidateQueries({ queryKey: ["admin", "tag-defaults"] });
+      qc.invalidateQueries({ queryKey: ["config"] });
       qc.invalidateQueries({ queryKey });
       qc.invalidateQueries({ queryKey: domain === "resource" || domain === "user" ? ["preset-tags", domain] : ["metadata-tags", domain] });
       if (domain === "user") qc.invalidateQueries({ queryKey: ["admin", "users"] });
     },
     onError: (mutationError: Error) => toast.error(mutationError.message || "删除失败"),
   });
-  const defaultFilterMutation = useMutation({
-    mutationFn: ({ id, enabled }: { id: number; enabled: boolean }) =>
-      api<AdminTag>(endpoint + "/" + id + "/default-filter", {
-        method: "PUT",
-        json: { enabled },
-      }),
-    onSuccess: (updated) => {
-      toast.success(
-        (updated.default_filter ? "已设为默认筛选：" : "已取消默认筛选：") + tagLabel(updated),
-      );
-      qc.invalidateQueries({ queryKey });
-      qc.invalidateQueries({ queryKey: ["config"] });
-    },
-    onError: (mutationError: Error) => toast.error(mutationError.message || "更新默认筛选失败"),
-  });
-
   const toggleCategory = (category: string) => {
     setCollapsed((previous) => {
       const next = new Set(previous);
@@ -303,6 +295,8 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
   };
   const invalidate = () => {
     setSelectedIds(new Set());
+    qc.invalidateQueries({ queryKey: ["admin", "tag-defaults"] });
+    qc.invalidateQueries({ queryKey: ["config"] });
     qc.invalidateQueries({ queryKey });
     qc.invalidateQueries({ queryKey: domain === "resource" || domain === "user" ? ["preset-tags", domain] : ["metadata-tags", domain] });
     if (domain === "user") qc.invalidateQueries({ queryKey: ["admin", "users"] });
@@ -335,10 +329,10 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
           <span className="truncate text-[13px] font-medium" title={item.name}>{tagLabel(item)}</span>
-          {item.default_filter && (
-            <span className="inline-flex shrink-0 items-center gap-1 text-[11px] text-primary" title="已设为默认筛选">
-              <Check className="h-3 w-3" />默认
-            </span>
+          {Boolean(item.default_scopes?.length) && (
+            <button className="inline-flex shrink-0 items-center gap-1 text-[11px] text-primary" onClick={() => setDefaultTarget({ ...item, domain })}>
+              <Check className="h-3 w-3" />默认用于 {item.default_scopes?.length} 个场景
+            </button>
           )}
         </div>
         <div className="mt-0.5 text-[11px] text-muted-foreground">
@@ -363,11 +357,10 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-44">
             <DropdownMenuItem
-              disabled={defaultFilterMutation.isPending && defaultFilterMutation.variables?.id === item.id}
-              onClick={() => defaultFilterMutation.mutate({ id: item.id, enabled: !item.default_filter })}
+              onClick={() => setDefaultTarget({ ...item, domain })}
             >
               <ListFilter className="mr-2 h-3.5 w-3.5" />
-              {item.default_filter ? "取消默认筛选" : "设为默认筛选"}
+              默认设置…
             </DropdownMenuItem>
             <DropdownMenuItem
               className="text-destructive focus:text-destructive"
@@ -430,6 +423,7 @@ function TagDomainPanel({ domain }: { domain: TagDomain }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
+      {defaultTarget && <TagDefaultsDialog tag={defaultTarget} onClose={() => setDefaultTarget(null)} />}
       <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-card p-3">
         <div className="min-w-[220px] flex-1">
           <div className="text-sm font-medium">{copy.label}</div>

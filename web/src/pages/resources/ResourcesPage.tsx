@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useSceneFilters } from "@/lib/tag-defaults";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronDown, ListChecks, Loader2, Pencil, Plus, Trash2, Upload, X } from "lucide-react";
@@ -21,9 +22,7 @@ import { useAuth } from "@/lib/auth";
 import { serializeTags } from "@/lib/types";
 import { Resource, ResourceVersion, Show } from "@/lib/types";
 import { useResponsiveGrid } from "@/lib/use-grid-layout";
-import { useEncodedUrlState } from "@/lib/use-encoded-url-state";
-import { useResourceFilters, markResourceFiltersUrlRestored } from "@/stores/resource-filters";
-import { DEFAULT_SORT_KEY, type SortKey } from "@/lib/constants";
+import { DEFAULT_SORT_KEY } from "@/lib/constants";
 import { usePaginatedQuery } from "@/lib/use-paginated-query";
 import { PageHeader } from "@/components/common/PageHeader";
 import { ViewModeSwitch } from "@/components/common/ViewModeSwitch";
@@ -53,7 +52,6 @@ export function ResourcesPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const filters = useResourceFilters();
 
   // 列数与每页大小由共享 hook 按容器宽度连续计算
   const contentRef = React.useRef<HTMLDivElement>(null);
@@ -72,58 +70,12 @@ export function ResourcesPage() {
   }, []);
 
   // 筛选 + 页码统一编码到 URL ?s=…
-  const [urlState, setUrlState] = useEncodedUrlState({ defaults: URL_DEFAULTS });
+  const { state: urlState, setState: setUrlState, filters } = useSceneFilters("resource_list", URL_DEFAULTS);
   const viewMode = urlState.view === "list" ? "list" : "card";
   const pageSize = viewMode === "list" ? listPageSize : cardPageSize;
   const setViewMode = (view: "card" | "list") => {
     setUrlState((prev) => ({ ...prev, view, p: 1 }));
   };
-
-  // URL → zustand store（仅首次挂载时同步）
-  const initialized = React.useRef(false);
-  if (!initialized.current) {
-    initialized.current = true;
-    const s = urlState;
-    filters.setQuery(s.q);
-    filters.setSubject(s.sub);
-    filters.setStatus(s.sta as "all" | "active" | "disabled");
-    filters.setPermission(s.perm as "all" | "created" | "managed" | "visible");
-    filters.setRemarkCommon(s.rc as "all" | "has" | "none");
-    filters.setRemarkPersonal(s.rp as "all" | "has" | "none");
-    filters.setTags(s.tags);
-    filters.setTagsMode(s.tm as "any" | "all");
-    filters.setSort(s.sort as SortKey);
-    // URL 中有状态时告诉 store 跳过 initDefaults 覆写
-    if (new URLSearchParams(window.location.search).has("s")) {
-      markResourceFiltersUrlRestored();
-    }
-  }
-
-  // zustand → URL（筛选变化时重置页码）
-  const prevFiltersKey = React.useRef("");
-  React.useEffect(() => {
-    const key = JSON.stringify({
-      q: filters.query, sub: filters.subject,
-      sta: filters.status, perm: filters.permission,
-      rc: filters.remarkCommon, rp: filters.remarkPersonal,
-      tags: filters.tags, tm: filters.tagsMode, sort: filters.sort,
-    });
-    if (key === prevFiltersKey.current) return;
-    const filtersChanged = prevFiltersKey.current !== "";
-    prevFiltersKey.current = key;
-    setUrlState((prev) => ({
-      ...prev,
-      q: filters.query, sub: filters.subject,
-      sta: filters.status, perm: filters.permission,
-      rc: filters.remarkCommon, rp: filters.remarkPersonal,
-      tags: filters.tags, tm: filters.tagsMode, sort: filters.sort,
-      p: filtersChanged ? 1 : prev.p,
-    }));
-  }, [
-    filters.query, filters.subject, filters.status,
-    filters.permission, filters.remarkCommon, filters.remarkPersonal,
-    filters.tags, filters.tagsMode, filters.sort, setUrlState,
-  ]);
 
   const page = urlState.p;
   const setPage = React.useCallback(
@@ -351,6 +303,7 @@ export function ResourcesPage() {
       />
 
       <ResourceFilters
+        filters={filters}
         subjects={subjects}
         tags={tags}
         actions={

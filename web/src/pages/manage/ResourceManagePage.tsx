@@ -1,5 +1,6 @@
 import { TableTags, TableText } from "@/components/common/TableContent";
 import * as React from "react";
+import { useSceneFilters } from "@/lib/tag-defaults";
 import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -43,11 +44,9 @@ import {
 } from "@/lib/constants";
 import { parseTags, Resource, serializeTags } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { useManageResourceFilters, markManageResourceFiltersUrlRestored } from "@/stores/manage-resource-filters";
 import { ResourceDeletionDialog } from "@/components/resource/ResourceDeletionDialog";
 import { BatchEditDialog } from "@/components/manage/BatchEditDialog";
 import { usePaginatedQuery } from "@/lib/use-paginated-query";
-import { useEncodedUrlState } from "@/lib/use-encoded-url-state";
 import { PageHeader } from "@/components/common/PageHeader";
 
 /* ---------- types ---------- */
@@ -79,7 +78,6 @@ const URL_DEFAULTS: ManageUrlState = {
 
 export default function ResourceManagePage() {
   const { user } = useAuth();
-  const filters = useManageResourceFilters();
   const { options: statusTags } = useMetadataTagOptions("status");
   const statusOptions = React.useMemo<Option[]>(
     () => [{ value: "all", label: "全部" }, ...statusTags],
@@ -109,50 +107,7 @@ export default function ResourceManagePage() {
   }, []);
 
   // 筛选 + 页码统一编码到 URL ?s=…
-  const [urlState, setUrlState] = useEncodedUrlState({ defaults: URL_DEFAULTS });
-
-  // URL → zustand store（仅首次挂载时同步）
-  const initialized = React.useRef(false);
-  if (!initialized.current) {
-    initialized.current = true;
-    const s = urlState;
-    filters.setQuery(s.q);
-    filters.setSubject(s.sub);
-    filters.setStatus(s.sta as "all" | "active" | "disabled");
-    filters.setOwnership(s.own as "all" | "created" | "managed");
-    filters.setRemarkCommon(s.rc as "all" | "has" | "none");
-    filters.setRemarkPersonal(s.rp as "all" | "has" | "none");
-    filters.setTags(s.tags);
-    filters.setTagsMode(s.tm as "any" | "all");
-    if (new URLSearchParams(window.location.search).has("s")) {
-      markManageResourceFiltersUrlRestored();
-    }
-  }
-
-  // zustand → URL（筛选变化时重置页码）
-  const prevFiltersKey = React.useRef("");
-  React.useEffect(() => {
-    const key = JSON.stringify({
-      q: filters.query, sub: filters.subject,
-      sta: filters.status, own: filters.ownership,
-      rc: filters.remarkCommon, rp: filters.remarkPersonal,
-      tags: filters.tags, tm: filters.tagsMode,
-    });
-    if (key === prevFiltersKey.current) return;
-    const filtersChanged = prevFiltersKey.current !== "";
-    prevFiltersKey.current = key;
-    setUrlState((prev) => ({
-      q: filters.query, sub: filters.subject,
-      sta: filters.status, own: filters.ownership,
-      rc: filters.remarkCommon, rp: filters.remarkPersonal,
-      tags: filters.tags, tm: filters.tagsMode,
-      p: filtersChanged ? 1 : prev.p,
-    }));
-  }, [
-    filters.query, filters.subject, filters.status,
-    filters.ownership, filters.remarkCommon, filters.remarkPersonal,
-    filters.tags, filters.tagsMode, setUrlState,
-  ]);
+  const { state: urlState, setState: setUrlState, filters } = useSceneFilters("resource_manage", URL_DEFAULTS);
 
   const page = urlState.p;
   const setPage = React.useCallback(
@@ -362,7 +317,7 @@ export default function ResourceManagePage() {
         <FilterGroupChip
           groups={filterGroups}
           dirtyCount={filterDirtyCount}
-          onReset={() => filters.reset()}
+          onReset={() => filters.clear()}
         />
 
         <SubjectFilterChip
@@ -382,15 +337,16 @@ export default function ResourceManagePage() {
           onChangeMode={(v) => filters.setTagsMode(v)}
         />
 
+        <Button variant="ghost" size="sm" onClick={() => filters.reset()}>恢复默认</Button>
         {isDirty && (
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => filters.reset()}
-              className="h-8 gap-1 text-xs text-muted-foreground hover:text-foreground"
+            onClick={() => filters.clear()}
+            className="h-8 gap-1 text-xs text-muted-foreground hover:text-foreground"
           >
             <RotateCcw className="h-3.5 w-3.5" />
-            重置
+            清空筛选
           </Button>
         )}
 

@@ -1,3 +1,4 @@
+import { useNewFormDefaults } from "@/lib/tag-defaults";
 import * as React from "react";
 import { AlertCircle, ArrowLeft, ArrowRight, CheckCircle2, FileText, Loader2, RefreshCw, Upload, X } from "lucide-react";
 import { toast } from "sonner";
@@ -98,6 +99,11 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, ownerId, taskId:
   const [subject, setSubject] = React.useState(DEFAULT_RESOURCE_SUBJECT);
   const [status, setStatus] = React.useState("");
   const [tagList, setTagList] = React.useState<string[]>([]);
+  const markDefaultsTouched = useNewFormDefaults("resource_create", (defaults) => {
+    setSubject(defaults.subject || "");
+    setStatus(defaults.status || "");
+    setTagList(defaults.resource_tags ?? []);
+  }, templateMode || Boolean(initialTaskId) || Boolean(taskId));
   const [visibilityScope, setVisibilityScope] = React.useState<ScopeValue | "">("");
   const [managementScope, setManagementScope] = React.useState<ScopeValue | "">("");
   const [visibleUserIds, setVisibleUserIds] = React.useState<number[]>([]);
@@ -456,7 +462,7 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, ownerId, taskId:
     ? `${Math.floor(renderElapsedSeconds / 60)} 分 ${renderElapsedSeconds % 60} 秒`
     : `${renderElapsedSeconds} 秒`;
 
-  return <div className="relative flex h-full min-h-0 flex-col bg-background"><div className="flex h-full min-h-0 w-full flex-col gap-4 overflow-hidden">
+  return <div onChangeCapture={markDefaultsTouched} className="relative flex h-full min-h-0 flex-col bg-background"><div className="flex h-full min-h-0 w-full flex-col gap-4 overflow-hidden">
     <header className="shrink-0"><h1 className="text-xl font-semibold tracking-tight">{templateMode ? "导入标准模板系列" : "导入单页素材"}</h1><p className="mt-1 text-sm text-muted-foreground">上传 PPT 并填写信息后，平台会在后台完成字体检测和图片渲染；{templateMode ? "每页将按 PPT 顺序保存为同一系列。" : "可留在此处继续，也可稍后从任务管理恢复。"}</p></header>
     <nav aria-label="素材导入步骤" className="shrink-0"><ol className="grid grid-cols-4 gap-1 sm:gap-3">{STEPS.map((item, index) => { const current = item.id === step; const completed = index < stepIndex || createdCount !== null; return <li key={item.id} aria-current={current ? "step" : undefined} className={cn("flex flex-col items-center gap-1.5 rounded-md border px-1 py-2 text-center text-xs sm:flex-row sm:justify-center sm:gap-2 sm:px-3 sm:text-sm", current ? "border-foreground/25 bg-primary-weak font-medium text-foreground" : completed ? "border-foreground/15 text-foreground" : "border-transparent bg-muted/40 text-muted-foreground")}><span className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-full", current ? "bg-primary text-primary-foreground" : "bg-muted")}>{completed ? <CheckCircle2 className="h-4 w-4" /> : index + 1}</span>{item.label}</li>; })}</ol></nav>
     <div ref={contentRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-0.5 pb-1" aria-busy={busy}>
@@ -467,7 +473,7 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, ownerId, taskId:
           {templateMode ? <>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="grid gap-1.5"><Label htmlFor="import-template-series">系列 <span className="text-destructive">*</span></Label><Input id="import-template-series" maxLength={80} value={templateSeries} onChange={(event) => setTemplateSeries(event.target.value)} placeholder="如：产品发布会" /></div>
-            <div className="grid gap-1.5"><Label htmlFor="import-template-subject">主体 <span className="text-destructive">*</span></Label><MetadataTagSelect id="import-template-subject" domain="subject" value={subject} onChange={setSubject} /></div>
+            <div className="grid gap-1.5"><Label htmlFor="import-template-subject">主体 <span className="text-destructive">*</span></Label><MetadataTagSelect id="import-template-subject" domain="subject" value={subject} onChange={(value) => { markDefaultsTouched(); setSubject(value); }} /></div>
           </div>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <div className="grid gap-1.5"><Label>平台</Label><Select value={templatePlatform} onValueChange={setTemplatePlatform}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{TEMPLATE_PLATFORM_OPTIONS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></div>
@@ -481,14 +487,14 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, ownerId, taskId:
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <div className="grid gap-1.5">
               <Label htmlFor="import-subject">主体</Label>
-              <MetadataTagSelect id="import-subject" domain="subject" value={subject} onChange={setSubject} />
+              <MetadataTagSelect id="import-subject" domain="subject" value={subject} onChange={(value) => { markDefaultsTouched(); setSubject(value); }} />
             </div>
             <div className="grid gap-1.5">
               <Label htmlFor="import-status">状态 <span className="text-destructive">*</span></Label>
-              <MetadataTagSelect id="import-status" domain="status" value={status} onChange={setStatus} />
+              <MetadataTagSelect id="import-status" domain="status" value={status} onChange={(value) => { markDefaultsTouched(); setStatus(value); }} />
             </div>
           </div>
-          <div className="mt-4 grid gap-1.5"><Label>分类标签</Label><TagInput value={tagList} onChange={setTagList} suggestions={[]} /></div>
+          <div className="mt-4 grid gap-1.5"><Label>分类标签</Label><TagInput value={tagList} onChange={(value) => { markDefaultsTouched(); setTagList(value); }} suggestions={[]} /></div>
           </>}
           <div className="mt-4 grid gap-4 sm:grid-cols-2"><div className="grid gap-1.5"><Label htmlFor="import-visibility">可见范围 <span className="text-destructive">*</span></Label><Select value={visibilityScope} onValueChange={(value) => setVisibilityScope(value as ScopeValue)}><SelectTrigger id="import-visibility"><SelectValue placeholder="请选择可见范围" /></SelectTrigger><SelectContent>{VISIBILITY_SCOPE_OPTIONS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></div><div className="grid gap-1.5"><Label htmlFor="import-management">管理范围 <span className="text-destructive">*</span></Label><Select value={managementScope} onValueChange={(value) => setManagementScope(value as ScopeValue)}><SelectTrigger id="import-management"><SelectValue placeholder="请选择管理范围" /></SelectTrigger><SelectContent>{MANAGEMENT_SCOPE_OPTIONS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></div></div>{visibilityScope === "partial" && <div className="mt-4 space-y-2"><Label>可见用户或用户标签（至少选 1 项）</Label><UserPicker value={visibleUserIds} onChange={setVisibleUserIds} tagValue={visibleUserTags} onTagChange={setVisibleUserTags} allowTagSelection lockedIds={ownerId ? [ownerId] : undefined} /></div>}{managementScope === "partial" && <div className="mt-4 space-y-2"><Label>管理用户或用户标签（至少选 1 项）</Label><UserPicker value={manageUserIds} onChange={setManageUserIds} tagValue={manageUserTags} onTagChange={setManageUserTags} allowTagSelection lockedIds={ownerId ? [ownerId] : undefined} /></div>}{!templateMode && <div className="mt-4 grid gap-2"><Label id="import-remark-label">通用备注</Label><RichTextEditor ariaLabelledBy="import-remark-label" value={remarkHtml} onChange={setRemarkHtml} minHeight={100} /></div>}
         </div></section>}

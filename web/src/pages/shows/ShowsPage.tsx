@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useSceneFilters } from "@/lib/tag-defaults";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Check, ChevronDown, ClipboardList, ListChecks, Loader2, Plus, Star, Trash2, X } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
@@ -21,9 +22,7 @@ import { useAuth } from "@/lib/auth";
 import { toast } from "sonner";
 import { serializeTags, Show } from "@/lib/types";
 import { useResponsiveGrid } from "@/lib/use-grid-layout";
-import { useEncodedUrlState } from "@/lib/use-encoded-url-state";
-import { useShowFilters } from "@/stores/show-filters";
-import { DEFAULT_SORT_KEY, type SortKey } from "@/lib/constants";
+import { DEFAULT_SORT_KEY } from "@/lib/constants";
 import { usePaginatedQuery } from "@/lib/use-paginated-query";
 import { readShowCreateDraft, showCreateDraftKey, type ShowCreateDraft } from "@/lib/show-create-draft";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -54,7 +53,6 @@ export interface ShowsPageProps {
 export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const filters = useShowFilters();
   const queryClient = useQueryClient();
 
   // 分页
@@ -78,54 +76,13 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
   }, []);
 
   // 筛选 + 页码统一编码到 URL ?s=…
-  const [urlState, setUrlState] = useEncodedUrlState({ defaults: URL_DEFAULTS });
+  const { state: urlState, setState: setUrlState, filters } = useSceneFilters(standardOnly ? "standard_show_list" : "show_list", URL_DEFAULTS);
   const viewMode = standardOnly ? "card" : urlState.view === "list" ? "list" : "card";
   const pageSize = viewMode === "list" ? listPageSize : cardPageSize;
   const setViewMode = (view: "card" | "list") => {
     if (standardOnly) return;
     setUrlState((prev) => ({ ...prev, view, p: 1 }));
   };
-
-  // URL → zustand store（仅首次挂载时同步）
-  // 注意：必须在 useEffect 中执行而非渲染期间，否则 StrictMode 下
-  // 组件卸载重挂载时 ref 会重置，导致重复同步并可能覆盖用户操作。
-  const initialized = React.useRef(false);
-  React.useEffect(() => {
-    if (initialized.current) return;
-    initialized.current = true;
-    const s = urlState;
-    filters.setQuery(s.q);
-    filters.setSubject(s.sub);
-    filters.setStatus(s.sta);
-    filters.setPermission(s.perm as "all" | "created" | "managed" | "visible");
-    filters.setTags(s.tags);
-    filters.setTagsMode(s.tm as "any" | "all");
-    filters.setSort(s.sort as SortKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // zustand → URL（筛选变化时重置页码）
-  const prevFiltersKey = React.useRef("");
-  React.useEffect(() => {
-    const key = JSON.stringify({
-      q: filters.query, sub: filters.subject,
-      sta: filters.status, perm: filters.permission,
-      tags: filters.tags, tm: filters.tagsMode, sort: filters.sort,
-    });
-    if (key === prevFiltersKey.current) return;
-    const filtersChanged = prevFiltersKey.current !== "";
-    prevFiltersKey.current = key;
-    setUrlState((prev) => ({
-      ...prev,
-      q: filters.query, sub: filters.subject,
-      sta: filters.status, perm: filters.permission,
-      tags: filters.tags, tm: filters.tagsMode, sort: filters.sort,
-      p: filtersChanged ? 1 : prev.p,
-    }));
-  }, [
-    filters.query, filters.subject, filters.status,
-    filters.permission, filters.tags, filters.tagsMode, filters.sort, setUrlState,
-  ]);
 
   const page = urlState.p;
   const setPage = React.useCallback(
@@ -428,6 +385,7 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
       )}
 
       <ShowFilters
+        filters={filters}
         subjects={subjects}
         tags={tags}
         hidePermission={standardOnly}

@@ -1,3 +1,4 @@
+import { usePublicConfig } from "@/lib/tag-defaults";
 import * as React from "react";
 import { Check, ChevronDown, ChevronRight, Tags, X } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -32,11 +33,6 @@ interface PresetTagsResponse {
   groups: PresetTagGroup[];
 }
 
-interface ConfigResponse {
-  resource_custom_tags?: boolean;
-  user_custom_tags?: boolean;
-}
-
 function splitInput(raw: string): string[] {
   return raw
     .split(/[，,\s]+/)
@@ -60,11 +56,7 @@ export function TagInput(props: TagInputProps) {
     className,
   } = props;
 
-  const { data: configData } = useQuery({
-    queryKey: ["config"],
-    queryFn: () => api<ConfigResponse>("/api/config"),
-    staleTime: 60_000,
-  });
+  const { data: configData } = usePublicConfig();
 
   const { data: tagsData, isLoading: tagsLoading, isError: tagsError } = useQuery({
     queryKey: ["preset-tags", domain],

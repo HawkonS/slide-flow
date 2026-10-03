@@ -18,7 +18,7 @@ from app.config import (
 from app.core.bootstrap import prepare_initial_admin
 from app.core.fonts import normalize_font_name
 
-DB_SCHEMA_VERSION = 27
+DB_SCHEMA_VERSION = 28
 
 
 def is_sqlite_busy_error(exc: BaseException) -> bool:
@@ -868,6 +868,8 @@ def _migrate_schema(db: sqlite3.Connection, schema_version: int) -> None:
     # cannot retain values written by an older process.
     _retire_secrecy_metadata(db)
 
+    from app.services.tag_defaults import migrate_tag_defaults
+    migrate_tag_defaults(db, schema_version)
     _maintain_resource_metadata_tags(db)
     if schema_version < 25:
         _migrate_normalized_content_tags(db)
@@ -1185,9 +1187,14 @@ def _maintain_resource_metadata_tags(db: sqlite3.Connection) -> None:
     if legacy_secrecy_table is not None:
         db.execute("DELETE FROM secrecy_tag_definitions")
 
+    has_defaults = db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tag_default_rules'").fetchone() is not None
+    def protected(domain: str) -> str:
+        return (f" AND id NOT IN (SELECT tag_id FROM tag_default_rules WHERE domain = '{domain}')"
+                if has_defaults else "")
+
     db.execute(
         "DELETE FROM subject_tag_definitions "
-        "WHERE created_by IS NULL AND is_default_filter = 0"
+        "WHERE created_by IS NULL AND is_default_filter = 0" + protected("subject")
     )
     db.execute(
         "UPDATE subject_tag_definitions SET category = '主体', label = name"
@@ -1196,7 +1203,7 @@ def _maintain_resource_metadata_tags(db: sqlite3.Connection) -> None:
         db.execute(
             f"DELETE FROM {table} "
             "WHERE created_by IS NULL AND is_default_filter = 0 "
-            "AND category IN ('系统默认', '历史值')"
+            "AND category IN ('系统默认', '历史值')" + protected("status")
         )
         db.execute(
             f"UPDATE {table} SET category = ?, label = name",

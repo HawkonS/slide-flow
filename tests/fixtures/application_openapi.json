@@ -9215,6 +9215,70 @@
           }
         }
       }
+    },
+    "/api/admin/tag-defaults": {
+      "get": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "Admin Get Tag Defaults",
+        "operationId": "admin_get_tag_defaults_api_admin_tag_defaults_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Admin Get Tag Defaults Api Admin Tag Defaults Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "tags"
+        ],
+        "summary": "Admin Patch Tag Defaults",
+        "operationId": "admin_patch_tag_defaults_api_admin_tag_defaults_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TagDefaultsPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Admin Patch Tag Defaults Api Admin Tag Defaults Patch"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -11250,6 +11314,53 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "TagDefaultsPayload": {
+        "properties": {
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/TagDefaultChange"
+            },
+            "type": "array",
+            "maxItems": 32,
+            "minItems": 1,
+            "title": "Changes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "changes"
+        ],
+        "title": "TagDefaultsPayload"
+      },
+      "TagDefaultChange": {
+        "properties": {
+          "scene": {
+            "type": "string",
+            "title": "Scene"
+          },
+          "domain": {
+            "type": "string",
+            "title": "Domain"
+          },
+          "tag_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "maxItems": 1000,
+            "title": "Tag Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "scene",
+          "domain",
+          "tag_ids"
+        ],
+        "title": "TagDefaultChange"
       }
     }
   }

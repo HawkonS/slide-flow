@@ -1,3 +1,4 @@
+import { useNewFormDefaults } from "@/lib/tag-defaults";
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -188,11 +189,9 @@ export function ShowCreatePage() {
     setHydratedOwnerId(ownerId);
   }, [hydratedOwnerId, user?.id]);
 
-  React.useEffect(() => {
-    if (!form.status && statusOptions[0]?.value) {
-      setForm((current) => ({ ...current, status: statusOptions[0].value }));
-    }
-  }, [form.status, statusOptions]);
+  const markDefaultsTouched = useNewFormDefaults("show_create", (defaults) => {
+    setForm((current) => ({ ...current, subject: defaults.subject || "", status: defaults.status || "", tagList: defaults.resource_tags ?? [] }));
+  }, Boolean(initialDraft) || hydratedOwnerId !== user?.id);
 
   const makeDraft = React.useCallback(
     (stepOverride = step): ShowCreateDraft => ({
@@ -289,6 +288,7 @@ export function ShowCreatePage() {
   });
 
   const updateForm = <K extends keyof FormState>(key: K, value: FormState[K]) => {
+    markDefaultsTouched();
     setForm((current) => ({ ...current, [key]: value }));
   };
 

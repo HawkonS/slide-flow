@@ -15,6 +15,7 @@ from app.config import reload_settings, settings, write_properties
 from app.core.permissions import is_admin, require_admin, require_user
 from app.db import now_iso
 from app.routers.dependencies import ApiPayload, db_dep, db_read_dep
+from app.services.tag_defaults import admin_defaults, update_defaults, tag_scopes, delete_tag_defaults, DOMAIN_TABLES
 from app.services.tagging import (
     entity_tag_names,
     refresh_entity_tag_cache,
@@ -53,6 +54,31 @@ class TagsConfigPayload(ApiPayload):
     resource_custom_tags: bool | None = None
     user_custom_tags: bool | None = None
     status_custom_tags: bool | None = None
+
+
+class TagDefaultChange(ApiPayload):
+    scene: str
+    domain: str
+    tag_ids: list[int] = Field(..., max_length=1000)
+
+
+class TagDefaultsPayload(ApiPayload):
+    changes: list[TagDefaultChange] = Field(..., min_length=1, max_length=32)
+
+
+@router.get("/admin/tag-defaults")
+def admin_get_tag_defaults(
+    _: Any = Depends(require_admin), db: sqlite3.Connection = Depends(db_read_dep),
+) -> dict[str, Any]:
+    return admin_defaults(db)
+
+
+@router.patch("/admin/tag-defaults")
+def admin_patch_tag_defaults(
+    payload: TagDefaultsPayload,
+    _: Any = Depends(require_admin), db: sqlite3.Connection = Depends(db_dep),
+) -> dict[str, Any]:
+    return update_defaults(db, [change.model_dump() for change in payload.changes])
 
 
 class DefaultFilterPayload(ApiPayload):
@@ -225,9 +251,11 @@ def _admin_list_definitions(
         f"SELECT id, name, category, label, sort_order, is_default_filter, created_at "
         f"FROM {table} ORDER BY sort_order, id"
     ).fetchall()
+    scopes = tag_scopes(db, table)
     result: list[dict[str, Any]] = []
     for row in rows:
         item = _serialize_tag(row)
+        item["default_scopes"] = scopes.get(row["id"], [])
         if flat_category is not None:
             item["category"] = flat_category
             item["label"] = item["name"]
@@ -287,6 +315,7 @@ def _create_definitions(
                 "label": label,
                 "sort_order": next_sort,
                 "default_filter": False,
+                "default_scopes": [],
                 "created_at": created_at,
             }
         )
@@ -689,7 +718,8 @@ def _batch_rename_definitions(
 
         if commit:
             db.commit()
-        return [_serialize_tag(_load_definition(db, table, tag_id)) for tag_id in ids]
+        scopes = tag_scopes(db, table)
+        return [{**_serialize_tag(_load_definition(db, table, tag_id)), "default_scopes": scopes.get(tag_id, [])} for tag_id in ids]
     except Exception:
         db.rollback()
         raise
@@ -748,15 +778,19 @@ def _update_default_filter(
     *,
     exclusive: bool,
 ) -> dict[str, Any]:
-    row = _load_definition(db, table, tag_id)
-    if enabled and exclusive:
-        db.execute(f"UPDATE {table} SET is_default_filter = 0")
-    db.execute(
-        f"UPDATE {table} SET is_default_filter = ? WHERE id = ?",
-        (1 if enabled else 0, tag_id),
-    )
-    db.commit()
-    return _serialize_tag(_load_definition(db, table, tag_id))
+    _load_definition(db, table, tag_id)
+    domain = next(key for key, value in DOMAIN_TABLES.items() if value == table)
+    scenes = ["user_list"] if domain == "user" else ["resource_list", "resource_manage"]
+    current = admin_defaults(db)["defaults"]
+    changes = []
+    for scene in scenes:
+        ids = [value for value in current[scene][domain] if value != tag_id]
+        if enabled:
+            ids = [tag_id] if exclusive else [*ids, tag_id]
+        changes.append({"scene": scene, "domain": domain, "tag_ids": ids})
+    update_defaults(db, changes)
+    return {**_serialize_tag(_load_definition(db, table, tag_id)),
+            "default_scopes": tag_scopes(db, table).get(tag_id, [])}
 
 
 @router.put("/admin/tags/{tag_id}/default-filter")
@@ -943,6 +977,7 @@ def admin_delete_tag(
         if "show_tags" in relation_tables
         else []
     )
+    delete_tag_defaults(db, "tags", tag_id)
     db.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
     for row in affected_resources:
         refresh_entity_tag_cache(
@@ -986,6 +1021,7 @@ def admin_delete_user_tag(
         updated = _replace_csv_tags(user_row["tags"], {tag_name: ""})
         if updated != user_row["tags"]:
             db.execute("UPDATE users SET tags = ? WHERE id = ?", (updated, user_row["id"]))
+    delete_tag_defaults(db, "user_tag_definitions", tag_id)
     db.execute("DELETE FROM user_tag_definitions WHERE id = ?", (tag_id,))
     db.commit()
     return {"ok": True}
@@ -1003,6 +1039,7 @@ def admin_delete_metadata_tag(
         raise HTTPException(404, "标签类型不存在")
     table, _ = config
     _load_definition(db, table, tag_id)
+    delete_tag_defaults(db, table, tag_id)
     db.execute(f"DELETE FROM {table} WHERE id = ?", (tag_id,))
     db.commit()
     return {"ok": True}

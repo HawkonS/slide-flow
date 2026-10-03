@@ -11,9 +11,10 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
+    "test:tag-defaults": "node --test tests/tag-defaults.mjs",
     "test:pwa:install": "playwright install chromium",
     "test:pwa:unit": "node --test tests/api-errors.mjs tests/offline-session.mjs tests/playback-assets.mjs ../tests/test_pwa_service_worker.mjs",
-    "test:pwa:browser": "node --test --test-concurrency=1 tests/offline-auth.mjs tests/playback-browser.mjs tests/playback-integration.mjs tests/offline-cache-ui.mjs tests/product-review-browser.mjs ../tests/test_pwa_browser.mjs",
+    "test:pwa:browser": "node --test --test-concurrency=1 tests/offline-auth.mjs tests/playback-browser.mjs tests/playback-integration.mjs tests/offline-cache-ui.mjs tests/product-review-browser.mjs tests/tag-defaults.mjs ../tests/test_pwa_browser.mjs",
     "test:pwa:ui": "node --test tests/offline-cache-ui.mjs",
     "test:pwa": "npm run test:pwa:unit && npm run build && npm run test:pwa:browser"
   },

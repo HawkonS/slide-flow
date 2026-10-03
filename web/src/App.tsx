@@ -1,3 +1,4 @@
+import { usePublicConfig } from "@/lib/tag-defaults";
 import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
@@ -6,9 +7,19 @@ import { AuthProvider, useAuth } from "@/lib/auth";
 import { AppRouter } from "@/router";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/toaster";
-import { useResourceFilters } from "@/stores/resource-filters";
-import { useManageResourceFilters } from "@/stores/manage-resource-filters";
 import { useSiteConfig } from "@/stores/site-config";
+
+function SiteConfigSync() {
+  const { data: config } = usePublicConfig();
+  useEffect(() => {
+    if (config?.site_name) {
+      useSiteConfig.getState().setSiteName(config.site_name);
+      document.title = config.site_name;
+    }
+    if (config?.logo_svg_path) useSiteConfig.getState().setLogoSvgPath(config.logo_svg_path);
+  }, [config]);
+  return null;
+}
 
 function ResourceDeletionSync() {
   const client = useQueryClient();
@@ -31,31 +42,8 @@ export function App() {
       }),
   );
 
-  // 加载配置并初始化筛选器默认值
-  // 使用 AbortController + setTimeout 给 fetch 加上 5s 超时保护，
-  // 避免后端不可用时 promise 长期挂起、以及组件卸载后仍被触发。
+  // Version lookup is independent of the shared React Query site config.
   useEffect(() => {
-    const configController = new AbortController();
-    const configTimeout = window.setTimeout(() => configController.abort(), 5000);
-    fetch("/api/config", { signal: configController.signal })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((config) => {
-        if (config) {
-          useResourceFilters.getState().initDefaults(config);
-          useManageResourceFilters.getState().initDefaults(config);
-          // 站点名称 & Logo
-          if (config.site_name) {
-            useSiteConfig.getState().setSiteName(config.site_name);
-            document.title = config.site_name;
-          }
-          if (config.logo_svg_path) {
-            useSiteConfig.getState().setLogoSvgPath(config.logo_svg_path);
-          }
-        }
-      })
-      .catch(() => { /* ignore */ })
-      .finally(() => window.clearTimeout(configTimeout));
-
     // 加载版本信息
     const versionController = new AbortController();
     const versionTimeout = window.setTimeout(() => versionController.abort(), 5000);
@@ -70,9 +58,7 @@ export function App() {
       .finally(() => window.clearTimeout(versionTimeout));
 
     return () => {
-      configController.abort();
       versionController.abort();
-      window.clearTimeout(configTimeout);
       window.clearTimeout(versionTimeout);
     };
   }, []);
@@ -81,6 +67,7 @@ export function App() {
     <QueryClientProvider client={client}>
       <AuthProvider>
         <ResourceDeletionSync />
+        <SiteConfigSync />
         <TooltipProvider delayDuration={200}>
           <AppRouter />
           <Toaster />

@@ -1,4 +1,5 @@
 import * as React from "react";
+import type { SceneFilters } from "@/lib/tag-defaults";
 import { RotateCcw, Search } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -9,7 +10,6 @@ import {
 } from "@/lib/constants";
 import { useMetadataTagOptions } from "@/components/resource/MetadataTagSelect";
 import { cn } from "@/lib/utils";
-import { useShowFilters } from "@/stores/show-filters";
 import {
   FilterGroupChip,
   SortFilterChip,
@@ -20,6 +20,7 @@ import {
 } from "@/components/resource/filter-chips";
 
 export interface ShowFiltersProps {
+  filters: SceneFilters;
   subjects: string[];
   tags: string[];
   /** 右侧插槽：如"创建放映"按钮 */
@@ -28,8 +29,7 @@ export interface ShowFiltersProps {
   hidePermission?: boolean;
 }
 
-export function ShowFilters({ subjects, tags, actions, hidePermission = false }: ShowFiltersProps) {
-  const s = useShowFilters();
+export function ShowFilters({ filters: s, subjects, tags, actions, hidePermission = false }: ShowFiltersProps) {
   const { options: statusTags } = useMetadataTagOptions("status");
   const statusOptions = React.useMemo<ChipOption[]>(
     () => [{ value: "all", label: "全部" }, ...statusTags],
@@ -98,7 +98,7 @@ export function ShowFilters({ subjects, tags, actions, hidePermission = false }:
       <FilterGroupChip
         groups={groups}
         dirtyCount={filterDirtyCount}
-        onReset={() => s.reset()}
+        onReset={() => s.clear()}
       />
 
       {/* 主体（独立 chip，可扩展） */}
@@ -132,13 +132,15 @@ export function ShowFilters({ subjects, tags, actions, hidePermission = false }:
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => s.reset()}
+          onClick={() => s.clear()}
           className="h-8 gap-1 text-xs text-muted-foreground hover:text-foreground"
         >
           <RotateCcw className="h-3.5 w-3.5" />
-          重置
+          清空筛选
         </Button>
       )}
+
+      <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => s.reset()}>恢复默认</Button>
 
       {actions && <div className="ml-auto flex items-center gap-2">{actions}</div>}
     </div>

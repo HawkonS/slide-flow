@@ -26,3 +26,8 @@ no existing route was removed.
 `schema_v23.sql` freezes the legacy business-table schema used by isolated
 database-upgrade tests. It contains schema definitions, not production data,
 and the upgrade tests do not require Git or access to a running deployment.
+
+The scene-defaults review adds GET/PATCH `/api/admin/tag-defaults` and the
+`TagDefaultChange` / `TagDefaultsPayload` request models. Legacy default-filter
+routes remain compatible; database schema 28 migrates their settings only to
+the resource list, resource management, and user list scenes.

@@ -636,7 +636,7 @@ export function FilterGroupChip({
               className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-accent hover:text-foreground"
             >
               <RotateCcw className="h-3 w-3" />
-              重置
+              清空筛选
             </button>
           </div>
         )}

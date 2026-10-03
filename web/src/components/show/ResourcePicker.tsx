@@ -1,3 +1,4 @@
+import { useSceneFilters } from "@/lib/tag-defaults";
 import { TableTags, TableText } from "@/components/common/TableContent";
 import { parseTags } from "@/lib/types";
 import * as React from "react";
@@ -29,7 +30,6 @@ import { ViewModeSwitch } from "@/components/common/ViewModeSwitch";
 import {
   DEFAULT_SORT_KEY,
   RESOURCE_PERMISSION_OPTIONS,
-  type SortKey,
 } from "@/lib/constants";
 import { useMetadataTagOptions } from "@/components/resource/MetadataTagSelect";
 import { cn } from "@/lib/utils";
@@ -96,6 +96,8 @@ const DEFAULT_SUBJECT = "all";
 const DEFAULT_PERMISSION: PermissionState = "all";
 const DEFAULT_REMARK: RemarkState = "all";
 
+const PICKER_BASE = { q: "", sub: "all", sta: "all", perm: "all", rc: "all", rp: "all", tags: [] as string[], tm: "any", sort: DEFAULT_SORT_KEY, p: 1 };
+
 export function ResourcePicker({
   value,
   onChange,
@@ -109,19 +111,17 @@ export function ResourcePicker({
   viewMode: controlledViewMode,
   onViewModeChange,
 }: ResourcePickerProps) {
-  const [search, setSearch] = React.useState("");
-  const [debouncedSearch, setDebouncedSearch] = React.useState("");
-  const [status, setStatus] = React.useState<StatusState>(DEFAULT_STATUS);
-  const [subject, setSubject] = React.useState<string>(DEFAULT_SUBJECT);
-  const [permission, setPermission] = React.useState<PermissionState>(DEFAULT_PERMISSION);
-  const [remarkCommon, setRemarkCommon] = React.useState<RemarkState>(DEFAULT_REMARK);
-  const [remarkPersonal, setRemarkPersonal] = React.useState<RemarkState>(DEFAULT_REMARK);
-  const [tags, setTags] = React.useState<string[]>([]);
-  const [tagsMode, setTagsMode] = React.useState<"any" | "all">("any");
-  const [sort, setSort] = React.useState<SortKey>(DEFAULT_SORT_KEY);
+  const { state: pickerState, setState: setPickerState, filters } = useSceneFilters("resource_picker", PICKER_BASE, true);
+  const { query: search, setQuery: setSearch, status, setStatus, subject, setSubject,
+    permission, setPermission, remarkCommon, setRemarkCommon, remarkPersonal, setRemarkPersonal,
+    tags, setTags, tagsMode, setTagsMode, sort, setSort } = filters;
+  const [debouncedSearch, setDebouncedSearch] = React.useState(search);
   const [density, setDensity] = React.useState<"compact" | "standard">("standard");
   const [internalViewMode, setInternalViewMode] = React.useState<"card" | "list">("card");
-  const [page, setPage] = React.useState(1);
+  const page = pickerState.p;
+  const setPage = React.useCallback((action: React.SetStateAction<number>) => {
+    setPickerState((prev) => ({ ...prev, p: typeof action === "function" ? action(prev.p) : action }));
+  }, [setPickerState]);
   const currentViewMode = controlledViewMode ?? internalViewMode;
   const { options: statusTags } = useMetadataTagOptions("status");
   const statusOptions = React.useMemo<ChipOption[]>(
@@ -133,15 +133,9 @@ export function ResourcePicker({
   React.useEffect(() => {
     const timer = setTimeout(() => {
       setDebouncedSearch(search);
-      setPage(1);
     }, 300);
     return () => clearTimeout(timer);
   }, [search]);
-
-  // 任一筛选条件变更时回到第 1 页
-  React.useEffect(() => {
-    setPage(1);
-  }, [status, subject, permission, remarkCommon, remarkPersonal, tags, tagsMode, sort]);
 
   // 共享筛选参数
   const filterParams = React.useMemo(
@@ -283,16 +277,8 @@ export function ResourcePicker({
     sort !== DEFAULT_SORT_KEY;
 
   const resetFilters = () => {
-    setSearch("");
+    filters.clear();
     setDebouncedSearch("");
-    setStatus(DEFAULT_STATUS);
-    setSubject(DEFAULT_SUBJECT);
-    setPermission(DEFAULT_PERMISSION);
-    setRemarkCommon(DEFAULT_REMARK);
-    setRemarkPersonal(DEFAULT_REMARK);
-    setTags([]);
-    setTagsMode("any");
-    setSort(DEFAULT_SORT_KEY);
   };
 
   const setViewMode = (next: "card" | "list") => {
@@ -485,13 +471,14 @@ export function ResourcePicker({
           selected={tags}
           mode={tagsMode}
           onToggle={(t) =>
-            setTags((prev) => (prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]))
+            filters.toggleTag(t)
           }
           onClear={() => setTags([])}
           onChangeMode={setTagsMode}
           compact
         />
         <SortFilterChip value={sort} onChange={setSort} baseValue={DEFAULT_SORT_KEY} compact />
+        <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => { filters.reset(); setDebouncedSearch(""); }}>恢复默认</Button>
         {isDirty && (
           <Button
             variant="ghost"
@@ -500,7 +487,7 @@ export function ResourcePicker({
             className="h-7 gap-1 rounded-md px-2 text-xs text-muted-foreground hover:text-foreground"
           >
             <RotateCcw className="h-3 w-3" />
-            重置
+            清空筛选
           </Button>
         )}
         <div className="ml-auto flex shrink-0 items-center gap-1.5">

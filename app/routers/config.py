@@ -95,19 +95,6 @@ def api_admin_config_put(
     return {"applied": [], "pending_restart": pending}
 
 
-def _default_filter_names(
-    db: sqlite3.Connection,
-    table: str,
-    *,
-    multiple: bool,
-) -> str | list[str]:
-    rows = db.execute(
-        f"SELECT name FROM {table} WHERE is_default_filter = 1 ORDER BY sort_order, id"
-    ).fetchall()
-    names = [str(row["name"]) for row in rows]
-    return names if multiple else (names[0] if names else "all")
-
-
 @router.get("/config")
 def api_config(
     db: sqlite3.Connection = Depends(db_read_dep),
@@ -122,14 +109,18 @@ def api_config(
         logo_url = "/" + logo_path
     else:
         logo_url = "/" + logo_path
+    from app.services.tag_defaults import resolved_defaults
+    tag_defaults = resolved_defaults(db)
+    resource_defaults = tag_defaults["resource_list"]
     return {
         "site_name": settings.site_name,
         "logo_svg_path": logo_url,
+        "tag_defaults": tag_defaults,
         "default_filters": {
-            "resource_tags": _default_filter_names(db, "tags", multiple=True),
-            "subject": _default_filter_names(db, "subject_tag_definitions", multiple=False),
-            "status": _default_filter_names(db, "status_tag_definitions", multiple=False),
-            "user_tags": _default_filter_names(db, "user_tag_definitions", multiple=True),
+            "resource_tags": resource_defaults["resource_tags"],
+            "subject": resource_defaults["subject"] or "all",
+            "status": resource_defaults["status"] or "all",
+            "user_tags": tag_defaults["user_list"]["user_tags"],
         },
         "feishu_sso_enabled": settings.feishu_sso_enabled,
         "feishu_app_id": settings.feishu_app_id if settings.feishu_sso_enabled else "",
