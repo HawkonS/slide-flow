@@ -13,6 +13,7 @@ from xml.etree import ElementTree as ET
 import zipfile
 
 from PIL import Image, ImageChops, ImageFont
+from defusedxml.common import DTDForbidden
 
 from app.core import ppt
 
@@ -286,7 +287,7 @@ class PptPublicContractTests(unittest.TestCase):
         before = source.read_bytes()
         ppt.add_watermark_to_pptx(source, "")
         self.assertEqual(source.read_bytes(), before)
-        text = 'Internal & <review> "draft"'
+        text = 'Internal & <review> "draft" <!DOCTYPE test [<!ENTITY value "text">]>'
         ppt.add_watermark_to_pptx(source, text)
         self.assertEqual(ppt.slide_count(source), 2)
         self.assert_valid_package(source)
@@ -297,6 +298,45 @@ class PptPublicContractTests(unittest.TestCase):
             for index, image in enumerate(self.images, start=1):
                 self.assertEqual(package.read(f"ppt/media/image{index}.png"), image.read_bytes())
         self.assertFalse(source.with_suffix(".tmp").exists())
+
+    def test_pptx_watermark_rejects_dtds_before_rewriting_package(self):
+        presentation = (
+            f'<p:presentation xmlns:p="{P_NS}">'
+            '<p:sldSz cx="12192000" cy="6858000"/></p:presentation>'
+        )
+        for target, root_name in (
+            ("ppt/presentation.xml", "p:presentation"),
+            ("ppt/slideMasters/slideMaster1.xml", "p:sldMaster"),
+            ("ppt/slideLayouts/slideLayout1.xml", "p:sldLayout"),
+        ):
+            master_name = target if "slideLayout" in target else "ppt/slideMasters/slideMaster1.xml"
+            master_tag = "p:sldLayout" if "slideLayout" in target else "p:sldMaster"
+            clean_parts = {
+                "ppt/presentation.xml": presentation,
+                master_name: (
+                    f'<{master_tag} xmlns:p="{P_NS}">'
+                    f'<p:cSld><p:spTree/></p:cSld></{master_tag}>'
+                ),
+            }
+            for declaration, reference in (
+                ("", ""),
+                (' [<!ENTITY value "expanded entity">]', "&value;"),
+                (' SYSTEM "https://example.invalid/watermark.dtd"', ""),
+                (' [<!ENTITY value SYSTEM "file:///watermark-test.xml">]', "&value;"),
+            ):
+                for encoding in ("utf-8", "utf-16"):
+                    with self.subTest(part=target, declaration=declaration, encoding=encoding):
+                        body = clean_parts[target].replace(">", f">{reference}", 1)
+                        xml = f'<?xml version="1.0" encoding="{encoding}"?><!DOCTYPE {root_name}{declaration}>{body}'
+                        source = self.root / "unsafe-watermark.pptx"
+                        with zipfile.ZipFile(source, "w") as package:
+                            for name, data in clean_parts.items():
+                                package.writestr(name, xml.encode(encoding) if name == target else data.encode())
+                        before = source.read_bytes()
+                        with self.assertRaises(DTDForbidden):
+                            ppt.add_watermark_to_pptx(source, "CONFIDENTIAL")
+                        self.assertEqual(source.read_bytes(), before)
+                        self.assertFalse(source.with_suffix(".tmp").exists())
 
 
 class PptModuleArchitectureTests(unittest.TestCase):

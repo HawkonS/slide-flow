@@ -9,6 +9,7 @@ oss2>=2.18.6,<3.0
 cryptography>=50.0.0,<51.0
 fonttools>=4.53,<5.0
 Pillow>=12.3.0,<13.0
+defusedxml>=0.7.1,<1.0
 psutil>=5.9,<7.0
 httpx>=0.27,<1.0
 httpx2>=2.13.1,<3.0

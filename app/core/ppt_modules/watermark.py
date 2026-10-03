@@ -6,8 +6,8 @@ import logging
 import re
 import zipfile
 from pathlib import Path
-from xml.etree import ElementTree as ET
 
+from defusedxml import ElementTree as ET
 from PIL import Image, ImageDraw, ImageFont
 
 from .svg import _BLIP_REPAIR_DIRS, _repair_blip_in_xml
@@ -201,6 +201,7 @@ def add_watermark_to_pptx(pptx_path: Path, text: str) -> None:
 
     性能优化：只读取需要修改的母版 XML，其余 ZIP 条目直接拷贝原始压缩数据，
     避免解压/重压缩大量媒体文件（PPTX 中的图片通常为 ZIP_STORED，直拷极快）。
+    XML 解析禁止 DTD、实体定义和外部引用，即使文件未经过导入校验。
     """
     if not text:
         return
@@ -227,7 +228,9 @@ def add_watermark_to_pptx(pptx_path: Path, text: str) -> None:
             master_data[n] = zf.read(n)
 
     # ── 修改母版 XML（纯内存操作） ──
-    pres_xml = ET.fromstring(pres_data)
+    pres_xml = ET.fromstring(
+        pres_data, forbid_dtd=True, forbid_entities=True, forbid_external=True,
+    )
     sld_sz = pres_xml.find(f"{{{P_NS}}}sldSz")
     slide_w = int(sld_sz.get("cx", "12192000")) if sld_sz is not None else 12192000
     slide_h = int(sld_sz.get("cy", "6858000")) if sld_sz is not None else 6858000
@@ -244,7 +247,9 @@ def add_watermark_to_pptx(pptx_path: Path, text: str) -> None:
 
     modified_masters: dict[str, bytes] = {}
     for master_name in master_names:
-        root = ET.fromstring(master_data[master_name])
+        root = ET.fromstring(
+            master_data[master_name], forbid_dtd=True, forbid_entities=True, forbid_external=True,
+        )
         sp_tree = root.find(f".//{{{P_NS}}}spTree")
         if sp_tree is None:
             continue
@@ -270,7 +275,9 @@ def add_watermark_to_pptx(pptx_path: Path, text: str) -> None:
                 f'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
                 f'{wm_xml}</__wrap>'
             )
-            wrapper = ET.fromstring(wrapped)
+            wrapper = ET.fromstring(
+                wrapped, forbid_dtd=True, forbid_entities=True, forbid_external=True,
+            )
             wm_elem = wrapper[0]
             sp_tree.append(wm_elem)
 
