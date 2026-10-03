@@ -102,6 +102,10 @@ if ! [[ "$PORT" =~ ^[1-9][0-9]*$ ]] || [ "$PORT" -gt 65535 ]; then
   abort_restart "server.port 不是合法端口: $PORT"
 fi
 
+# Python can create a separate POSIX session on macOS and Linux, even when
+# the setsid command is unavailable. Check this before stopping anything.
+PYTHON_CMD="$(operation_python)" || abort_restart "未找到 Python，无法启动独立的后台服务"
+
 if [ -f "$STOP_SCRIPT" ]; then
   log_info "正在停止旧进程"
   if ! bash "$STOP_SCRIPT"; then
@@ -121,17 +125,25 @@ STARTUP_LOG="$LOG_DIR/startup.log"
 
 log_info "正在后台启动 $START_SCRIPT"
 write_operation_state "restarting" "旧服务已停止，正在启动新服务"
-if [ "$(uname -s)" = "Darwin" ]; then
-  nohup bash "$START_SCRIPT" >"$STARTUP_LOG" 2>&1 < /dev/null &
-elif command -v setsid >/dev/null 2>&1; then
-  setsid bash "$START_SCRIPT" >"$STARTUP_LOG" 2>&1 < /dev/null &
-else
-  nohup bash "$START_SCRIPT" >"$STARTUP_LOG" 2>&1 < /dev/null &
-fi
-new_pid=$!
-disown "$new_pid" 2>/dev/null || true
+# nohup ignores SIGHUP but keeps the caller's process group. Cleaning up
+# that group can otherwise kill a server that already passed its health check.
+new_pid="$("$PYTHON_CMD" - "$START_SCRIPT" "$STARTUP_LOG" <<'PY'
+import subprocess
+import sys
 
-PYTHON_CMD="$(operation_python)" || true
+with open(sys.argv[2], "wb") as log_file:
+    process = subprocess.Popen(
+        ["bash", sys.argv[1]],
+        stdin=subprocess.DEVNULL,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        close_fds=True,
+    )
+print(process.pid)
+PY
+)"
+
 probe_backend() {
   if [ -n "$PYTHON_CMD" ]; then
     "$PYTHON_CMD" - "$PORT" <<'PY' >/dev/null 2>&1

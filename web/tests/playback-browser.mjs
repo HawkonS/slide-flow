@@ -219,12 +219,11 @@ test('cached playback stops at the authorization expiry without a new navigation
   assert.equal(await page.locator('img[src^="blob:"]').count(), 0);
 });
 
-test('an empty show gives Display a finite error instead of an endless image spinner', async t => {
+test('an empty show gives Presenter a finite error instead of opening a spinner Display', async t => {
   const { page } = await setup(t, { empty: true });
-  const popupPromise = page.waitForEvent('popup');
   await page.goto(baseUrl + '/shows/1/presenter');
-  const display = await popupPromise;
-  await display.getByRole('alert').filter({ hasText: '没有可显示的幻灯片' }).waitFor();
+  await page.getByRole('alert').filter({ hasText: '放映没有可播放页面，请返回详情页处理' }).waitFor();
+  assert.equal(await page.getByText('正在加载放映…', { exact: true }).count(), 0);
 });
 
 test('independent presenters isolate navigation and keep drawings synchronized across a page change', async t => {

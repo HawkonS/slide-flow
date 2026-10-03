@@ -14,6 +14,8 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/HawkonS/slide-flow/actions/workflows/checks.yml"><img src="https://github.com/HawkonS/slide-flow/actions/workflows/checks.yml/badge.svg" alt="Checks" /></a>
+  <a href="https://github.com/HawkonS/slide-flow/actions/workflows/codeql-analysis.yml"><img src="https://github.com/HawkonS/slide-flow/actions/workflows/codeql-analysis.yml/badge.svg" alt="CodeQL" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0" /></a>
 </p>
 
@@ -69,7 +71,14 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8088 --reload
 cd web && npm install && npm run dev
 ```
 
-Backend tests run with `pytest tests`; frontend tests and type checks are in the scripts of `web/package.json`. Backend route changes require a restart.
+Backend tests need `python-pptx` to generate test documents:
+
+```bash
+python -m pip install -r requirements.txt python-pptx
+python -m unittest discover -s tests -p 'test_*.py' -v
+```
+
+Frontend tests and type checks are in the scripts of `web/package.json`. Backend route changes require a restart.
 
 ## Security notes
 
