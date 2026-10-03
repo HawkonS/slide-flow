@@ -676,10 +676,6 @@ export function ResourceSharePage() {
 
 export default ResourceDetailPage;
 
-function hasRemarkHtml(html: string) {
-  return html.replace(/<[^>]*>/g, "").replace(/&nbsp;|&#160;|&#xA0;|\s/gi, "").length > 0;
-}
-
 const REMARK_PREVIEW_ENTITIES: Record<string, string> = {
   "&nbsp;": " ",
   "&#160;": " ",
