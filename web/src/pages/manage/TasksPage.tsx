@@ -1,3 +1,4 @@
+import { TableText } from "@/components/common/TableContent";
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
@@ -58,6 +59,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Tooltip,
   TooltipContent,
+  TooltipPortal,
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
@@ -393,13 +395,8 @@ function TaskRow({ task, onOpenDetails, onCancel, canManage, showOwner, isAdmin,
 
         <TableCell>
           <div className="flex flex-col gap-0.5">
-            <span className="text-sm font-medium">
-              {task.params.series || task.params.name_prefix || TASK_TYPE_LABEL[task.task_type] || task.task_type}
-            </span>
-            <span className="text-[11px] text-muted-foreground">
-              {TASK_TYPE_LABEL[task.task_type] || task.task_type}
-              {task.params.subject ? ` · ${task.params.subject}` : ""}
-            </span>
+            <TableText className="text-sm font-medium" text={task.params.series || task.params.name_prefix || TASK_TYPE_LABEL[task.task_type] || task.task_type} />
+            <TableText className="text-[11px] text-muted-foreground" text={`${TASK_TYPE_LABEL[task.task_type] || task.task_type}${task.params.subject ? ` · ${task.params.subject}` : ""}`} />
           </div>
         </TableCell>
 
@@ -414,10 +411,10 @@ function TaskRow({ task, onOpenDetails, onCancel, canManage, showOwner, isAdmin,
         </TableCell>
 
         <TableCell>
-          <div className="flex min-w-[160px] items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2">
             {task.total > 0 ? (
               <>
-                <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+                <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-muted">
                   <div
                     className={cn(
                       "h-full rounded-full transition-all duration-500",
@@ -434,7 +431,7 @@ function TaskRow({ task, onOpenDetails, onCancel, canManage, showOwner, isAdmin,
                 </span>
               </>
             ) : status === "processing" && task.message ? (
-              <span className="truncate text-xs text-muted-foreground">{task.message}</span>
+              <TableText className="text-xs text-muted-foreground" text={task.message} />
             ) : (
               <span className="text-xs text-muted-foreground">-</span>
             )}
@@ -444,8 +441,8 @@ function TaskRow({ task, onOpenDetails, onCancel, canManage, showOwner, isAdmin,
         {showOwner && (
           <TableCell className="whitespace-nowrap">
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <User className="h-3 w-3" />
-              {ownerDisplay(task.owner, task.owner_id)}
+              <User className="h-3 w-3 shrink-0" />
+              <TableText text={ownerDisplay(task.owner, task.owner_id)} />
             </div>
           </TableCell>
         )}
@@ -461,7 +458,7 @@ function TaskRow({ task, onOpenDetails, onCancel, canManage, showOwner, isAdmin,
           </span>
         </TableCell>
 
-        <TableCell className="w-32">
+        <TableCell>
           <div className="flex items-center gap-1">
             {task.params.session_id && !isCompleted && !isCancelled ? (
               <Button
@@ -1160,7 +1157,7 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
           </div>
         ) : (
           <div className="overflow-hidden">
-            <Table>
+            <Table className="min-w-[1160px]">
               <TableHeader>
                 <TableRow className="bg-muted/30 hover:bg-muted/30">
                   {isAdmin && (
@@ -1172,14 +1169,14 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
                       />
                     </TableHead>
                   )}
-                  <TableHead className="w-16">ID</TableHead>
+                  <TableHead className="w-20">ID</TableHead>
                   <TableHead>任务</TableHead>
                   <TableHead className="w-28">状态</TableHead>
                   <TableHead className="w-48">进度</TableHead>
                   {showOwner && <TableHead className="w-32">提交人</TableHead>}
                   <TableHead className="w-28">提交时间</TableHead>
-                  <TableHead className="w-20">耗时</TableHead>
-                  <TableHead className="w-28">操作</TableHead>
+                  <TableHead className="w-24">耗时</TableHead>
+                  <TableHead className="w-40">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -1451,7 +1448,7 @@ function DownloadTasksTab({ canManage }: { canManage: boolean }) {
         ) : (
           <TooltipProvider delayDuration={150}>
           <div className="overflow-hidden">
-            <Table>
+            <Table className="min-w-[1120px]">
               <TableHeader>
                 <TableRow className="bg-muted/30 hover:bg-muted/30">
                   {isAdmin && (
@@ -1463,7 +1460,7 @@ function DownloadTasksTab({ canManage }: { canManage: boolean }) {
                       />
                     </TableHead>
                   )}
-                  <TableHead className="w-14">ID</TableHead>
+                  <TableHead className="w-20">ID</TableHead>
                   <TableHead>放映名称</TableHead>
                   <TableHead className="w-28">下载类型</TableHead>
                   <TableHead className="w-44">状态</TableHead>
@@ -1580,9 +1577,7 @@ function DownloadTaskRow({ task, showOwner, isAdmin, isSelected, onSelectToggle 
 
       <TableCell>
         <div className="flex flex-col gap-0.5">
-          <span className="truncate text-sm font-medium" title={downloadTaskShowName(task)}>
-            {downloadTaskShowName(task)}
-          </span>
+          <TableText className="text-sm font-medium" text={downloadTaskShowName(task)} />
           <span className="text-[11px] text-muted-foreground">
             {task.params?.with_fonts && <span>含字体打包</span>}
             {task.params?.with_fonts && isCompleted && fileSize ? <span> · </span> : null}
@@ -1595,8 +1590,8 @@ function DownloadTaskRow({ task, showOwner, isAdmin, isSelected, onSelectToggle 
       </TableCell>
 
       <TableCell>
-        <span className="inline-flex items-center rounded-md border bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground">
-            {downloadLabel || "—"}
+        <span className="inline-flex max-w-full items-center rounded-md border bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground">
+          <TableText text={downloadLabel || "—"} />
         </span>
       </TableCell>
 
@@ -1624,21 +1619,19 @@ function DownloadTaskRow({ task, showOwner, isAdmin, isSelected, onSelectToggle 
         {trackCode ? (
           <Tooltip>
             <TooltipTrigger asChild>
-              <span className="cursor-default border-b border-dashed border-muted-foreground/40">
+              <span tabIndex={0} className="block cursor-default truncate border-b border-dashed border-muted-foreground/40">
                 {trackCode}
               </span>
             </TooltipTrigger>
-            <TooltipContent side="top" className="font-mono">
+            <TooltipPortal><TooltipContent side="top" className="max-w-[min(24rem,calc(100vw-2rem))] break-all font-mono">
               <div className="flex flex-col gap-0.5">
                 <span>追踪码：{trackCode}</span>
                 <span>客户端IP：{clientIp || "—"}</span>
               </div>
-            </TooltipContent>
+            </TooltipContent></TooltipPortal>
           </Tooltip>
         ) : clientIp ? (
-          <span className="text-muted-foreground/80" title={`客户端IP：${clientIp}`}>
-            {clientIp}
-          </span>
+          <TableText className="text-muted-foreground/80" text={clientIp} />
         ) : (
           <span className="text-muted-foreground/60">—</span>
         )}
@@ -1647,8 +1640,8 @@ function DownloadTaskRow({ task, showOwner, isAdmin, isSelected, onSelectToggle 
       {showOwner && (
         <TableCell className="whitespace-nowrap">
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <User className="h-3 w-3" />
-            {ownerDisplay(task.owner, task.owner_id)}
+            <User className="h-3 w-3 shrink-0" />
+            <TableText text={ownerDisplay(task.owner, task.owner_id)} />
           </div>
         </TableCell>
       )}

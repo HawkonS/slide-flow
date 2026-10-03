@@ -1,3 +1,4 @@
+import { TableText } from "@/components/common/TableContent";
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -269,10 +270,10 @@ export function AdminTemplatesPage() {
           </div>
         ) : (
           <div className="overflow-hidden rounded-md border bg-card">
-            <Table>
+            <Table className="min-w-[1000px]">
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-10">
+                  <TableHead className="w-12">
                     <div className="flex items-center gap-0.5">
                       <Checkbox
                         checked={allSelected ? true : someSelected ? "indeterminate" : false}
@@ -313,7 +314,7 @@ export function AdminTemplatesPage() {
                   <TableHead className="w-24">平台</TableHead>
                   <TableHead className="w-20">比例</TableHead>
                   <TableHead className="w-28">可见性</TableHead>
-                  <TableHead className="w-32 text-right">操作</TableHead>
+                  <TableHead className="w-40 text-right">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -341,17 +342,15 @@ export function AdminTemplatesPage() {
                       </div>
                     </TableCell>
                     <TableCell>
-                      <div className="font-medium">{t.name}</div>
+                      <TableText className="font-medium" text={t.name} />
                       {(t.subject || t.series) && (
-                        <div className="text-xs text-muted-foreground">
-                          {[t.subject, t.series].filter(Boolean).join(" · ")}
-                        </div>
+                        <TableText className="text-xs text-muted-foreground" text={[t.subject, t.series].filter(Boolean).join(" · ")} />
                       )}
                     </TableCell>
                     <TableCell>
                       {t.template_type ? (
-                        <Badge variant="outline" className="text-[11px]">
-                          {TEMPLATE_TYPE_LABEL[t.template_type] || t.template_type}
+                        <Badge variant="outline" className="max-w-full text-[11px]">
+                          <TableText text={TEMPLATE_TYPE_LABEL[t.template_type] || t.template_type} />
                         </Badge>
                       ) : (
                         <span className="text-xs text-muted-foreground">-</span>
@@ -359,15 +358,15 @@ export function AdminTemplatesPage() {
                     </TableCell>
                     <TableCell>
                       {t.platform ? (
-                        <Badge variant="outline" className="text-[11px]">
-                          {TEMPLATE_PLATFORM_LABEL[t.platform] || t.platform}
+                        <Badge variant="outline" className="max-w-full text-[11px]">
+                          <TableText text={TEMPLATE_PLATFORM_LABEL[t.platform] || t.platform} />
                         </Badge>
                       ) : (
                         <span className="text-xs text-muted-foreground">-</span>
                       )}
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground">
-                      {t.ratio || "-"}
+                      <TableText text={t.ratio || "-"} />
                     </TableCell>
                     <TableCell>
                       <Badge

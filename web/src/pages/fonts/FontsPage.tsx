@@ -1,3 +1,4 @@
+import { TableText } from "@/components/common/TableContent";
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -86,7 +87,7 @@ function AliasList({ aliases, family }: { aliases: string[]; family: string }) {
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="group mt-1 flex max-w-[320px] items-center gap-1.5 text-left text-xs leading-5 text-muted-foreground transition-colors hover:text-foreground"
+          className="group mt-1 flex w-full min-w-0 items-center gap-1.5 text-left text-xs leading-5 text-muted-foreground transition-colors hover:text-foreground"
           aria-label={`查看 ${visibleAliases.length} 个字体别名`}
         >
           <span className="shrink-0 text-[11px] text-muted-foreground/70">别名</span>
@@ -325,10 +326,10 @@ export function FontsPage() {
           <div className="rounded-md border border-dashed py-16 text-center text-sm text-muted-foreground">{query.trim() ? "没有匹配的字体" : "暂无字体资源"}</div>
         ) : (
           <div className="overflow-hidden rounded-md border bg-card">
-            <Table className="min-w-[760px]">
+            <Table className="min-w-[760px] md:min-w-[960px] lg:min-w-[1080px]">
               <TableHeader>
                 <TableRow className="bg-muted/40 hover:bg-muted/40">
-                  <TableHead className="w-10">
+                  <TableHead className="w-12">
                     <div className="flex items-center gap-0.5">
                       <Checkbox checked={allSelected ? true : someSelected ? "indeterminate" : false} onCheckedChange={(checked) => setPageSelection(Boolean(checked), pageItemIds)} aria-label="选择当前页字体" />
                       <DropdownMenu>
@@ -344,11 +345,11 @@ export function FontsPage() {
                     </div>
                   </TableHead>
                   <TableHead>字体</TableHead>
-                  <TableHead>文件</TableHead>
-                  <TableHead>服务器</TableHead>
-                  <TableHead className="hidden lg:table-cell">上传者</TableHead>
-                  <TableHead className="hidden md:table-cell">创建时间</TableHead>
-                  <TableHead className="w-32 text-right">操作</TableHead>
+                  <TableHead className="w-56">文件</TableHead>
+                  <TableHead className="w-28">服务器</TableHead>
+                  <TableHead className="hidden w-32 lg:table-cell">上传者</TableHead>
+                  <TableHead className="hidden w-44 md:table-cell">创建时间</TableHead>
+                  <TableHead className="w-36 text-right">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -357,15 +358,15 @@ export function FontsPage() {
                     <TableRow key={font.id}>
                       <TableCell><Checkbox checked={selected.has(font.id)} onCheckedChange={(checked) => setPageSelection(Boolean(checked), [font.id])} aria-label={`选择字体 ${font.family}`} /></TableCell>
                       <TableCell className="py-3">
-                        <div className="max-w-[260px] truncate font-medium" title={font.family}>{font.family}</div>
+                        <TableText className="font-medium" text={font.family} />
                         <AliasList aliases={font.aliases || []} family={font.family} />
                       </TableCell>
-                      <TableCell className="max-w-[220px] truncate text-sm text-muted-foreground" title={font.file_name}>{font.file_name}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground"><TableText text={font.file_name} /></TableCell>
                       <TableCell>
                         {font.installed_on_server ? <Badge variant="success" className="gap-1 text-[11px]"><Server className="h-3 w-3" />已安装</Badge> : <Badge variant="outline" className="gap-1 text-[11px] text-muted-foreground"><HardDriveDownload className="h-3 w-3" />未安装</Badge>}
                       </TableCell>
-                      <TableCell className="hidden text-sm text-muted-foreground lg:table-cell">{font.uploaded_by || "-"}</TableCell>
-                      <TableCell className="hidden text-sm text-muted-foreground md:table-cell">{font.created_at || "-"}</TableCell>
+                      <TableCell className="hidden text-sm text-muted-foreground lg:table-cell"><TableText text={font.uploaded_by || "-"} /></TableCell>
+                      <TableCell className="hidden text-sm text-muted-foreground md:table-cell"><TableText text={font.created_at || "-"} /></TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-1">
                           <Button variant="outline" size="sm" onClick={() => handleDownload(font)}><Download className="mr-1 h-3.5 w-3.5" />下载</Button>

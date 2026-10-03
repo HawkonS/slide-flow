@@ -236,3 +236,107 @@ await page.keyboard.press('Escape'); await dialog.waitFor({ state: 'hidden' });
   await dialog.waitFor({ state: 'hidden' });
   assert.equal(requests.filter(r => r.method === 'DELETE').length, 1);
 });
+
+const longTableText = '超长名称用于验证表格固定列宽及完整内容展示'.repeat(5);
+const longTableTags = ['短标签', '没有分隔符的超长标签'.repeat(12), '销售部', '方案组', '华东区', '内部用户'];
+const tableWidths = page => page.locator('table:visible thead th').evaluateAll(cells => cells.map(cell => cell.getBoundingClientRect().width));
+
+async function assertTableContentFits(page, route) {
+  const overflow = await page.locator('table:visible tbody td').evaluateAll(cells => cells.flatMap(cell => {
+    const bounds = cell.getBoundingClientRect();
+    return [...cell.querySelectorAll('button, [role="checkbox"], .truncate')].filter(element => {
+      if (!element.getClientRects().length) return false;
+      const rect = element.getBoundingClientRect();
+      return rect.right > bounds.right + 1 || rect.left < bounds.left - 1;
+    }).map(element => element.textContent || element.getAttribute('aria-label'));
+  }));
+  assert.deepEqual(overflow, [], `${route}: controls and text must stay inside their columns`);
+  assert.equal(await page.locator('table:visible').evaluate(table => getComputedStyle(table).tableLayout), 'fixed');
+}
+
+test('fixed tables: user pagination preserves column widths and exposes all truncated content', { timeout: 30_000 }, async t => {
+  const context = await browser.newContext({ viewport: { width: 1680, height: 1000 }, serviceWorkers: 'block' });
+  t.after(() => context.close());
+  const page = await context.newPage();
+  page.setDefaultTimeout(5000);
+  await page.route('**/api/admin/users?*', route => {
+    const secondPage = new URL(route.request().url()).searchParams.get('page') === '2';
+    const record = { ...user, id: secondPage ? 21 : 2, role: 'user', name: secondPage ? longTableText : '张三', username: secondPage ? 'long_account_'.repeat(12) : 'zhangsan', tags: secondPage ? longTableTags.join(',') : '', must_change_pwd: secondPage, created_at: stamp, last_login_at: stamp };
+    return route.fulfill({ json: { users: [record], total: 21, page_size: 20, available_tags: [] } });
+  });
+  await page.goto(origin + '/admin/users');
+  await page.getByText('zhangsan', { exact: true }).waitFor();
+  const widths = await tableWidths(page);
+  const rowHeight = await page.locator('tbody tr').evaluate(row => row.getBoundingClientRect().height);
+  await page.getByRole('button', { name: '下一页', exact: true }).click();
+  await page.getByText('long_account_'.repeat(12), { exact: true }).waitFor();
+  assert.deepEqual(await tableWidths(page), widths);
+  assert.equal(await page.locator('tbody tr').evaluate(row => row.getBoundingClientRect().height), rowHeight);
+  await assertTableContentFits(page, '/admin/users');
+  const name = page.locator('tbody td').nth(1).locator('.truncate');
+  assert.equal(await name.evaluate(element => element.scrollWidth > element.clientWidth), true);
+  await name.hover();
+  await page.getByRole('tooltip').waitFor();
+  assert.equal(await page.getByRole('tooltip').textContent(), longTableText);
+  assert.equal(await page.getByRole('tooltip').evaluate(element => element.closest('table')), null);
+  await page.keyboard.press('Escape');
+  await page.getByRole('tooltip').waitFor({ state: 'hidden' });
+  const tags = page.locator('tbody td').nth(4).locator('[tabindex="0"]');
+  await tags.focus();
+  await page.getByRole('tooltip').waitFor();
+  for (const tag of longTableTags) assert.ok((await page.getByRole('tooltip').textContent()).includes(tag));
+  await page.keyboard.press('Escape');
+  await page.getByRole('tooltip').waitFor({ state: 'hidden' });
+  if (process.env.REVIEW_SCREENSHOTS) {
+    await mkdir(process.env.REVIEW_SCREENSHOTS, { recursive: true });
+    await page.screenshot({ path: path.join(process.env.REVIEW_SCREENSHOTS, 'fixed-user-table.png') });
+  }
+  await page.getByRole('button', { name: '更多用户操作 ' + 'long_account_'.repeat(12) }).click();
+  await page.getByRole('menuitem', { name: '重置密码' }).waitFor();
+  await page.keyboard.press('Escape');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await assertTableContentFits(page, '/admin/users mobile');
+  assert.ok(await page.locator('table').evaluate(table => table.parentElement.scrollWidth > table.parentElement.clientWidth));
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+});
+
+for (const routePath of ['/resources', '/manage/shows', '/manage/resources', '/fonts', '/manage/shares', '/manage/tasks?tab=uploads', '/manage/tasks?tab=downloads']) {
+  test(`fixed tables: ${routePath} keeps long records inside stable columns`, { timeout: 30_000 }, async t => {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, serviceWorkers: 'block' });
+    t.after(() => context.close());
+    const page = await context.newPage();
+    page.setDefaultTimeout(5000);
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.message));
+    let long = false;
+    await page.route('**/api/**', async route => {
+      const url = new URL(route.request().url());
+      const name = long ? longTableText : '简短名称';
+      const tags = long ? longTableTags.join(',') : '';
+      const owner = { ...user, name };
+      const target = { ...resource, name, subject: name, tags, owner, status: long ? '自定义的超长状态名称' : 'active', detail_path: '/resources/review-resource' };
+      if (url.pathname === '/api/resources') return route.fulfill({ json: list([target]) });
+      if (url.pathname === '/api/shows') return route.fulfill({ json: list([{ ...show, name, subject: name, tags, has_other_versions: true }]) });
+      if (url.pathname === '/api/fonts') return route.fulfill({ json: { fonts: [{ id: 1, family: name, file_name: name + '.ttf', aliases: [name + ' alias'], uploaded_by: name, installed_on_server: true, created_at: stamp }] } });
+      if (url.pathname.endsWith('-share-links')) return route.fulfill({ json: { ...list([{ id: 1, creator: owner, resource: target, show: { ...target, version_no: 1, page_count: 3 }, status: 'active', share_path: '/share/test', created_at: stamp, expires_at: stamp }]), stats: { total: 1, active: 1, expired: 0, revoked: 0 } } });
+      if (url.pathname === '/api/tasks') return route.fulfill({ json: list([{ id: 1, task_type: url.searchParams.get('task_type'), status: 'processing', owner_id: 1, owner, progress: 0, total: 0, message: name, params: { series: name, show_name: name, subject: name, download_type: 'pptx', track_code: long ? 'a'.repeat(80) : 'abc123' }, created_at: stamp, updated_at: stamp }]) });
+      return route.continue();
+    });
+    const openTable = async () => {
+      await page.goto(origin + routePath);
+      if (['/resources', '/manage/shows'].includes(routePath)) await page.getByRole('button', { name: '列表视图' }).click();
+      await page.locator('table:visible tbody tr').first().waitFor();
+    };
+    await openTable();
+    const widths = await tableWidths(page);
+    long = true;
+    await openTable();
+    await page.locator('table:visible').getByText(longTableText, { exact: true }).first().waitFor();
+    assert.deepEqual(await tableWidths(page), widths);
+    await assertTableContentFits(page, routePath);
+    assert.deepEqual(errors, []);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await assertTableContentFits(page, routePath + ' mobile');
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  });
+}

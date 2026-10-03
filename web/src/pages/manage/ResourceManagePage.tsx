@@ -1,3 +1,4 @@
+import { TableTags, TableText } from "@/components/common/TableContent";
 import * as React from "react";
 import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
@@ -450,10 +451,10 @@ export default function ResourceManagePage() {
           </div>
         ) : (
           <div className="overflow-hidden rounded-md border bg-card">
-            <Table>
+            <Table className="min-w-[1080px]">
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-10">
+                  <TableHead className="w-12">
                     <div className="flex items-center gap-0.5">
                       <Checkbox
                         checked={
@@ -500,7 +501,7 @@ export default function ResourceManagePage() {
                   <TableHead className="w-28">主体</TableHead>
                   <TableHead className="w-52">标签</TableHead>
                   <TableHead className="w-16">状态</TableHead>
-                  <TableHead className="w-24">所有者</TableHead>
+                  <TableHead className="w-32">所有者</TableHead>
                   <TableHead className="w-24">更新时间</TableHead>
                 </TableRow>
               </TableHeader>
@@ -547,42 +548,24 @@ export default function ResourceManagePage() {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <button type="button" className="max-w-[200px] truncate text-left font-medium hover:text-foreground hover:underline" onClick={() => r.detail_token && navigate(`/resources/${encodeURIComponent(r.detail_token)}`)} title={r.name}>{r.name}</button>
+                        <TableText text={r.name}><button type="button" className="w-full text-left font-medium hover:text-foreground hover:underline" onClick={() => r.detail_token && navigate(`/resources/${encodeURIComponent(r.detail_token)}`)}>{r.name}</button></TableText>
                       </TableCell>
-                      <TableCell className="max-w-[120px] truncate text-sm text-muted-foreground">
-                        {r.subject || DEFAULT_RESOURCE_SUBJECT}
+                      <TableCell className="text-sm text-muted-foreground">
+                        <TableText text={r.subject || DEFAULT_RESOURCE_SUBJECT} />
                       </TableCell>
                       <TableCell>
-                        <div className="flex items-center gap-1 overflow-hidden">
-                          {rTags.length > 0 ? (
-                            rTags.slice(0, 3).map((tag) => (
-                              <span
-                                key={tag}
-                                className="inline-flex h-5 shrink-0 items-center rounded-md bg-secondary px-1.5 text-[11px] text-secondary-foreground"
-                              >
-                                {tag}
-                              </span>
-                            ))
-                          ) : (
-                            <span className="text-xs text-muted-foreground">-</span>
-                          )}
-                          {rTags.length > 3 && (
-                            <span className="inline-flex h-5 shrink-0 items-center text-[11px] text-muted-foreground">
-                              +{rTags.length - 3}
-                            </span>
-                          )}
-                        </div>
+                        <TableTags tags={rTags} />
                       </TableCell>
                       <TableCell>
                         <Badge
                           variant="outline"
-                          className="text-[11px]"
+                          className="max-w-full text-[11px]"
                         >
-                          {r.status}
+                          <TableText text={r.status} />
                         </Badge>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
-                        {r.owner?.name || r.owner?.username || "-"}
+                        <TableText text={r.owner?.name || r.owner?.username || "-"} />
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
                         {formatDate(r.updated_at)}

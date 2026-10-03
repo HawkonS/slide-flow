@@ -44,6 +44,7 @@ import { USER_ROLE_LABEL, USER_ROLE_OPTIONS } from "@/lib/constants";
 import { AdminUser, AdminUsersResponse, UserRole } from "@/lib/types";
 import { useUrlPage } from "@/lib/use-url-page";
 import { cn } from "@/lib/utils";
+import { TableTags, TableText } from "@/components/common/TableContent";
 import { PageHeader } from "@/components/common/PageHeader";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { TagInput } from "@/components/resource/TagInput";
@@ -665,7 +666,7 @@ export function AdminUsersPage() {
             <Table className="min-w-[1120px]">
               <TableHeader>
                 <TableRow className="bg-muted/40 hover:bg-muted/40">
-                  <TableHead className="w-10">
+                  <TableHead className="w-12">
                     <div className="flex items-center gap-0.5">
                       <Checkbox
                         checked={allSelected ? true : someSelected ? "indeterminate" : false}
@@ -711,11 +712,11 @@ export function AdminUsersPage() {
                   </TableHead>
                   <TableHead>姓名</TableHead>
                   <TableHead>用户名</TableHead>
-                  <TableHead className="w-32">角色</TableHead>
+                  <TableHead className="w-28">角色</TableHead>
                   <TableHead>用户标签</TableHead>
-                  <TableHead>创建时间</TableHead>
-                  <TableHead>最后登录时间</TableHead>
-                  <TableHead className="w-40 text-right">操作</TableHead>
+                  <TableHead className="w-40">创建时间</TableHead>
+                  <TableHead className="w-40">最后登录时间</TableHead>
+                  <TableHead className="w-36 text-right">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -733,16 +734,16 @@ export function AdminUsersPage() {
                       />
                     </TableCell>
                     <TableCell>
-                      <span className="inline-flex items-center gap-2">
+                      <span className="flex min-w-0 items-center gap-2">
                         <UserAvatar name={u.name} username={u.username} url={u.avatar_url} size="sm" />
-                        <span>{u.name || "-"}</span>
+                        <TableText text={u.name || "-"} />
                       </span>
                     </TableCell>
                     <TableCell>
-                      <span className="inline-flex items-center gap-1.5">
-                        {u.username}
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <TableText text={u.username} />
                         {u.must_change_pwd && (
-                          <Badge variant="outline" className="border-amber-400 text-amber-600 text-[10px] px-1 py-0">
+                          <Badge variant="outline" className="shrink-0 whitespace-nowrap border-amber-400 text-amber-600 text-[10px] px-1 py-0">
                             需改密
                           </Badge>
                         )}
@@ -762,17 +763,12 @@ export function AdminUsersPage() {
                         {USER_ROLE_LABEL[u.role] || u.role}
                       </Badge>
                     </TableCell>
-                    <TableCell className="max-w-52 text-sm text-muted-foreground">
-                      <div className="flex flex-wrap gap-1">
-                        {parseTags(u.tags).map((tag) => <Badge key={tag} variant="outline" className="text-[10px]">{tag}</Badge>)}
-                        {!u.tags && <span>-</span>}
-                      </div>
-                    </TableCell>
+                    <TableCell><TableTags tags={parseTags(u.tags)} /></TableCell>
                     <TableCell className="whitespace-nowrap text-sm text-muted-foreground" title={u.created_at}>
-                      {formatUserDateTime(u.created_at)}
+                      <TableText text={formatUserDateTime(u.created_at)} />
                     </TableCell>
                     <TableCell className="whitespace-nowrap text-sm text-muted-foreground" title={u.last_login_at || "从未登录"}>
-                      {formatUserDateTime(u.last_login_at, "从未登录")}
+                      <TableText text={formatUserDateTime(u.last_login_at, "从未登录")} />
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1">

@@ -9,6 +9,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { TableTags, TableText } from "@/components/common/TableContent";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -60,12 +61,12 @@ export function ShowListView({
 
   return (
     <div className="surface overflow-hidden">
-      <Table className="min-w-[900px]">
+      <Table className="min-w-[1040px]">
         <TableHeader>
           <TableRow>
             {selectedIds && onTogglePage && <TableHead className="w-10"><Checkbox checked={allPageSelected ? true : somePageSelected ? "indeterminate" : false} onCheckedChange={(checked) => onTogglePage(checked === true)} aria-label="选择本页放映" /></TableHead>}
             <TableHead className="w-20">预览</TableHead>
-            <TableHead className="min-w-52">名称</TableHead>
+            <TableHead>名称</TableHead>
             <TableHead className="w-32">主体</TableHead>
             <TableHead className="w-48">标签</TableHead>
             <TableHead className="w-20">状态</TableHead>
@@ -89,23 +90,19 @@ export function ShowListView({
                 </TableCell>
                 <TableCell>
                   <div className="flex min-w-0 items-center gap-1.5">
-                    <button type="button" className="max-w-[280px] truncate text-left font-medium hover:text-primary hover:underline" onClick={() => onOpen(show)} title={show.name}>
+                    <TableText text={show.name} className="flex-1"><button type="button" className="w-full text-left font-medium hover:text-primary hover:underline" onClick={() => onOpen(show)}>
                       {show.name}
-                    </button>
+                    </button></TableText>
                     {show.has_other_versions && <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"><GitBranch className="h-3 w-3" />v{show.version_no}</span>}
                     {show.is_standard && <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-[10px]"><Star className="mr-1 h-3 w-3 fill-current" />标准</Badge>}
                   </div>
                   <div className="text-[11px] text-muted-foreground">ID {show.id}</div>
                 </TableCell>
-                <TableCell className="max-w-32 truncate text-muted-foreground" title={show.subject || DEFAULT_RESOURCE_SUBJECT}>{show.subject || DEFAULT_RESOURCE_SUBJECT}</TableCell>
+                <TableCell className="text-muted-foreground"><TableText text={show.subject || DEFAULT_RESOURCE_SUBJECT} /></TableCell>
                 <TableCell>
-                  <div className="flex items-center gap-1 overflow-hidden">
-                    {tags.slice(0, 2).map((tag) => <span key={tag} className="max-w-20 truncate rounded-md bg-secondary px-1.5 py-0.5 text-[11px]" title={tag}>{tag}</span>)}
-                    {tags.length > 2 && <span className="text-xs text-muted-foreground">+{tags.length - 2}</span>}
-                    {tags.length === 0 && <span className="text-muted-foreground">-</span>}
-                  </div>
+                  <TableTags tags={tags} />
                 </TableCell>
-                <TableCell><Badge variant="outline" className="text-[11px]">{show.status}</Badge></TableCell>
+                <TableCell><Badge variant="outline" className="max-w-full text-[11px]"><TableText text={show.status} /></Badge></TableCell>
                 <TableCell className="text-muted-foreground">{show.all_resource_ids?.length ?? show.resources.length}</TableCell>
                 <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{new Date(show.updated_at).toLocaleDateString("zh-CN")}</TableCell>
                 <TableCell>

@@ -1,3 +1,4 @@
+import { TableText } from "@/components/common/TableContent";
 import * as React from "react";
 import {
   AlertTriangle,
@@ -66,7 +67,8 @@ export function FontCheckPanel({
           {/* 展开后的紧凑列表 */}
           {expanded && (
             <div className={cn("mt-1.5 overflow-y-auto", maxHeight)}>
-              <table className="w-full text-xs">
+              <table className="w-full table-fixed text-xs">
+                <colgroup><col className="w-5" /><col /><col className="w-[45%]" /></colgroup>
                 <tbody>
                   {local.rows.map((row, i) => {
                     const isOk = row.available === true;
@@ -97,9 +99,7 @@ export function FontCheckPanel({
                           <Icon className={cn("h-3.5 w-3.5", toneClass)} />
                         </td>
                         <td className="py-1 pr-2 align-middle font-medium">
-                          <span className="block truncate max-w-[160px]" title={row.font}>
-                            {row.font}
-                          </span>
+                          <TableText text={row.font} />
                         </td>
                         <td
                           className={cn(
@@ -107,7 +107,7 @@ export function FontCheckPanel({
                             toneClass,
                           )}
                         >
-                          {status}
+                          <TableText text={status} />
                         </td>
                       </tr>
                     );

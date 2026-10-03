@@ -1,5 +1,6 @@
 import { Download, Eye, GitBranch, ImageOff, Maximize, MoreHorizontal, Pencil } from "lucide-react";
 
+import { TableTags, TableText } from "@/components/common/TableContent";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -39,8 +40,8 @@ export function ResourceListView({
                 aria-label="选择本页素材"
               />
             </TableHead>
-            <TableHead className="w-16">预览</TableHead>
-            <TableHead className="min-w-48">名称</TableHead>
+            <TableHead className="w-20">预览</TableHead>
+            <TableHead>名称</TableHead>
             <TableHead className="w-28">主体</TableHead>
             <TableHead className="w-48">标签</TableHead>
             <TableHead className="w-20">状态</TableHead>
@@ -73,22 +74,16 @@ export function ResourceListView({
                   </button>
                 </TableCell>
                 <TableCell>
-                  <button type="button" className="max-w-[280px] truncate text-left font-medium hover:text-primary hover:underline" onClick={() => onOpen(resource)} title={resource.name}>
+                  <TableText text={resource.name} className="flex-1"><button type="button" className="w-full text-left font-medium hover:text-primary hover:underline" onClick={() => onOpen(resource)}>
                     {resource.name}
-                  </button>
+                  </button></TableText>
                   <div className="text-[11px] text-muted-foreground">ID {resource.id} · v{resource.current_version}</div>
                 </TableCell>
-                <TableCell className="max-w-28 truncate text-muted-foreground" title={resource.subject || DEFAULT_RESOURCE_SUBJECT}>
-                  {resource.subject || DEFAULT_RESOURCE_SUBJECT}
-                </TableCell>
+                <TableCell className="text-muted-foreground"><TableText text={resource.subject || DEFAULT_RESOURCE_SUBJECT} /></TableCell>
                 <TableCell>
-                  <div className="flex items-center gap-1 overflow-hidden">
-                    {tags.slice(0, 2).map((tag) => <span key={tag} className="max-w-20 truncate rounded-md bg-secondary px-1.5 py-0.5 text-[11px]" title={tag}>{tag}</span>)}
-                    {tags.length > 2 && <span className="text-xs text-muted-foreground">+{tags.length - 2}</span>}
-                    {tags.length === 0 && <span className="text-muted-foreground">-</span>}
-                  </div>
+                  <TableTags tags={tags} />
                 </TableCell>
-                <TableCell><Badge variant="outline" className="text-[11px]">{resource.status}</Badge></TableCell>
+                <TableCell><Badge variant="outline" className="max-w-full text-[11px]"><TableText text={resource.status} /></Badge></TableCell>
                 <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{new Date(resource.updated_at).toLocaleDateString("zh-CN")}</TableCell>
                 <TableCell>
                   <DropdownMenu>

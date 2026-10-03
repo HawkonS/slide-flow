@@ -1,3 +1,5 @@
+import { TableTags, TableText } from "@/components/common/TableContent";
+import { parseTags } from "@/lib/types";
 import * as React from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import {
@@ -594,11 +596,11 @@ export function ResourcePicker({
             </div>
           ) : currentViewMode === "list" ? (
             <div className="overflow-x-auto">
-              <Table className="min-w-[440px] table-fixed">
+              <Table className="min-w-[440px] xl:min-w-[568px] 2xl:min-w-[664px]">
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-8 px-1.5"><span className="sr-only">选择</span></TableHead>
-                    <TableHead className="w-16 px-1.5">预览</TableHead>
+                    <TableHead className="w-20 px-1.5">预览</TableHead>
                     <TableHead className="px-2">名称</TableHead>
                     <TableHead className="w-24 px-1.5">主体</TableHead>
                     <TableHead className="hidden w-32 px-2 xl:table-cell">标签</TableHead>
@@ -644,16 +646,12 @@ export function ResourcePicker({
                           </div>
                         </TableCell>
                         <TableCell className="px-2">
-                          <div className="max-w-[360px] truncate font-medium" title={r.name}>{r.name}</div>
+                          <TableText className="font-medium" text={r.name} />
                           <div className="text-[11px] text-muted-foreground">ID {r.id}</div>
                         </TableCell>
-                        <TableCell className="truncate px-1.5 text-muted-foreground" title={r.subject || "未设置主体"}>
-                          {r.subject || "未设置主体"}
-                        </TableCell>
+                        <TableCell className="px-1.5 text-muted-foreground"><TableText text={r.subject || "未设置主体"} /></TableCell>
                         <TableCell className="hidden px-2 xl:table-cell">
-                          <div className="max-w-44 truncate text-xs text-muted-foreground" title={r.tags || undefined}>
-                            {r.tags || "未设置标签"}
-                          </div>
+                          <TableTags tags={parseTags(r.tags)} emptyText="未设置标签" />
                         </TableCell>
                         <TableCell className="hidden whitespace-nowrap px-2 text-xs text-muted-foreground 2xl:table-cell">
                           {r.updated_at ? new Date(r.updated_at).toLocaleDateString("zh-CN") : "-"}
