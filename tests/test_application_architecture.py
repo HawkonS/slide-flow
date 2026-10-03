@@ -29,13 +29,27 @@ def _read_fixture(name: str):
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
+def _iter_effective_routes(routes):
+    """Flatten FastAPI's deferred included routers across supported versions."""
+    for route in routes:
+        effective_candidates = getattr(route, "effective_candidates", None)
+        if effective_candidates is not None:
+            yield from _iter_effective_routes(effective_candidates())
+        else:
+            yield route
+
+
 def _route_inventory(app: FastAPI) -> list[dict]:
     routes = []
-    for route in app.routes:
-        item = {"path": route.path, "name": route.name}
-        if isinstance(route, APIWebSocketRoute):
+    for route in _iter_effective_routes(app.routes):
+        original_route = getattr(route, "original_route", route)
+        effective_route = getattr(route, "starlette_route", route)
+        path = getattr(route, "path", None) or getattr(effective_route, "path", None)
+        name = getattr(route, "name", None) or getattr(effective_route, "name", None)
+        item = {"path": path, "name": name}
+        if isinstance(original_route, APIWebSocketRoute):
             item.update(kind="websocket", methods=[])
-        elif isinstance(route, Mount):
+        elif isinstance(original_route, Mount):
             item.update(kind="mount", methods=[])
         else:
             item.update(kind="http", methods=sorted(route.methods or []))
@@ -115,7 +129,11 @@ class ApplicationArchitectureTests(unittest.TestCase):
         ):
             with self.subTest(method=method, path=path):
                 scope = {"type": "http", "method": method, "path": path, "root_path": ""}
-                matches = [route for route in self.app.routes if route.matches(scope)[0] == Match.FULL]
+                matches = [
+                    route
+                    for route in _iter_effective_routes(self.app.routes)
+                    if route.matches(scope)[0] == Match.FULL
+                ]
                 self.assertTrue(matches)
                 self.assertEqual(matches[0].name, name)
 
