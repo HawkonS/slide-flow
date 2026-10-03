@@ -13,6 +13,7 @@ from typing import BinaryIO
 import logging
 import mimetypes
 import os
+import re
 import tempfile
 import threading
 import time
@@ -48,6 +49,11 @@ class StorageUnavailableError(RuntimeError):
 
 STORAGE_UNAVAILABLE_MESSAGE = "对象存储暂时不可用，请稍后重试；如持续失败，请联系管理员检查 OSS 网络"
 INTERNAL_ENDPOINT_COOLDOWN_SECONDS = 60
+# OSS service endpoints may have one bucket label (3-63 characters).
+_INTERNAL_OSS_HOST_RE = re.compile(
+    r"(?:[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\.)?"
+    r"oss-[a-z0-9]+(?:-[a-z0-9]+)*-internal\.aliyuncs\.com"
+)
 
 
 def is_oss_ref(value: str | None) -> bool:
@@ -84,7 +90,8 @@ def _is_internal_endpoint(endpoint: str) -> bool:
     if not endpoint:
         return False
     host = (urlparse(endpoint if "://" in endpoint else f"https://{endpoint}").hostname or "").lower()
-    return host.endswith("-internal.aliyuncs.com")
+    # A DNS root dot does not change the host; match the whole OSS hostname.
+    return _INTERNAL_OSS_HOST_RE.fullmatch(host.removesuffix(".")) is not None
 
 
 def public_asset_origin() -> str | None:

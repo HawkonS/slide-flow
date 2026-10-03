@@ -12,7 +12,7 @@ from PIL import Image
 from fastapi import UploadFile
 
 from app.config import settings
-from app.core.oss import OSSStorage, StorageConfigurationError, oss_key, oss_ref, public_asset_origin
+from app.core.oss import OSSStorage, StorageConfigurationError, _is_internal_endpoint, oss_key, oss_ref, public_asset_origin
 from app.middleware.http import SecurityHeadersMiddleware
 from app.services import files
 from app.core import storage as upload_storage
@@ -176,6 +176,56 @@ class OSSStorageTests(unittest.TestCase):
             self.assertEqual(oss_key(ref), "resources/png/example.png")
             with self.assertRaises(ValueError):
                 oss_key("oss://another/resources/png/example.png")
+
+    def test_internal_endpoint_recognizes_complete_oss_hostnames(self):
+        for endpoint in (
+            "https://oss-cn-beijing-internal.aliyuncs.com",
+            "oss-cn-hangzhou-internal.aliyuncs.com",
+            "http://oss-ap-southeast-1-internal.aliyuncs.com:80/",
+            "https://slides.oss-cn-beijing-internal.aliyuncs.com",
+            "https://SLIDES.OSS-CN-BEIJING-INTERNAL.ALIYUNCS.COM:443/",
+            "https://oss-cn-beijing-internal.aliyuncs.com./",
+            "slides.oss-cn-beijing-internal.aliyuncs.com.:443",
+        ):
+            with self.subTest(endpoint=endpoint):
+                self.assertTrue(_is_internal_endpoint(endpoint))
+
+    def test_internal_endpoint_does_not_match_similar_or_embedded_hostnames(self):
+        for endpoint in (
+            "",
+            "https://oss-cn-beijing.aliyuncs.com",
+            "https://cdn.example.com",
+            "https://other-service-internal.aliyuncs.com",
+            "https://not-oss-cn-beijing-internal.aliyuncs.com",
+            "https://nested.slides.oss-cn-beijing-internal.aliyuncs.com",
+            "https://-slides.oss-cn-beijing-internal.aliyuncs.com",
+            "https://slides_test.oss-cn-beijing-internal.aliyuncs.com",
+            "https://oss--internal.aliyuncs.com",
+            "https://oss-cn-beijing-internal.aliyuncs.com..",
+            "https://oss-cn-beijing-internal.aliyuncs.com.example.com",
+            "https://oss-cn-beijing-internal.aliyuncs.com@cdn.example.com",
+            "https://cdn.example.com/oss-cn-beijing-internal.aliyuncs.com",
+            "https://cdn.example.com/?host=oss-cn-beijing-internal.aliyuncs.com",
+        ):
+            with self.subTest(endpoint=endpoint):
+                self.assertFalse(_is_internal_endpoint(endpoint))
+
+    def test_configuration_rejects_internal_hostname_with_dns_root_dot(self):
+        for setting in ("oss_endpoint", "oss_public_endpoint"):
+            with (
+                self.subTest(setting=setting),
+                patch.object(settings, "storage_backend", "oss"),
+                patch.object(settings, "oss_endpoint", "https://oss-cn-beijing.aliyuncs.com"),
+                patch.object(settings, "oss_internal_endpoint", ""),
+                patch.object(settings, "oss_public_endpoint", ""),
+                patch.object(settings, "oss_bucket", "slides"),
+                patch.object(settings, "oss_access_key_id", "test-key"),
+                patch.object(settings, "oss_access_key_secret", "test-secret"),
+                patch.object(settings, setting, "https://slides.oss-cn-beijing-internal.aliyuncs.com.:443/"),
+            ):
+                error = OSSStorage().configuration_error()
+                self.assertIsNotNone(error)
+                self.assertIn("内网", error)
 
     def test_configuration_rejects_internal_endpoint_for_browser_urls(self):
         storage = OSSStorage()
