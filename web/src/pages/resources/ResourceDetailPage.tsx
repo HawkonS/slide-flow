@@ -680,17 +680,25 @@ function hasRemarkHtml(html: string) {
   return html.replace(/<[^>]*>/g, "").replace(/&nbsp;|&#160;|&#xA0;|\s/gi, "").length > 0;
 }
 
+const REMARK_PREVIEW_ENTITIES: Record<string, string> = {
+  "&nbsp;": " ",
+  "&#160;": " ",
+  "&#xa0;": " ",
+  "&amp;": "&",
+  "&lt;": "<",
+  "&gt;": ">",
+  "&quot;": '"',
+  "&#39;": "'",
+  "&apos;": "'",
+};
+
 function remarkPreviewText(html: string) {
   return html
     .replace(/<br\s*\/?\s*>/gi, " " )
     .replace(/<\/(p|div|li|h[1-6])>/gi, " " )
     .replace(/<[^>]*>/g, " " )
-    .replace(/&nbsp;|&#160;|&#xA0;/gi, " " )
-    .replace(/&amp;/gi, "&" )
-    .replace(/&lt;/gi, "<" )
-    .replace(/&gt;/gi, ">" )
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;|&apos;/gi, "'" )
+    // Decode only the original matches, so &amp;lt; remains literal &lt; text.
+    .replace(/&(?:nbsp|#160|#xa0|amp|lt|gt|quot|#39|apos);/gi, (entity) => REMARK_PREVIEW_ENTITIES[entity.toLowerCase()])
     .replace(/\s+/g, " " )
     .trim();
 }

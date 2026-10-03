@@ -64,6 +64,49 @@ before(async () => {
 });
 after(async () => { await browser?.close(); server?.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
 
+for (const { name, html, expected } of [
+  {
+    name: 'decode nested entities only once',
+    html: '<p>&amp;lt; &amp;gt; &amp;quot; &amp;#39; &amp;apos; &amp;nbsp; &amp;#160; &amp;#xA0; &amp;amp;lt;</p>',
+    expected: '&lt; &gt; &quot; &#39; &apos; &nbsp; &#160; &#xA0; &amp;lt;',
+  },
+  {
+    name: 'preserve ordinary entities and whitespace normalization',
+    html: '<p> A&nbsp;&#160;&#xA0;B<br/>C </p><div>&amp; &lt; &gt; &quot; &#39; &apos;</div><ul><li>D</li><li>E</li></ul>',
+    expected: 'A B C & < > " \' \' D E',
+  },
+  {
+    name: 'keep decoded markup and unknown entities as text',
+    html: '<p>&lt;b&gt;正文&lt;/b&gt; &unknown; &amp;unknown; &AMP;LT; &LT;</p>',
+    expected: '<b>正文</b> &unknown; &unknown; &LT; <',
+  },
+  {
+    name: 'retain empty remark placeholders',
+    html: '<p>&nbsp;&#160;&#xA0; <br/></p>',
+    expected: '',
+  },
+]) {
+  test(`resource remark previews ${name}`, { timeout: 15_000 }, async t => {
+    const context = await browser.newContext({ serviceWorkers: 'block' });
+    t.after(() => context.close());
+    const page = await context.newPage();
+    page.setDefaultTimeout(5000);
+    const detailToken = 'remark-preview-'.padEnd(32, 'a');
+    const remarkVersion = { ...version, common_remark_html: html };
+    await page.route('**/api/resources/by-key/*', route => route.fulfill({ json: {
+      resource: { ...resource, detail_token: detailToken, current: remarkVersion, versions: [remarkVersion] },
+    } }));
+    await page.route('**/api/resources/1/personal-remark*', route => route.fulfill({ json: { content_html: html, version_id: version.id } }));
+    await page.goto(origin + '/resources/' + detailToken);
+    await page.waitForLoadState('networkidle');
+    for (const label of ['通用备注', '个人备注']) {
+      const preview = page.getByRole('button', { name: new RegExp(label) }).locator('span.line-clamp-3');
+      assert.equal(await preview.textContent(), expected || `暂无${label}`, label);
+      assert.equal(await preview.locator('*').count(), 0, `${label} must render plain text`);
+    }
+  });
+}
+
 const routes = ['/home', '/resources', '/resources/review-resource', '/shows', '/shows/1', '/shows/1/iterate', '/manage/shows', '/manage/shows/new', '/manage/resources', '/manage/shares', '/manage/tasks', '/manage/offline-cache', '/manage/tags', '/admin/users', '/templates', '/fonts'];
 for (const width of [1440, 390, 320]) {
   test(`production pages remain usable at ${width}px`, { timeout: 90_000 }, async t => {
