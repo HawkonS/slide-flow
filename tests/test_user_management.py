@@ -21,6 +21,7 @@ from app.core.user_profiles import (
     delete_managed_avatar,
     is_managed_avatar_ref,
     username_lookup_key,
+    validate_avatar_url,
 )
 from app.db import DB_SCHEMA_VERSION, init_db, now_iso
 from app.routers import auth, config as config_router, feishu_auth, presentation, tags, users
@@ -1077,6 +1078,35 @@ class UserManagementTests(unittest.TestCase):
         self.assertEqual(audit["actor_user_id"], admin_id)
         self.assertEqual(audit["subject_user_id"], source_id)
         self.assertEqual(json.loads(audit["details"])["transferred_to"], target_id)
+
+    def test_avatar_url_expands_only_aliyun_endpoint_hosts(self):
+        for endpoint_setting in ("oss_endpoint", "oss_public_endpoint"):
+            for hostname, allow_bucket_host in (
+                ("aliyuncs.com", True),
+                ("oss-cn-hangzhou.aliyuncs.com", True),
+                ("OSS-CN-HANGZHOU.ALIYUNCS.COM.", True),
+                ("notaliyuncs.com", False),
+                ("cdn.notaliyuncs.com", False),
+                ("aliyuncs.com.example.com", False),
+                ("cdn.example.com", False),
+            ):
+                endpoint = f"https://{hostname}"
+                configured = {"oss_endpoint": "", "oss_public_endpoint": ""}
+                configured[endpoint_setting] = endpoint
+                with (
+                    self.subTest(setting=endpoint_setting, hostname=hostname),
+                    patch.multiple(settings, oss_bucket="slides", **configured),
+                ):
+                    direct_url = f"{endpoint}/avatar.png"
+                    self.assertEqual(validate_avatar_url(direct_url), direct_url)
+                    bucket_url = f"https://slides.{hostname}/avatar.png"
+                    if allow_bucket_host:
+                        self.assertEqual(validate_avatar_url(bucket_url), bucket_url)
+                    else:
+                        with self.assertRaises(ValueError):
+                            validate_avatar_url(bucket_url)
+                    with self.assertRaises(ValueError):
+                        validate_avatar_url(f"https://unconfigured.{hostname}/avatar.png")
 
     def test_avatar_upload_round_trip_delete_and_url_validation(self):
         admin_id = self.insert_user("root", role="system_admin")

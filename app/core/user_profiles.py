@@ -80,9 +80,10 @@ def _configured_avatar_hosts() -> set[str]:
                 continue
             parsed = urlparse(value if "://" in value else f"https://{value}")
             if parsed.hostname:
-                hosts.add(parsed.hostname.casefold().rstrip("."))
-                if settings.oss_bucket and parsed.hostname.endswith("aliyuncs.com"):
-                    hosts.add(f"{settings.oss_bucket}.{parsed.hostname}".casefold())
+                host = parsed.hostname.casefold().rstrip(".")
+                hosts.add(host)
+                if settings.oss_bucket and (host == "aliyuncs.com" or host.endswith(".aliyuncs.com")):
+                    hosts.add(f"{settings.oss_bucket}.{host}".casefold())
     return hosts
 
 
