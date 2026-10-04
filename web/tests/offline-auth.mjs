@@ -64,6 +64,7 @@ test('an external same-window identity lock clears queries, aborts verification 
     const original = window.fetch;
     const user = window.__offlineAuth.user;
     window.__offlineAuthTest.client.setQueryData(['private-data'], { private: true });
+    window.__offlineAuthTest.downloads.getState().addTask(10, 'Private deck', 'a');
     window.fetch = (input, init) => {
       if (String(input).endsWith('/api/me')) {
         window.__heldSignal = init.signal;
@@ -78,11 +79,12 @@ test('an external same-window identity lock clears queries, aborts verification 
   });
   await page.waitForFunction(() => !!window.__heldSignal && window.__offlineAuth.loading);
   const locked = await page.evaluate(() => {
-    const { client, session } = window.__offlineAuthTest;
+    const { client, session, downloads } = window.__offlineAuthTest;
     session.lockOfflineIdentity();
-    return { aborted: window.__heldSignal.aborted, queries: client.getQueryCache().getAll().length, locked: session.isOfflineLoggedOut() };
+    return { aborted: window.__heldSignal.aborted, queries: client.getQueryCache().getAll().length,
+      tasks: downloads.getState().tasks.size, locked: session.isOfflineLoggedOut() };
   });
-  assert.deepEqual(locked, { aborted: true, queries: 0, locked: true });
+  assert.deepEqual(locked, { aborted: true, queries: 0, tasks: 0, locked: true });
   await page.getByRole('heading', { name: '需要登录' }).waitFor();
   assert.equal(await page.getByTestId('protected-player').count(), 0);
   assert.equal(await page.evaluate(() => window.__offlineAuthTest.lifecycle.unmounted), 1);
@@ -96,8 +98,9 @@ test('normal local adoption and lease publication do not re-enter authentication
   const { page, errors } = await setup(t);
   assert.equal(state.meRequests, 1, 'initial identity adoption must not start another /me request');
   await page.evaluate(() => {
-    const { client, session } = window.__offlineAuthTest;
+    const { client, session, downloads } = window.__offlineAuthTest;
     client.setQueryData(['same-account-data'], { retained: true });
+    downloads.getState().addTask(10, 'Same account deck', 'a');
     const identity = session.readOfflineIdentity();
     session.grantOfflineLease(identity, new Date(Date.now() + 60_000).toISOString());
     session.notifyPwaChange(17);
@@ -105,10 +108,12 @@ test('normal local adoption and lease publication do not re-enter authentication
   await page.evaluate(() => window.__offlineAuth.reload());
   assert.equal(state.meRequests, 2);
   assert.deepEqual(await page.evaluate(() => window.__offlineAuthTest.client.getQueryData(['same-account-data'])), { retained: true });
+  assert.equal(await page.evaluate(() => window.__offlineAuthTest.downloads.getState().tasks.size), 1);
   state.userId = 2;
   await page.evaluate(() => window.__offlineAuth.reload());
   await page.waitForFunction(() => window.__offlineAuth.user?.id === 2 && !window.__offlineAuth.loading);
   assert.equal(state.meRequests, 3, 'account adoption must not recursively revalidate');
+  assert.equal(await page.evaluate(() => window.__offlineAuthTest.downloads.getState().tasks.size), 0);
   assert.deepEqual(await page.evaluate(() => window.__offlineAuthTest.lifecycle), { mounted: 1, unmounted: 0 });
   assert.equal(await page.evaluate(() => window.__offlineAuthTest.session.isOfflineLoggedOut()), false);
   assert.deepEqual(errors, []);

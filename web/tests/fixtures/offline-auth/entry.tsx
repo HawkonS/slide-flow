@@ -4,10 +4,11 @@ import { BrowserRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider, RequireAuth, useAuth } from '@/lib/auth';
 import * as session from '@/lib/offline-session';
+import { useDownloadManager } from '@/stores/download-manager';
 
 const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 const lifecycle = { mounted: 0, unmounted: 0 };
-Object.assign(window, { __offlineAuthTest: { client, lifecycle, session } });
+Object.assign(window, { __offlineAuthTest: { client, lifecycle, session, downloads: useDownloadManager } });
 function AuthBridge() {
   const auth = useAuth();
   useEffect(() => { Object.assign(window, { __offlineAuth: auth }); }, [auth]);

@@ -454,6 +454,13 @@ def update_show_resources(
     for rid in set(payload.resource_ids) - existing.keys():
         if not can_view_resource(db, _resource_row(db, rid), user):
             raise HTTPException(403, "部分新增素材不可访问，请重新选择")
+    removed_ids = existing.keys() - set(payload.resource_ids)
+    if removed_ids:
+        marks = ','.join('?' for _ in removed_ids)
+        db.execute(
+            f"DELETE FROM show_remarks WHERE show_id = ? AND resource_id IN ({marks})",
+            [show_id, *removed_ids],
+        )
     db.execute("DELETE FROM show_resources WHERE show_id = ?", (show_id,))
     for index, rid in enumerate(payload.resource_ids):
         version_no = existing.get(rid)

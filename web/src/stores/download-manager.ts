@@ -32,6 +32,7 @@ interface CompletedMessage {
   file_name: string;
   file_size: number;
   watermark_applied?: boolean;
+  watermark_requested?: boolean;
 }
 
 interface FailedMessage {
@@ -56,7 +57,7 @@ interface DownloadManagerState {
   wsConnected: boolean;
   /** WebSocket lifecycle */
   connect: (userKey: string) => void;
-  disconnect: () => void;
+  disconnect: (clearTasks?: boolean) => void;
   /** Task management */
   addTask: (taskId: number, showName: string, trackCode: string) => void;
   removeTask: (taskId: number) => void;
@@ -162,10 +163,11 @@ function maybeShrinkAutoTriggered(currentTaskIds: Iterable<number>) {
   }
 }
 
-function triggerBrowserDownload(taskId: number, fileName: string) {
-  // 复用 downloadFile：HEAD 预检 + 浏览器原生流式下载，失败时 toast 提示
+function triggerBrowserDownload(taskId: number, fileName: string, userKey = wsRuntime.userKey) {
+  if (wsRuntime.manuallyClosed || wsRuntime.userKey !== userKey) return;
+  // 复用 downloadFile：Range 预检 + 浏览器原生流式下载，失败时 toast 提示
   void downloadFile(`/api/downloads/${taskId}/file`, fileName).catch((err) =>
-    toast.error(err instanceof Error ? err.message : "下载失败"),
+    wsRuntime.userKey === userKey && !wsRuntime.manuallyClosed && toast.error(err instanceof Error ? err.message : "下载失败"),
   );
 }
 
@@ -189,6 +191,7 @@ export const useDownloadManager = create<DownloadManagerState>((set, get) => {
     } catch {
       return;
     }
+    if (!msg || typeof msg !== "object" || typeof msg.type !== "string") return;
 
     const eventId = (msg as { event_id?: unknown }).event_id;
     if (typeof eventId === "number" && Number.isInteger(eventId) && eventId >= 0) {
@@ -227,6 +230,7 @@ export const useDownloadManager = create<DownloadManagerState>((set, get) => {
       }
       case "download_completed": {
         const m = msg as CompletedMessage;
+        const userKey = wsRuntime.userKey;
         const task = get().tasks.get(m.task_id);
         updateTask(m.task_id, {
           status: "completed",
@@ -256,13 +260,13 @@ export const useDownloadManager = create<DownloadManagerState>((set, get) => {
             action: {
               label: "点击下载",
               onClick: () => {
-                triggerBrowserDownload(m.task_id, m.file_name);
+                triggerBrowserDownload(m.task_id, m.file_name, userKey);
               },
             },
           });
           // 水印添加失败提醒：后端明确返回 watermark_applied === false
           // 表示文件未成功嵌入水印，需要提示用户。
-          if (m.watermark_applied === false) {
+          if (m.watermark_requested === true && m.watermark_applied === false) {
             toast.warning("下载已完成，但水印添加失败，文件不包含水印");
           }
         }
@@ -326,26 +330,32 @@ export const useDownloadManager = create<DownloadManagerState>((set, get) => {
       return;
     }
     wsRuntime.socket = socket;
+    const userKey = wsRuntime.userKey;
+    const isCurrent = () => wsRuntime.socket === socket && !wsRuntime.manuallyClosed && wsRuntime.userKey === userKey;
 
     socket.onopen = () => {
+      if (!isCurrent()) return;
       wsRuntime.reconnectAttempts = 0;
       wsRuntime.givenUp = false;
       set({ wsConnected: true });
     };
 
     socket.onmessage = (event) => {
+      if (!isCurrent()) return;
       if (typeof event.data === "string") {
         handleMessage(event.data);
       }
     };
 
     socket.onclose = () => {
+      if (!isCurrent()) return;
       wsRuntime.socket = null;
       set({ wsConnected: false });
       scheduleReconnect();
     };
 
     socket.onerror = () => {
+      if (!isCurrent()) return;
       // 浏览器原生会输出一条 WebSocket error，无法静默；
       // 这里仅做调试日志（debug 级别），并由 onclose 触发重连
       console.debug("[download-manager] WebSocket 出错，等待 onclose 触发重连");
@@ -362,10 +372,13 @@ export const useDownloadManager = create<DownloadManagerState>((set, get) => {
     wsConnected: false,
 
     connect: (userKey: string) => {
-      wsRuntime.manuallyClosed = false;
       if (wsRuntime.userKey !== userKey) {
+        get().disconnect();
+        autoTriggeredTasks.clear();
+        set({ tasks: new Map() });
         wsRuntime.lastEventId = loadEventCursor(userKey);
       }
+      wsRuntime.manuallyClosed = false;
       wsRuntime.userKey = userKey;
       // 用户主动调用 connect 视为重置“放弃”状态，允许重新尝试一轮
       wsRuntime.givenUp = false;
@@ -382,7 +395,7 @@ export const useDownloadManager = create<DownloadManagerState>((set, get) => {
       openSocket();
     },
 
-    disconnect: () => {
+    disconnect: (clearTasks = true) => {
       wsRuntime.manuallyClosed = true;
       wsRuntime.givenUp = false;
       wsRuntime.reconnectAttempts = 0;
@@ -399,7 +412,7 @@ export const useDownloadManager = create<DownloadManagerState>((set, get) => {
           // ignore
         }
       }
-      set({ wsConnected: false });
+      set(clearTasks ? { wsConnected: false, tasks: new Map() } : { wsConnected: false });
     },
 
     addTask: (taskId, showName, trackCode) => {

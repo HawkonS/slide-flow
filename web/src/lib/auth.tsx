@@ -4,6 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { api, advanceApiSession, ApiError, ApiTransportError, setUnauthorizedHandler } from "@/lib/api";
 import { isAdminRole, isSystemAdminRole, type CurrentUser } from "@/lib/types";
+import { useDownloadManager } from "@/stores/download-manager";
 import {
   beginOfflineLogin, completeOfflineLogin, installOfflineSessionSync, isOfflineLoggedOut,
   isOfflineRouteAllowed, lockOfflineIdentity, offlineAuthEpoch, offlineOwnerKey,
@@ -49,6 +50,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const clearClient = useCallback(() => {
     advanceApiSession();
+    useDownloadManager.getState().disconnect();
     requests.current++;
     pending.current?.abort();
     pending.current = null;
@@ -75,6 +77,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const onlineUserChanged = userRef.current && (userRef.current.id !== verified.id
       || userRef.current.session_version !== verified.session_version);
     if (onlineUserChanged || (previous && (!next || offlineOwnerKey(previous) !== offlineOwnerKey(next)))) {
+      useDownloadManager.getState().disconnect();
       advanceApiSession(); queryClient.clear(); purgePrevious(previous);
     }
     epochRef.current = offlineAuthEpoch();

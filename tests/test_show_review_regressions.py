@@ -3,7 +3,7 @@ import unittest
 
 from app.db import now_iso
 from app.routers import show_shares
-from app.routers.shows import catalog, versions
+from app.routers.shows import catalog, versions, remarks
 from app.routers.dependencies import db_dep
 from tests import test_resource_share_management as share_fixtures
 
@@ -17,6 +17,7 @@ class ShowReviewTests(unittest.TestCase):
         share_fixtures.ResourceShareManagementTests.setUp(self)
         self.client.app.include_router(catalog.router)
         self.client.app.include_router(versions.router)
+        self.client.app.include_router(remarks.router)
         self.client.app.include_router(show_shares.router)
 
         def transactional_db():
@@ -159,6 +160,37 @@ class ShowReviewTests(unittest.TestCase):
     def test_names_and_page_lists_reject_invalid_input(self):
         for payload in [{'name': '  '}, {'name': 'x' * 201}, {'name': 'ok', 'resource_ids': [self.own, self.own]}, {'name': 'ok', 'resource_ids': [-1]}]:
             self.assertEqual(self.client.post('/api/shows', json=payload).status_code, 422)
+
+    def test_notes_require_an_accessible_page_in_the_show(self):
+        for resource_id, expected in ((self.own, 200), (self.private, 403), (self.extra, 404), (99999, 404)):
+            url = f'/api/shows/{self.show_id}/remarks/{resource_id}'
+            with self.subTest(resource_id=resource_id):
+                response = self.client.put(url, json={'content_html': '<p>演讲要点</p>'})
+                self.assertEqual(response.status_code, expected, response.text)
+                self.assertEqual(self.client.get(url).status_code, expected)
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM show_remarks').fetchone()[0], 1)
+
+    def test_removing_page_removes_notes_but_reordering_preserves_them(self):
+        url = f'/api/shows/{self.show_id}/remarks/{self.own}'
+        self.assertEqual(self.client.put(url, json={'content_html': '<p>演讲要点</p>'}).status_code, 200)
+        for ids in ([self.private, self.own], [self.private]):
+            response = self.client.put(f'/api/shows/{self.show_id}/resources', json={'resource_ids': ids})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(self.db.execute('SELECT COUNT(*) FROM show_remarks').fetchone()[0], int(self.own in ids))
+        self.assertEqual(self.client.put(url, json={'content_html': '过期页面编辑'}).status_code, 404)
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM show_remarks').fetchone()[0], 0)
+
+    def test_archived_pinned_page_notes_remain_editable_but_missing_versions_do_not(self):
+        self.db.execute('UPDATE resource_versions SET deleted_at = ? WHERE resource_id = ?', (now_iso(), self.own))
+        self.db.execute('UPDATE resources SET deleted_at = ? WHERE id = ?', (now_iso(), self.own))
+        self.db.commit()
+        url = f'/api/shows/{self.show_id}/remarks/{self.own}'
+        self.assertEqual(self.client.put(url, json={'content_html': '<p>保留页面</p>'}).status_code, 200)
+        self.assertEqual(self.client.get(url).json()['content_html'], '<p>保留页面</p>')
+        self.db.execute('UPDATE show_resources SET version_no = 99 WHERE resource_id = ?', (self.own,))
+        self.db.commit()
+        self.assertEqual(self.client.get(url).status_code, 404)
+        self.assertEqual(self.client.put(url, json={'content_html': ''}).status_code, 404)
 
     def test_detail_and_update_queries_do_not_grow_per_visible_page(self):
         ids = [self.insert_resource(owner=self.alice, name=f"性能页{i}")[0] for i in range(40)]

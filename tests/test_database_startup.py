@@ -114,6 +114,25 @@ class DatabaseStartupTests(unittest.TestCase):
             original_users,
         )
 
+    def test_read_pool_can_open_readonly_connections(self):
+        """Read dependencies must not try to change journal mode."""
+        path = settings.db_dir / 'readonly.db'
+        with sqlite3.connect(path) as writer:
+            writer.execute('CREATE TABLE sample (value INTEGER)')
+            writer.execute('INSERT INTO sample VALUES (7)')
+        writer.close()
+        pool = database._ConnectionPool(path, readonly=True)
+        self.addCleanup(pool.close_all)
+        connection = pool.acquire()
+        try:
+            self.assertEqual(connection.execute('SELECT value FROM sample').fetchone()[0], 7)
+            self.assertEqual(connection.execute('PRAGMA journal_mode').fetchone()[0], 'delete')
+            with self.assertRaises(sqlite3.OperationalError):
+                connection.execute('INSERT INTO sample VALUES (8)')
+        finally:
+            connection.rollback()
+            pool.release(connection)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -172,7 +172,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
 
 export function AppShell() {
   const location = useLocation();
-  const { user, logout, offline } = useAuth();
+  const { user, logout, offline, epoch } = useAuth();
   const pwaStatus = usePwaStatus();
   const [sheetOpen, setSheetOpen] = useState(false);
 
@@ -181,15 +181,20 @@ export function AppShell() {
   }, [location.pathname]);
 
   // 用户登录后初始化全局 WebSocket 连接，用于接收异步任务推送
-  // 同源 WebSocket 通过 httpOnly Cookie 鉴权；用户 ID 只用于隔离事件游标。
+  // 同源 WebSocket 通过 httpOnly Cookie 鉴权；会话标识用于隔离任务和事件游标。
   useEffect(() => {
-    if (!user || user.must_change_pwd || offline) return;
-    const userKey = String(user.id);
+    if (!user || user.must_change_pwd) {
+      useDownloadManager.getState().disconnect();
+      return;
+    }
+    if (offline) return;
+    const userKey = `${user.id}:${user.session_version ?? 0}:${epoch}`;
     useDownloadManager.getState().connect(userKey);
     return () => {
-      useDownloadManager.getState().disconnect();
+      // 临时离线和 StrictMode 重挂载仍保留同一会话的任务。
+      useDownloadManager.getState().disconnect(false);
     };
-  }, [user?.id, user?.must_change_pwd, offline]);
+  }, [user?.id, user?.session_version, user?.must_change_pwd, offline, epoch]);
 
   const userDisplayName = user?.name || user?.username || "";
   const userRoleText =

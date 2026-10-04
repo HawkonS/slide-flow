@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PIL import Image
 from app.config import settings
-from app.core.oss import StorageConfigurationError
+from app.core.oss import StorageConfigurationError, StorageUnavailableError
 from app.core.oss import asset_url as _oss_asset_url
 from app.core.oss import is_oss_ref
 from app.core.oss import oss_ref
@@ -183,6 +183,9 @@ def _resource_file_abs(stored_path: str | None) -> Path | None:
             if scope is not None:
                 scope.add(path)
             return path
+        except (StorageConfigurationError, StorageUnavailableError):
+            # Storage outages are retryable failures, never an absent page.
+            raise
         except Exception:
             logger.exception("OSS 对象下载失败: %s", stored_path)
             return None

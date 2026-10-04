@@ -4,7 +4,7 @@ import test from 'node:test';
 import ts from 'typescript';
 const source = await readFile(new URL('../src/lib/api.ts', import.meta.url), 'utf8');
 const js = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
-const { api, responseErrorMessage, ApiTransportError, advanceApiSession, setUnauthorizedHandler } = await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'));
+const { api, downloadFile, responseErrorMessage, ApiTransportError, advanceApiSession, setUnauthorizedHandler } = await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'));
 
 test('validation messages describe fields without echoing rejected secrets or internal errors', () => {
   const detail = [{ loc: ['body', 'password'], input: 'secret-password', msg: 'secret-password failed' }];
@@ -33,4 +33,23 @@ test('late unauthorized response cannot log out a newer session', async t => {
   resolve(new Response('{}', { status: 401 }));
   await assert.rejects(pending);
   assert.equal(unauthorized, 0);
+});
+
+test('download preflight cannot trigger a browser download in a later login session', async t => {
+  const originalFetch = globalThis.fetch, originalDocument = globalThis.document;
+  t.after(() => { globalThis.fetch = originalFetch; globalThis.document = originalDocument; });
+  let resolve, clicks = 0;
+  globalThis.document = {
+    body: { appendChild() {} },
+    createElement: () => ({ click() { clicks++; }, remove() {} }),
+  };
+  globalThis.fetch = () => new Promise(r => { resolve = r; });
+  const pending = downloadFile('/api/downloads/1/file', 'slides.pptx');
+  advanceApiSession();
+  resolve(new Response('x', { status: 206 }));
+  await pending;
+  assert.equal(clicks, 0);
+  globalThis.fetch = async () => new Response('x', { status: 206 });
+  await downloadFile('/api/downloads/2/file', 'current.pptx');
+  assert.equal(clicks, 1);
 });

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from app.config import settings
 from app.core.permissions import SESSION_COOKIE
+from app.core.origins import require_browser_origin
 from app.core.security import read_session_claims
 from app.core.task_events import fetch_task_events
 from app.core.task_events import latest_task_event_id
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi import WebSocket
 from fastapi import WebSocketDisconnect
 import asyncio
@@ -18,25 +19,38 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _session_is_current(token: str | None) -> bool:
+    claims = read_session_claims(token, settings.secret_key)
+    if claims is None:
+        return False
+    user_id, session_version = claims
+    from app.db import get_read_db, release_db
+    db = get_read_db()
+    try:
+        user = db.execute(
+            "SELECT session_version, must_change_pwd FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        return bool(user and int(user["session_version"]) == session_version and not user["must_change_pwd"])
+    finally:
+        release_db(db, readonly=True)
+
+
 @router.websocket("/ws/tasks")
 async def ws_tasks(websocket: WebSocket) -> None:
     """Stream durable task events for the authenticated user."""
+    try:
+        require_browser_origin(websocket)
+    except HTTPException:
+        await websocket.close(code=1008)
+        return
     cookie_token = websocket.cookies.get(SESSION_COOKIE)
     claims = read_session_claims(cookie_token, settings.secret_key) if cookie_token else None
     if not claims:
         # 未认证：拒绝握手
         await websocket.close(code=1008)
         return
-    user_id, session_version = claims
-    from app.db import get_read_db, release_db
-    db = get_read_db()
-    try:
-        user = db.execute(
-            "SELECT session_version, must_change_pwd FROM users WHERE id = ?", (int(user_id),)
-        ).fetchone()
-    finally:
-        release_db(db, readonly=True)
-    if user is None or int(user["session_version"]) != int(session_version) or user["must_change_pwd"]:
+    user_id, _ = claims
+    if not await asyncio.to_thread(_session_is_current, cookie_token):
         await websocket.close(code=1008)
         return
     user_id = int(user_id)
@@ -59,6 +73,9 @@ async def ws_tasks(websocket: WebSocket) -> None:
     try:
         while True:
             try:
+                if not await asyncio.to_thread(_session_is_current, cookie_token):
+                    await websocket.close(code=1008)
+                    return
                 events = await asyncio.to_thread(
                     fetch_task_events,
                     user_id,

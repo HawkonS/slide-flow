@@ -368,6 +368,14 @@ class OSSStorageTests(unittest.TestCase):
                 self.assertTrue(target.exists())
             self.assertFalse(target.exists())
 
+    def test_materialization_preserves_retryable_storage_failures(self):
+        from app.core.oss import StorageConfigurationError, StorageUnavailableError
+        for error_type in (StorageConfigurationError, StorageUnavailableError):
+            with self.subTest(error=error_type.__name__), \
+                 patch.object(files.oss_storage, 'materialize', side_effect=error_type('storage unavailable')), \
+                 self.assertRaises(error_type):
+                files._resource_file_abs('oss://slides/resources/ppt/asset.pptx')
+
     def test_upload_can_stage_through_oss_before_local_processing(self):
         class FakeStorage:
             def __init__(self):

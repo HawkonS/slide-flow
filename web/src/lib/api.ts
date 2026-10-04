@@ -269,6 +269,8 @@ export async function downloadFile(path: string, fileName?: string): Promise<voi
   } catch {
     // 忽略取消失败
   }
+  // A successful preflight may finish after logout or an account switch.
+  if (requestGeneration !== sessionGeneration) return;
   const a = document.createElement("a");
   a.href = path;
   if (fileName) a.download = fileName;

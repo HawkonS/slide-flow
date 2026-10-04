@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import re
 import shutil
 import sqlite3
@@ -403,6 +404,129 @@ class DownloadPermissionTests(unittest.TestCase):
         self.db.execute('UPDATE tasks SET result_data = ? WHERE id = ?', (json.dumps(result), task_id))
         self.db.commit()
         self.assertEqual(self.client.get(f'/api/downloads/{task_id}/file').status_code, 410)
+
+    def test_all_formats_reject_missing_pages_instead_of_caching_partial_exports(self):
+        self.authenticate(1)
+        for suffix in ('pptx', 'png'):
+            (self.assets / f'21-v1.{suffix}').unlink()
+        for kind in ('pdf', 'pptx-images', 'pptx', 'pptx?with_fonts=true', 'zip'):
+            with self.subTest(sync=kind):
+                response = self.client.get(f'/api/shows/10/download/{kind}')
+                self.assertEqual(response.status_code, 409, response.text)
+        for kind in ('pdf', 'pptx_images', 'pptx', 'pptx_pages', 'zip'):
+            with self.subTest(async_type=kind), self.assertRaises(HTTPException) as error:
+                self.generate(owner_id=1, download_type=kind)
+            self.assertEqual(error.exception.status_code, 409)
+        self.assertEqual(list((self.output / 'cache').glob('*')), [])
+        self.assertEqual(list((self.output / 'tasks').glob('*')), [])
+
+    def test_watermark_failures_never_publish_unmarked_exports(self):
+        staging = self.root / 'staging'
+        staging.mkdir()
+        with patch.object(tempfile, 'tempdir', str(staging)), \
+             patch.object(download_tasks, 'add_watermark_to_image', side_effect=OSError('watermark failed')), \
+             patch.object(download_tasks, 'add_watermark_to_pptx', side_effect=OSError('watermark failed')):
+            for kind in ('pdf', 'pptx_images', 'pptx', 'pptx_pages', 'zip'):
+                with self.subTest(kind=kind), self.assertRaises(OSError):
+                    self.generate(download_type=kind, user_watermark='Requested')
+                self.assertEqual(list(staging.iterdir()), [])
+                self.assertEqual(list((self.output / 'tasks').glob('*')), [])
+        with TestClient(self.client.app, raise_server_exceptions=False) as client, \
+             patch.object(tempfile, 'tempdir', str(staging)), \
+             patch.object(show_downloads, 'add_watermark_to_image', side_effect=OSError('watermark failed')), \
+             patch.object(show_downloads, 'add_watermark_to_pptx', side_effect=OSError('watermark failed')):
+            client.cookies.update(self.client.cookies)
+            for kind in ('pdf', 'pptx-images', 'pptx', 'zip'):
+                with self.subTest(sync=kind):
+                    response = client.get(f'/api/shows/10/download/{kind}', params={'watermark': 'Requested'})
+                    self.assertGreaterEqual(response.status_code, 400)
+                    self.assertEqual(list(staging.iterdir()), [])
+
+    def test_sync_outputs_are_cleaned_after_delivery_but_shared_cache_survives(self):
+        staging = self.root / 'staging'
+        staging.mkdir()
+        with patch.object(tempfile, 'tempdir', str(staging)):
+            for kind in ('pdf', 'pptx-images', 'pptx', 'pptx?with_fonts=true', 'zip'):
+                with self.subTest(kind=kind):
+                    response = self.client.get(f'/api/shows/10/download/{kind}')
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(list(staging.iterdir()), [])
+            caches = {file: file.read_bytes() for file in (self.output / 'cache').iterdir()}
+            self.assertTrue(caches)
+            for kind in ('pdf', 'pptx-images', 'pptx', 'pptx?with_fonts=true'):
+                self.assertEqual(self.client.get(f'/api/shows/10/download/{kind}').status_code, 200)
+            self.assertEqual(caches, {file: file.read_bytes() for file in (self.output / 'cache').iterdir()})
+
+    def test_cancelled_generation_cleans_outputs_and_parallel_staging(self):
+        staging = self.root / 'staging'
+        staging.mkdir()
+        def cancel(progress, message):
+            raise download_tasks.DownloadTaskCancelled()
+        with patch.object(tempfile, 'tempdir', str(staging)):
+            for kind in ('pdf', 'pptx_images', 'pptx', 'pptx_pages', 'zip'):
+                task_id, params = self.add_task(owner_id=1, download_type=kind, user_watermark='Requested')
+                with self.subTest(kind=kind), self.assertRaises(download_tasks.DownloadTaskCancelled):
+                    download_tasks._generate_download_file_sync(task_id, params, progress_callback=cancel)
+                self.assertEqual(list(staging.iterdir()), [])
+                self.assertEqual(list((self.output / 'tasks').glob('*')), [])
+
+    def test_export_cleanup_runs_even_if_response_send_fails(self):
+        path = self.root / 'export.pptx'
+        path.write_bytes(b'generated')
+        response = show_downloads._generated_file_response(path, media_type='application/octet-stream', filename='export.pptx')
+        response.cleanup_export = path.unlink
+        async def disconnected(message):
+            raise OSError('client disconnected')
+        with self.assertRaises(OSError):
+            asyncio.run(response({'type': 'http', 'method': 'GET', 'headers': []}, None, disconnected))
+        self.assertFalse(path.exists())
+
+    def test_zip_keeps_distinct_pages_when_names_collide_after_sanitization(self):
+        self.db.execute("UPDATE resources SET name = 'Same' WHERE id = 20")
+        self.db.execute("UPDATE resources SET name = 'same' WHERE id = 21")
+        self.db.commit()
+        self.authenticate(1)
+        sync = self.client.get('/api/shows/10/download/zip')
+        self.assertEqual(sync.status_code, 200)
+        _, result = self.generate(owner_id=1)
+        for source in (BytesIO(sync.content), result['file_path']):
+            with zipfile.ZipFile(source) as archive:
+                names = [name for name in archive.namelist() if name.endswith('.pptx')]
+                self.assertEqual(len({name.casefold() for name in names}), 2)
+                self.assertEqual({archive.read(name) for name in names},
+                                 {(self.assets / '20-v1.pptx').read_bytes(), (self.assets / '21-v1.pptx').read_bytes()})
+
+    def test_cache_publication_is_atomic_and_failed_refresh_keeps_previous_file(self):
+        source = self.root / 'fresh.zip'
+        source.write_bytes(b'complete old output')
+        cached = cache._save_to_cache(source, 'example', 'zip')
+        source.write_bytes(b'complete new output')
+        def interrupted(src, stage):
+            Path(stage).write_bytes(b'partial')
+            self.assertEqual(cache._get_cached_download('example', 'zip').read_bytes(), b'complete old output')
+            raise OSError('interrupted write')
+        with patch.object(cache.shutil, 'copyfile', side_effect=interrupted), self.assertRaises(OSError):
+            cache._save_to_cache(source, 'example', 'zip')
+        self.assertEqual(cached.read_bytes(), b'complete old output')
+        self.assertEqual(list(cached.parent.iterdir()), [cached])
+        cache._save_to_cache(source, 'example', 'zip')
+        self.assertEqual(cached.read_bytes(), b'complete new output')
+
+    def test_font_and_show_name_changes_invalidate_export_cache(self):
+        self.generate(download_type='pptx', with_fonts=True)
+        with patch.object(download_tasks, '_generate_pptx', wraps=download_tasks._generate_pptx) as generated:
+            self.generate(download_type='pptx', with_fonts=True)
+            generated.assert_not_called()
+            self.db.execute("INSERT INTO fonts VALUES ('New font', '[\"New font\"]', 'new.ttf')")
+            self.db.commit()
+            self.generate(download_type='pptx', with_fonts=True)
+            self.assertEqual(generated.call_count, 1)
+            self.db.execute("UPDATE shows SET name = 'Renamed'")
+            self.db.commit()
+            _, result = self.generate(download_type='pptx', with_fonts=True)
+            self.assertEqual(generated.call_count, 2)
+            with zipfile.ZipFile(result['file_path']) as archive:
+                self.assertIn('Renamed.pptx', archive.namelist())
 
 
 if __name__ == '__main__':

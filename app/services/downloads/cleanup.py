@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from datetime import timedelta
-from pathlib import Path
+from app.services.downloads.cache import _cleanup_expired_cache
 import asyncio
 import json
 import logging
@@ -21,6 +21,7 @@ async def _download_cleanup_loop() -> None:
         except asyncio.CancelledError:
             return
         try:
+            await asyncio.to_thread(_cleanup_expired_cache)
             cutoff = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S")
             db = get_write_db()
             try:
@@ -35,14 +36,12 @@ async def _download_cleanup_loop() -> None:
                         result = json.loads(task["result_data"] or "{}")
                     except (ValueError, TypeError):
                         result = {}
+                    if not isinstance(result, dict):
+                        result = {}
                     if result.get("expired"):
                         continue
-                    fp = result.get("file_path")
-                    if fp:
-                        try:
-                            Path(fp).unlink(missing_ok=True)
-                        except Exception:
-                            logger.warning("清理过期下载文件失败 task_id=%s path=%s", task["id"], fp, exc_info=True)
+                    from app.core.download_tasks import cleanup_download_task_output
+                    cleanup_download_task_output(int(task["id"]))
                     db.execute(
                         "UPDATE tasks SET result_data = ?,"
                         " updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
