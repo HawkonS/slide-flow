@@ -53,7 +53,7 @@ function isValidValue(raw: string, type: ConfigItem["type"]): boolean {
 
 export function AdminConfigPage() {
   const qc = useQueryClient();
-  const { data, isLoading, isError, error } = useQuery({
+  const { data, isFetching, isError, error } = useQuery({
     queryKey: ["admin", "config"],
     queryFn: async () => api<ConfigResponse>("/api/admin/config"),
   });
@@ -149,18 +149,21 @@ export function AdminConfigPage() {
     setSecretOriginals({});
   };
 
-  if (isLoading) {
+  // A cached error can be refetched when the route is mounted again. During
+  // that request TanStack Query reports `isError` and `isFetching` together,
+  // while `isLoading` is false. Keep the transient request state neutral so
+  // the page does not flash the error panel before the response arrives.
+  if (!data) {
+    if (isError && !isFetching) {
+      return (
+        <div className="rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
+          加载失败：{(error as Error)?.message || "未知错误"}
+        </div>
+      );
+    }
     return (
       <div className="flex h-64 items-center justify-center text-sm text-muted-foreground">
         <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 加载中…
-      </div>
-    );
-  }
-
-  if (isError || !data) {
-    return (
-      <div className="rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
-        加载失败：{(error as Error)?.message || "未知错误"}
       </div>
     );
   }
