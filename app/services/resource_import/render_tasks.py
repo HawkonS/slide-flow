@@ -34,6 +34,7 @@ from app.services.resource_import.sessions import (
     _write_resource_import_session,
 )
 from app.services.resource_import.validation import _validate_import_image
+from app.services.resource_import.validation import _split_import_pages
 
 logger = logging.getLogger(__name__)
 
@@ -405,10 +406,36 @@ def create_render_task(session: dict[str, Any]) -> sqlite3.Row:
     try:
         if shutil.disk_usage(root).free < 1024 * 1024 * 1024:
             raise RuntimeError("主服务器临时空间不足，请稍后重试")
-        singles = split_pptx_to_single_pages(source, source_dir, max_total_bytes=512 * 1024 * 1024)
+        # The durable import worker may already have removed pages that contain
+        # external media. Reuse that immutable filtered split; re-splitting the
+        # original source would put the rejected pages back into rendering.
+        existing_splits = [
+            _resource_import_file(session, path)
+            for path in session.get("split_paths", [])
+            if isinstance(path, str)
+        ]
+        if existing_splits:
+            singles = existing_splits
+        elif session.get("skipped_pages"):
+            singles, source_indexes, skipped, _ = _split_import_pages(
+                source, source_dir, max_total_bytes=512 * 1024 * 1024,
+            )
+            session["valid_source_page_indexes"] = source_indexes
+            session["skipped_pages"] = skipped
+            session["split_paths"] = [str(path) for path in singles]
+            session["split_hashes"] = [sha256_file(path) for path in singles]
+            _write_resource_import_session(session)
+        else:
+            singles = split_pptx_to_single_pages(
+                source, source_dir, max_total_bytes=512 * 1024 * 1024
+            )
         if len(singles) != expected:
             raise RuntimeError("PPT 拆分页数不一致，未提交渲染")
         batch_size = max(1, min(50, int(getattr(settings, "render_wps_batch_size", 20))))
+        if session.get("skipped_pages"):
+            # v2 renders the original multi-page source and therefore cannot
+            # omit a rejected page. Use the validated single-page inputs.
+            batch_size = 1
         source_sha256 = sha256_file(source)
         render_source: dict[str, Any] | None = None
         if batch_size > 1:
@@ -426,6 +453,9 @@ def create_render_task(session: dict[str, Any]) -> sqlite3.Row:
                 "size": source_size,
                 "slide_count": expected,
             }
+        original_indexes = list(session.get("valid_source_page_indexes") or range(len(singles)))
+        if len(original_indexes) != len(singles):
+            raise RuntimeError("PPT 有效页码清单不一致，未提交渲染")
         pages: list[dict[str, Any]] = []
         for index, single in enumerate(singles):
             size = single.stat().st_size
@@ -436,6 +466,7 @@ def create_render_task(session: dict[str, Any]) -> sqlite3.Row:
             source_ref = oss_ref(_task_key(task_id, "input", index, ".pptx"))
             pages.append({
                 "index": index,
+                "source_page": int(original_indexes[index]),
                 "source_ref": source_ref,
                 "source_uploaded": False,
                 "sha256": sha256_file(single),
@@ -1066,6 +1097,7 @@ def _update_parent_task(
             "workflow_state": "awaiting_confirmation", "preview_status": "ready", "preview_error": None,
             "render_stage": "completed", "render_completed": total, "render_total": total,
             "render_worker_attempt": int(row["attempts"]),
+            "skipped_pages": params.get("skipped_pages", []),
         })
         message, progress = "图片已渲染，等待确认导入", len(_manifest(row, "source_manifest").get("pages", []))
         db.execute(

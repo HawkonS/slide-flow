@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from app.core.ppt import split_pptx_to_single_pages
 from app.core.errors import storage_public_message
 from app.db import get_db
 from app.db import new_resource_detail_token, now_iso
@@ -26,6 +25,7 @@ from app.services.tasks.runtime import (
     _pending_task_futures,
     _task_cancel_flags,
 )
+from app.services.resource_import.validation import _split_import_pages
 from pathlib import Path
 import json
 import logging
@@ -106,26 +106,40 @@ def _execute_split_task(
             )
             db.commit()
 
-        split_files = split_pptx_to_single_pages(ppt_path, split_dir, progress_callback=on_split_progress)
+        split_files, source_indexes, skipped_pages, source_slide_count = _split_import_pages(
+            ppt_path,
+            split_dir,
+            progress_callback=on_split_progress,
+        )
         if _task_is_cancelled(db, task_id, cancel_event):
             _cleanup_split_resources(db, resource_ids)
             return
         if not split_files:
             db.execute(
-                "UPDATE tasks SET status = 'failed', error_message = '未能拆分 PPTX',"
+                "UPDATE tasks SET status = 'failed', error_message = ?, params = ?,"
                 " updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
                 " WHERE id = ? AND status <> 'cancelled'",
-                (task_id,),
+                (
+                    "PPT 每一页都包含外部链接资源，请嵌入资源后重试"
+                    if skipped_pages else "未能拆分 PPTX",
+                    json.dumps({**params, "source_slide_count": source_slide_count, "skipped_pages": skipped_pages}, ensure_ascii=False),
+                    task_id,
+                ),
             )
             db.commit()
             return
 
         total = len(split_files)
+        params = {
+            **params,
+            "source_slide_count": source_slide_count,
+            "skipped_pages": skipped_pages,
+        }
         db.execute(
-            "UPDATE tasks SET total = ?, message = '正在创建资源...',"
+            "UPDATE tasks SET total = ?, message = '正在创建资源...', params = ?,"
             " updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
             " WHERE id = ? AND status <> 'cancelled'",
-            (total, task_id),
+            (total, json.dumps(params, ensure_ascii=False), task_id),
         )
         db.commit()
         logger.info("Task %d: split complete, %d pages, starting resource creation", task_id, total)
@@ -150,9 +164,10 @@ def _execute_split_task(
         # Keep enough precision to distinguish two batches committed in the
         # same second while retaining one shared timestamp per batch.
         batch_ts = now_iso(timespec="milliseconds")
-        name_width = max(2, len(str(total)))
+        name_width = max(2, len(str(max(source_indexes, default=0) + 1)))
 
         for index, split_ppt in enumerate(split_files, start=1):
+            source_index = int(source_indexes[index - 1])
             pending_refs.clear()
             # 检查超时
             if time.time() - start_time > SPLIT_TASK_TIMEOUT:
@@ -168,8 +183,8 @@ def _execute_split_task(
             # upload them directly instead of creating a local asset folder.
             v1_path = split_ppt
             png_path: Path | None = None
-            if has_images and index <= len(image_paths):
-                img_src = Path(image_paths[index - 1])
+            if has_images and source_index < len(image_paths):
+                img_src = Path(image_paths[source_index])
                 if img_src.exists():
                     img_src = _compress_hd_image(img_src)
                     png_path = img_src
@@ -189,7 +204,7 @@ def _execute_split_task(
                 """,
                 (
                     new_resource_detail_token(),
-                    f"{name_prefix}_{index:0{name_width}d}",
+                    f"{name_prefix}_{source_index + 1:0{name_width}d}",
                     owner_id,
                     subject,
                     tags,
@@ -259,7 +274,12 @@ def _execute_split_task(
         if _task_is_cancelled(db, task_id, cancel_event):
             _cleanup_split_resources(db, resource_ids)
             return
-        result = {"total": total, "created": len(resource_ids), "resource_ids": resource_ids}
+        result = {
+            "total": source_slide_count,
+            "created": len(resource_ids),
+            "resource_ids": resource_ids,
+            "skipped_pages": skipped_pages,
+        }
         completed = db.execute(
             "UPDATE tasks SET status = 'completed', progress = ?, message = '',"
             " result_data = ?,"

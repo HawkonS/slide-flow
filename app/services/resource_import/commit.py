@@ -237,8 +237,13 @@ def _commit_resource_import_sync(
         # Keep enough precision to distinguish two batches committed in the
         # same second while retaining one shared timestamp per batch.
         batch_ts = now_iso(timespec="milliseconds")
-        name_width = max(2, len(str(len(split_files))))
+        skipped_pages = list(session.get("skipped_pages") or [])
+        source_indexes = list(session.get("valid_source_page_indexes") or range(len(split_files)))
+        if len(source_indexes) != len(split_files):
+            raise RuntimeError("PPT 有效页码清单不一致")
+        name_width = max(2, len(str(max(source_indexes, default=0) + 1)))
         for index, split_ppt in enumerate(split_files, start=1):
+            source_page = int(source_indexes[index - 1]) + 1
             # split_ppt and the reviewed PNG are temporary working files. They
             # are uploaded directly; no persistent local asset directory is
             # created for a committed resource.
@@ -258,7 +263,7 @@ def _commit_resource_import_sync(
                    visibility_scope, management_scope, secrecy_level, current_version,
                    updated_by, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', 1, ?, ?, ?)""",
-                (new_resource_detail_token(), f"{name_prefix}_{index:0{name_width}d}", user["id"], subject, tags, status,
+                (new_resource_detail_token(), f"{name_prefix}_{source_page:0{name_width}d}", user["id"], subject, tags, status,
                  visibility_scope, management_scope, user["id"], batch_ts, batch_ts),
             )
             resource_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
@@ -291,7 +296,12 @@ def _commit_resource_import_sync(
             session["commit_progress"] = index
             session["commit_message"] = f"已保存第 {index}/{len(split_files)} 个单页素材…"
             _write_resource_import_session(session)
-        result = {"resource_ids": resource_ids, "created": len(resource_ids)}
+        result = {
+            "resource_ids": resource_ids,
+            "created": len(resource_ids),
+            "total": int(session.get("source_slide_count") or session["slide_count"]),
+            "skipped_pages": skipped_pages,
+        }
         db.execute(
             "INSERT INTO resource_import_commits (session_id, owner_id, result_json, created_at) VALUES (?, ?, ?, ?)",
             (session_id, int(user["id"]), json.dumps(result, ensure_ascii=False), now_iso()),

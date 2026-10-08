@@ -279,7 +279,9 @@ async def create_split_import_task(
             stage_oss=True,
         )
         total_bytes += source_size
-        _validate_import_ppt_package(source_path)
+        # Defer external-resource validation until the deck has been split so
+        # a single bad page does not reject the entire upload task.
+        _validate_import_ppt_package(source_path, reject_external_resources=False)
         image_paths: list[str] = []
         for img in images:
             img_path, image_size = await _save_resource_import_upload(
@@ -469,7 +471,9 @@ async def create_resource_import_task(
         )
         # Validate the package before placing it in the background queue. The
         # expensive conversion, font check and rendering still happen later.
-        _validate_import_ppt_package(source_path)
+        # The background worker validates each generated page individually so
+        # one page with external media can be skipped while the rest imports.
+        _validate_import_ppt_package(source_path, reject_external_resources=False)
         params.update({"task_id": task_id, "source_path": str(source_path), "workflow_state": "queued"})
         session = {
             "session_id": session_id,

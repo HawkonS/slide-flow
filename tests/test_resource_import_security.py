@@ -13,6 +13,8 @@ from fastapi import HTTPException, UploadFile, FastAPI, File
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 from PIL import Image
+from pptx import Presentation
+from pptx.util import Inches
 
 from app.middleware import resource_import as import_guard
 from app.middleware.resource_import import ResourceImportRequestGuard
@@ -179,6 +181,39 @@ class ResourceImportSafetyTests(unittest.TestCase):
             with zipfile.ZipFile(ppt, "w") as package:
                 package.writestr(name, content)
             self.reject(400, import_validation._validate_import_ppt_package, ppt)
+
+    def test_external_media_is_skipped_per_page_during_batch_split(self):
+        source = self.root / "mixed-pages.pptx"
+        presentation = Presentation()
+        for index in range(2):
+            slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+            slide.shapes.add_textbox(Inches(1), Inches(1), Inches(2), Inches(1)).text = f"page {index + 1}"
+        presentation.save(source)
+
+        with zipfile.ZipFile(source) as package:
+            parts = {name: package.read(name) for name in package.namelist()}
+        rels_name = "ppt/slides/_rels/slide2.xml.rels"
+        parts[rels_name] = parts[rels_name].replace(
+            b"</Relationships>",
+            b'<Relationship Id="rExternal" '
+            b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
+            b'Target="https://example.com/external.png" TargetMode="External"/>'
+            b"</Relationships>",
+        )
+        mixed = self.root / "mixed-pages-with-external.pptx"
+        with zipfile.ZipFile(mixed, "w") as package:
+            for name, content in parts.items():
+                package.writestr(name, content)
+
+        self.reject(400, import_validation._validate_import_ppt_package, mixed)
+        import_validation._validate_import_ppt_package(mixed, reject_external_resources=False)
+        accepted, indexes, skipped, total = import_validation._split_import_pages(
+            mixed, self.root / "split-pages"
+        )
+        self.assertEqual(total, 2)
+        self.assertEqual(indexes, [0])
+        self.assertEqual(len(accepted), 1)
+        self.assertEqual(skipped, [{"page": 2, "reason": "PPT 包含外部链接资源，请嵌入资源后重试"}])
 
 
 if __name__ == "__main__":

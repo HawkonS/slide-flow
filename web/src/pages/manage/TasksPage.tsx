@@ -108,6 +108,8 @@ interface TaskParams {
   file_name?: string;
   workflow_state?: string;
   slide_count?: number;
+  source_slide_count?: number;
+  skipped_pages?: Array<{ page: number; reason: string }>;
   fonts?: string[];
   missing_fonts?: string[];
   preview_status?: string;
@@ -596,6 +598,7 @@ function TaskDetail({ task, onClose }: { task: Task; onClose: () => void }) {
               {params.file_name && <InfoRow label="PPT 文件" value={params.file_name} />}
               {params.workflow_state && <InfoRow label="处理阶段" value={params.workflow_state === "font_check" ? "字体检测" : params.workflow_state === "rendering" ? "图片渲染" : params.workflow_state === "awaiting_confirmation" ? "等待确认导入" : params.workflow_state === "completed" ? "已完成" : params.workflow_state} />}
               {typeof params.slide_count === "number" && <InfoRow label="页数" value={`${params.slide_count} 页`} />}
+              {typeof params.source_slide_count === "number" && params.source_slide_count !== params.slide_count && <InfoRow label="原始页数" value={`${params.source_slide_count} 页`} />}
               {typeof params.render_completed === "number" && typeof params.render_total === "number" && <InfoRow label="渲染进度" value={`${params.render_completed} / ${params.render_total} 页`} />}
               {params.subject && <InfoRow label="分类" value={params.subject} />}
               {params.tags && <InfoRow label="标签" value={params.tags} />}
@@ -615,6 +618,16 @@ function TaskDetail({ task, onClose }: { task: Task; onClose: () => void }) {
             icon={status === "failed" ? <AlertCircle className="h-3.5 w-3.5 text-destructive" /> : <Hash className="h-3.5 w-3.5" />}
             title={status === "failed" ? "失败原因" : "执行结果"}
           >
+            {Array.isArray(params.skipped_pages) && params.skipped_pages.length > 0 && (
+              <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
+                <div className="font-medium">以下页面未导入</div>
+                <div className="mt-1 space-y-1">
+                  {params.skipped_pages.map((item) => (
+                    <div key={`${item.page}-${item.reason}`}>第 {item.page} 页：{item.reason}</div>
+                  ))}
+                </div>
+              </div>
+            )}
             {status === "failed" && task.error_message ? (
               <div className="whitespace-pre-wrap break-all rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs leading-relaxed text-destructive">{task.error_message}</div>
             ) : status === "completed" ? (

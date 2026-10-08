@@ -13,6 +13,7 @@ from app.core.ppt import detect_ppt_fonts, slide_count
 from app.db import get_db, known_font_aliases
 from app.services.resource_import.render_tasks import ensure_render_task
 from app.services.resource_import.rendering import _normalize_import_ppt
+from app.services.resource_import.remote_fonts import sha256_file
 from app.services.resource_import.sessions import (
     _resource_import_file,
     _resource_import_operation,
@@ -20,7 +21,7 @@ from app.services.resource_import.sessions import (
     _write_resource_import_session,
     _load_resource_import_session_file,
 )
-from app.services.resource_import.validation import _validate_import_ppt_package
+from app.services.resource_import.validation import _split_import_pages, _validate_import_ppt_package
 from app.services.tasks.runtime import _pending_task_futures, _task_cancel_flags
 from pathlib import Path
 import asyncio
@@ -91,16 +92,37 @@ def _execute_resource_import_task(task_id: int, session_id: str) -> None:
 
         # Conversion/validation happens here, after the upload task already
         # exists.  This is what makes a large upload resumable from Tasks.
-        _validate_import_ppt_package(source)
+        # External media is checked after the deck has been split.  This lets
+        # the task keep usable pages and report only the affected page(s).
+        _validate_import_ppt_package(source, reject_external_resources=False)
         source = _normalize_import_ppt(source, temp_dir)
-        _validate_import_ppt_package(source)
-        count = int(slide_count(source))
-        if count <= 0:
+        _validate_import_ppt_package(source, reject_external_resources=False)
+        source_count = int(slide_count(source))
+        if source_count <= 0:
             raise RuntimeError("无法读取 PPT 页数")
-        fonts = detect_ppt_fonts(source)
+        split_dir = temp_dir / "task-pages"
+        valid_split_files, valid_source_page_indexes, skipped_pages, split_count = _split_import_pages(
+            source, split_dir, max_total_bytes=512 * 1024 * 1024,
+        )
+        if split_count != source_count:
+            raise RuntimeError("PPT 拆分页数不一致")
+        if not valid_split_files:
+            raise RuntimeError("PPT 每一页都包含外部链接资源，请嵌入资源后重试")
+        count = len(valid_split_files)
+        # Fonts referenced only by skipped pages must not block the usable
+        # pages. Build the inventory from the pages that will be imported.
+        fonts: list[str] = []
+        for split_file in valid_split_files:
+            for font in detect_ppt_fonts(split_file):
+                if font not in fonts:
+                    fonts.append(font)
         missing = missing_fonts(fonts, known_font_aliases(db))
         session.update(
-            source_path=str(source), slide_count=count, fonts=fonts,
+            source_path=str(source), slide_count=count, source_slide_count=source_count,
+            split_paths=[str(path) for path in valid_split_files],
+            split_hashes=[sha256_file(path) for path in valid_split_files],
+            valid_source_page_indexes=valid_source_page_indexes,
+            skipped_pages=skipped_pages, fonts=fonts,
             missing_fonts=missing, mode="ppt", preview_status="blocked" if missing else "pending",
             preview_error=None, task_id=task_id, expires_at=time.time() + 7 * 24 * 3600,
         )
@@ -109,6 +131,8 @@ def _execute_resource_import_task(task_id: int, session_id: str) -> None:
         params.update({
             "workflow_state": "font_check" if missing else "rendering",
             "slide_count": count,
+            "source_slide_count": source_count,
+            "skipped_pages": skipped_pages,
             "fonts": fonts,
             "missing_fonts": missing,
             "preview_status": session["preview_status"] if missing else "rendering",

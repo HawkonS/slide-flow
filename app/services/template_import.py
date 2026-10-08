@@ -131,7 +131,12 @@ def _commit_template_import_sync(
             session["commit_message"] = f"已保存第 {index}/{slide_count} 个标准模板…"
             _write_resource_import_session(session)
 
-        result = {"template_ids": template_ids, "created": len(template_ids)}
+        result = {
+            "template_ids": template_ids,
+            "created": len(template_ids),
+            "total": int(session.get("source_slide_count") or slide_count),
+            "skipped_pages": list(session.get("skipped_pages") or []),
+        }
         db.execute(
             "INSERT INTO resource_import_commits (session_id, owner_id, result_json, created_at) VALUES (?, ?, ?, ?)",
             (session_id, int(user["id"]), json.dumps(result, ensure_ascii=False), now_iso()),

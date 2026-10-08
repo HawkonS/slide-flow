@@ -79,8 +79,14 @@ async def _save_resource_import_upload(
         raise
 
 
-def _validate_import_ppt_package(path: Path) -> None:
-    """Reject zip bombs/path-like entries before PPT parsing/rendering."""
+def _validate_import_ppt_package(path: Path, *, reject_external_resources: bool = True) -> None:
+    """Reject unsafe PPTX package contents before parsing/rendering.
+
+    ``reject_external_resources`` remains enabled for ordinary one-file
+    validation.  Batch imports set it to ``False`` for the source package and
+    validate each generated single-page package afterwards, so one bad page
+    can be reported and skipped without blocking the other pages.
+    """
     try:
         with zipfile.ZipFile(path) as package:
             infos = package.infolist()
@@ -110,7 +116,9 @@ def _validate_import_ppt_package(path: Path) -> None:
                     if name.lower().endswith(".rels"):
                         from xml.etree import ElementTree as ET
                         for rel in ET.fromstring(package.read(info)):
-                            if rel.get("TargetMode", "").lower() == "external" and not rel.get("Type", "").endswith("/hyperlink"):
+                            if (reject_external_resources
+                                    and rel.get("TargetMode", "").lower() == "external"
+                                    and not rel.get("Type", "").endswith("/hyperlink")):
                                 raise HTTPException(400, "PPT 包含外部链接资源，请嵌入资源后重试")
                 if name.lower().endswith("vbaproject.bin") or "/activex/" in name.lower():
                     raise HTTPException(400, "PPT 包含宏或活动控件，无法安全导入")
@@ -120,6 +128,45 @@ def _validate_import_ppt_package(path: Path) -> None:
         # Keep the existing parser's useful handling for malformed legacy
         # files, but do not allow an unreadable package into the renderer.
         raise HTTPException(400, "PPT 文件损坏或格式不正确") from exc
+
+
+def _split_import_pages(
+    path: Path,
+    output_dir: Path,
+    *,
+    max_total_bytes: int | None = None,
+    progress_callback=None,
+):
+    """Split a deck and return valid pages, their source indexes and issues.
+
+    Only external linked media is recoverable at page granularity. Other
+    package errors still fail the import because continuing could publish a
+    corrupt or unsafe single-page resource.
+    """
+    from app.core.ppt import split_pptx_to_single_pages
+
+    all_pages = split_pptx_to_single_pages(
+        path,
+        output_dir,
+        progress_callback=progress_callback,
+        max_total_bytes=max_total_bytes,
+    )
+    accepted: list[Path] = []
+    source_indexes: list[int] = []
+    skipped: list[dict[str, str | int]] = []
+    for page_number, page_path in enumerate(all_pages, start=1):
+        try:
+            _validate_import_ppt_package(page_path)
+        except HTTPException as exc:
+            if "外部链接资源" not in str(exc.detail):
+                raise
+            skipped.append({"page": page_number, "reason": "PPT 包含外部链接资源，请嵌入资源后重试"})
+            continue
+        accepted.append(page_path)
+        source_indexes.append(page_number - 1)
+    if all_pages and not accepted:
+        raise HTTPException(400, "PPT 每一页都包含外部链接资源，请嵌入资源后重试")
+    return accepted, source_indexes, skipped, len(all_pages)
 
 
 def _validate_import_image(path: Path) -> None:

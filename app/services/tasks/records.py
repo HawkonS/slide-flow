@@ -38,6 +38,8 @@ _TASK_PARAMS_PUBLIC_KEYS = (
     "file_name",
     "workflow_state",
     "slide_count",
+    "source_slide_count",
+    "skipped_pages",
     "fonts",
     "missing_fonts",
     "preview_status",
@@ -81,7 +83,7 @@ def _serialize_task(row: sqlite3.Row, db: sqlite3.Connection | None = None) -> d
     if isinstance(raw_result_data, dict):
         result_data = {
             key: raw_result_data[key]
-            for key in ("total", "created", "resource_ids", "template_ids", "message", "expired")
+            for key in ("total", "created", "resource_ids", "template_ids", "message", "expired", "skipped_pages")
             if key in raw_result_data
         }
 
