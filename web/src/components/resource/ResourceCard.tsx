@@ -3,15 +3,14 @@ import {
   Check,
   Download,
   Eye,
-  GitBranch,
   ImageOff,
   Loader2,
-  Maximize,
   MoreHorizontal,
   Pencil,
   Pin,
   PinOff,
   Plus,
+  Trash2,
 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -20,7 +19,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Resource, Show } from "@/lib/types";
@@ -31,9 +29,8 @@ export interface ResourceCardProps {
   resource: Resource;
   onOpen?: (resource: Resource) => void;
   onEdit?: (resource: Resource) => void;
-  onNewVersion?: (resource: Resource) => void;
   onDownload?: (resource: Resource) => void;
-  onFullscreen?: (resource: Resource) => void;
+  onDelete?: (resource: Resource) => void;
 }
 
 interface ShowListResponse {
@@ -44,15 +41,15 @@ export function ResourceCard({
   resource,
   onOpen,
   onEdit,
-  onNewVersion,
   onDownload,
-  onFullscreen,
+  onDelete,
 }: ResourceCardProps) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const version = resource.current;
   const preview = version?.preview_url || null;
   const canManage = resource.can_manage;
+  const hasResourceActions = Boolean(onEdit || onDownload || onDelete);
 
   const [addOpen, setAddOpen] = React.useState(false);
 
@@ -161,7 +158,7 @@ export function ResourceCard({
           </div>
         )}
 
-        <div className="absolute right-2 top-2 opacity-100 transition">
+        {(!hasResourceActions || canManage) && <div className="absolute right-2 top-2 opacity-100 transition">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
@@ -174,20 +171,25 @@ export function ResourceCard({
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
-              <DropdownMenuItem onSelect={() => onOpen?.(resource)}>
-                <Eye className="mr-2 h-4 w-4" /> 查看详情
-              </DropdownMenuItem>
-              {onFullscreen && (
-                <DropdownMenuItem onSelect={() => onFullscreen(resource)}>
-                  <Maximize className="mr-2 h-4 w-4" /> 放大查看
+              {canManage && onEdit && (
+                <DropdownMenuItem onSelect={() => window.setTimeout(() => onEdit(resource), 0)}>
+                  <Pencil className="mr-2 h-4 w-4" /> 编辑
                 </DropdownMenuItem>
               )}
-              {resource.can_manage && onDownload && (
-                <DropdownMenuItem onSelect={() => onDownload(resource)}>
+              {canManage && onDownload && (
+                <DropdownMenuItem onSelect={() => window.setTimeout(() => onDownload(resource), 0)}>
                   <Download className="mr-2 h-4 w-4" /> 下载
                 </DropdownMenuItem>
               )}
-              {user && (
+              {canManage && onDelete && (
+                <DropdownMenuItem onSelect={() => window.setTimeout(() => onDelete(resource), 0)} className="text-destructive focus:text-destructive">
+                  <Trash2 className="mr-2 h-4 w-4" /> 删除
+                </DropdownMenuItem>
+              )}
+              {!hasResourceActions && <DropdownMenuItem onSelect={() => onOpen?.(resource)}>
+                <Eye className="mr-2 h-4 w-4" /> 查看详情
+              </DropdownMenuItem>}
+              {!hasResourceActions && user && (
                 <DropdownMenuItem onSelect={() => handleTogglePin()}>
                   {resource.is_pinned ? (
                     <>
@@ -200,24 +202,9 @@ export function ResourceCard({
                   )}
                 </DropdownMenuItem>
               )}
-              {canManage && (
-                <>
-                  <DropdownMenuSeparator />
-                  {onEdit && (
-                    <DropdownMenuItem onSelect={() => onEdit(resource)}>
-                      <Pencil className="mr-2 h-4 w-4" /> 编辑信息
-                    </DropdownMenuItem>
-                  )}
-                  {onNewVersion && (
-                    <DropdownMenuItem onSelect={() => onNewVersion(resource)}>
-                      <GitBranch className="mr-2 h-4 w-4" /> 版本迭代
-                    </DropdownMenuItem>
-                  )}
-                </>
-              )}
             </DropdownMenuContent>
           </DropdownMenu>
-        </div>
+        </div>}
 
         {user && (
           <div className="absolute right-2 bottom-2 opacity-100 transition">

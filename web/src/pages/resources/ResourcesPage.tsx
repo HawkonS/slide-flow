@@ -13,10 +13,10 @@ import { BatchEditDialog } from "@/components/manage/BatchEditDialog";
 import { ResourceCard } from "@/components/resource/ResourceCard";
 import { ResourceListView } from "@/components/resource/ResourceListView";
 import { ResourceDownloadDialog } from "@/components/resource/ResourceDownloadDialog";
+import { ResourceDeletionDialog } from "@/components/resource/ResourceDeletionDialog";
 import { ResourceEditDialog } from "@/components/resource/ResourceEditDialog";
 import { ResourcePreviewDialog } from "@/components/resource/ResourcePreviewDialog";
 import { ResourceFilters } from "@/components/resource/ResourceFilters";
-import { ResourceNewVersionDialog } from "@/components/resource/ResourceNewVersionDialog";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { serializeTags } from "@/lib/types";
@@ -131,9 +131,8 @@ export function ResourcesPage() {
   }, [page, totalPages, setPage]);
 
   const [editResource, setEditResource] = React.useState<Resource | null>(null);
-  const [newVersionResource, setNewVersionResource] = React.useState<Resource | null>(null);
+  const [deletionResource, setDeletionResource] = React.useState<Resource | null>(null);
   const [editOpen, setEditOpen] = React.useState(false);
-  const [newVersionOpen, setNewVersionOpen] = React.useState(false);
   const [downloadCtx, setDownloadCtx] = React.useState<
     { resource: Resource; version: ResourceVersion } | null
   >(null);
@@ -151,15 +150,22 @@ export function ResourcesPage() {
   };
 
   const handleEdit = async (r: Resource) => {
-    const full = await fetchFullResource(r);
-    setEditResource(full);
-    setEditOpen(true);
+    try {
+      const full = await fetchFullResource(r);
+      setEditResource(full);
+      setEditOpen(true);
+    } catch (err) {
+      toast.error((err as Error).message || "加载素材失败");
+    }
   };
 
-  const handleNewVersion = async (r: Resource) => {
-    const full = await fetchFullResource(r);
-    setNewVersionResource(full);
-    setNewVersionOpen(true);
+  const handleDelete = async (r: Resource) => {
+    try {
+      const full = await fetchFullResource(r);
+      setDeletionResource(full);
+    } catch (err) {
+      toast.error((err as Error).message || "加载素材失败");
+    }
   };
 
   const handleDownload = (r: Resource, version: ResourceVersion) => {
@@ -376,7 +382,7 @@ export function ResourcesPage() {
             onPreview={handlePreview}
             onDownload={(r) => handleDownload(r, r.current)}
             onEdit={handleEdit}
-            onNewVersion={handleNewVersion}
+            onDelete={handleDelete}
           /> : <div className="grid content-start" style={gridStyle}>
             {resources.map((r) => (
               <ResourceCard
@@ -384,9 +390,8 @@ export function ResourcesPage() {
                 resource={r}
                 onOpen={handleOpenDetail}
                 onEdit={handleEdit}
-                onNewVersion={handleNewVersion}
                 onDownload={(x) => handleDownload(x, x.current)}
-                onFullscreen={handlePreview}
+                onDelete={handleDelete}
               />
             ))}
           </div>
@@ -435,13 +440,15 @@ export function ResourcesPage() {
         subjectSuggestions={subjects}
       />
 
-      <ResourceNewVersionDialog
-        open={newVersionOpen}
+      <ResourceDeletionDialog
+        open={deletionResource != null}
         onOpenChange={(open) => {
-          setNewVersionOpen(open);
-          if (!open) setNewVersionResource(null);
+          if (!open) setDeletionResource(null);
         }}
-        resource={newVersionResource}
+        resourceIds={deletionResource ? [deletionResource.id] : []}
+        name={deletionResource?.name}
+        versionCount={deletionResource?.versions?.length ?? 1}
+        onSuccess={clearSelection}
       />
 
       <ResourceDownloadDialog

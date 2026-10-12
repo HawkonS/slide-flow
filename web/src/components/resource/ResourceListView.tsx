@@ -1,10 +1,10 @@
-import { Download, Eye, GitBranch, ImageOff, Maximize, MoreHorizontal, Pencil } from "lucide-react";
+import { Download, ImageOff, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 
 import { TableTags, TableText } from "@/components/common/TableContent";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { DEFAULT_RESOURCE_SUBJECT } from "@/lib/constants";
@@ -21,12 +21,12 @@ interface ResourceListViewProps {
   onPreview: (resource: Resource) => void;
   onDownload: (resource: Resource) => void;
   onEdit: (resource: Resource) => void;
-  onNewVersion: (resource: Resource) => void;
+  onDelete: (resource: Resource) => void;
 }
 
 export function ResourceListView({
   resources, selectedIds, allPageSelected, somePageSelected, onToggle, onTogglePage,
-  onOpen, onPreview, onDownload, onEdit, onNewVersion,
+  onOpen, onPreview, onDownload, onEdit, onDelete,
 }: ResourceListViewProps) {
   return (
     <div className="surface overflow-hidden">
@@ -86,19 +86,14 @@ export function ResourceListView({
                 <TableCell><Badge variant="outline" className="max-w-full text-[11px]"><TableText text={resource.status} /></Badge></TableCell>
                 <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{new Date(resource.updated_at).toLocaleDateString("zh-CN")}</TableCell>
                 <TableCell>
-                  <DropdownMenu>
+                  {resource.can_manage && <DropdownMenu>
                     <DropdownMenuTrigger asChild><button type="button" aria-label={`${resource.name} 更多操作`} className="rounded p-1 hover:bg-accent"><MoreHorizontal className="h-4 w-4" /></button></DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      <DropdownMenuItem onSelect={() => onOpen(resource)}><Eye className="mr-2 h-4 w-4" />查看详情</DropdownMenuItem>
-                      <DropdownMenuItem onSelect={() => onPreview(resource)}><Maximize className="mr-2 h-4 w-4" />放大查看</DropdownMenuItem>
-                      {resource.can_manage && <DropdownMenuItem onSelect={() => onDownload(resource)}><Download className="mr-2 h-4 w-4" />下载</DropdownMenuItem>}
-                      {resource.can_manage && <>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem onSelect={() => onEdit(resource)}><Pencil className="mr-2 h-4 w-4" />编辑信息</DropdownMenuItem>
-                        <DropdownMenuItem onSelect={() => onNewVersion(resource)}><GitBranch className="mr-2 h-4 w-4" />版本迭代</DropdownMenuItem>
-                      </>}
+                      <DropdownMenuItem onSelect={() => window.setTimeout(() => onEdit(resource), 0)}><Pencil className="mr-2 h-4 w-4" />编辑</DropdownMenuItem>
+                      <DropdownMenuItem onSelect={() => window.setTimeout(() => onDownload(resource), 0)}><Download className="mr-2 h-4 w-4" />下载</DropdownMenuItem>
+                      <DropdownMenuItem onSelect={() => window.setTimeout(() => onDelete(resource), 0)} className="text-destructive focus:text-destructive"><Trash2 className="mr-2 h-4 w-4" />删除</DropdownMenuItem>
                     </DropdownMenuContent>
-                  </DropdownMenu>
+                  </DropdownMenu>}
                 </TableCell>
               </TableRow>
             );
