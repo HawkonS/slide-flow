@@ -69,31 +69,48 @@ function standaloneMode(): boolean {
     || (navigator as Navigator & { standalone?: boolean }).standalone === true;
 }
 
+function hasWaitingUpdate(registration?: ServiceWorkerRegistration): boolean {
+  // 首次安装也会短暂进入 waiting；只有旧版已激活时才是版本更新。
+  return !!registration && isOurWorker(registration.active) && registration.active.state === "activated"
+    && isOurWorker(registration.waiting) && registration.waiting !== registration.active;
+}
+
 function publishRegistrationStatus(registration?: ServiceWorkerRegistration): void {
-  const active = !!registration?.active && isOurWorker(registration.active);
+  const active = !!registration?.active && isOurWorker(registration.active) && registration.active.state === "activated";
   const waiting = !!registration?.waiting && isOurWorker(registration.waiting);
+  const updating = hasWaitingUpdate(registration);
+  const deploying = waiting || (isOurWorker(registration?.installing ?? null) && registration?.installing?.state !== "redundant")
+    || (isOurWorker(registration?.active ?? null) && registration?.active?.state === "activating");
   const controlled = !!navigator.serviceWorker.controller && isOurWorker(navigator.serviceWorker.controller);
   publishPwaStatus({
-    status: waiting ? "update-available" : active ? "deployed" : "not-deployed",
+    status: updating ? "update-available" : active ? "deployed" : deploying ? "checking" : "not-deployed",
     active, waiting, controlled, standalone: standaloneMode(),
-    message: waiting
+    message: updating
       ? "本地应用有新版本，完成当前工作后重新打开即可更新"
       : active && controlled
         ? "本地应用已部署并接管当前页面"
         : active
           ? "本地应用已部署，重新打开页面后即可接管"
-          : "本地应用尚未完成部署，请联网后重试",
+          : deploying
+            ? "正在部署本地应用…"
+            : "本地应用尚未完成部署，请联网后重试",
   });
 }
 
 function showNotices(registration?: ServiceWorkerRegistration): void {
-  if (registration) publishRegistrationStatus(registration);
+  if (registration) {
+    publishRegistrationStatus(registration);
+    if (!hasWaitingUpdate(registration)) {
+      updateNoticeShown = false;
+      toast.dismiss(UPDATE_NOTICE);
+    }
+  }
   if (isPlaybackWindow() || document.hidden) {
     toast.dismiss(UPDATE_NOTICE);
     toast.dismiss(INSTALL_NOTICE);
     return;
   }
-  if (registration?.waiting && !updateNoticeShown) {
+  if (hasWaitingUpdate(registration) && !updateNoticeShown) {
     updateNoticeShown = true;
     toast.info("新版已准备好", {
       id: UPDATE_NOTICE, duration: 8_000,
@@ -123,9 +140,7 @@ function observeRegistration(registration: ServiceWorkerRegistration): void {
   const observe = () => {
     const worker = registration.installing;
     if (!worker) return;
-    worker.addEventListener("statechange", () => {
-      if (worker.state === "installed" || worker.state === "activated") showNotices(registration);
-    });
+    worker.addEventListener("statechange", () => showNotices(registration));
   };
   registration.addEventListener("updatefound", observe);
   observe();

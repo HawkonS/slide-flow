@@ -20,7 +20,7 @@ async function until(check, description) {
   throw new Error('Browser condition timed out: ' + description);
 }
 
-test('native shell guards anonymous offline Display navigation and waits for every old window before updating', { timeout: 60_000 }, async () => {
+test('native shell distinguishes first installation from updates, guards offline routes and waits for every old window', { timeout: 60_000 }, async () => {
   assert.ok(existsSync(path.join(root, 'sw.js')), 'Missing production build: run npm run build from web/ before test:pwa:browser');
   const builtWorker = await readFile(path.join(root, 'sw.js'), 'utf8');
   const config = JSON.parse(builtWorker.match(/const SHELL_CONFIG = (.+);/)[1]);
@@ -57,6 +57,10 @@ test('native shell guards anonymous offline Display navigation and waits for eve
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const origin = `http://127.0.0.1:${server.address().port}`;
     const context = await browser.newContext();
+    await context.addInitScript(() => {
+      window.__pwaStatuses = [];
+      window.addEventListener('slideflow-pwa-status-change', event => window.__pwaStatuses.push(event.detail.status));
+    });
     const status = page => page.evaluate(async () => {
       const registration = await navigator.serviceWorker.ready;
       const channel = new MessageChannel();
@@ -67,10 +71,11 @@ test('native shell guards anonymous offline Display navigation and waits for eve
       });
     });
     const first = await context.newPage();
-    await first.goto(origin + '/__pwa_probe');
-    await first.evaluate(() => navigator.serviceWorker.register('/sw.js', { scope: '/', updateViaCache: 'none' }));
+    await first.goto(origin + '/login');
     await first.waitForFunction(() => !!navigator.serviceWorker.controller);
     assert.equal((await status(first)).ready, true);
+    assert.equal(await first.evaluate(() => window.__pwaStatuses.includes('update-available')), false, 'First installation must not report an update');
+    assert.equal(await first.getByText('新版已准备好', { exact: true }).count(), 0);
     assert.equal(await first.evaluate(() => fetch('/api/forbidden').then(response => response.status)), 403);
     await context.setOffline(true);
     assert.equal(await first.evaluate(() => fetch('/api/forbidden').then(() => false, () => true)), true);
@@ -97,6 +102,8 @@ test('native shell guards anonymous offline Display navigation and waits for eve
     await first.evaluate(() => navigator.serviceWorker.getRegistration().then(registration => registration.update()));
     // Await asynchronous browser work with evaluate + node polling; waitForFunction predicates stay synchronous.
     await until(() => first.evaluate(() => navigator.serviceWorker.getRegistration().then(registration => !!registration.waiting)), 'new worker waiting');
+    await guarded.waitForFunction(() => window.__pwaStatuses.includes('update-available'));
+    await guarded.getByText('新版已准备好', { exact: true }).waitFor();
     assert.equal((await status(guarded)).version, config.version);
     assert.equal(await guarded.evaluate(() => window.__pwaWindowContinuity), 123);
     await first.close();
@@ -104,10 +111,13 @@ test('native shell guards anonymous offline Display navigation and waits for eve
     await guarded.close();
     await delay(250);
     const reopened = await context.newPage();
-    await reopened.goto(origin + '/__pwa_probe');
+    await reopened.goto(origin + '/login');
     await reopened.waitForFunction(() => !!navigator.serviceWorker.controller);
     await until(async () => (await status(reopened)).version === config.version + '-next', 'new worker activated');
     assert.equal((await status(reopened)).ready, true);
+    await reopened.waitForFunction(() => window.__pwaStatuses.includes('deployed'));
+    assert.equal(await reopened.evaluate(() => window.__pwaStatuses.includes('update-available')), false, 'Reopening an activated version must not report an update');
+    assert.equal(await reopened.getByText('新版已准备好', { exact: true }).count(), 0);
     console.log(`Validated ${config.files.length} shell files, offline RequireAuth/login lazy loading and deferred multi-window update`);
   } finally {
     await browser?.close();
