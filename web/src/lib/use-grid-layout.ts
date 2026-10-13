@@ -15,6 +15,8 @@ export interface ResponsiveGrid {
   pageSize: number;
   /** 直接挂到 grid 容器上的 inline style */
   gridStyle: GridStyle;
+  /** 容器已经测量，可安全发起依赖 pageSize 的查询。 */
+  ready: boolean;
 }
 
 /** 默认列宽阈值：每 240px 一列，2 ≤ cols ≤ 5。 */
@@ -79,7 +81,10 @@ export function useResponsiveGrid(
   const columnStep = options.columnStep ?? COL_STEP;
   const minCols = options.minCols ?? MIN_COLS;
   const maxCols = options.maxCols ?? MAX_COLS;
-  const [state, setState] = React.useState(() => computeGrid(1024, 720, titleH, columnStep, minCols, maxCols));
+  const [state, setState] = React.useState(() => ({
+    ...computeGrid(1024, 720, titleH, columnStep, minCols, maxCols),
+    ready: false,
+  }));
 
   React.useEffect(() => {
     const el = ref.current;
@@ -93,9 +98,10 @@ export function useResponsiveGrid(
         prev.cols === next.cols &&
         prev.rows === next.rows &&
         prev.gapX === next.gapX &&
-        prev.gapY === next.gapY
+        prev.gapY === next.gapY &&
+        prev.ready
           ? prev
-          : next,
+          : { ...next, ready: true },
       );
     };
     compute();
@@ -104,18 +110,19 @@ export function useResponsiveGrid(
     return () => ro.disconnect();
   }, [ref, titleH, widthOffset, columnStep, minCols, maxCols]);
 
-  const { cols, rows, gapX, gapY } = state;
+  const { cols, rows, gapX, gapY, ready } = state;
   return React.useMemo<ResponsiveGrid>(
     () => ({
       cols,
       rows,
       pageSize: Math.max(6, cols * rows),
+      ready,
       gridStyle: {
         gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
         columnGap: gapX,
         rowGap: gapY,
       },
     }),
-    [cols, rows, gapX, gapY],
+    [cols, rows, gapX, gapY, ready],
   );
 }

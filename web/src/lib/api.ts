@@ -126,6 +126,33 @@ export async function api<T = unknown>(
   return (await res.text()) as unknown as T;
 }
 
+/** Bound both receiving headers and reading the body; parent cancellation stays cancellation. */
+export async function apiWithTimeout<T>(path: string, options: FetchOptions = {}, timeoutMs = 12_000): Promise<T> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const abort = () => controller.abort(options.signal?.reason);
+  if (options.signal?.aborted) abort();
+  else options.signal?.addEventListener("abort", abort, { once: true });
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  try {
+    controller.signal.throwIfAborted();
+    const result = await api<T>(path, { ...options, signal: controller.signal });
+    controller.signal.throwIfAborted();
+    return result;
+  } catch (error) {
+    if (timedOut && !options.signal?.aborted) {
+      throw new ApiTransportError("请求超时，请检查网络后重试");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", abort);
+  }
+}
+
 /** Consume bounded UTF-8 NDJSON without buffering the complete render result.
  * Older servers may return their regular JSON response instead. A transport
  * EOF is not a completed job: the caller must require a completed event.

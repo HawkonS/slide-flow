@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   FolderOpen,
@@ -25,6 +25,7 @@ import { useSiteConfig } from "@/stores/site-config";
 import { useDownloadManager } from "@/stores/download-manager";
 import { useAuth } from "@/lib/auth";
 import { ForceChangePassword } from "@/components/common/ForceChangePassword";
+import { PageLoadingSkeleton } from "@/components/common/PageLoadingSkeleton";
 import { usePwaStatus } from "@/lib/pwa";
 import {
   SheetRoot,
@@ -296,7 +297,9 @@ export function AppShell() {
 
         {/* 主内容 */}
         <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto px-3 py-3 sm:px-4 sm:py-4 md:px-6 md:py-5">
-          <Outlet />
+          <Suspense key={location.pathname} fallback={<PageLoadingSkeleton />}>
+            <Outlet />
+          </Suspense>
         </main>
       </div>
 

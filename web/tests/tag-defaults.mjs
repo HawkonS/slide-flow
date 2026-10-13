@@ -143,10 +143,11 @@ test('URL and browser history win, shows keep independent defaults', async t => 
 
 test('late config does not overwrite manual filters', async t => {
   const { page, requests } = await fixture(t, { delay: 1600 });
+  const configResponse = page.waitForResponse(response => response.url().endsWith('/api/config'));
   await page.goto(origin + '/resources');
   await page.getByPlaceholder('搜索标题、关键词').fill('先输入');
   await until(() => last(requests, '/api/resources')?.search === '先输入');
-  await page.waitForResponse(response => response.url().endsWith('/api/config'));
+  await configResponse;
   assert.equal(await page.getByPlaceholder('搜索标题、关键词').inputValue(), '先输入');
   assert.equal(last(requests, '/api/resources').status, undefined);
 });

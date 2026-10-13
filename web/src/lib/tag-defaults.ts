@@ -74,7 +74,8 @@ export function useSceneFilters<T extends FilterUrl>(scene: DefaultScene, base: 
     setEntry({ ...entry, baseline, settled: true });
   }
   const raw = session ? entry.saved : params.get("s");
-  const state = React.useMemo(() => decodeState(raw, base) ?? entry.baseline, [raw, base, entry.baseline]);
+  const explicitState = React.useMemo(() => decodeState(raw, base), [raw, base]);
+  const state = explicitState ?? entry.baseline;
   const setState = React.useCallback((action: React.SetStateAction<T>) => {
     if (session) {
       setEntry((prev) => {
@@ -121,7 +122,8 @@ export function useSceneFilters<T extends FilterUrl>(scene: DefaultScene, base: 
     reset: () => restore(baseline),
     clear: () => restore(base),
   };
-  return { state, setState, filters };
+  // URL 中已有明确筛选时无需等待默认配置；显式状态本身优先级更高。
+  return { state, setState, filters, ready: entry.settled || explicitState !== null };
 }
 export type SceneFilters = ReturnType<typeof useSceneFilters>["filters"];
 

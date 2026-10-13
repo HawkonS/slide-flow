@@ -7,17 +7,13 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { BatchEditDialog } from "@/components/manage/BatchEditDialog";
 import { ResourceCard } from "@/components/resource/ResourceCard";
 import { ResourceListView } from "@/components/resource/ResourceListView";
-import { ResourceDownloadDialog } from "@/components/resource/ResourceDownloadDialog";
-import { ResourceDeletionDialog } from "@/components/resource/ResourceDeletionDialog";
-import { ResourceEditDialog } from "@/components/resource/ResourceEditDialog";
-import { ResourcePreviewDialog } from "@/components/resource/ResourcePreviewDialog";
 import { ResourceFilters } from "@/components/resource/ResourceFilters";
 import { api } from "@/lib/api";
+import { isChunkLoadError } from "@/lib/chunk-recovery";
 import { useAuth } from "@/lib/auth";
 import { serializeTags } from "@/lib/types";
 import { Resource, ResourceVersion, Show } from "@/lib/types";
@@ -26,6 +22,7 @@ import { DEFAULT_SORT_KEY } from "@/lib/constants";
 import { usePaginatedQuery } from "@/lib/use-paginated-query";
 import { PageHeader } from "@/components/common/PageHeader";
 import { ViewModeSwitch } from "@/components/common/ViewModeSwitch";
+import { ResultsLoadingSkeleton } from "@/components/common/PageLoadingSkeleton";
 
 /* ---- URL 持久化状态类型与默认值 ---- */
 interface ResourceUrlState {
@@ -55,13 +52,17 @@ export function ResourcesPage() {
 
   // 列数与每页大小由共享 hook 按容器宽度连续计算
   const contentRef = React.useRef<HTMLDivElement>(null);
-  const { pageSize: cardPageSize, gridStyle } = useResponsiveGrid(contentRef);
+  const { pageSize: cardPageSize, gridStyle, ready: gridReady } = useResponsiveGrid(contentRef);
   const [listPageSize, setListPageSize] = React.useState(12);
+  const [listPageReady, setListPageReady] = React.useState(false);
   React.useEffect(() => {
     const el = contentRef.current;
     if (!el) return;
     const compute = () => {
-      if (el.clientHeight) setListPageSize(Math.max(5, Math.floor((el.clientHeight - 42) / 60)));
+      if (el.clientHeight) {
+        setListPageSize(Math.max(5, Math.floor((el.clientHeight - 42) / 60)));
+        setListPageReady(true);
+      }
     };
     compute();
     const observer = new ResizeObserver(compute);
@@ -70,9 +71,10 @@ export function ResourcesPage() {
   }, []);
 
   // 筛选 + 页码统一编码到 URL ?s=…
-  const { state: urlState, setState: setUrlState, filters } = useSceneFilters("resource_list", URL_DEFAULTS);
+  const { state: urlState, setState: setUrlState, filters, ready: filtersReady } = useSceneFilters("resource_list", URL_DEFAULTS);
   const viewMode = urlState.view === "list" ? "list" : "card";
   const pageSize = viewMode === "list" ? listPageSize : cardPageSize;
+  const queryReady = filtersReady && (viewMode === "list" ? listPageReady : gridReady);
   const setViewMode = (view: "card" | "list") => {
     setUrlState((prev) => ({ ...prev, view, p: 1 }));
   };
@@ -111,14 +113,17 @@ export function ResourcesPage() {
     allTags: tags,
     allSubjects: subjects,
     isLoading,
+    isFetching,
     isError,
     error,
+    refetch,
   } = usePaginatedQuery<Resource>({
     url: "/api/resources",
     queryKeyPrefix: "resources",
     params: apiParams,
     page,
     pageSize,
+    enabled: queryReady,
   });
 
   // 页码越界检查
@@ -137,11 +142,60 @@ export function ResourcesPage() {
     { resource: Resource; version: ResourceVersion } | null
   >(null);
   const [previewResource, setPreviewResource] = React.useState<Resource | null>(null);
+  const [dialogComponents, setDialogComponents] = React.useState<{
+    Edit?: typeof import("@/components/resource/ResourceEditDialog").ResourceEditDialog;
+    Download?: typeof import("@/components/resource/ResourceDownloadDialog").ResourceDownloadDialog;
+    Delete?: typeof import("@/components/resource/ResourceDeletionDialog").ResourceDeletionDialog;
+    Preview?: typeof import("@/components/resource/ResourcePreviewDialog").ResourcePreviewDialog;
+    BatchEdit?: typeof import("@/components/manage/BatchEditDialog").BatchEditDialog;
+  }>({});
+  const pendingDialog = React.useRef<AbortController | null>(null);
+  const [dialogLoading, setDialogLoading] = React.useState<string | null>(null);
+  const cancelDialogLoading = React.useCallback(() => {
+    pendingDialog.current?.abort();
+    pendingDialog.current = null;
+    setDialogLoading(null);
+  }, []);
+  React.useEffect(() => () => {
+    pendingDialog.current?.abort();
+    pendingDialog.current = null;
+  }, []);
 
-  const fetchFullResource = React.useCallback(async (r: Resource): Promise<Resource> => {
-    // 如果已有完整数据（含 versions），直接返回
+  // 代码与完整元数据并行加载；取消、超时或离开页面后不再打开迟到的弹窗。
+  const openDialog = React.useCallback(async (title: string, prepare: (signal: AbortSignal) => Promise<() => void>) => {
+    pendingDialog.current?.abort();
+    const controller = new AbortController();
+    pendingDialog.current = controller;
+    setDialogLoading(title);
+    const timer = window.setTimeout(() => {
+      controller.abort();
+      if (pendingDialog.current === controller) {
+        pendingDialog.current = null;
+        setDialogLoading(null);
+        toast.error("打开窗口超时，请检查网络后重试");
+      }
+    }, 12_000);
+    controller.signal.addEventListener("abort", () => window.clearTimeout(timer), { once: true });
+    try {
+      const apply = await prepare(controller.signal);
+      if (!controller.signal.aborted) apply();
+    } catch (err) {
+      if (!controller.signal.aborted) {
+        controller.abort();
+        toast.error(!isChunkLoadError(err) && err instanceof Error ? err.message : "打开窗口失败，请检查网络后重试");
+      }
+    } finally {
+      window.clearTimeout(timer);
+      if (pendingDialog.current === controller) {
+        pendingDialog.current = null;
+        setDialogLoading(null);
+      }
+    }
+  }, []);
+
+  const fetchFullResource = React.useCallback(async (r: Resource, signal: AbortSignal): Promise<Resource> => {
     if (r.versions) return r;
-    const res = await api<{ resource: Resource }>(`/api/resources/${r.id}`);
+    const res = await api<{ resource: Resource }>(`/api/resources/${r.id}`, { signal });
     return res.resource;
   }, []);
 
@@ -149,32 +203,42 @@ export function ResourcesPage() {
     if (r.detail_token) navigate(`/resources/${encodeURIComponent(r.detail_token)}`);
   };
 
-  const handleEdit = async (r: Resource) => {
-    try {
-      const full = await fetchFullResource(r);
+  const handleEdit = (r: Resource) => openDialog("正在打开编辑窗口", async (signal) => {
+    const [{ ResourceEditDialog: Edit }, full] = await Promise.all([
+      import("@/components/resource/ResourceEditDialog"), fetchFullResource(r, signal),
+    ]);
+    return () => {
+      setDialogComponents((prev) => ({ ...prev, Edit }));
       setEditResource(full);
       setEditOpen(true);
-    } catch (err) {
-      toast.error((err as Error).message || "加载素材失败");
-    }
-  };
+    };
+  });
 
-  const handleDelete = async (r: Resource) => {
-    try {
-      const full = await fetchFullResource(r);
+  const handleDelete = (r: Resource) => openDialog("正在打开删除窗口", async (signal) => {
+    const [{ ResourceDeletionDialog: Delete }, full] = await Promise.all([
+      import("@/components/resource/ResourceDeletionDialog"), fetchFullResource(r, signal),
+    ]);
+    return () => {
+      setDialogComponents((prev) => ({ ...prev, Delete }));
       setDeletionResource(full);
-    } catch (err) {
-      toast.error((err as Error).message || "加载素材失败");
-    }
-  };
+    };
+  });
 
-  const handleDownload = (r: Resource, version: ResourceVersion) => {
-    setDownloadCtx({ resource: r, version });
-  };
+  const handleDownload = (r: Resource, version: ResourceVersion) => openDialog("正在打开下载窗口", async () => {
+    const { ResourceDownloadDialog: Download } = await import("@/components/resource/ResourceDownloadDialog");
+    return () => {
+      setDialogComponents((prev) => ({ ...prev, Download }));
+      setDownloadCtx({ resource: r, version });
+    };
+  });
 
-  const handlePreview = React.useCallback((r: Resource) => {
-    setPreviewResource(r);
-  }, []);
+  const handlePreview = (r: Resource) => openDialog("正在打开预览窗口", async () => {
+    const { ResourcePreviewDialog: Preview } = await import("@/components/resource/ResourcePreviewDialog");
+    return () => {
+      setDialogComponents((prev) => ({ ...prev, Preview }));
+      setPreviewResource(r);
+    };
+  });
 
   // 列表选择可跨页；筛选条件变化时清空，避免批量操作作用到隐藏的旧结果。
   const [selectedIds, setSelectedIds] = React.useState<Set<number>>(new Set());
@@ -237,6 +301,13 @@ export function ResourcesPage() {
   };
 
   const [batchEditOpen, setBatchEditOpen] = React.useState(false);
+  const handleBatchEdit = () => openDialog("正在打开批量编辑窗口", async () => {
+    const { BatchEditDialog: BatchEdit } = await import("@/components/manage/BatchEditDialog");
+    return () => {
+      setDialogComponents((prev) => ({ ...prev, BatchEdit }));
+      setBatchEditOpen(true);
+    };
+  });
   const [deleteOpen, setDeleteOpen] = React.useState(false);
   const [deleting, setDeleting] = React.useState(false);
   const deleteSelected = async () => {
@@ -304,7 +375,7 @@ export function ResourcesPage() {
       <PageHeader
         title="单页素材"
         description="按主体、标签和状态快速查找并管理单页素材。"
-        count={total > 0 ? `共 ${total} 条` : "共 0 条"}
+        count={!queryReady || isLoading ? "加载中…" : `共 ${total} 条`}
         actions={<ViewModeSwitch value={viewMode} onChange={setViewMode} />}
       />
 
@@ -350,7 +421,7 @@ export function ResourcesPage() {
                 {showsLoading ? <DropdownMenuItem disabled>加载中…</DropdownMenuItem> : (showsData?.items.filter((s) => s.can_manage) ?? []).length === 0 ? <DropdownMenuItem disabled>没有可管理的放映</DropdownMenuItem> : showsData?.items.filter((s) => s.can_manage).map((s) => <DropdownMenuItem key={s.id} onSelect={() => { void addSelectedToShow(s); }}>{s.name}</DropdownMenuItem>)}
               </DropdownMenuContent>
             </DropdownMenu>}
-            <Button variant="outline" size="sm" className="h-8 gap-1" disabled={!allManageable} title={selectedIds.size && !allManageable ? "批量编辑仅支持所选素材全部可管理时使用" : undefined} onClick={() => setBatchEditOpen(true)}><Pencil className="h-3.5 w-3.5" />批量编辑</Button>
+            <Button variant="outline" size="sm" className="h-8 gap-1" disabled={!allManageable} title={selectedIds.size && !allManageable ? "批量编辑仅支持所选素材全部可管理时使用" : undefined} onClick={handleBatchEdit}><Pencil className="h-3.5 w-3.5" />批量编辑</Button>
             <Button variant="outline" size="sm" className="h-8 gap-1 text-destructive hover:text-destructive" disabled={!allManageable} title={selectedIds.size && !allManageable ? "批量删除仅支持所选素材全部可管理时使用" : undefined} onClick={() => setDeleteOpen(true)}><Trash2 className="h-3.5 w-3.5" />批量删除</Button>
           </div>
         </div>
@@ -358,13 +429,12 @@ export function ResourcesPage() {
 
       {/* 内容区 */}
       <div ref={contentRef} className="min-h-0 flex-1 overflow-auto">
-        {isLoading ? (
-          <div className="flex items-center justify-center py-16 text-muted-foreground">
-            <Loader2 className="mr-2 h-5 w-5 animate-spin" /> 加载中…
-          </div>
+        {!queryReady || isLoading ? (
+          <ResultsLoadingSkeleton viewMode={viewMode} count={pageSize} gridStyle={gridStyle} />
         ) : isError ? (
-          <div className="rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
-            加载失败：{error?.message || "未知错误"}
+          <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
+            <p>加载失败：{error?.message || "未知错误"}</p>
+            <Button variant="outline" size="sm" className="mt-3" disabled={isFetching} onClick={() => void refetch()}>{isFetching ? "重试中…" : "重试"}</Button>
           </div>
         ) : resources.length === 0 ? (
           <div className="surface border-dashed py-16 text-center text-sm text-muted-foreground">
@@ -398,38 +468,51 @@ export function ResourcesPage() {
         )}
       </div>
 
-      {/* 分页条 */}
-      {!isLoading && !isError && resources.length > 0 && (
-        <div className="flex shrink-0 items-center justify-between border-t pt-3 text-sm text-muted-foreground select-none">
-          <span>
-            显示 {pageStart + 1}-{Math.min(pageStart + pageSize, total)}，共{" "}
-            {total} 条
-          </span>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page <= 1}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-            >
-              上一页
-            </Button>
-            <span className="min-w-[52px] text-center text-foreground select-none">
-              {page} / {totalPages}
+      {/* 预留分页条高度，避免首批数据返回后改变容器尺寸、再次请求。 */}
+      <div className="h-12 shrink-0">
+        {queryReady && !isLoading && !isError && resources.length > 0 && (
+          <div className="flex items-center justify-between border-t pt-3 text-sm text-muted-foreground select-none">
+            <span>
+              显示 {pageStart + 1}-{Math.min(pageStart + pageSize, total)}，共{" "}
+              {total} 条
             </span>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page >= totalPages}
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-            >
-              下一页
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={page <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                上一页
+              </Button>
+              <span className="min-w-[52px] text-center text-foreground select-none">
+                {page} / {totalPages}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={page >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              >
+                下一页
+              </Button>
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
-      <ResourceEditDialog
+      <Dialog open={dialogLoading != null} onOpenChange={(open) => { if (!open) cancelDialogLoading(); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{dialogLoading}</DialogTitle>
+            <DialogDescription>正在加载，请稍候。</DialogDescription>
+          </DialogHeader>
+          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" aria-hidden="true" />
+          <DialogFooter><Button variant="outline" onClick={cancelDialogLoading}>取消</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {dialogComponents.Edit && editOpen && <dialogComponents.Edit
         open={editOpen}
         onOpenChange={(open) => {
           setEditOpen(open);
@@ -438,9 +521,9 @@ export function ResourcesPage() {
         resource={editResource}
         tagSuggestions={tags}
         subjectSuggestions={subjects}
-      />
+      />}
 
-      <ResourceDeletionDialog
+      {dialogComponents.Delete && deletionResource && <dialogComponents.Delete
         open={deletionResource != null}
         onOpenChange={(open) => {
           if (!open) setDeletionResource(null);
@@ -449,26 +532,26 @@ export function ResourcesPage() {
         name={deletionResource?.name}
         versionCount={deletionResource?.versions?.length ?? 1}
         onSuccess={clearSelection}
-      />
+      />}
 
-      <ResourceDownloadDialog
+      {dialogComponents.Download && downloadCtx && <dialogComponents.Download
         open={downloadCtx != null}
         onOpenChange={(open) => {
           if (!open) setDownloadCtx(null);
         }}
         resource={downloadCtx?.resource ?? null}
         version={downloadCtx?.version ?? null}
-      />
+      />}
 
-      <ResourcePreviewDialog
+      {dialogComponents.Preview && previewResource && <dialogComponents.Preview
         open={previewResource != null}
         onOpenChange={(open) => {
           if (!open) setPreviewResource(null);
         }}
         resource={previewResource}
-      />
+      />}
 
-      <BatchEditDialog
+      {dialogComponents.BatchEdit && batchEditOpen && <dialogComponents.BatchEdit
         open={batchEditOpen}
         onOpenChange={setBatchEditOpen}
         resourceIds={[...selectedIds]}
@@ -477,7 +560,7 @@ export function ResourcesPage() {
           clearSelection();
           queryClient.invalidateQueries({ queryKey: ["resources"] });
         }}
-      />
+      />}
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader><DialogTitle>确认批量删除</DialogTitle></DialogHeader>

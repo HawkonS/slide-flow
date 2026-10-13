@@ -4,7 +4,7 @@ import test from 'node:test';
 import ts from 'typescript';
 const source = await readFile(new URL('../src/lib/api.ts', import.meta.url), 'utf8');
 const js = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
-const { api, downloadFile, responseErrorMessage, ApiTransportError, advanceApiSession, setUnauthorizedHandler } = await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'));
+const { api, apiWithTimeout, downloadFile, responseErrorMessage, ApiTransportError, advanceApiSession, setUnauthorizedHandler } = await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'));
 
 test('validation messages describe fields without echoing rejected secrets or internal errors', () => {
   const detail = [{ loc: ['body', 'password'], input: 'secret-password', msg: 'secret-password failed' }];
@@ -52,4 +52,46 @@ test('download preflight cannot trigger a browser download in a later login sess
   globalThis.fetch = async () => new Response('x', { status: 206 });
   await downloadFile('/api/downloads/2/file', 'current.pptx');
   assert.equal(clicks, 1);
+});
+
+
+test('request timeout aborts a stalled fetch with a retryable network message', async t => {
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  let signal;
+  globalThis.fetch = async (_url, options) => {
+    signal = options.signal;
+    return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+  };
+  await assert.rejects(apiWithTimeout('/api/resources', {}, 20), error => error instanceof ApiTransportError && error.message === '请求超时，请检查网络后重试');
+  assert.equal(signal.aborted, true);
+});
+
+test('request timeout covers a body that stalls after successful headers', async t => {
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  globalThis.fetch = async (_url, { signal }) => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"items":'));
+      signal.addEventListener('abort', () => controller.error(signal.reason), { once: true });
+    },
+  }), { headers: { 'Content-Type': 'application/json' } });
+  await assert.rejects(apiWithTimeout('/api/resources', {}, 20), error => error instanceof ApiTransportError && error.message.includes('请求超时'));
+});
+
+test('parent cancellation stays cancellation and an already cancelled request never starts', async t => {
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  let calls = 0;
+  globalThis.fetch = async (_url, { signal }) => {
+    calls++;
+    return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+  };
+  const controller = new AbortController();
+  const reason = new DOMException('Switched filters', 'AbortError');
+  const pending = apiWithTimeout('/api/resources', { signal: controller.signal }, 1000);
+  controller.abort(reason);
+  await assert.rejects(pending, error => error === reason);
+  await assert.rejects(apiWithTimeout('/api/resources', { signal: controller.signal }, 1000), error => error === reason);
+  assert.equal(calls, 1);
 });

@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { apiWithTimeout } from "@/lib/api";
 
 export interface PaginatedResponse<T> {
   items: T[];
@@ -25,6 +25,8 @@ export interface PaginatedQueryOptions<T> {
   pageSize: number;
   /** 是否启用查询 */
   enabled?: boolean;
+  /** 弱网下避免请求无限期占用页面和连接。 */
+  timeoutMs?: number;
 }
 
 export interface PaginatedQueryResult<T> {
@@ -35,14 +37,16 @@ export interface PaginatedQueryResult<T> {
   allSubjects: string[];
   allSeries: string[];
   isLoading: boolean;
+  isFetching: boolean;
   isError: boolean;
   error: Error | null;
+  refetch: () => Promise<unknown>;
 }
 
 export function usePaginatedQuery<T>(
   options: PaginatedQueryOptions<T>,
 ): PaginatedQueryResult<T> {
-  const { url, queryKeyPrefix, params, page, pageSize, enabled = true } = options;
+  const { url, queryKeyPrefix, params, page, pageSize, enabled = true, timeoutMs = 12_000 } = options;
 
   // 将 params 序列化为稳定字符串用于 queryKey
   const paramsKey = React.useMemo(() => {
@@ -52,16 +56,12 @@ export function usePaginatedQuery<T>(
     return JSON.stringify(entries);
   }, [params]);
 
-  const { data, isLoading, isError, error } = useQuery({
+  const { data, isLoading, isFetching, isError, error, refetch } = useQuery({
     queryKey: [queryKeyPrefix, paramsKey, page, pageSize],
-    queryFn: async () =>
-      api<PaginatedResponse<T>>(url, {
-        params: {
-          ...params,
-          page,
-          page_size: pageSize,
-        },
-      }),
+    queryFn: ({ signal }) => apiWithTimeout<PaginatedResponse<T>>(url, {
+      signal,
+      params: { ...params, page, page_size: pageSize },
+    }, timeoutMs),
     enabled,
     placeholderData: (prev) => prev, // 切换页面时保留旧数据，避免闪烁
   });
@@ -77,7 +77,9 @@ export function usePaginatedQuery<T>(
     allSubjects: data?.all_subjects ?? [],
     allSeries: data?.all_series ?? [],
     isLoading,
+    isFetching,
     isError,
     error: error as Error | null,
+    refetch,
   };
 }
