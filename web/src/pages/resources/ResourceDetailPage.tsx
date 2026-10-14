@@ -1,7 +1,8 @@
 import { copyText } from "@/lib/clipboard";
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useDetailReturn } from "@/lib/detail-navigation";
 import {
   ArrowLeft,
   ArrowRight,
@@ -21,7 +22,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { CommonRemarkView, PersonalRemarkEditor, resolveVersion } from "@/components/resource/ResourceDetailDialog";
+import { CommonRemarkView, PersonalRemarkEditor } from "@/components/resource/ResourceDetailDialog";
 import { ResourceDownloadDialog } from "@/components/resource/ResourceDownloadDialog";
 import { ResourceEditDialog } from "@/components/resource/ResourceEditDialog";
 import { ResourceNewVersionDialog } from "@/components/resource/ResourceNewVersionDialog";
@@ -76,9 +77,11 @@ function ScopeLine({ label, value }: { label: string; value: string }) {
 }
 
 function RecommendedResourceCard({ resource }: { resource: Resource }) {
+  const location = useLocation();
   return (
     <Link
       to={`/resources/${resource.detail_token}`}
+      state={location.state}
       className="group overflow-hidden rounded-lg border bg-card shadow-sm transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md"
     >
       <div className="relative aspect-video overflow-hidden bg-slate-100">
@@ -179,11 +182,15 @@ function ResourceLinksDialog({
   onOpenChange,
   resource,
   publicUrl,
+  version,
+  followsLatest,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   resource: Resource;
   publicUrl: string;
+  version: ResourceVersion;
+  followsLatest: boolean;
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -203,7 +210,7 @@ function ResourceLinksDialog({
             <div className="flex items-center justify-between gap-3">
               <div>
                 <h2 className="text-sm font-semibold">页面地址</h2>
-                <p className="mt-1 text-xs text-muted-foreground">当前素材详情页</p>
+                <p className="mt-1 text-xs text-muted-foreground">{followsLatest ? "始终显示最新版" : `固定显示 v${version.version_no}`}</p>
               </div>
               <Clipboard className="h-4 w-4 text-muted-foreground" />
             </div>
@@ -241,11 +248,19 @@ function ResourceLinksDialog({
 
 export function ResourceDetailPage() {
   const navigate = useNavigate();
+  const returnToList = useDetailReturn("/resources");
+  const location = useLocation();
+  const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const { resourceKey } = useParams();
+  const versionParam = searchParams.get("version");
+  const followsLatest = versionParam === null;
+  const requestedVersionNo = versionParam !== null && /^[1-9]\d*$/.test(versionParam)
+    && Number.isSafeInteger(Number(versionParam)) ? Number(versionParam) : null;
   const validKey = Boolean(resourceKey && /^[A-Za-z0-9_-]{32,128}$/.test(resourceKey));
   const { data, isLoading, error } = useQuery({
-    queryKey: ["resource-detail", resourceKey],
+    // Revalidate on entry and URL version changes so the bare address follows updates.
+    queryKey: ["resource-detail", resourceKey, versionParam],
     queryFn: async () => (
       await api<{ resource: Resource }>(
         `/api/resources/by-key/${encodeURIComponent(resourceKey!)}`,
@@ -253,9 +268,10 @@ export function ResourceDetailPage() {
     ).resource,
     enabled: validKey,
     retry: false,
+    staleTime: 0,
+    refetchOnWindowFocus: true,
   });
   const resource = data ?? null;
-  const [selectedVersionId, setSelectedVersionId] = React.useState<number | null>(null);
   const [editOpen, setEditOpen] = React.useState(false);
   const [newVersionOpen, setNewVersionOpen] = React.useState(false);
   const [downloadCtx, setDownloadCtx] = React.useState<{ resource: Resource; version: ResourceVersion } | null>(null);
@@ -264,14 +280,19 @@ export function ResourceDetailPage() {
   const [commonRemarkOpen, setCommonRemarkOpen] = React.useState(false);
   const [personalRemarkOpen, setPersonalRemarkOpen] = React.useState(false);
 
-  React.useEffect(() => {
-    if (resource) setSelectedVersionId(resource.current?.id ?? null);
-  }, [resource?.id, resource?.current?.id]);
-
-  const version = resource ? resolveVersion(resource, selectedVersionId) : null;
   const versionOptions = resource
     ? (resource.versions?.length ? resource.versions : [resource.current])
     : [];
+  const version = followsLatest
+    ? resource?.current ?? null
+    : versionOptions.find((item) => item.version_no === requestedVersionNo) ?? null;
+  const selectVersion = (value: string) => {
+    const next = new URLSearchParams(searchParams);
+    if (value === "latest") next.delete("version");
+    else next.set("version", value);
+    const search = next.toString();
+    navigate({ pathname: location.pathname, search: search ? `?${search}` : "", hash: location.hash }, { preventScrollReset: true, state: location.state });
+  };
   const personalRemarkQuery = useQuery({
     queryKey: ["resource", resource?.id, "personal-remark", version?.id],
     queryFn: async () => api<PersonalRemarkResponse>(
@@ -361,7 +382,7 @@ export function ResourceDetailPage() {
     staleTime: 60_000,
   });
   const statusLabel = resource?.status || "";
-  const publicUrl = window.location.href;
+  const publicUrl = `${window.location.origin}${location.pathname}${location.search}${location.hash}`;
   const closeAndRefresh = React.useCallback((open: boolean, setOpen: (value: boolean) => void) => {
     setOpen(open);
     if (!open && resource) {
@@ -370,11 +391,21 @@ export function ResourceDetailPage() {
     }
   }, [queryClient, resource, resourceKey]);
 
-  if (!validKey) return <div className="mx-auto flex h-full w-full max-w-xl flex-col items-center justify-center gap-3 p-6 text-center"><FileKey2 className="h-8 w-8 text-muted-foreground" /><h1 className="text-lg font-semibold">素材不存在</h1><Button variant="outline" onClick={() => navigate("/resources")}><ArrowLeft className="mr-1.5 h-4 w-4" />返回素材库</Button></div>;
+  if (!validKey) return <div className="mx-auto flex h-full w-full max-w-xl flex-col items-center justify-center gap-3 p-6 text-center"><FileKey2 className="h-8 w-8 text-muted-foreground" /><h1 className="text-lg font-semibold">素材不存在</h1><Button variant="outline" onClick={returnToList}><ArrowLeft className="mr-1.5 h-4 w-4" />返回素材库</Button></div>;
   if (isLoading) return <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin" />加载素材详情…</div>;
   if (!resource) {
     const status = error instanceof ApiError ? error.status : 0;
-    return <div className="mx-auto flex h-full w-full max-w-xl flex-col items-center justify-center gap-3 p-6 text-center"><div className="rounded-full bg-destructive/10 p-3"><FileKey2 className="h-6 w-6 text-destructive" /></div><h1 className="text-lg font-semibold">{status === 403 ? "没有查看权限" : status === 404 ? "素材不存在" : "素材加载失败"}</h1><p className="text-sm text-muted-foreground">{status === 403 ? "该素材的可见范围不包含当前账号。" : "请返回素材库重试。"}</p><Button variant="outline" onClick={() => navigate("/resources")}><ArrowLeft className="mr-1.5 h-4 w-4" />返回素材库</Button></div>;
+    return <div className="mx-auto flex h-full w-full max-w-xl flex-col items-center justify-center gap-3 p-6 text-center"><div className="rounded-full bg-destructive/10 p-3"><FileKey2 className="h-6 w-6 text-destructive" /></div><h1 className="text-lg font-semibold">{status === 403 ? "没有查看权限" : status === 404 ? "素材不存在" : "素材加载失败"}</h1><p className="text-sm text-muted-foreground">{status === 403 ? "该素材的可见范围不包含当前账号。" : "请返回素材库重试。"}</p><Button variant="outline" onClick={returnToList}><ArrowLeft className="mr-1.5 h-4 w-4" />返回素材库</Button></div>;
+  }
+  if (!version) {
+    return (
+      <div className="mx-auto flex h-full w-full max-w-xl flex-col items-center justify-center gap-3 p-6 text-center">
+        <FileKey2 className="h-8 w-8 text-muted-foreground" />
+        <h1 className="text-lg font-semibold">{requestedVersionNo === null ? "版本参数无效" : "版本不存在"}</h1>
+        <p className="text-sm text-muted-foreground">{requestedVersionNo === null ? "请使用 ?version=版本号，例如 ?version=2。" : `「${resource.name}」的 v${requestedVersionNo} 不存在或已删除。`}</p>
+        <Button variant="outline" onClick={() => selectVersion("latest")}>查看最新版</Button>
+      </div>
+    );
   }
 
   return (
@@ -387,7 +418,7 @@ export function ResourceDetailPage() {
             className="h-9 w-9 shrink-0"
             title="返回素材库"
             aria-label="返回素材库"
-            onClick={() => navigate("/resources")}
+            onClick={returnToList}
           >
             <ArrowLeft className="h-4 w-4" />
           </Button>
@@ -459,18 +490,20 @@ export function ResourceDetailPage() {
                   共 {versionOptions.length} 个版本
                 </span>
               </div>
-              <Select value={String(version?.id ?? "")} onValueChange={(value) => setSelectedVersionId(Number(value))}>
+              <Select value={followsLatest ? "latest" : String(version.version_no)} onValueChange={selectVersion}>
                 <SelectTrigger className="mt-3 h-10 w-full border-border/70 bg-muted/30 px-3 text-sm font-medium hover:bg-muted/60" aria-label="切换版本">
                   <SelectValue placeholder="选择版本" />
                 </SelectTrigger>
                 <SelectContent>
-                      {versionOptions.map((item) => (
-                        <SelectItem key={item.id} value={String(item.id)}>
-                          v{item.version_no}{item.id === resource.current.id ? "（当前）" : ""}{item.change_note ? ` · ${item.change_note}` : ""}
-                        </SelectItem>
+                  <SelectItem value="latest">最新版 · v{resource.current.version_no}</SelectItem>
+                  {versionOptions.map((item) => (
+                    <SelectItem key={item.id} value={String(item.version_no)}>
+                      v{item.version_no}{item.id === resource.current.id ? "（当前）" : ""}{item.change_note ? ` · ${item.change_note}` : ""}
+                    </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              <p className="mt-2 text-xs text-muted-foreground">{followsLatest ? "自动跟随最新版" : `已固定到 v${version.version_no}，切换至最新版可自动跟随更新`}</p>
             </section>
 
             <section className="rounded-lg border bg-card p-3 shadow-sm">
@@ -554,7 +587,7 @@ export function ResourceDetailPage() {
       <ResourceNewVersionDialog open={newVersionOpen} onOpenChange={(open) => closeAndRefresh(open, setNewVersionOpen)} resource={resource} />
       <ResourceDownloadDialog open={downloadCtx != null} onOpenChange={(open) => { if (!open) setDownloadCtx(null); }} resource={downloadCtx?.resource ?? null} version={downloadCtx?.version ?? null} />
       <ResourcePreviewDialog open={previewResource != null} onOpenChange={(open) => { if (!open) setPreviewResource(null); }} resource={previewResource} />
-      <ResourceLinksDialog open={linksOpen} onOpenChange={setLinksOpen} resource={resource} publicUrl={publicUrl} />
+      <ResourceLinksDialog open={linksOpen} onOpenChange={setLinksOpen} resource={resource} publicUrl={publicUrl} version={version} followsLatest={followsLatest} />
       <Dialog open={commonRemarkOpen} onOpenChange={setCommonRemarkOpen}>
         <DialogContent className="max-h-[90vh] max-w-2xl overflow-hidden p-0">
           <DialogHeader className="sr-only"><DialogTitle>通用备注</DialogTitle><DialogDescription>查看或编辑当前版本的通用备注</DialogDescription></DialogHeader>

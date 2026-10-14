@@ -53,6 +53,55 @@ class ShowReviewTests(unittest.TestCase):
                         (rid, self.alice['id'], now_iso()))
         self.db.commit()
 
+    def iterate_show(self, show_id, resource_ids):
+        response = self.client.post(f'/api/shows/{show_id}/iterate', json={'resource_ids': resource_ids})
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()['show']['id']
+
+    def test_detail_address_resolves_latest_and_pins_requested_series_version(self):
+        second = self.iterate_show(self.show_id, [self.own, self.extra])
+        address = f'/api/shows/{self.show_id}'
+        self.assertEqual(self.client.get(address).json()['show']['id'], self.show_id)
+        self.assertEqual(self.client.get(address + '?version=latest').json()['show']['id'], second)
+        third = self.iterate_show(second, [self.extra])
+        for anchor in [self.show_id, second, third]:
+            for version, expected in [('latest', third), ('1', self.show_id), ('2', second), ('3', third)]:
+                with self.subTest(anchor=anchor, version=version):
+                    response = self.client.get(f'/api/shows/{anchor}?version={version}')
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertEqual(response.json()['show']['id'], expected)
+        self.assertEqual([r['id'] for r in self.client.get(address + '?version=latest').json()['show']['resources']], [self.extra])
+
+    def test_detail_version_lookup_is_limited_to_its_series_and_never_falls_back(self):
+        other = self.insert_show([self.extra])
+        self.db.execute('UPDATE shows SET version_no = 99 WHERE id = ?', (other,))
+        self.db.commit()
+        for version in ['2', '99']:
+            response = self.client.get(f'/api/shows/{self.show_id}?version={version}')
+            self.assertEqual(response.status_code, 404, response.text)
+        for version in ['', '0', '-1', 'abc', '1.5', '9' * 17]:
+            with self.subTest(version=version):
+                response = self.client.get(f'/api/shows/{self.show_id}?version={version}')
+                self.assertEqual(response.status_code, 422, response.text)
+
+    def test_detail_checks_selected_version_permissions_even_when_anchor_is_accessible(self):
+        second = self.iterate_show(self.show_id, [self.own, self.extra])
+        self.db.execute("UPDATE shows SET owner_id = ?, visibility_scope = 'private', management_scope = 'private' WHERE id = ?", (self.bob['id'], second))
+        self.db.commit()
+        address = f'/api/shows/{self.show_id}'
+        self.assertEqual(self.client.get(address + '?version=1').status_code, 200)
+        self.assertEqual(self.client.get(address + '?version=latest').status_code, 403)
+        self.assertEqual(self.client.get(address + '?version=2').status_code, 403)
+
+        # An old record's permissions do not prevent opening an accessible new version.
+        self.db.execute("UPDATE shows SET visibility_scope = 'private' WHERE id = ?", (self.show_id,))
+        self.db.commit()
+        self.current_user = self.bob
+        self.assertEqual(self.client.get(address).status_code, 403)
+        response = self.client.get(address + '?version=latest')
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['show']['id'], second)
+
     def test_diff_and_update_checks_never_reveal_private_resource(self):
         self.upgrade_resource(self.own)
         self.upgrade_resource(self.private)

@@ -31,3 +31,10 @@ The scene-defaults review adds GET/PATCH `/api/admin/tag-defaults` and the
 `TagDefaultChange` / `TagDefaultsPayload` request models. Legacy default-filter
 routes remain compatible; database schema 28 migrates their settings only to
 the resource list, resource management, and user list scenes.
+
+The show-detail version review adds the optional `version` parameter to GET
+`/api/shows/{show_id}`: `latest` resolves the newest record in the same series,
+and a positive version number resolves that version. Omitting the parameter
+retains the exact-record behavior used by playback and iteration callers.
+Permission checks apply to the resolved record. Only this operation's OpenAPI
+parameters were updated; no route or schema was added.

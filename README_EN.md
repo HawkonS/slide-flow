@@ -59,6 +59,9 @@ Object storage, the Windows render node, and reverse proxy upload limits need a 
 
 - **Startup failure**: check for port conflicts, Python and Node versions, and the format of the configuration file; `run.sh` reports the environment problems it finds.
 - **Cannot see an asset, or cannot download it**: visible, downloadable and manageable are separate boundaries, so check the role and the asset's visibility scope.
+- **Asset detail links and versions**: `/resources/<asset key>` follows the latest version and keeps the same address after an iteration. Add `?version=2` to pin v2. Selecting a version updates the address; selecting “Latest” removes the version parameter. Reloading and browser back/forward restore the version specified by the address.
+- **Show detail links and versions**: `/shows/<show ID>` follows the latest version in its series, so existing addresses keep working. Add `?version=2` to pin v2. Switching versions updates the parameter while keeping the original address. Playback, downloads and remarks use the displayed version.
+- **Returning from details**: the back button in asset and show details restores the originating page, search filters, view and scroll position, including after version switches or a detail reload. Pinned items return to the home page; directly opened detail links return to their library.
 - **Missing fonts, or a render task stuck**: the asset detail page lists missing fonts to upload, and the task page shows status and logs. Rendering depends on a Windows worker being online to pull the task.
 
 ## Development

@@ -1,5 +1,6 @@
 import * as React from "react";
 import { useSceneFilters } from "@/lib/tag-defaults";
+import { useOpenDetail, useRestoreListScroll } from "@/lib/detail-navigation";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronDown, ListChecks, Loader2, Pencil, Plus, Trash2, Upload, X } from "lucide-react";
@@ -48,6 +49,7 @@ const URL_DEFAULTS: ResourceUrlState = {
 export function ResourcesPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const openDetail = useOpenDetail();
   const queryClient = useQueryClient();
 
   // 列数与每页大小由共享 hook 按容器宽度连续计算
@@ -126,6 +128,8 @@ export function ResourcesPage() {
     enabled: queryReady,
   });
 
+  useRestoreListScroll(queryReady && !isLoading && !isFetching && !isError);
+
   // 页码越界检查
   // 增加 page !== 1 守卫，避免与其他 setPage 调用产生竞态、
   // 也避免页码已为 1 时仍然触发一次不必要的 setState。
@@ -200,7 +204,7 @@ export function ResourcesPage() {
   }, []);
 
   const handleOpenDetail = (r: Resource) => {
-    if (r.detail_token) navigate(`/resources/${encodeURIComponent(r.detail_token)}`);
+    if (r.detail_token) openDetail(`/resources/${encodeURIComponent(r.detail_token)}`);
   };
 
   const handleEdit = (r: Resource) => openDialog("正在打开编辑窗口", async (signal) => {
@@ -428,7 +432,7 @@ export function ResourcesPage() {
       )}
 
       {/* 内容区 */}
-      <div ref={contentRef} className="min-h-0 flex-1 overflow-auto">
+      <div ref={contentRef} data-list-scroll="results" className="min-h-0 flex-1 overflow-auto">
         {!queryReady || isLoading ? (
           <ResultsLoadingSkeleton viewMode={viewMode} count={pageSize} gridStyle={gridStyle} />
         ) : isError ? (

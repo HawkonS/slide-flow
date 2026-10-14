@@ -1,16 +1,19 @@
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, GitBranch, Loader2 } from "lucide-react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { ShowUpgradeDialog } from "@/components/show/ShowUpgradeDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ApiError, api } from "@/lib/api";
+import { useDetailReturn } from "@/lib/detail-navigation";
 import type { Show } from "@/lib/types";
 
 export function ShowIterationPage() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const returnToList = useDetailReturn("/manage/shows");
   const { id } = useParams();
   const [searchParams] = useSearchParams();
   const initialTab = searchParams.get("tab") === "reorganize" ? "reorganize" : "upgrade";
@@ -25,24 +28,24 @@ export function ShowIterationPage() {
   });
   const show = data?.show ?? null;
 
-  if (!validId) return <IterationError title="放映不存在" onBack={() => navigate("/manage/shows")} />;
+  if (!validId) return <IterationError title="放映不存在" onBack={returnToList} />;
   if (isLoading) {
     return <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin" />加载放映详情…</div>;
   }
   if (!show) {
     const status = error instanceof ApiError ? error.status : 0;
-    return <IterationError title={status === 403 ? "没有查看权限" : "放映不存在或加载失败"} onBack={() => navigate(-1)} />;
+    return <IterationError title={status === 403 ? "没有查看权限" : "放映不存在或加载失败"} onBack={returnToList} />;
   }
 
   if (!show.can_manage) {
-    return <IterationError title="没有版本迭代权限" onBack={() => navigate(`/shows/${show.id}`)} />;
+    return <IterationError title="没有版本迭代权限" onBack={() => navigate(`/shows/${show.id}`, { state: location.state })} />;
   }
 
   return (
     <div className="min-h-full w-full px-1 pb-10 sm:px-2">
       <header className="mx-auto flex w-full max-w-7xl items-center justify-between gap-3 border-b py-3">
         <div className="flex min-w-0 items-center gap-2.5">
-          <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0" title="返回放映详情" aria-label="返回放映详情" onClick={() => navigate(`/shows/${show.id}`)}>
+          <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0" title="返回放映详情" aria-label="返回放映详情" onClick={() => navigate(`/shows/${show.id}`, { state: location.state })}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div className="min-w-0">
@@ -63,9 +66,9 @@ export function ShowIterationPage() {
           initialTab={initialTab}
           show={show}
           onOpenChange={(open) => {
-            if (!open) navigate(`/shows/${show.id}`);
+            if (!open) navigate(`/shows/${show.id}`, { state: location.state });
           }}
-          onSuccess={(newShow) => navigate(`/shows/${newShow.id}`)}
+          onSuccess={(newShow) => navigate(`/shows/${newShow.id}`, { state: location.state })}
         />
       </main>
     </div>

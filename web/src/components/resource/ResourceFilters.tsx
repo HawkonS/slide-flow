@@ -1,5 +1,6 @@
 import * as React from "react";
 import type { SceneFilters } from "@/lib/tag-defaults";
+import { useSearchInput } from "@/lib/use-search-input";
 import { RotateCcw, Search } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -26,6 +27,7 @@ export interface ResourceFiltersProps {
 }
 
 export function ResourceFilters({ filters: s, subjects, tags, actions }: ResourceFiltersProps) {
+  const searchInput = useSearchInput(s.query, s.setQuery);
   const { options: statusTags } = useMetadataTagOptions("status");
   const statusOptions = React.useMemo<ChipOption[]>(
     () => [{ value: "all", label: "全部" }, ...statusTags],
@@ -78,8 +80,7 @@ export function ResourceFilters({ filters: s, subjects, tags, actions }: Resourc
       <div className="relative min-w-0 flex-1 sm:flex-none">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
         <input
-          value={s.query}
-          onChange={(e) => s.setQuery(e.target.value)}
+          {...searchInput}
           placeholder="搜索标题、关键词"
           className={cn(
             "h-8 w-full rounded-md border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition sm:w-56",

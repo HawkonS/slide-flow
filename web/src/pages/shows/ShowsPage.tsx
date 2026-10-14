@@ -1,5 +1,6 @@
 import * as React from "react";
 import { useSceneFilters } from "@/lib/tag-defaults";
+import { useOpenDetail, useRestoreListScroll } from "@/lib/detail-navigation";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Check, ChevronDown, ClipboardList, ListChecks, Loader2, Plus, Star, Trash2, X } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
@@ -53,6 +54,7 @@ export interface ShowsPageProps {
 export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const openDetail = useOpenDetail();
   const queryClient = useQueryClient();
 
   // 分页
@@ -117,6 +119,7 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
     allTags: tags,
     allSubjects: subjects,
     isLoading,
+    isFetching,
     isError,
     error,
   } = usePaginatedQuery<Show>({
@@ -126,6 +129,8 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
     page,
     pageSize,
   });
+
+  useRestoreListScroll(!isLoading && !isFetching && !isError);
 
   // 页码越界检查
   // 增加 page !== 1 守卫，避免与其他 setPage 调用产生竞态、
@@ -210,7 +215,7 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
   }, []);
 
   const handleOpenDetail = (s: Show) => {
-    navigate(`/shows/${s.id}`);
+    openDetail(`/shows/${s.id}`);
   };
 
   const handleEdit = async (s: Show) => {
@@ -439,7 +444,7 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
       )}
 
       {/* 内容区 */}
-      <div ref={contentRef} className="min-h-0 flex-1 overflow-auto">
+      <div ref={contentRef} data-list-scroll="results" className="min-h-0 flex-1 overflow-auto">
         {isLoading ? (
           <div className="flex items-center justify-center py-16 text-muted-foreground">
             <Loader2 className="mr-2 h-5 w-5 animate-spin" /> 加载中…
@@ -459,7 +464,7 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
               onOpen={handleOpenDetail}
               onEdit={standardOnly ? undefined : handleEdit}
               onDuplicate={standardOnly ? undefined : handleDuplicate}
-              onIterate={standardOnly ? undefined : (s) => navigate(`/shows/${s.id}/iterate`)}
+              onIterate={standardOnly ? undefined : (s) => openDetail(`/shows/${s.id}/iterate`)}
               onDelete={standardOnly ? undefined : handleDelete}
               onToggleStandard={standardOnly ? undefined : (show) => standardMutation.mutate(show)}
               selectedIds={standardOnly ? undefined : selectedIds}
@@ -477,7 +482,7 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
                   onOpen={handleOpenDetail}
                   onEdit={standardOnly ? undefined : handleEdit}
                   onDuplicate={standardOnly ? undefined : handleDuplicate}
-                  onIterate={standardOnly ? undefined : () => navigate(`/shows/${s.id}/iterate`)}
+                  onIterate={standardOnly ? undefined : () => openDetail(`/shows/${s.id}/iterate`)}
                   onDelete={standardOnly ? undefined : handleDelete}
                   onToggleStandard={standardOnly ? undefined : (show) => standardMutation.mutate(show)}
                 />

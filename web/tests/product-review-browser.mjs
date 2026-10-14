@@ -64,6 +64,382 @@ before(async () => {
 });
 after(async () => { await browser?.close(); server?.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
 
+async function versionedResourcePage(t) {
+  const context = await browser.newContext({ serviceWorkers: 'block' });
+  t.after(() => context.close());
+  const page = await context.newPage();
+  page.setDefaultTimeout(5000);
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  t.after(() => assert.deepEqual(errors, [], 'uncaught browser errors'));
+  const versions = [1, 2, 3].map(no => ({
+    ...version, id: no * 10 + 1, version_no: no,
+    preview_url: `/fixture.png?version=${no}`, original_preview_url: `/fixture.png?version=${no}`,
+    common_remark_html: `<p>版本 ${no} 的通用备注</p>`, change_note: `版本 ${no}`,
+  }));
+  let current = 2;
+  const detailToken = 'version-history-'.padEnd(32, 'a');
+  await page.route('**/api/resources/by-key/*', route => route.fulfill({ json: {
+    resource: { ...resource, detail_token: detailToken, current_version: current, current: versions[current - 1], versions: versions.slice(0, current) },
+  } }));
+  await page.route('**/api/resources/1/personal-remark*', route => {
+    const versionId = Number(new URL(route.request().url()).searchParams.get('version_id'));
+    return route.fulfill({ json: { content_html: `<p>版本 ID ${versionId} 的个人备注</p>`, version_id: versionId } });
+  });
+  const assertVersion = async no => {
+    await page.waitForFunction(({ name, no }) => document.querySelector(`img[alt="${name}"]`)?.getAttribute('src') === `/fixture.png?version=${no}`, { name: resource.name, no });
+    assert.equal(await page.getByRole('button', { name: /通用备注/ }).locator('span.line-clamp-3').textContent(), `版本 ${no} 的通用备注`);
+    await page.getByRole('button', { name: /个人备注/ }).getByText(`版本 ID ${no * 10 + 1} 的个人备注`, { exact: true }).waitFor();
+  };
+  const chooseVersion = async no => {
+    await page.getByRole('combobox', { name: '切换版本' }).click();
+    await page.getByRole('option', { name: no === 'latest' ? /^最新版/ : new RegExp(`^v${no}(?:（| ·)`), exact: false }).click();
+  };
+  return { page, path: `/resources/${detailToken}`, assertVersion, chooseVersion, update: no => { current = no; } };
+}
+
+test('resource version selection updates the URL, survives reload and follows browser history', { timeout: 30_000 }, async t => {
+  const { page, path: detailPath, assertVersion, chooseVersion, update } = await versionedResourcePage(t);
+  const latestUrl = origin + detailPath + '?source=test#preview';
+  await page.goto(latestUrl);
+  await assertVersion(2);
+  assert.equal(page.url(), latestUrl, 'bare version URL stays unpinned');
+  await chooseVersion(1);
+  await assertVersion(1);
+  assert.equal(page.url(), origin + detailPath + '?source=test&version=1#preview');
+
+  await page.getByRole('button', { name: '链接与分享' }).click();
+  assert.equal(await page.getByRole('textbox', { name: '素材页面地址', exact: true }).inputValue(), page.url());
+  await page.getByText('固定显示 v1', { exact: true }).waitFor();
+  await page.keyboard.press('Escape');
+  await page.reload();
+  await assertVersion(1);
+
+  // Returning to the cached bare route must pick up an iteration made elsewhere.
+  update(3);
+  await page.goBack();
+  await assertVersion(3);
+  assert.equal(page.url(), latestUrl);
+  await page.goForward();
+  await assertVersion(1);
+  await chooseVersion('latest');
+  await assertVersion(3);
+  assert.equal(page.url(), latestUrl, 'latest removes only the version parameter');
+});
+
+test('an explicit resource version remains pinned when newer versions arrive', { timeout: 20_000 }, async t => {
+  const { page, path: detailPath, assertVersion, chooseVersion, update } = await versionedResourcePage(t);
+  await page.goto(origin + detailPath + '?version=2');
+  await assertVersion(2);
+  update(3);
+  await page.reload();
+  await assertVersion(2);
+  assert.equal(new URL(page.url()).searchParams.get('version'), '2');
+  await chooseVersion('latest');
+  await assertVersion(3);
+  assert.equal(new URL(page.url()).searchParams.has('version'), false);
+  await chooseVersion(3);
+  await assertVersion(3);
+  assert.equal(new URL(page.url()).searchParams.get('version'), '3', 'the current version can also be pinned');
+});
+
+test('invalid and missing resource versions show an error and can return to latest', { timeout: 30_000 }, async t => {
+  const { page, path: detailPath, assertVersion } = await versionedResourcePage(t);
+  for (const invalid of ['', '0', '-1', '1.5', 'abc', '9007199254740993']) {
+    await page.goto(origin + detailPath + '?version=' + invalid);
+    await page.getByRole('heading', { name: '版本参数无效', exact: true }).waitFor();
+    assert.equal(await page.getByRole('img', { name: resource.name, exact: true }).count(), 0);
+  }
+  await page.goto(origin + detailPath + '?version=99&source=test');
+  await page.getByRole('heading', { name: '版本不存在', exact: true }).waitFor();
+  assert.equal(await page.getByRole('img', { name: resource.name, exact: true }).count(), 0);
+  await page.getByRole('button', { name: '查看最新版', exact: true }).click();
+  await assertVersion(2);
+  assert.equal(page.url(), origin + detailPath + '?source=test');
+});
+
+async function versionedShowPage(t) {
+  const context = await browser.newContext({ serviceWorkers: 'block' });
+  t.after(() => context.close());
+  const page = await context.newPage();
+  page.setDefaultTimeout(5000);
+  const errors = [], calls = [];
+  page.on('pageerror', error => errors.push(error.message));
+  t.after(() => assert.deepEqual(errors, [], 'uncaught browser errors'));
+  const records = [1, 2, 3].map(no => ({
+    ...show, id: no === 1 ? 1 : no * 100 + 1, name: `放映 v${no}`, version_no: no, change_note: `版本 ${no}`,
+    resources: Array.from({ length: no === 1 ? 1 : 2 }, (_, index) => ({
+      ...show.resources[index], name: `版本 ${no} 第 ${index + 1} 页`, version_no: no,
+      preview_url: `/fixture.png?showVersion=${no}&page=${index + 1}`,
+      original_preview_url: `/fixture.png?showVersion=${no}&page=${index + 1}`,
+    })),
+  }));
+  let current = 2;
+  await context.route(url => /^\/api\/shows\/\d+(?:\/.*)?$/.test(url.pathname), route => {
+    const url = new URL(route.request().url());
+    calls.push({ path: url.pathname, version: url.searchParams.get('version') });
+    const recordId = Number(url.pathname.split('/')[3]);
+    if (url.pathname.endsWith('/versions')) return route.fulfill({ json: {
+      versions: records.slice(0, current).map(record => ({ ...record, resource_count: record.resources.length })),
+      current_version_no: records.find(record => record.id === recordId)?.version_no,
+    } });
+    if (url.pathname.includes('/remarks/')) return route.fulfill({ json: { content_html: `<p>放映记录 ${recordId} 的备注</p>` } });
+    if (/^\/api\/shows\/\d+$/.test(url.pathname)) {
+      const selected = url.searchParams.get('version');
+      const record = selected === 'latest' ? records[current - 1]
+        : selected !== null ? records.slice(0, current).find(record => record.version_no === Number(selected))
+          : records.find(record => record.id === recordId);
+      if (!record) return route.fulfill({ status: 404, json: { detail: '放映版本不存在或已删除' } });
+      return route.fulfill({ json: { show: { ...record, latest_version_no: current, version_count: current, has_other_versions: true } } });
+    }
+    return route.fulfill({ json: { items: [], updates: [] } });
+  });
+  await context.route(url => /^\/api\/resources\/\d+$/.test(url.pathname), route => route.fulfill({ json: {
+    resource: { ...resource, current: version, versions: [1, 2, 3].map(no => ({ ...version, id: no * 10 + 1, version_no: no })) },
+  } }));
+  const assertVersion = async no => {
+    await page.getByRole('heading', { name: `放映 v${no}`, exact: true }).waitFor();
+    await page.waitForFunction(no => document.querySelector('main img')?.getAttribute('src') === `/fixture.png?showVersion=${no}&page=1`, no);
+    await page.getByRole('combobox', { name: '切换放映版本' }).waitFor();
+    await page.waitForFunction(() => document.querySelector('[aria-label="切换放映版本"]')?.textContent?.includes('v'));
+  };
+  const chooseVersion = async no => {
+    await page.getByRole('combobox', { name: '切换放映版本' }).click();
+    await page.getByRole('option', { name: no === 'latest' ? /^最新版/ : new RegExp(`^v${no}(?:（| ·)`) }).click();
+  };
+  return { page, calls, assertVersion, chooseVersion, update: no => { current = no; } };
+}
+
+test('show detail keeps a stable address and restores URL versions through reload and history', { timeout: 30_000 }, async t => {
+  const { page, calls, assertVersion, chooseVersion, update } = await versionedShowPage(t);
+  const latestUrl = origin + '/shows/1?source=test#preview';
+  await page.goto(latestUrl);
+  await assertVersion(2);
+  assert.equal(page.url(), latestUrl);
+  await page.getByRole('button', { name: '第 2 页：版本 2 第 2 页', exact: true }).click();
+  await chooseVersion(1);
+  await assertVersion(1);
+  assert.equal(page.url(), origin + '/shows/1?source=test&version=1#preview');
+  await page.getByRole('button', { name: '分享', exact: true }).click();
+  assert.equal(await page.getByRole('textbox', { name: '放映页面地址', exact: true }).inputValue(), page.url());
+  await page.getByText('固定显示 v1', { exact: true }).waitFor();
+  await page.keyboard.press('Escape');
+  await page.reload();
+  await assertVersion(1);
+  update(3);
+  await page.goBack();
+  await assertVersion(3);
+  assert.equal(page.url(), latestUrl);
+  await page.goForward();
+  await assertVersion(1);
+  await chooseVersion('latest');
+  await assertVersion(3);
+  assert.equal(page.url(), latestUrl);
+  assert.ok(calls.some(call => call.path === '/api/shows/301/check-updates'), 'update checks use the displayed record');
+  const popupPromise = page.waitForEvent('popup');
+  await page.getByRole('button', { name: '放映', exact: true }).click();
+  const popup = await popupPromise;
+  assert.equal(new URL(popup.url()).pathname, '/shows/301/fullscreen', 'playback pins the displayed version');
+  await popup.close();
+});
+
+test('explicit show versions stay pinned across iterations and support anchors from any version', { timeout: 20_000 }, async t => {
+  const { page, assertVersion, chooseVersion, update } = await versionedShowPage(t);
+  await page.goto(origin + '/shows/1?version=2');
+  await assertVersion(2);
+  update(3);
+  await page.reload();
+  await assertVersion(2);
+  assert.equal(new URL(page.url()).searchParams.get('version'), '2');
+  await chooseVersion('latest');
+  await assertVersion(3);
+  assert.equal(page.url(), origin + '/shows/1');
+  await chooseVersion(3);
+  assert.equal(page.url(), origin + '/shows/1?version=3');
+  await page.goto(origin + '/shows/301?version=1');
+  await assertVersion(1);
+  await chooseVersion('latest');
+  await assertVersion(3);
+  assert.equal(page.url(), origin + '/shows/301');
+});
+
+test('invalid and missing show versions show an error and can return to latest', { timeout: 20_000 }, async t => {
+  const { page, assertVersion } = await versionedShowPage(t);
+  for (const invalid of ['', '0', '-1', '1.5', 'abc', '9007199254740993']) {
+    await page.goto(origin + '/shows/1?version=' + invalid);
+    await page.getByRole('heading', { name: '版本参数无效', exact: true }).waitFor();
+    assert.equal(await page.getByRole('combobox', { name: '切换放映版本' }).count(), 0);
+  }
+  await page.goto(origin + '/shows/1?version=99&source=test');
+  await page.getByRole('heading', { name: '版本不存在', exact: true }).waitFor();
+  await page.getByRole('button', { name: '查看最新版', exact: true }).click();
+  await assertVersion(2);
+  assert.equal(page.url(), origin + '/shows/1?source=test');
+});
+
+const encodeListState = state => Buffer.from(JSON.stringify(state)).toString('base64url');
+async function pagedDetailList(page, kind, detailPath) {
+  const model = kind === 'resource' ? resource : show;
+  const calls = [];
+  await page.route(url => url.pathname === `/api/${kind === 'resource' ? 'resources' : 'shows'}`, route => {
+    const query = Object.fromEntries(new URL(route.request().url()).searchParams);
+    calls.push(query);
+    const count = Number(query.page_size) || 6;
+    const items = Array.from({ length: count }, (_, index) => ({
+      ...model,
+      id: index === count - 1 ? 1 : index + 10,
+      name: index === count - 1 ? model.name : `${model.name} ${index + 1}`,
+      detail_token: detailPath.split('/').at(-1),
+    }));
+    return route.fulfill({ json: { ...list(items), total: 300, page: Number(query.page), page_size: count } });
+  });
+  return calls;
+}
+
+for (const { route, kind, view } of [
+  { route: '/resources', kind: 'resource', view: 'card' },
+  { route: '/resources', kind: 'resource', view: 'list' },
+  { route: '/manage/resources', kind: 'resource', view: 'list' },
+  { route: '/manage/shows', kind: 'show', view: 'card' },
+  { route: '/manage/shows', kind: 'show', view: 'list' },
+  { route: '/shows', kind: 'show', view: 'card' },
+]) {
+  test(`${route} ${view} returns to its page, filters and scroll after detail versions and reload`, { timeout: 30_000 }, async t => {
+    const fixture = await (kind === 'resource' ? versionedResourcePage(t) : versionedShowPage(t));
+    const { page, chooseVersion, assertVersion } = fixture;
+    await page.setViewportSize({ width: 390, height: 480 });
+    const detailPath = fixture.path ?? '/shows/1';
+    const calls = await pagedDetailList(page, kind, detailPath);
+    const state = { q: '客户', sub: '产品介绍', sta: 'active', tags: ['精选'], tm: 'any', p: 3, view };
+    const listUrl = origin + route + '?s=' + encodeListState(state) + '&source=catalog#results';
+    const title = kind === 'resource' ? resource.name : show.name;
+    const target = () => page.locator('[data-list-scroll="results"]').getByText(title, { exact: true });
+    const assertReturned = async scroll => {
+      await page.waitForURL(listUrl);
+      await target().waitFor();
+      assert.equal(page.url(), listUrl);
+      assert.equal(await page.getByPlaceholder(route === '/manage/resources' ? '搜索名称、主体、所有者、ID' : '搜索标题、关键词', { exact: true }).inputValue(), '客户');
+      await page.getByText(/^3 \/ \d+$/).waitFor();
+      await page.waitForFunction(scroll => document.querySelector('[data-list-scroll="results"]')?.scrollTop === scroll, scroll);
+      const latest = calls.filter(call => call.search === '客户').at(-1);
+      assert.equal(latest.page, '3');
+      assert.equal(latest.search, '客户');
+      assert.equal(latest.subject, '产品介绍');
+      assert.equal(latest.status, 'active');
+      assert.equal(latest.tags, '精选');
+    };
+    await page.goto(listUrl);
+    await target().click(); // The last item also scrolls the list before navigation.
+    await assertVersion(2);
+    const originalScroll = await page.evaluate(() => history.state.usr.detailOrigin.scroll.results.top);
+    assert.ok(originalScroll > 0, 'fixture must exercise a scrolled list');
+    await page.reload();
+    await assertVersion(2);
+    await page.goBack();
+    await assertReturned(originalScroll);
+    await target().click();
+    await assertVersion(2);
+    await chooseVersion(1);
+    await assertVersion(1);
+    await chooseVersion('latest');
+    await assertVersion(2);
+    await chooseVersion(1);
+    await page.reload();
+    await assertVersion(1);
+    await page.getByRole('button', { name: kind === 'resource' ? '返回素材库' : '返回放映库', exact: true }).click();
+    await assertReturned(originalScroll);
+  });
+}
+
+test('recommended resource details retain the original filtered list', { timeout: 20_000 }, async t => {
+  const { page, path: detailPath, assertVersion, chooseVersion } = await versionedResourcePage(t);
+  await pagedDetailList(page, 'resource', detailPath);
+  const listUrl = origin + '/resources?s=' + encodeListState({ q: '客户', sub: 'all', sta: 'all', tags: [], tm: 'all', p: 4, view: 'card' });
+  await page.goto(listUrl);
+  await page.locator('article').getByText(resource.name, { exact: true }).click();
+  await assertVersion(2);
+  await chooseVersion(1);
+  await page.locator(`a[href="${detailPath}"]`).first().click();
+  await assertVersion(2);
+  await page.reload();
+  await assertVersion(2);
+  await page.getByRole('button', { name: '返回素材库', exact: true }).click();
+  await page.waitForURL(listUrl);
+  await page.getByText(/^4 \/ \d+$/).waitFor();
+});
+
+test('a resource loading error returns to its original list', { timeout: 20_000 }, async t => {
+  const { page, path: detailPath } = await versionedResourcePage(t);
+  await pagedDetailList(page, 'resource', detailPath);
+  await page.route('**/api/resources/by-key/*', route => route.fulfill({ status: 404, json: { detail: '素材不存在' } }));
+  const listUrl = origin + '/resources?s=' + encodeListState({ q: '客户', sub: 'all', sta: 'all', tags: [], tm: 'all', p: 3, view: 'card' });
+  await page.goto(listUrl);
+  await page.locator('article').getByText(resource.name, { exact: true }).click();
+  await page.getByRole('heading', { name: '素材不存在', exact: true }).waitFor();
+  await page.getByRole('button', { name: '返回素材库', exact: true }).click();
+  await page.waitForURL(listUrl);
+  await page.getByText(/^3 \/ \d+$/).waitFor();
+});
+
+for (const entry of ['detail', 'list']) {
+  test(`show iteration entered from ${entry} retains the original list`, { timeout: 20_000 }, async t => {
+    const { page, assertVersion } = await versionedShowPage(t);
+    await pagedDetailList(page, 'show', '/shows/1');
+    const listUrl = origin + '/manage/shows?s=' + encodeListState({ q: '客户', sub: 'all', sta: 'all', tags: [], tm: 'all', p: 3, view: 'card' });
+    await page.goto(listUrl);
+    const card = page.locator('article').filter({ has: page.getByText(show.name, { exact: true }) });
+    if (entry === 'detail') {
+      await card.click();
+      await assertVersion(2);
+      await page.getByRole('button', { name: '版本迭代', exact: true }).click();
+    } else {
+      await card.getByRole('button', { name: '更多操作', exact: true }).click();
+      await page.getByRole('menuitem', { name: '版本迭代', exact: true }).click();
+    }
+    await page.getByRole('heading', { name: '版本迭代', exact: true }).waitFor();
+    await page.reload();
+    await page.getByRole('button', { name: '返回放映详情', exact: true }).click();
+    await assertVersion(2);
+    await page.getByRole('button', { name: '返回放映库', exact: true }).click();
+    await page.waitForURL(listUrl);
+    await page.getByText(/^3 \/ \d+$/).waitFor();
+  });
+}
+
+for (const kind of ['resource', 'show']) {
+  test(`pinned ${kind} details return to the scrolled home page`, { timeout: 20_000 }, async t => {
+    const fixture = await (kind === 'resource' ? versionedResourcePage(t) : versionedShowPage(t));
+    const { page, assertVersion, chooseVersion } = fixture;
+    await page.setViewportSize({ width: 390, height: 600 });
+    const token = fixture.path?.split('/').at(-1);
+    await page.route(url => url.pathname === '/api/me/pins', route => route.fulfill({ json: {
+      shows: [show], resources: [{ ...resource, detail_token: token ?? resource.detail_token }],
+    } }));
+    await page.goto(origin + '/home');
+    await page.locator('article').getByText(kind === 'resource' ? resource.name : show.name, { exact: true }).click();
+    await assertVersion(2);
+    const scroll = await page.evaluate(() => history.state.usr.detailOrigin.scroll);
+    assert.ok(scroll.results.top > 0 || scroll.app.top > 0, 'fixture must exercise home scrolling');
+    await chooseVersion(1);
+    await page.reload();
+    await assertVersion(1);
+    await page.getByRole('button', { name: kind === 'resource' ? '返回素材库' : '返回放映库', exact: true }).click();
+    await page.waitForURL(origin + '/home');
+    await page.getByRole('heading', { name: '我的置顶', exact: true }).waitFor();
+    await page.waitForFunction(scroll => ['app', 'results'].every(key => document.querySelector(`[data-list-scroll="${key}"]`)?.scrollTop === scroll[key].top), scroll);
+  });
+
+  test(`direct ${kind} links return to their library without an origin`, { timeout: 20_000 }, async t => {
+    const fixture = await (kind === 'resource' ? versionedResourcePage(t) : versionedShowPage(t));
+    const { page, assertVersion, chooseVersion } = fixture;
+    await page.goto(origin + (fixture.path ?? '/shows/1'));
+    await assertVersion(2);
+    await chooseVersion(1);
+    await page.getByRole('button', { name: kind === 'resource' ? '返回素材库' : '返回放映库', exact: true }).click();
+    await page.waitForURL(origin + (kind === 'resource' ? '/resources' : '/manage/shows'));
+  });
+}
+
 for (const { name, html, expected } of [
   {
     name: 'decode nested entities only once',
@@ -142,7 +518,7 @@ for (const width of [1440, 390, 320]) {
       ...show.resources[0], id: index + 1, name: `介绍第 ${index + 1} 页`,
       preview_url: `/fixture.png?slide=${index + 1}`, original_preview_url: `/fixture.png?slide=${index + 1}`,
     }));
-    await page.route('**/api/shows/1', route => route.fulfill({ json: { show: { ...show, resources } } }));
+    await page.route(url => url.pathname === '/api/shows/1', route => route.fulfill({ json: { show: { ...show, resources } } }));
     await page.route('**/fixture.png?slide=*', route => {
       const number = Number(new URL(route.request().url()).searchParams.get('slide'));
       const dark = number % 3 === 1;
@@ -213,7 +589,7 @@ test('show thumbnail arrows reflect overflow after resizing and handle an empty 
   await page.locator('button[aria-label="向右滚动缩略图"]:enabled').waitFor();
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.locator('button[aria-label="向右滚动缩略图"]:disabled').waitFor();
-  await page.route('**/api/shows/1', route => route.fulfill({ json: { show: { ...show, resources: [] } } }));
+  await page.route(url => url.pathname === '/api/shows/1', route => route.fulfill({ json: { show: { ...show, resources: [] } } }));
   await page.reload();
   await page.getByText('暂无放映页面', { exact: true }).waitFor();
   assert.equal(await navigation.count(), 0);

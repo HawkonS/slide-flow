@@ -1,7 +1,8 @@
 import { TableTags, TableText } from "@/components/common/TableContent";
 import * as React from "react";
 import { useSceneFilters } from "@/lib/tag-defaults";
-import { useNavigate } from "react-router-dom";
+import { useSearchInput } from "@/lib/use-search-input";
+import { useOpenDetail, useRestoreListScroll } from "@/lib/detail-navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Check,
@@ -84,7 +85,7 @@ export default function ResourceManagePage() {
     [statusTags],
   );
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
+  const openDetail = useOpenDetail();
 
   /* ---- Pagination ---- */
   const contentRef = React.useRef<HTMLDivElement>(null);
@@ -108,6 +109,7 @@ export default function ResourceManagePage() {
 
   // 筛选 + 页码统一编码到 URL ?s=…
   const { state: urlState, setState: setUrlState, filters } = useSceneFilters("resource_manage", URL_DEFAULTS);
+  const searchInput = useSearchInput(filters.query, filters.setQuery);
 
   const page = urlState.p;
   const setPage = React.useCallback(
@@ -141,6 +143,7 @@ export default function ResourceManagePage() {
     allTags: tags,
     allSubjects: subjects,
     isLoading,
+    isFetching,
     isError,
     error,
   } = usePaginatedQuery<Resource>({
@@ -150,6 +153,8 @@ export default function ResourceManagePage() {
     page,
     pageSize,
   });
+
+  useRestoreListScroll(!isLoading && !isFetching && !isError);
 
   // 页码越界检查
   React.useEffect(() => {
@@ -302,8 +307,7 @@ export default function ResourceManagePage() {
         <div className="relative min-w-0 flex-1 sm:flex-none">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <input
-            value={filters.query}
-            onChange={(e) => filters.setQuery(e.target.value)}
+            {...searchInput}
             placeholder="搜索名称、主体、所有者、ID"
             className={cn(
               "h-8 w-full rounded-md border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition sm:w-56",
@@ -392,7 +396,7 @@ export default function ResourceManagePage() {
 
       {/* 内容区 */}
       <div className="min-h-0 flex-1 flex flex-col gap-0">
-        <div ref={contentRef} className="min-h-0 flex-1 overflow-auto">
+        <div ref={contentRef} data-list-scroll="results" className="min-h-0 flex-1 overflow-auto">
         {isLoading ? (
           <div className="flex items-center justify-center py-16 text-muted-foreground">
             <Loader2 className="mr-2 h-5 w-5 animate-spin" /> 加载中…
@@ -488,7 +492,7 @@ export default function ResourceManagePage() {
                             "flex h-9 w-16 items-center justify-center overflow-hidden rounded border bg-muted",
                             "cursor-pointer",
                           )}
-                          onClick={() => r.detail_token && navigate(`/resources/${encodeURIComponent(r.detail_token)}`)}
+                          onClick={() => r.detail_token && openDetail(`/resources/${encodeURIComponent(r.detail_token)}`)}
                         >
                           {preview ? (
                             <img
@@ -504,7 +508,7 @@ export default function ResourceManagePage() {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <TableText text={r.name}><button type="button" className="w-full text-left font-medium hover:text-foreground hover:underline" onClick={() => r.detail_token && navigate(`/resources/${encodeURIComponent(r.detail_token)}`)}>{r.name}</button></TableText>
+                        <TableText text={r.name}><button type="button" className="w-full text-left font-medium hover:text-foreground hover:underline" onClick={() => r.detail_token && openDetail(`/resources/${encodeURIComponent(r.detail_token)}`)}>{r.name}</button></TableText>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
                         <TableText text={r.subject || DEFAULT_RESOURCE_SUBJECT} />

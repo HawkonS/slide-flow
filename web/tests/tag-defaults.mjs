@@ -105,6 +105,52 @@ async function until(check) {
 }
 const last = (requests, p) => requests.filter(r => r.p === p).at(-1)?.query;
 
+for (const [routePath, apiPath, placeholder, usesSession = false] of [
+  ['/resources', '/api/resources', '搜索标题、关键词'],
+  ['/shows', '/api/shows', '搜索标题、关键词'],
+  ['/manage/shows', '/api/shows', '搜索标题、关键词'],
+  ['/manage/resources', '/api/resources', '搜索名称、主体、所有者、ID'],
+  ['/shows/1/iterate?tab=reorganize', '/api/resources/pick', '搜索名称或主体', true],
+]) test(`Chinese search waits for IME confirmation without changing focus or URL: ${routePath}`, async t => {
+  const { page, requests } = await fixture(t);
+  await page.goto(origin + routePath);
+  await until(() => Boolean(last(requests, apiPath)));
+  const input = page.getByPlaceholder(placeholder);
+  await input.focus();
+  const originalUrl = page.url();
+  const session = await page.context().newCDPSession(page);
+  const composing = text => session.send('Input.imeSetComposition', { text, selectionStart: text.length, selectionEnd: text.length });
+  await composing('zhong');
+  await page.waitForTimeout(350);
+  assert.equal(page.url(), originalUrl, 'unconfirmed pinyin must not navigate');
+  assert.equal(last(requests, apiPath).search, undefined, 'unconfirmed pinyin must not be searched');
+  assert.equal(await input.inputValue(), 'zhong');
+  await composing('zhongwen');
+  await page.waitForTimeout(350);
+  assert.equal(page.url(), originalUrl);
+  assert.equal(await input.evaluate(el => document.activeElement === el), true, 'composition retains input focus');
+  await composing('');
+  assert.equal(await input.inputValue(), '', 'cancelling composition restores the committed search');
+  assert.equal(page.url(), originalUrl);
+  await composing('zhongwen');
+  await session.send('Input.insertText', { text: '中文' });
+  await until(() => last(requests, apiPath)?.search === '中文');
+  assert.equal(await input.inputValue(), '中文');
+  assert.equal(requests.filter(r => r.p === apiPath && r.query.search === '中文').length, 1);
+  assert.equal(requests.some(r => r.p === apiPath && /^zhong/.test(r.query.search || '')), false);
+  const encodedState = usesSession
+    ? await page.evaluate(() => sessionStorage.getItem('slide-flow:filters:1:resource_picker:/shows/1/iterate'))
+    : new URL(page.url()).searchParams.get('s');
+  assert.equal(JSON.parse(Buffer.from(encodedState, 'base64url').toString()).q, '中文');
+
+  await page.reload();
+  assert.equal(await page.getByPlaceholder(placeholder).inputValue(), '中文', 'confirmed search persists after reload');
+  await page.getByRole('button', { name: '清空筛选', exact: true }).click();
+  await until(async () => await page.getByPlaceholder(placeholder).inputValue() === '');
+  await page.getByPlaceholder(placeholder).fill('english');
+  await until(() => last(requests, apiPath)?.search === 'english');
+});
+
 for (const [routePath, apiPath, status, userScene] of [
   ['/resources', '/api/resources', '正式'], ['/manage/resources', '/api/resources', '正式'],
   ['/manage/shows', '/api/shows', '草稿'], ['/shows', '/api/shows', '封存'],

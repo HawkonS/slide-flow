@@ -1,4 +1,5 @@
 import { useSceneFilters } from "@/lib/tag-defaults";
+import { useSearchInput } from "@/lib/use-search-input";
 import { TableTags, TableText } from "@/components/common/TableContent";
 import { parseTags } from "@/lib/types";
 import * as React from "react";
@@ -115,6 +116,7 @@ export function ResourcePicker({
   const { query: search, setQuery: setSearch, status, setStatus, subject, setSubject,
     permission, setPermission, remarkCommon, setRemarkCommon, remarkPersonal, setRemarkPersonal,
     tags, setTags, tagsMode, setTagsMode, sort, setSort } = filters;
+  const searchInput = useSearchInput(search, setSearch);
   const [debouncedSearch, setDebouncedSearch] = React.useState(search);
   const [density, setDensity] = React.useState<"compact" | "standard">("standard");
   const [internalViewMode, setInternalViewMode] = React.useState<"card" | "list">("card");
@@ -424,8 +426,7 @@ export function ResourcePicker({
         <div className="relative">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
           <Input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            {...searchInput}
             placeholder="搜索名称或主体"
             className={cn(
               "h-7 w-48 rounded-md pl-7 text-xs",

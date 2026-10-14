@@ -296,8 +296,20 @@ def get_show(
     show_id: int,
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_read_dep),
+    version: str | None = Query(None, max_length=16, pattern=r"^(latest|[1-9][0-9]*)$"),
 ) -> dict[str, Any]:
     row = _show_row(db, show_id)
+    # Detail links resolve within the series; playback callers omit version to
+    # keep the exact show record they opened.
+    if version is not None:
+        condition = "" if version == "latest" else " AND version_no = ?"
+        params = (row["series_id"],) if version == "latest" else (row["series_id"], int(version))
+        row = db.execute(
+            f"SELECT * FROM shows WHERE series_id = ?{condition} ORDER BY version_no DESC, id DESC LIMIT 1",
+            params,
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, "放映版本不存在或已删除")
     if not can_view_show(db, row, user):
         raise HTTPException(403, "无可见权限")
     return {"show": _serialize_show(db, row, user)}

@@ -296,7 +296,7 @@ export function AppShell() {
         </aside>
 
         {/* 主内容 */}
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto px-3 py-3 sm:px-4 sm:py-4 md:px-6 md:py-5">
+        <main data-list-scroll="app" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto px-3 py-3 sm:px-4 sm:py-4 md:px-6 md:py-5">
           <Suspense key={location.pathname} fallback={<PageLoadingSkeleton />}>
             <Outlet />
           </Suspense>

@@ -25,7 +25,7 @@ function formatDate(value: string) {
 }
 
 
-export function ShowShareDialog({ open, onOpenChange, show }: { open: boolean; onOpenChange: (open: boolean) => void; show: Show }) {
+export function ShowShareDialog({ open, onOpenChange, show, pageUrl, followsLatest }: { open: boolean; onOpenChange: (open: boolean) => void; show: Show; pageUrl: string; followsLatest: boolean }) {
   const queryClient = useQueryClient();
   const [days, setDays] = React.useState("7");
   const [createdLink, setCreatedLink] = React.useState<string | null>(null);
@@ -66,6 +66,15 @@ export function ShowShareDialog({ open, onOpenChange, show }: { open: boolean; o
           <DialogDescription>分享“{show.name}”的放映预览。链接仅提供页面预览，不授予素材下载权限。</DialogDescription>
         </DialogHeader>
         <div className="space-y-6 px-6 py-5">
+          <section>
+            <h2 className="text-sm font-semibold">页面地址</h2>
+            <p className="mt-1 text-xs text-muted-foreground">{followsLatest ? "始终显示最新版" : `固定显示 v${show.version_no}`}</p>
+            <div className="mt-3 flex min-w-0 gap-2">
+              <Input readOnly value={pageUrl} className="h-9 min-w-0 bg-muted/30 text-xs" aria-label="放映页面地址" />
+              <Button variant="outline" size="icon" className="h-9 w-9 shrink-0" title="复制页面地址" aria-label="复制页面地址" onClick={() => void copyText(pageUrl)}><Copy className="h-3.5 w-3.5" /></Button>
+              <Button variant="outline" size="icon" className="h-9 w-9 shrink-0" title="打开页面地址" aria-label="打开页面地址" onClick={() => window.open(pageUrl, "_blank", "noopener,noreferrer")}><ExternalLink className="h-3.5 w-3.5" /></Button>
+            </div>
+          </section>
           <section>
             <h2 className="text-sm font-semibold">创建分享链接</h2>
             <p className="mt-1 text-xs text-muted-foreground">设置有效期后创建，链接会自动复制到剪贴板。</p>

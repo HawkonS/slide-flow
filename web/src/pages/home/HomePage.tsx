@@ -1,5 +1,6 @@
 import * as React from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
+import { useOpenDetail, useRestoreListScroll } from "@/lib/detail-navigation";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowRight,
@@ -36,7 +37,7 @@ interface HomePins {
 
 export function HomePage() {
   const { user } = useAuth();
-  const navigate = useNavigate();
+  const openDetail = useOpenDetail();
 
   const { data: stats, isLoading: statsLoading, isError: statsError, refetch: refetchStats } = useQuery({
     queryKey: ["home", "stats"],
@@ -52,12 +53,13 @@ export function HomePage() {
 
   const pinnedShows = pins?.shows ?? [];
   const pinnedResources = pins?.resources ?? [];
+  useRestoreListScroll(!statsLoading && !pinsLoading);
 
   const greeting = user?.name || user?.username || "你好";
   const greetingPrefix = getGreetingPrefix();
 
   return (
-    <div className="min-h-full overflow-auto pb-6">
+    <div data-list-scroll="results" className="min-h-full overflow-auto pb-6">
       <div className="space-y-5">
         <header className="flex flex-col gap-3 border-b pb-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
@@ -99,12 +101,12 @@ export function HomePage() {
           <div className="grid gap-x-8 gap-y-6 xl:grid-cols-2">
             <PinnedPanel title="放映素材" count={pinnedShows.length} loading={pinsLoading} empty={pinsError ? <p className="text-sm text-muted-foreground">暂时无法加载置顶放映</p> : <EmptyPinned title="还没有置顶放映" hint="从放映素材或标准放映的卡片菜单中置顶" to="/manage/shows" action="浏览放映" />}>
               <div className="grid gap-3 sm:grid-cols-2">
-                {pinnedShows.map((s) => <ShowCard key={s.id} show={s} onOpen={(x) => navigate(`/shows/${x.id}`)} />)}
+                {pinnedShows.map((s) => <ShowCard key={s.id} show={s} onOpen={(x) => openDetail(`/shows/${x.id}`)} />)}
               </div>
             </PinnedPanel>
             <PinnedPanel title="单页素材" count={pinnedResources.length} loading={pinsLoading} empty={pinsError ? <p className="text-sm text-muted-foreground">暂时无法加载置顶素材</p> : <EmptyPinned title="还没有置顶素材" hint="从单页素材卡片菜单中置顶常用内容" to="/resources" action="浏览素材" />}>
               <div className="grid gap-3 sm:grid-cols-2">
-                {pinnedResources.map((r) => <ResourceCard key={r.id} resource={r} onOpen={(x) => x.detail_token && navigate(`/resources/${encodeURIComponent(x.detail_token)}`)} />)}
+                {pinnedResources.map((r) => <ResourceCard key={r.id} resource={r} onOpen={(x) => x.detail_token && openDetail(`/resources/${encodeURIComponent(x.detail_token)}`)} />)}
               </div>
             </PinnedPanel>
           </div>
