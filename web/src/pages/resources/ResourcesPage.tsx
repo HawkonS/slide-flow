@@ -204,7 +204,7 @@ export function ResourcesPage() {
   }, []);
 
   const handleOpenDetail = (r: Resource) => {
-    if (r.detail_token) openDetail(`/resources/${encodeURIComponent(r.detail_token)}`);
+    if (r.detail_token) openDetail(`/resources/${encodeURIComponent(r.detail_token)}`, apiParams);
   };
 
   const handleEdit = (r: Resource) => openDialog("正在打开编辑窗口", async (signal) => {

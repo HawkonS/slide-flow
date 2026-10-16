@@ -185,9 +185,9 @@ def _commit_resource_import_sync(
         raise HTTPException(400, "请先生成 PPT 预览图")
     name_prefix = str(payload.get("name_prefix", "")).strip()
     if not name_prefix:
-        raise HTTPException(400, "请填写名称前缀")
+        raise HTTPException(400, "请填写素材名称")
     if len(name_prefix) > RESOURCE_IMPORT_MAX_NAME_LENGTH or any(ord(char) < 32 for char in name_prefix):
-        raise HTTPException(400, f"名称前缀不能超过 {RESOURCE_IMPORT_MAX_NAME_LENGTH} 个字符且不能包含控制字符")
+        raise HTTPException(400, f"素材名称不能超过 {RESOURCE_IMPORT_MAX_NAME_LENGTH} 个字符且不能包含控制字符")
     subject = _validate_resource_subject(str(payload.get("subject", DEFAULT_RESOURCE_SUBJECT)), allow_empty=True)
     tags = str(payload.get("tags", ""))
     status = _validate_resource_status(str(payload.get("status", "")))
@@ -263,7 +263,7 @@ def _commit_resource_import_sync(
                    visibility_scope, management_scope, secrecy_level, current_version,
                    updated_by, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', 1, ?, ?, ?)""",
-                (new_resource_detail_token(), f"{name_prefix}_{source_page:0{name_width}d}", user["id"], subject, tags, status,
+                (new_resource_detail_token(), name_prefix if len(split_files) == 1 else f"{name_prefix}_{source_page:0{name_width}d}", user["id"], subject, tags, status,
                  visibility_scope, management_scope, user["id"], batch_ts, batch_ts),
             )
             resource_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])

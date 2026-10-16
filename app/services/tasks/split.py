@@ -204,7 +204,7 @@ def _execute_split_task(
                 """,
                 (
                     new_resource_detail_token(),
-                    f"{name_prefix}_{source_index + 1:0{name_width}d}",
+                    name_prefix if total == 1 else f"{name_prefix}_{source_index + 1:0{name_width}d}",
                     owner_id,
                     subject,
                     tags,

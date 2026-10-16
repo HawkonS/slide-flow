@@ -11,6 +11,7 @@ from app.services.common import (
 )
 from app.services.resource_queries import (
     _build_resource_query_sql,
+    resource_neighbors,
 )
 from app.services.resources import (
     _serialize_resource_lite,
@@ -25,6 +26,30 @@ from typing import Any
 import sqlite3
 
 router = APIRouter()
+
+
+@router.get("/api/resources/{resource_id}/neighbors")
+def get_resource_neighbors(
+    resource_id: int,
+    search: str = Query(""),
+    tags: str = Query(""),
+    tags_mode: str = Query("any"),
+    subject: str = Query(""),
+    status: str = Query("all"),
+    permission: str = Query("all"),
+    remark_common: str = Query("all"),
+    remark_personal: str = Query("all"),
+    sort: str = Query("updated_desc"),
+    manageable_only: bool = Query(False),
+    user: sqlite3.Row = Depends(require_user),
+    db: sqlite3.Connection = Depends(db_read_dep),
+) -> dict[str, Any]:
+    return resource_neighbors(
+        db, user, resource_id,
+        search=search, tags=tags, tags_mode=tags_mode, subject=subject,
+        status=status, permission=permission, remark_common=remark_common,
+        remark_personal=remark_personal, sort=sort, manageable_only=manageable_only,
+    )
 
 
 def _resource_facets(

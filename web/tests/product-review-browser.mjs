@@ -278,6 +278,105 @@ test('invalid and missing show versions show an error and can return to latest',
 });
 
 const encodeListState = state => Buffer.from(JSON.stringify(state)).toString('base64url');
+
+for (const viewport of [{ width: 1360, height: 960 }, { width: 390, height: 844 }]) {
+  test(`resource detail switches in the same frame at ${viewport.width}px`, { timeout: 30_000 }, async t => {
+    const context = await browser.newContext({ viewport, serviceWorkers: 'block' });
+    t.after(() => context.close());
+    const page = await context.newPage();
+    page.setDefaultTimeout(5000);
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.message));
+    t.after(() => assert.deepEqual(errors, []));
+    const resources = [1, 2, 3].map(id => {
+      const versions = [1, 2].map(no => ({ ...version, id: id * 10 + no, version_no: no, common_remark_html: `<p>素材 ${id} 版本 ${no}</p>` }));
+      return {
+        ...resource, id, detail_token: `neighbor-resource-${id}`.padEnd(32, 'a'),
+        name: id === 2 ? '客户介绍二：这是一个很长的标题用于检查切换时框架和按钮不会移动'.repeat(3) : `客户介绍${id}`,
+        tags: id === 2 ? Array.from({ length: 20 }, (_, i) => `分类标签${i}`).join(',') : '精选',
+        can_manage: id !== 2, current_version: 2, current: versions[1], versions,
+      };
+    });
+    let releaseSecond;
+    const secondGate = new Promise(resolve => { releaseSecond = resolve; });
+    let requestedSecond = false;
+    let failThird = true;
+    const neighborCalls = [];
+    await page.route(url => url.pathname === '/api/resources', route => route.fulfill({ json: { ...list(resources), total: 100, page: 3 } }));
+    await page.route('**/api/resources/by-key/*', async route => {
+      const item = resources.find(item => route.request().url().includes(item.detail_token));
+      if (item?.id === 2) { requestedSecond = true; await secondGate; }
+      if (item?.id === 3 && failThird) { failThird = false; return route.fulfill({ status: 504, json: { detail: 'timeout' } }); }
+      return route.fulfill({ json: { resource: item } });
+    });
+    await page.route('**/api/resources/*/neighbors*', route => {
+      const url = new URL(route.request().url());
+      const index = Number(url.pathname.split('/')[3]) - 1;
+      neighborCalls.push(Object.fromEntries(url.searchParams));
+      return route.fulfill({ json: { previous: resources[index - 1] ?? null, next: resources[index + 1] ?? null, position: index + 1, total: resources.length } });
+    });
+    const listUrl = origin + '/resources?s=' + encodeListState({ q: '客户', sub: '产品介绍', sta: 'active', tags: ['精选'], tm: 'all', sort: 'name_asc', p: 3, view: 'list' });
+    await page.goto(listUrl);
+    await page.locator('[data-list-scroll="results"]').getByRole('button', { name: resources[0].name, exact: true }).click();
+    const card = page.getByRole('region', { name: '素材预览' });
+    const nav = page.getByRole('navigation', { name: '素材切换' });
+    const previous = nav.getByRole('button', { name: '上一个素材', exact: true });
+    const next = nav.getByRole('button', { name: '下一个素材', exact: true });
+    await next.and(page.locator(':enabled')).waitFor();
+    assert.equal(await previous.isDisabled(), true);
+    await page.getByRole('combobox', { name: '切换版本' }).click();
+    await page.getByRole('option', { name: /^v1/ }).click();
+    await page.waitForURL(url => url.searchParams.get('version') === '1');
+    await page.getByText('已固定到 v1，切换至最新版可自动跟随更新', { exact: true }).waitFor();
+    await next.and(page.locator(':enabled')).waitFor();
+    const originalCard = await card.boundingBox();
+    const originalNext = await next.boundingBox();
+    const originalNav = await nav.elementHandle();
+    await next.click();
+    await page.waitForFunction(() => document.querySelector('[aria-label="素材预览"]')?.getAttribute('aria-busy') === 'true');
+    assert.equal(requestedSecond, true);
+    assert.equal(await next.isDisabled(), true);
+    assert.equal(await page.getByRole('heading', { name: resources[0].name, exact: true }).count(), 1);
+    assert.deepEqual(await next.boundingBox(), originalNext, 'button must stay put while loading');
+    releaseSecond();
+    await page.waitForURL(url => url.pathname.endsWith(resources[1].detail_token));
+    await next.and(page.locator(':enabled')).waitFor();
+    assert.equal(new URL(page.url()).searchParams.has('version'), false, 'new material opens its latest version');
+    assert.equal(await originalNav.evaluate(element => element.isConnected), true, 'detail frame must not remount');
+    assert.deepEqual(await card.boundingBox(), originalCard, 'long titles, tags and permission changes must not move the preview');
+    assert.deepEqual(await next.boundingBox(), originalNext);
+    if (process.env.REVIEW_SCREENSHOTS) {
+      await mkdir(process.env.REVIEW_SCREENSHOTS, { recursive: true });
+      await card.screenshot({ path: path.join(process.env.REVIEW_SCREENSHOTS, `${viewport.width}-resource-navigation.png`) });
+    }
+    await next.click();
+    await page.waitForFunction(() => document.querySelector('[aria-label="素材预览"]')?.getAttribute('aria-busy') === 'false');
+    assert.equal(new URL(page.url()).pathname.endsWith(resources[1].detail_token), true, 'failed navigation keeps the current resource');
+    assert.deepEqual(await next.boundingBox(), originalNext);
+    await next.click();
+    await page.waitForURL(url => url.pathname.endsWith(resources[2].detail_token));
+    await nav.getByText('3 / 3', { exact: true }).waitFor();
+    assert.equal(await next.isDisabled(), true);
+    assert.deepEqual(await card.boundingBox(), originalCard);
+    await previous.click();
+    await page.waitForURL(url => url.pathname.endsWith(resources[1].detail_token));
+    await page.reload();
+    await nav.getByText('2 / 3', { exact: true }).waitFor();
+    assert.ok(neighborCalls.length >= 4);
+    for (const params of neighborCalls) {
+      assert.equal(params.search, '客户');
+      assert.equal(params.subject, '产品介绍');
+      assert.equal(params.status, 'active');
+      assert.equal(params.tags, '精选');
+      assert.equal(params.tags_mode, 'all');
+      assert.equal(params.sort, 'name_asc');
+      assert.equal(params.page, undefined, 'navigation is not limited to the visible list page');
+    }
+    await page.getByRole('button', { name: '返回素材库', exact: true }).click();
+    await page.waitForURL(listUrl);
+  });
+}
+
 async function pagedDetailList(page, kind, detailPath) {
   const model = kind === 'resource' ? resource : show;
   const calls = [];

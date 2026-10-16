@@ -173,6 +173,8 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
 
 export function AppShell() {
   const location = useLocation();
+  // Adjacent resources share one detail frame instead of remounting the page.
+  const pageKey = /^\/resources\/[A-Za-z0-9_-]{32,128}$/.test(location.pathname) ? "/resources/:resourceKey" : location.pathname;
   const { user, logout, offline, epoch } = useAuth();
   const pwaStatus = usePwaStatus();
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -297,7 +299,7 @@ export function AppShell() {
 
         {/* 主内容 */}
         <main data-list-scroll="app" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto px-3 py-3 sm:px-4 sm:py-4 md:px-6 md:py-5">
-          <Suspense key={location.pathname} fallback={<PageLoadingSkeleton />}>
+          <Suspense key={pageKey} fallback={<PageLoadingSkeleton />}>
             <Outlet />
           </Suspense>
         </main>

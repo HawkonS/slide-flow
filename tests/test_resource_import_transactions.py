@@ -238,6 +238,23 @@ class ResourceImportTransactionTests(unittest.TestCase):
             resource_import_result(session["session_id"], Response(), user={"id": 2}, db=self.db)
         self.assertEqual(caught.exception.status_code, 404)
 
+    def test_single_page_uses_the_edited_name_without_a_sequence_suffix(self):
+        session = self.session(slides=1)
+        payload = {**self.payload, "name_prefix": "  产品介绍（定稿）  "}
+        result = asyncio.run(self.commit(session["session_id"], payload=payload))
+        self.assertEqual(result["created"], 1)
+        self.assertEqual(self.db.execute("SELECT name FROM resources").fetchone()["name"], "产品介绍（定稿）")
+
+    def test_multiple_pages_append_sequence_suffixes_to_the_edited_name(self):
+        session = self.session(slides=2)
+        payload = {**self.payload, "name_prefix": "产品介绍（定稿）"}
+        result = asyncio.run(self.commit(session["session_id"], payload=payload))
+        self.assertEqual(result["created"], 2)
+        self.assertEqual(
+            [row["name"] for row in self.db.execute("SELECT name FROM resources ORDER BY id")],
+            ["产品介绍（定稿）_01", "产品介绍（定稿）_02"],
+        )
+
     def test_status_reports_ready_processing_and_completed_snapshots(self):
         session = self.session()
         response = Response()

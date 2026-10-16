@@ -58,21 +58,21 @@ function metadataTags(domain) {
   };
 }
 
-function serializedTask({ fonts, missingFonts, renderReady }) {
+function serializedTask({ fonts, missingFonts, renderReady, slideCount = 2, namePrefix = "四步回归" }) {
   return {
     id: 101,
     task_type: "batch_split_import",
     status: "pending",
-    progress: renderReady ? 2 : 0,
+    progress: renderReady ? slideCount : 0,
     upload_progress: 100,
-    total: 2,
+    total: slideCount,
     message: renderReady ? "图片已渲染，等待确认导入" : "等待图片渲染",
     error_message: null,
     result_data: null,
     params: {
       session_id: sessionId,
       file_name: "wizard.pptx",
-      name_prefix: "四步回归",
+      name_prefix: namePrefix,
       subject: "产品",
       secrecy_level: "public",
       status: "active",
@@ -83,13 +83,13 @@ function serializedTask({ fonts, missingFonts, renderReady }) {
       manage_user_ids: "[]",
       manage_user_tags: "[]",
       remark_html: "",
-      slide_count: 2,
+      slide_count: slideCount,
       fonts,
       missing_fonts: missingFonts,
       preview_status: renderReady ? "ready" : missingFonts.length ? "blocked" : "pending",
       workflow_state: renderReady ? "awaiting_confirmation" : missingFonts.length ? "awaiting_fonts" : "awaiting_render",
-      render_completed: renderReady ? 2 : 0,
-      render_total: 2,
+      render_completed: renderReady ? slideCount : 0,
+      render_total: slideCount,
       preview_error: null,
     },
   };
@@ -116,7 +116,6 @@ async function fillUploadStep(page) {
   });
   await page.getByPlaceholder("如：产品介绍", { exact: true }).fill("四步回归");
   await selectOption(page, "主体", "产品");
-  await selectOption(page, "密级", "公开");
   await selectOption(page, "状态", "正常");
   await selectOption(page, "可见范围", "公开（全体可见）");
   await selectOption(page, "管理范围", "公开（全体可管理）");
@@ -135,6 +134,8 @@ async function createHarness(t, options = {}) {
   const page = await context.newPage();
   const pageErrors = [];
   const calls = { upload: 0, replace: 0, render: 0, commit: 0 };
+  const submitted = { uploadName: null, commitName: null, polls: 0 };
+  const slideCount = options.slideCount ?? 2;
   const gates = {
     upload: deferred(),
     replace: deferred(),
@@ -163,11 +164,13 @@ async function createHarness(t, options = {}) {
     if (path === "/api/users/options") return ok({ users: [] });
     if (path === "/api/tasks/split-import") {
       calls.upload += 1;
+      submitted.uploadName = request.postData()?.match(/name="name_prefix"\r\n\r\n([^\r\n]*)/)?.[1] ?? null;
       await gates.upload.promise;
       return ok({ task_id: 101, session_id: sessionId });
     }
     if (path === "/api/tasks/101") {
-      return ok(serializedTask({ fonts, missingFonts, renderReady }));
+      submitted.polls += 1;
+      return ok(serializedTask({ fonts, missingFonts, renderReady, slideCount, namePrefix: submitted.uploadName ?? "四步回归" }));
     }
     if (path === `/api/resource-import/${sessionId}/replace-fonts`) {
       calls.replace += 1;
@@ -181,10 +184,9 @@ async function createHarness(t, options = {}) {
       await gates.render.promise;
       renderReady = true;
       const events = [
-        { type: "started", total: 2, message: "已提交 Windows 图片渲染任务" },
-        { type: "page", index: 0, preview_url: `/api/resource-import/${sessionId}/preview/0?attempt=wizard` },
-        { type: "page", index: 1, preview_url: `/api/resource-import/${sessionId}/preview/1?attempt=wizard` },
-        { type: "completed", preview_status: "ready", preview_count: 2 },
+        { type: "started", total: slideCount, message: "已提交 Windows 图片渲染任务" },
+        ...Array.from({ length: slideCount }, (_, index) => ({ type: "page", index, preview_url: `/api/resource-import/${sessionId}/preview/${index}?attempt=wizard` })),
+        { type: "completed", preview_status: "ready", preview_count: slideCount },
       ];
       return route.fulfill({
         contentType: "application/x-ndjson; charset=utf-8",
@@ -196,11 +198,12 @@ async function createHarness(t, options = {}) {
     }
     if (path === `/api/resource-import/${sessionId}/commit`) {
       calls.commit += 1;
+      submitted.commitName = request.postDataJSON().name_prefix;
       await gates.commit.promise;
-      return ok({ created: 2 });
+      return ok({ created: slideCount });
     }
     if (path === `/api/resource-import/${sessionId}/status`) {
-      return ok({ status: "processing", progress: 0, total: 2, message: "正在保存" });
+      return ok({ status: "processing", progress: 0, total: slideCount, message: "正在保存" });
     }
     return ok({});
   });
@@ -211,7 +214,62 @@ async function createHarness(t, options = {}) {
     await page.getByRole("navigation", { name: "素材导入步骤" }).getByRole("listitem").count(),
     4,
   );
-  return { page, calls, gates };
+  return { page, calls, gates, submitted };
+}
+
+test("file names fill the resource name while manual edits remain editable", async (t) => {
+  const { page } = await createHarness(t);
+  const name = page.locator("#import-name");
+  const chooseFile = (filename) => page.getByLabel("选择 PPT 文件", { exact: true }).setInputFiles({
+    name: filename, mimeType: "application/octet-stream", buffer: Buffer.from("mocked PPTX"),
+  });
+  for (const filename of ["产品介绍.pptx", "产品介绍.v2.POTX", "发布会.ppsx"]) {
+    await chooseFile(filename);
+    assert.equal(await name.inputValue(), filename.replace(/\.[^.]+$/, ""));
+  }
+  await name.fill("手动修改的名称");
+  await chooseFile("其他文件.pptx");
+  assert.equal(await name.inputValue(), "手动修改的名称");
+  await name.fill("");
+  await chooseFile("重新选取.pptx");
+  assert.equal(await name.inputValue(), "重新选取");
+});
+
+for (const slideCount of [1, 2]) {
+  test(`${slideCount}-page import previews and submits the chosen resource name`, async (t) => {
+    const { page, calls, gates, submitted } = await createHarness(t, { missingFont: false, slideCount });
+    await fillUploadStep(page);
+    // Exercise the file-name default, then edit at confirmation for multiple pages.
+    await page.locator("#import-name").fill("");
+    await page.getByLabel("选择 PPT 文件", { exact: true }).setInputFiles({
+      name: "产品介绍.v2.pptx", mimeType: "application/octet-stream", buffer: Buffer.from("mocked PPTX"),
+    });
+    gates.upload.resolve();
+    gates.render.resolve();
+    gates.commit.resolve();
+    await page.getByRole("button", { name: "创建上传任务", exact: true }).click();
+    await page.getByText("字体检测通过，请确认后继续。", { exact: true }).waitFor();
+    assert.equal(submitted.uploadName, "产品介绍.v2");
+    let expectedName = "产品介绍.v2";
+    await page.getByRole("button", { name: "字体已确认，下一步", exact: true }).click();
+    await page.getByText(`共 ${slideCount} 页，已生成 ${slideCount} 页、已加载 ${slideCount} 张。`, { exact: true }).waitFor();
+    await page.getByRole("button", { name: "图片已确认，下一步", exact: true }).click();
+    await page.getByRole("heading", { name: "4. 确认导入", exact: true }).waitFor();
+    assert.equal(await page.getByRole("textbox", { name: "修改素材名称", exact: true }).inputValue(), expectedName);
+    if (slideCount === 2) {
+      expectedName = "上传后修改的名称";
+      await page.getByRole("textbox", { name: "修改素材名称", exact: true }).fill(expectedName);
+      const nextPoll = submitted.polls + 1;
+      await waitForCount(() => submitted.polls, nextPoll, "task state should refresh");
+      assert.equal(await page.getByRole("textbox", { name: "修改素材名称", exact: true }).inputValue(), expectedName);
+    }
+    await page.getByText(slideCount === 1 ? expectedName : `${expectedName}_01 ～ ${expectedName}_02`, { exact: true }).waitFor();
+    await page.getByRole("button", { name: "确认导入", exact: true }).click();
+    await page.getByText(`导入完成，已保存 ${slideCount} 个单页素材`, { exact: true }).waitFor();
+    assert.equal(submitted.commitName, expectedName);
+    assert.equal(calls.upload, 1);
+    assert.equal(calls.commit, 1);
+  });
 }
 
 test("four-step import survives refresh and same-turn double clicks never duplicate work", async (t) => {

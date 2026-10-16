@@ -2,7 +2,7 @@ import { copyText } from "@/lib/clipboard";
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { useDetailReturn } from "@/lib/detail-navigation";
+import { useDetailReturn, useResourceListParams } from "@/lib/detail-navigation";
 import {
   ArrowLeft,
   ArrowRight,
@@ -42,7 +42,7 @@ import {
   DEFAULT_RESOURCE_SUBJECT,
   RESOURCE_SCOPE_LABEL,
 } from "@/lib/constants";
-import { ApiError, api } from "@/lib/api";
+import { ApiError, api, apiWithTimeout } from "@/lib/api";
 import { parseTags, type Resource, type ResourceVersion } from "@/lib/types";
 
 interface ShareLinkItem {
@@ -60,6 +60,19 @@ interface PersonalRemarkResponse {
 
 interface ResourceListResponse {
   items: Resource[];
+}
+
+interface AdjacentResource {
+  id: number;
+  name: string;
+  detail_token: string;
+}
+
+interface ResourceNeighbors {
+  previous: AdjacentResource | null;
+  next: AdjacentResource | null;
+  position: number | null;
+  total: number;
 }
 
 function formatDate(value: string | null | undefined) {
@@ -272,6 +285,45 @@ export function ResourceDetailPage() {
     refetchOnWindowFocus: true,
   });
   const resource = data ?? null;
+  const listParams = useResourceListParams();
+  const neighbors = useQuery({
+    queryKey: ["resource-neighbors", resource?.id, listParams],
+    queryFn: ({ signal }) => apiWithTimeout<ResourceNeighbors>(`/api/resources/${resource!.id}/neighbors`, { params: listParams, signal }, 12_000),
+    enabled: resource != null,
+    staleTime: 30_000,
+  });
+  const [switchingResource, setSwitchingResource] = React.useState(false);
+  const switchRequestRef = React.useRef<AbortController | null>(null);
+  React.useEffect(() => () => {
+    switchRequestRef.current?.abort();
+    switchRequestRef.current = null;
+  }, [resourceKey]);
+  const switchResource = async (target: AdjacentResource | null | undefined) => {
+    if (!target || switchRequestRef.current) return;
+    const controller = new AbortController();
+    switchRequestRef.current = controller;
+    setSwitchingResource(true);
+    try {
+      // Keep the current frame visible until the next detail is available.
+      const result = await apiWithTimeout<{ resource: Resource }>(`/api/resources/by-key/${encodeURIComponent(target.detail_token)}`, { signal: controller.signal }, 12_000);
+      if (controller.signal.aborted) return;
+      queryClient.setQueryData(["resource-detail", target.detail_token, null], result.resource);
+      const next = new URLSearchParams(searchParams);
+      next.delete("version");
+      const search = next.toString();
+      navigate({ pathname: `/resources/${encodeURIComponent(target.detail_token)}`, search: search ? `?${search}` : "", hash: location.hash }, { replace: true, preventScrollReset: true, state: location.state });
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        toast.error(error instanceof Error ? error.message : "切换素材失败，请重试");
+        if (error instanceof ApiError && [403, 404].includes(error.status)) void neighbors.refetch();
+      }
+    } finally {
+      if (switchRequestRef.current === controller) {
+        switchRequestRef.current = null;
+        setSwitchingResource(false);
+      }
+    }
+  };
   const [editOpen, setEditOpen] = React.useState(false);
   const [newVersionOpen, setNewVersionOpen] = React.useState(false);
   const [downloadCtx, setDownloadCtx] = React.useState<{ resource: Resource; version: ResourceVersion } | null>(null);
@@ -279,6 +331,16 @@ export function ResourceDetailPage() {
   const [linksOpen, setLinksOpen] = React.useState(false);
   const [commonRemarkOpen, setCommonRemarkOpen] = React.useState(false);
   const [personalRemarkOpen, setPersonalRemarkOpen] = React.useState(false);
+  React.useEffect(() => {
+    setEditOpen(false);
+    setNewVersionOpen(false);
+    setDownloadCtx(null);
+    setPreviewResource(null);
+    setLinksOpen(false);
+    setCommonRemarkOpen(false);
+    setPersonalRemarkOpen(false);
+    setSwitchingResource(false);
+  }, [resourceKey]);
 
   const versionOptions = resource
     ? (resource.versions?.length ? resource.versions : [resource.current])
@@ -410,8 +472,8 @@ export function ResourceDetailPage() {
 
   return (
     <div className="min-h-full w-full pb-8">
-      <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b px-1 py-2 sm:px-2">
-        <div className="flex min-w-0 items-center gap-2.5">
+      <header className="flex flex-col justify-between gap-x-4 gap-y-2 border-b px-1 py-2 sm:flex-row sm:items-center sm:px-2">
+        <div className="flex min-w-0 flex-1 items-center gap-2.5">
           <Button
             variant="ghost"
             size="icon"
@@ -423,17 +485,17 @@ export function ResourceDetailPage() {
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div className="min-w-0">
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
-              <h1 className="max-w-full truncate text-xl font-semibold tracking-tight sm:text-2xl">{resource.name}</h1>
+            <div className="flex h-9 min-w-0 items-center gap-2">
+              <h1 title={resource.name} className="min-w-0 truncate text-xl font-semibold tracking-tight sm:text-2xl">{resource.name}</h1>
               {statusLabel && (
-                <Badge variant={resource.status === "active" ? "secondary" : "outline"} className="h-5 px-1.5 text-[10px]">
+                <Badge variant={resource.status === "active" ? "secondary" : "outline"} className="h-5 shrink-0 px-1.5 text-[10px]">
                   {statusLabel}
                 </Badge>
               )}
             </div>
           </div>
         </div>
-        <div className="flex w-full flex-wrap items-center gap-1.5 sm:w-auto">
+        <div className="flex w-full shrink-0 flex-wrap items-center gap-1.5 sm:w-auto">
           <Button variant="outline" size="sm" className="h-8 gap-1.5 border-border/70 px-2.5 text-muted-foreground shadow-none hover:text-foreground" onClick={() => setLinksOpen(true)}>
             <Link2 className="h-4 w-4" />链接与分享
           </Button>
@@ -458,18 +520,18 @@ export function ResourceDetailPage() {
 
       <main className="min-w-0 pb-16 pt-5">
         <div className="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,1fr)_340px]">
-          <section className="min-w-0 overflow-hidden rounded-xl border bg-card shadow-sm">
-            <div className="flex min-h-10 flex-wrap items-center justify-between gap-2 border-b px-3 py-2 sm:px-4">
-              <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                <Eye className="h-4 w-4" />
-                <span className="font-medium text-foreground">预览</span>
+          <section aria-label="素材预览" aria-busy={switchingResource} className="min-w-0 self-start overflow-hidden rounded-xl border bg-card shadow-sm">
+            <div className="flex h-12 items-center justify-between gap-2 border-b px-3 py-2 sm:px-4">
+              <div className="flex min-w-0 items-center gap-2 overflow-hidden text-xs text-muted-foreground">
+                <Eye className="h-4 w-4 shrink-0" />
+                <span className="shrink-0 font-medium text-foreground">预览</span>
                 {tags.map((tag) => (
-                  <Badge key={tag} variant="outline" className="h-5 px-1.5 text-[10px] font-normal">
+                  <Badge key={tag} variant="outline" className="h-5 shrink-0 px-1.5 text-[10px] font-normal">
                     {tag}
                   </Badge>
                 ))}
               </div>
-              <Button variant="ghost" size="sm" className="h-7 gap-1.5 px-2 text-xs" title="放大预览当前版本" onClick={() => setPreviewResource(version ? { ...resource, current: version } : resource)}>
+              <Button variant="ghost" size="sm" className="h-7 shrink-0 gap-1.5 px-2 text-xs" title="放大预览当前版本" onClick={() => setPreviewResource(version ? { ...resource, current: version } : resource)}>
                 <Maximize className="h-3.5 w-3.5" />放大查看
               </Button>
             </div>
@@ -480,6 +542,13 @@ export function ResourceDetailPage() {
                 <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">暂无预览图</div>
               )}
             </div>
+            <nav aria-label="素材切换" className="flex h-14 items-center justify-between gap-2 border-t bg-card px-3 sm:px-4">
+              <Button type="button" variant="outline" size="sm" className="shrink-0 gap-1.5" disabled={switchingResource || !neighbors.data?.previous} title={neighbors.data?.previous?.name} onClick={() => void switchResource(neighbors.data?.previous)}><ArrowLeft />上一个素材</Button>
+              <div role="status" aria-live="polite" className="flex min-w-0 items-center justify-center gap-1.5 text-xs tabular-nums text-muted-foreground">
+                {switchingResource || neighbors.isLoading ? <Loader2 className="h-4 w-4 animate-spin" aria-label="正在加载素材" /> : neighbors.isError ? <Button type="button" variant="ghost" size="sm" className="h-7 px-1 text-xs" onClick={() => void neighbors.refetch()}>重试</Button> : neighbors.data?.position ? `${neighbors.data.position} / ${neighbors.data.total}` : "—"}
+              </div>
+              <Button type="button" variant="outline" size="sm" className="shrink-0 gap-1.5" disabled={switchingResource || !neighbors.data?.next} title={neighbors.data?.next?.name} onClick={() => void switchResource(neighbors.data?.next)}>下一个素材<ArrowRight /></Button>
+            </nav>
           </section>
 
           <aside className="flex min-w-0 flex-col gap-3">

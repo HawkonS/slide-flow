@@ -240,3 +240,43 @@ _PICK_SORT_KEYS = {
     "name_desc",
     "name_asc",
 }
+
+
+def resource_neighbors(
+    db: sqlite3.Connection,
+    user: sqlite3.Row,
+    resource_id: int,
+    **filters: Any,
+) -> dict[str, Any]:
+    """Find adjacent visible resources in the same filtered, ordered list."""
+    where_clause, order_sql, params = _build_resource_query_sql(user, db=db, **filters)
+    rows = db.execute(
+        f"""
+        WITH ordered AS (
+            SELECT r.id, r.name, r.detail_token,
+                   ROW_NUMBER() OVER (ORDER BY {order_sql}) AS position,
+                   COUNT(*) OVER () AS total
+            FROM resources r WHERE {where_clause}
+        ), current AS (
+            SELECT position FROM ordered WHERE id = :current_id
+        )
+        SELECT ordered.* FROM ordered, current
+        WHERE ordered.position BETWEEN current.position - 1 AND current.position + 1
+        ORDER BY ordered.position
+        """,
+        {**params, "current_id": resource_id},
+    ).fetchall()
+    current = next((row for row in rows if row["id"] == resource_id), None)
+    if current is None:
+        return {"previous": None, "next": None, "position": None, "total": 0}
+
+    def adjacent(position: int) -> dict[str, Any] | None:
+        row = next((row for row in rows if row["position"] == position), None)
+        return {key: row[key] for key in ("id", "name", "detail_token")} if row else None
+
+    return {
+        "previous": adjacent(current["position"] - 1),
+        "next": adjacent(current["position"] + 1),
+        "position": current["position"],
+        "total": current["total"],
+    }

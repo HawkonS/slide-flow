@@ -1576,5 +1576,13 @@
     "methods": [
       "GET"
     ]
+  },
+  {
+    "path": "/api/resources/{resource_id}/neighbors",
+    "name": "get_resource_neighbors",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
   }
 ]

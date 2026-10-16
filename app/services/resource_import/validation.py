@@ -215,7 +215,7 @@ def _validate_resource_import_replacements(
 def _validate_resource_import_payload(payload: dict[str, Any], db: sqlite3.Connection) -> dict[str, Any]:
     """Validate metadata before any split/output/database work is started."""
     field_limits = {
-        "name_prefix": (RESOURCE_IMPORT_MAX_NAME_LENGTH, "名称前缀"),
+        "name_prefix": (RESOURCE_IMPORT_MAX_NAME_LENGTH, "素材名称"),
         "subject": (80, "主体"),
         "tags": (RESOURCE_IMPORT_MAX_TAGS_LENGTH, "标签"),
         "remark_html": (100_000, "备注"),

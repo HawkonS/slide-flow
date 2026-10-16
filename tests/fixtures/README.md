@@ -38,3 +38,8 @@ and a positive version number resolves that version. Omitting the parameter
 retains the exact-record behavior used by playback and iteration callers.
 Permission checks apply to the resolved record. Only this operation's OpenAPI
 parameters were updated; no route or schema was added.
+
+The resource-detail navigation review adds GET `/api/resources/{resource_id}/neighbors`.
+It accepts the resource list's filters and sort order and returns only adjacent
+visible, non-deleted resources, plus the current position in that filtered list.
+Only this route and its OpenAPI operation were added to the fixtures.

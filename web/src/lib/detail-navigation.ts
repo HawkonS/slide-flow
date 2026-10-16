@@ -7,9 +7,11 @@ interface DetailOrigin {
   key: string;
   scroll: ScrollPositions;
 }
+export type ResourceListParams = Record<string, string | number | boolean | undefined>;
 interface NavigationState {
   detailOrigin?: DetailOrigin;
   listScroll?: ScrollPositions;
+  resourceListParams?: ResourceListParams;
 }
 
 // Keep browser Back working too; the detail's history state retains its origin
@@ -35,15 +37,23 @@ function captureScroll(): ScrollPositions {
 export function useOpenDetail() {
   const location = useLocation();
   const navigate = useNavigate();
-  return (url: string) => {
+  return (url: string, resourceListParams?: ResourceListParams) => {
     const scroll = captureScroll();
     rememberScroll(location.key, scroll);
-    navigate(url, { state: { detailOrigin: {
+    navigate(url, { state: { resourceListParams, detailOrigin: {
       url: location.pathname + location.search + location.hash,
       key: location.key,
       scroll,
     } } satisfies NavigationState });
   };
+}
+
+const defaultResourceListParams: ResourceListParams = { sort: "updated_desc" };
+
+/** Keep the originating list's filters out of shareable detail URLs. */
+export function useResourceListParams(): ResourceListParams {
+  const location = useLocation();
+  return (location.state as NavigationState | null)?.resourceListParams ?? defaultResourceListParams;
 }
 
 /** Return to the list even after visiting other detail versions or reloading. */

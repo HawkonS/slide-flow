@@ -492,7 +492,7 @@ export default function ResourceManagePage() {
                             "flex h-9 w-16 items-center justify-center overflow-hidden rounded border bg-muted",
                             "cursor-pointer",
                           )}
-                          onClick={() => r.detail_token && openDetail(`/resources/${encodeURIComponent(r.detail_token)}`)}
+                          onClick={() => r.detail_token && openDetail(`/resources/${encodeURIComponent(r.detail_token)}`, apiParams)}
                         >
                           {preview ? (
                             <img
@@ -508,7 +508,7 @@ export default function ResourceManagePage() {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <TableText text={r.name}><button type="button" className="w-full text-left font-medium hover:text-foreground hover:underline" onClick={() => r.detail_token && openDetail(`/resources/${encodeURIComponent(r.detail_token)}`)}>{r.name}</button></TableText>
+                        <TableText text={r.name}><button type="button" className="w-full text-left font-medium hover:text-foreground hover:underline" onClick={() => r.detail_token && openDetail(`/resources/${encodeURIComponent(r.detail_token)}`, apiParams)}>{r.name}</button></TableText>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
                         <TableText text={r.subject || DEFAULT_RESOURCE_SUBJECT} />
