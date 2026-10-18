@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   ExternalLink,
   GripVertical,
+  Link2,
   ImageOff,
   Loader2,
   Minus,
@@ -30,10 +31,13 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
+  DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -45,9 +49,9 @@ import {
   MANAGEMENT_SCOPE_OPTIONS,
   VISIBILITY_SCOPE_OPTIONS,
 } from "@/lib/constants";
-import { api } from "@/lib/api";
+import { ApiError, api, apiWithTimeout } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { Show } from "@/lib/types";
+import { Resource, Show } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
@@ -75,6 +79,43 @@ interface FormState {
 interface ShowFacetResponse {
   all_tags?: string[];
   all_subjects?: string[];
+}
+
+type UrlImportItemStatus = "loading" | "resolved" | "invalid" | "unavailable";
+
+interface UrlImportItem {
+  value: string;
+  status: UrlImportItemStatus;
+  resource?: PickerResource;
+  message?: string;
+}
+
+/** Split pasted material addresses while accepting the delimiters users commonly use. */
+function splitResourceUrls(value: string): string[] {
+  return [...new Set(value.split(/[\r\n,，;；]+/).map((item) => item.trim()).filter(Boolean))];
+}
+
+function resourceKeyFromUrl(value: string): string | null {
+  try {
+    const parsed = new URL(value, window.location.origin);
+    if (parsed.origin !== window.location.origin) return null;
+    const match = decodeURIComponent(parsed.pathname).match(/^\/resources\/([A-Za-z0-9_-]{32,128})\/?$/);
+    return match?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function pickerResourceFromResource(resource: Resource): PickerResource {
+  return {
+    id: resource.id,
+    name: resource.name,
+    tags: resource.tags,
+    subject: resource.subject ?? undefined,
+    updated_at: resource.updated_at,
+    created_at: resource.created_at,
+    preview_url: resource.current?.preview_url ?? null,
+  };
 }
 
 const INITIAL_FORM: FormState = {
@@ -133,6 +174,11 @@ export function ShowCreatePage() {
   const thumbnailScale = 8 - thumbnailColumns;
   const sortGridRef = React.useRef<HTMLOListElement>(null);
   const [previewResourceId, setPreviewResourceId] = React.useState<number | null>(null);
+  const [urlImportOpen, setUrlImportOpen] = React.useState(false);
+  const [urlImportText, setUrlImportText] = React.useState("");
+  const [urlImportItems, setUrlImportItems] = React.useState<UrlImportItem[]>([]);
+  const [urlImporting, setUrlImporting] = React.useState(false);
+  const urlImportRequestRef = React.useRef<AbortController | null>(null);
   const sortAutoScrollRef = React.useRef<{ clientY: number; frame: number | null }>({ clientY: 0, frame: null });
 
   const stopSortAutoScroll = React.useCallback(() => {
@@ -164,6 +210,14 @@ export function ShowCreatePage() {
   }, [stopSortAutoScroll]);
 
   React.useEffect(() => stopSortAutoScroll, [stopSortAutoScroll]);
+  React.useEffect(() => () => urlImportRequestRef.current?.abort(), []);
+
+  const closeUrlImport = () => {
+    urlImportRequestRef.current?.abort();
+    urlImportRequestRef.current = null;
+    setUrlImporting(false);
+    setUrlImportOpen(false);
+  };
 
   const { options: statusOptions } = useMetadataTagOptions("status");
   const { data: facets } = useQuery({
@@ -313,6 +367,76 @@ export function ShowCreatePage() {
     });
   }, []);
 
+  const importResourcesFromUrls = React.useCallback(async () => {
+    if (urlImportRequestRef.current) return;
+    const values = splitResourceUrls(urlImportText);
+    if (values.length === 0) {
+      toast.error("请粘贴至少一个单页素材网址");
+      return;
+    }
+
+    const initialItems = values.map<UrlImportItem>((value) => {
+      const key = resourceKeyFromUrl(value);
+      return key
+        ? { value, status: "loading" }
+        : { value, status: "invalid", message: "请使用本站单页素材的页面网址" };
+    });
+    const controller = new AbortController();
+    urlImportRequestRef.current = controller;
+    setUrlImportItems(initialItems);
+    setUrlImporting(true);
+
+    const requests = new Map<string, Promise<{ resource: Resource }>>();
+    const resolved = await Promise.all(initialItems.map(async (item) => {
+      if (item.status === "invalid") return item;
+      const key = resourceKeyFromUrl(item.value)!;
+      try {
+        let request = requests.get(key);
+        if (!request) {
+          request = apiWithTimeout<{ resource: Resource }>(`/api/resources/by-key/${encodeURIComponent(key)}`, { signal: controller.signal });
+          requests.set(key, request);
+        }
+        const result = await request;
+        return { ...item, status: "resolved" as const, resource: pickerResourceFromResource(result.resource) };
+      } catch (error) {
+        const message = error instanceof ApiError && [403, 404].includes(error.status)
+          ? "素材不存在或当前账号无权查看"
+          : error instanceof Error ? error.message : "素材查询失败，请重试";
+        return { ...item, status: "unavailable" as const, message };
+      }
+    }));
+    if (controller.signal.aborted) return;
+    urlImportRequestRef.current = null;
+    setUrlImportItems(resolved);
+    setUrlImporting(false);
+
+    const importedResources = [...new Map(resolved.flatMap((item) => item.resource ? [[item.resource.id, item.resource] as const] : [])).values()];
+    if (importedResources.length === 0) {
+      toast.error("没有找到可导入的单页素材");
+      return;
+    }
+
+    handleResourcesLoaded(importedResources);
+    setResourceIds((current) => {
+      const selected = new Set(current);
+      const next = [...current];
+      for (const resource of importedResources) {
+        if (!selected.has(resource.id)) {
+          selected.add(resource.id);
+          next.push(resource.id);
+        }
+      }
+      return next;
+    });
+    const failedCount = resolved.filter((item) => item.status !== "resolved").length;
+    toast.success(
+      failedCount > 0
+        ? `已选中 ${importedResources.length} 页，${failedCount} 个网址无法导入`
+        : `已选中 ${importedResources.length} 页单页素材`,
+    );
+    if (failedCount === 0) setUrlImportOpen(false);
+  }, [handleResourcesLoaded, urlImportText]);
+
   const validateInfo = () => {
     if (!form.name.trim()) {
       toast.error("请填写放映名称");
@@ -423,6 +547,21 @@ export function ShowCreatePage() {
             <span className="hidden text-xs text-muted-foreground md:inline" role="status">
               {draftSavedAt ? "草稿已自动暂存" : "编辑内容会自动暂存"}
             </span>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setUrlImportText("");
+                setUrlImportItems([]);
+                setUrlImportOpen(true);
+              }}
+              disabled={mutation.isPending}
+              aria-label="网址导入"
+            >
+              <Link2 className="h-3.5 w-3.5" />
+              网址导入
+            </Button>
             <Button
               type="button"
               size="sm"
@@ -587,6 +726,7 @@ export function ShowCreatePage() {
               value={resourceIds}
               onChange={setResourceIds}
               onResourcesLoaded={handleResourcesLoaded}
+              selectedResources={orderedResources}
               className="min-h-0 flex-1"
               showSelectedSidebar
               selectedSidebarPosition="left"
@@ -752,6 +892,74 @@ export function ShowCreatePage() {
           </section>
         )}
       </main>
+
+      <Dialog open={urlImportOpen} onOpenChange={(open) => { if (!open) closeUrlImport(); }}>
+        <DialogContent className="max-h-[min(760px,calc(100vh-2rem))] max-w-2xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <Link2 className="h-4 w-4 text-muted-foreground" />
+              网址导入
+            </DialogTitle>
+            <DialogDescription>
+              粘贴单页素材的网址，多个网址可用回车、逗号或分号分隔。按粘贴顺序追加到已选素材，重复素材只选一次。
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-2">
+            <Label htmlFor="show-create-url-import">单页素材网址</Label>
+            <Textarea
+              id="show-create-url-import"
+              value={urlImportText}
+              onChange={(event) => { setUrlImportText(event.target.value); setUrlImportItems([]); }}
+              placeholder="在此粘贴单页素材页面的网址，每行一个，也可用逗号或分号分隔"
+              rows={5}
+              autoFocus
+              disabled={urlImporting}
+            />
+            <p className="text-xs leading-5 text-muted-foreground">
+              支持完整网址或当前站点的相对地址，例如 <code className="rounded bg-muted px-1">/resources/...</code>。
+            </p>
+          </div>
+
+          {urlImportItems.length > 0 && (
+            <div className="grid gap-2 rounded-lg border bg-muted/20 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm font-medium">解析结果</p>
+                <span className="text-xs text-muted-foreground">共 {urlImportItems.length} 个网址</span>
+              </div>
+              <ul className="grid max-h-56 gap-1.5 overflow-y-auto text-xs" aria-label="网址解析结果">
+                {urlImportItems.map((item) => (
+                  <li key={item.value} className="flex min-w-0 items-start gap-2 rounded-md border bg-background px-2.5 py-2">
+                    {item.status === "loading" ? (
+                      <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
+                    ) : item.status === "resolved" ? (
+                      <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600" />
+                    ) : (
+                      <X className="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive" />
+                    )}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate" title={item.value}>{item.resource?.name || item.value}</span>
+                      <span className={cn("mt-0.5 block", item.status === "resolved" ? "text-emerald-700" : "text-muted-foreground")}>
+                        {item.status === "loading" ? "正在查询…" : item.status === "resolved" ? "已选中" : item.message}
+                      </span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={closeUrlImport}>
+              {urlImportItems.some((item) => item.status === "resolved") ? "完成" : "取消"}
+            </Button>
+            <Button type="button" onClick={() => void importResourcesFromUrls()} disabled={urlImporting || splitResourceUrls(urlImportText).length === 0}>
+              {urlImporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Link2 className="h-4 w-4" />}
+              {urlImporting ? "导入中…" : "导入并选中"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={previewResource != null} onOpenChange={(open) => { if (!open) setPreviewResourceId(null); }}>
         <DialogContent className="flex h-[min(92vh,900px)] w-[min(96vw,1440px)] max-w-none flex-col gap-0 p-0">

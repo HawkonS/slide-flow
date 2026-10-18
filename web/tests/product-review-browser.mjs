@@ -712,6 +712,105 @@ await page.keyboard.press('Escape'); await dialog.waitFor({ state: 'hidden' });
   assert.equal(requests.filter(r => r.method === 'DELETE').length, 1);
 });
 
+const importKey = id => `import-material-${id}-`.padEnd(32, 'a');
+const importMaterial = id => ({ ...resource, id, detail_token: importKey(id), name: `网址素材 ${id}` });
+const pickerMaterial = id => ({ ...importMaterial(id), preview_url: '/fixture.png' });
+
+async function showUrlImportPage(t, width = 1440) {
+  const context = await browser.newContext({ viewport: { width, height: 900 }, serviceWorkers: 'block' });
+  t.after(() => context.close());
+  await context.addInitScript(draft => {
+    if (!localStorage.getItem('slide-flow.show-create-draft.1')) {
+      localStorage.setItem('slide-flow.show-create-draft.1', JSON.stringify(draft));
+    }
+  }, { form: { name: '网址导入放映', status: 'active' }, step: 1, resourceIds: [9], resources: [pickerMaterial(9)], savedAt: stamp });
+  const page = await context.newPage();
+  page.setDefaultTimeout(5000);
+  const errors = [], lookups = [];
+  page.on('pageerror', error => errors.push(error.message));
+  t.after(() => assert.deepEqual(errors, [], 'uncaught browser errors'));
+  await page.route('**/api/resources/ids', route => route.fulfill({ json: { ids: [1, 2, 3, 4, 5, 6, 9] } }));
+  await page.route('**/api/resources/pick?*', route => route.fulfill({ json: list([pickerMaterial(1)]) }));
+  await page.route('**/api/resources/by-key/*', async route => {
+    const key = new URL(route.request().url()).pathname.split('/').at(-1);
+    lookups.push(key);
+    const id = [1, 2, 3, 4, 5, 6].find(id => importKey(id) === key);
+    if (id === 3) await new Promise(resolve => setTimeout(resolve, 150));
+    return id ? route.fulfill({ json: { resource: importMaterial(id) } })
+      : route.fulfill({ status: key === importKey(7) ? 403 : 404, json: { detail: '素材不可用' } });
+  });
+  await page.goto(origin + '/manage/shows/new');
+  await page.getByRole('heading', { name: '选择单页素材', exact: true }).waitFor();
+  return { page, lookups };
+}
+
+test('show URL import accepts mixed separators, preserves selection order and restores off-page metadata', async t => {
+  const { page, lookups } = await showUrlImportPage(t);
+  const url = id => `${origin}/resources/${importKey(id)}`;
+  await page.getByRole('button', { name: '网址导入', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '网址导入', exact: true });
+  const input = dialog.getByRole('textbox', { name: '单页素材网址', exact: true });
+  await input.fill(`  ${url(3)}\r\n${url(1)}, ${url(2)};${url(4)}，${url(5)}；/resources/${importKey(6)}\n${url(3)}?version=1#preview,${url(1)}  `);
+  await dialog.getByRole('button', { name: '导入并选中', exact: true }).click();
+  await dialog.waitFor({ state: 'hidden' });
+  const selected = page.locator('[data-selected-resource-id]');
+  assert.deepEqual(await selected.evaluateAll(items => items.map(item => Number(item.dataset.selectedResourceId))), [9, 3, 1, 2, 4, 5, 6]);
+  for (const id of [9, 3, 1, 2, 4, 5, 6]) {
+    const item = page.locator(`[data-selected-resource-id="${id}"]`);
+    assert.ok((await item.textContent()).includes(`网址素材 ${id}`));
+    assert.equal(await item.locator('img').getAttribute('src'), '/fixture.png');
+  }
+  assert.deepEqual(lookups.sort(), [1, 2, 3, 4, 5, 6].map(importKey).sort(), 'each material is fetched once');
+  await page.getByRole('button', { name: '列表视图', exact: true }).click();
+  assert.equal(await page.getByRole('checkbox', { name: '选择素材 网址素材 1', exact: true }).isChecked(), true);
+  await page.getByRole('button', { name: '暂存', exact: true }).click();
+  await page.reload();
+  await page.locator('[data-selected-resource-id="3"]').getByText('网址素材 3', { exact: true }).waitFor({ state: 'attached' });
+  assert.equal(await page.locator('[data-selected-resource-id="3"] img').getAttribute('src'), '/fixture.png');
+  await page.getByRole('button', { name: '下一步', exact: true }).click();
+  assert.deepEqual(await page.locator('[data-sort-resource-id]').evaluateAll(items => items.map(item => Number(item.dataset.sortResourceId))), [9, 3, 1, 2, 4, 5, 6]);
+});
+
+test('show URL import keeps failed addresses visible and selects only accessible materials on mobile', async t => {
+  const { page, lookups } = await showUrlImportPage(t, 390);
+  await page.getByRole('button', { name: '网址导入', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '网址导入', exact: true });
+  await dialog.getByRole('textbox', { name: '单页素材网址', exact: true }).fill([
+    `${origin}/resources/${importKey(2)}`, `${origin}/resources/${importKey(7)}`,
+    `${origin}/resources/${importKey(8)}`, `https://other.example/resources/${importKey(1)}`,
+    'javascript:alert(1)', `${origin}/manage/shows/new`,
+  ].join('\n'));
+  await dialog.getByRole('button', { name: '导入并选中', exact: true }).click();
+  await dialog.getByText('已选中', { exact: true }).waitFor();
+  assert.equal(await dialog.getByText('素材不存在或当前账号无权查看', { exact: true }).count(), 2);
+  assert.equal(await dialog.getByText('请使用本站单页素材的页面网址', { exact: true }).count(), 3);
+  assert.deepEqual(lookups.sort(), [2, 7, 8].map(importKey).sort());
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  if (process.env.REVIEW_SCREENSHOTS) {
+    await mkdir(process.env.REVIEW_SCREENSHOTS, { recursive: true });
+    await page.screenshot({ path: path.join(process.env.REVIEW_SCREENSHOTS, 'show-url-import-mobile.png') });
+  }
+  await dialog.getByRole('button', { name: '完成', exact: true }).click();
+  assert.deepEqual(await page.locator('[data-selected-resource-id]').evaluateAll(items => items.map(item => Number(item.dataset.selectedResourceId))), [9, 2]);
+});
+
+test('closing show URL import cancels a pending lookup without changing selection', async t => {
+  const { page, lookups } = await showUrlImportPage(t);
+  await page.getByRole('button', { name: '网址导入', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '网址导入', exact: true });
+  await dialog.getByRole('textbox', { name: '单页素材网址', exact: true }).fill(`${origin}/resources/${importKey(3)}`);
+  const pending = page.waitForRequest(request => new URL(request.url()).pathname.endsWith(importKey(3)));
+  await dialog.getByRole('button', { name: '导入并选中', exact: true }).click();
+  await pending;
+  await page.keyboard.press('Escape');
+  await dialog.waitFor({ state: 'hidden' });
+  await page.waitForTimeout(250);
+  assert.deepEqual(lookups, [importKey(3)]);
+  assert.deepEqual(await page.locator('[data-selected-resource-id]').evaluateAll(items => items.map(item => Number(item.dataset.selectedResourceId))), [9]);
+  await page.getByRole('button', { name: '网址导入', exact: true }).click();
+  assert.equal(await dialog.getByRole('textbox', { name: '单页素材网址', exact: true }).inputValue(), '');
+});
+
 const longTableText = '超长名称用于验证表格固定列宽及完整内容展示'.repeat(5);
 const longTableTags = ['短标签', '没有分隔符的超长标签'.repeat(12), '销售部', '方案组', '华东区', '内部用户'];
 const tableWidths = page => page.locator('table:visible thead th').evaluateAll(cells => cells.map(cell => cell.getBoundingClientRect().width));
