@@ -177,7 +177,8 @@ test('batch edit and preview work as the first dialog action in list mode', asyn
   assert.deepEqual(chunks.filter(chunk => /\/Resource(?:Edit|Download|Deletion|Preview)Dialog-/.test(chunk)), []);
   await dialog.getByRole('button', { name: '取消', exact: true }).click();
   await page.getByRole('button', { name: `放大查看 ${resource.name}` }).click();
-  await page.getByRole('dialog').waitFor();
+  // The previous dialog can remain mounted during its exit animation.
+  await page.getByRole('dialog').filter({ has: page.getByRole('heading', { name: resource.name, exact: true }) }).waitFor();
   assert.equal(chunks.filter(chunk => /\/ResourcePreviewDialog-/.test(chunk)).length, 1);
 });
 
