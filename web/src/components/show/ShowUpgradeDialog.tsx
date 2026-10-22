@@ -4,6 +4,7 @@ import {
   ArrowUpCircle,
   Check,
   ChevronRight,
+  CircleHelp,
   Clock,
   Eraser,
   FileText,
@@ -31,8 +32,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { Tooltip, TooltipContent, TooltipPortal, TooltipTrigger } from "@/components/ui/tooltip";
 import { RichTextEditor } from "@/components/resource/RichTextEditor";
 import { ResourcePicker, PickerResource } from "./ResourcePicker";
 import { cn } from "@/lib/utils";
@@ -115,6 +116,7 @@ export function ShowUpgradeDialog({
   onSuccess,
 }: ShowUpgradeDialogProps) {
   const queryClient = useQueryClient();
+  const formId = React.useId();
 
   // ── 视图状态 ──
   const [view, setView] = React.useState<View>("list");
@@ -554,29 +556,46 @@ export function ShowUpgradeDialog({
 
         {/* 顶部表单区 */}
         <div className="shrink-0 space-y-4 border-b bg-muted/20 px-6 py-5">
-          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,460px)]">
+          <div className="grid gap-4 lg:grid-cols-2">
             <div className="space-y-1.5">
-              <Label>变更说明</Label>
-              <Textarea
-                placeholder="创建新版本时说明新增、删除或升级了什么；仅调整顺序无需填写。"
+              <div className="flex h-5 items-center gap-1.5">
+                <Label htmlFor={`${formId}-change-note`}>变更说明 <span className="text-destructive" aria-hidden="true">*</span></Label>
+                <span id={`${formId}-change-note-requirement`} className="text-xs text-muted-foreground">创建版本时必填</span>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button type="button" className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label="查看版本创建规则">
+                      <CircleHelp className="h-4 w-4" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipPortal>
+                    <TooltipContent side="bottom" align="start" className="max-w-xs leading-5">
+                      只有资源新增、删除或升级才会创建版本，播放顺序单独调整会直接保存。
+                    </TooltipContent>
+                  </TooltipPortal>
+                </Tooltip>
+              </div>
+              <Input
+                id={`${formId}-change-note`}
+                placeholder="说明本次新增、删除或升级的内容"
                 value={changeNote}
                 onChange={(e) => setChangeNote(e.target.value)}
-                className="min-h-[88px] resize-y bg-background"
-                rows={3}
+                required={hasVersionChange}
+                aria-required={hasVersionChange}
+                aria-describedby={`${formId}-change-note-requirement`}
+                className="h-9 bg-background"
               />
-              <p className="text-xs text-muted-foreground">
-                只有资源新增、删除或升级才会创建版本，播放顺序单独调整会直接保存。
-              </p>
             </div>
             <div className="space-y-1.5">
-              <Label>名称</Label>
+              <Label htmlFor={`${formId}-name`} className="flex h-5 items-center gap-1">名称 <span className="text-xs font-normal text-muted-foreground">（选填）</span></Label>
               <Input
+                id={`${formId}-name`}
                 placeholder={show.name}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="h-11 bg-background text-base"
+                aria-describedby={`${formId}-name-hint`}
+                className="h-9 bg-background"
               />
-              <p className="text-xs text-muted-foreground">留空则继承当前名称</p>
+              <p id={`${formId}-name-hint`} className="text-xs text-muted-foreground">留空则继承当前名称</p>
             </div>
           </div>
 

@@ -14,6 +14,7 @@ import {
   Plus,
   CircleHelp,
   Save,
+  Trash2,
   ZoomIn,
   X,
 } from "lucide-react";
@@ -855,7 +856,7 @@ export function ShowCreatePage() {
                           dragOverId === resource.id && "ring-2 ring-primary",
                         )}
                       >
-                        <div className="relative aspect-video w-full bg-muted">
+                        <div className="relative aspect-video min-h-28 w-full bg-muted">
                           {resource.preview_url ? (
                             <img src={resource.preview_url} alt={resource.name} loading="lazy" decoding="async" className="h-full w-full object-contain" />
                           ) : (
@@ -878,6 +879,18 @@ export function ShowCreatePage() {
                               aria-label={`放大查看 ${resource.name}`}
                               title="放大查看"
                             ><ZoomIn className="h-4 w-4" /></button>
+                            <button
+                              type="button"
+                              onMouseDown={(event) => event.stopPropagation()}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setResourceIds((current) => current.filter((id) => id !== resource.id));
+                              }}
+                              disabled={mutation.isPending}
+                              className="flex h-8 w-8 items-center justify-center border-t border-white/20 transition hover:bg-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white disabled:pointer-events-none disabled:opacity-50"
+                              aria-label={`移除 ${resource.name}`}
+                              title="从放映中移除"
+                            ><Trash2 className="h-4 w-4" /></button>
                           </div>
                         </div>
                         <div className="flex min-w-0 items-center gap-2 px-3 py-2.5">
