@@ -1584,5 +1584,77 @@
     "methods": [
       "GET"
     ]
+  },
+  {
+    "path": "/api/admin/model-connections",
+    "name": "list_connections",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/admin/model-connections",
+    "name": "create_connection",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/admin/model-connections/{connection_id}",
+    "name": "update_connection",
+    "kind": "http",
+    "methods": [
+      "PATCH"
+    ]
+  },
+  {
+    "path": "/api/admin/model-connections/{connection_id}",
+    "name": "delete_connection",
+    "kind": "http",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/admin/model-connections/{connection_id}/models",
+    "name": "fetch_models",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/admin/model-connections/preview-models",
+    "name": "preview_models",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/admin/model-connections/{connection_id}/test",
+    "name": "test_connection",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/ai-tagging/resources/{resource_id}",
+    "name": "tag_resource",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/ai-tagging/tasks/{task_id}/apply",
+    "name": "apply_tags",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
   }
 ]

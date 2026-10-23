@@ -116,6 +116,12 @@ interface TaskParams {
   render_stage?: string;
   render_completed?: number;
   render_total?: number;
+  target_type?: "resource" | "show";
+  target_id?: number;
+  version_id?: number;
+  connection_id?: number;
+  connection_name?: string;
+  model?: string;
 }
 
 interface TaskResult {
@@ -126,6 +132,18 @@ interface TaskResult {
   template_ids?: number[];
   message?: string;
   expired?: boolean;
+  target_type?: "resource" | "show";
+  target_id?: number;
+  connection_id?: number;
+  connection_name?: string;
+  model?: string;
+  suggested_tags?: string[];
+  existing_tags?: string[];
+  applied_tags?: string[];
+  final_tags?: string[];
+  tags_applied?: boolean;
+  skipped_pages?: number;
+  page_count?: number;
 }
 
 interface Task {
@@ -220,6 +238,7 @@ type TaskStatus =
 
 const TASK_TYPE_LABEL: Record<string, string> = {
   batch_split_import: "PPT 上传",
+  ai_tagging: "智能标注",
 };
 
 const importTaskPath = (task: Task) =>
@@ -552,7 +571,7 @@ function TaskDetail({ task, onClose }: { task: Task; onClose: () => void }) {
             <div className="min-w-0">
               <DialogTitle className="truncate text-base">{taskTitle}</DialogTitle>
               <DialogDescription className="mt-1 truncate text-xs">
-                上传任务 #{task.id} · {formatDateTime(task.created_at)}
+                {TASK_TYPE_LABEL[task.task_type] || "后台任务"} #{task.id} · {formatDateTime(task.created_at)}
               </DialogDescription>
             </div>
           </div>
@@ -592,6 +611,9 @@ function TaskDetail({ task, onClose }: { task: Task; onClose: () => void }) {
             </DetailCard>
 
             <DetailCard icon={<FileText className="h-3.5 w-3.5" />} title="提交参数">
+              {task.task_type === "ai_tagging" && <InfoRow label="标注对象" value={params.target_type === "show" ? `放映 #${params.target_id ?? "-"}` : `素材 #${params.target_id ?? "-"}`} />}
+              {task.task_type === "ai_tagging" && params.connection_name && <InfoRow label="模型连接" value={params.connection_name} />}
+              {task.task_type === "ai_tagging" && params.model && <InfoRow label="模型" value={params.model} />}
               {params.import_target === "templates" && <InfoRow label="导入目标" value="标准模板" />}
               {params.series && <InfoRow label="系列" value={params.series} />}
               {params.name_prefix && params.import_target !== "templates" && <InfoRow label="名称前缀" value={params.name_prefix} />}
@@ -631,26 +653,35 @@ function TaskDetail({ task, onClose }: { task: Task; onClose: () => void }) {
             {status === "failed" && task.error_message ? (
               <div className="whitespace-pre-wrap break-all rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs leading-relaxed text-destructive">{task.error_message}</div>
             ) : status === "completed" ? (
-              <>
-                <InfoRow label="总页数" value={String(result.total ?? task.total ?? 0)} />
-                <InfoRow label="成功创建" value={String(result.created ?? 0)} highlight />
-                {resourceIds.length > 0 && (
-                  <div className="mt-3 space-y-2">
-                    <div className="text-[11px] font-medium text-muted-foreground">生成的资源 ID</div>
-                    <div className="flex max-h-28 flex-wrap gap-1.5 overflow-y-auto">
-                      {resourceIds.map((id) => {
-                        const detailToken = resourceDetailTokens[String(id)];
-                        const className = "inline-flex items-center rounded-md border bg-background px-2 py-1 font-mono text-[10px] text-muted-foreground";
-                        return detailToken ? (
-                          <Link key={id} to={`/resources/${encodeURIComponent(detailToken)}`} onClick={onClose} className={`${className} text-primary hover:border-primary/50 hover:underline`} title={`打开资源 #${id} 的单页详情`}>#{id}</Link>
-                        ) : (
-                          <span key={id} className={className}>#{id}</span>
-                        );
-                      })}
+              task.task_type === "ai_tagging" ? (
+                <>
+                  <InfoRow label="页面数" value={`${result.page_count ?? 0} 页`} />
+                  {(result.skipped_pages ?? 0) > 0 && <InfoRow label="跳过页面" value={`${result.skipped_pages} 页`} />}
+                  <InfoRow label="建议标签" value={result.suggested_tags?.join("、") || "无"} />
+                  {result.tags_applied && <InfoRow label="已写入" value={result.applied_tags?.join("、") || "未新增"} highlight />}
+                </>
+              ) : (
+                <>
+                  <InfoRow label="总页数" value={String(result.total ?? task.total ?? 0)} />
+                  <InfoRow label="成功创建" value={String(result.created ?? 0)} highlight />
+                  {resourceIds.length > 0 && (
+                    <div className="mt-3 space-y-2">
+                      <div className="text-[11px] font-medium text-muted-foreground">生成的资源 ID</div>
+                      <div className="flex max-h-28 flex-wrap gap-1.5 overflow-y-auto">
+                        {resourceIds.map((id) => {
+                          const detailToken = resourceDetailTokens[String(id)];
+                          const className = "inline-flex items-center rounded-md border bg-background px-2 py-1 font-mono text-[10px] text-muted-foreground";
+                          return detailToken ? (
+                            <Link key={id} to={`/resources/${encodeURIComponent(detailToken)}`} onClick={onClose} className={`${className} text-primary hover:border-primary/50 hover:underline`} title={`打开资源 #${id} 的单页详情`}>#{id}</Link>
+                          ) : (
+                            <span key={id} className={className}>#{id}</span>
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
-                )}
-              </>
+                  )}
+                </>
+              )
             ) : status === "cancelled" ? (
               <div className="text-xs text-muted-foreground">任务已被取消</div>
             ) : isActive ? (

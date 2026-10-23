@@ -9438,6 +9438,407 @@
           }
         }
       }
+    },
+    "/api/admin/model-connections": {
+      "get": {
+        "tags": [
+          "model_connections"
+        ],
+        "summary": "List Connections",
+        "operationId": "list_connections_api_admin_model_connections_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response List Connections Api Admin Model Connections Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "model_connections"
+        ],
+        "summary": "Create Connection",
+        "operationId": "create_connection_api_admin_model_connections_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelConnectionPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Create Connection Api Admin Model Connections Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/model-connections/{connection_id}": {
+      "patch": {
+        "tags": [
+          "model_connections"
+        ],
+        "summary": "Update Connection",
+        "operationId": "update_connection_api_admin_model_connections__connection_id__patch",
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Connection Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelConnectionPatchPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Update Connection Api Admin Model Connections  Connection Id  Patch"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "model_connections"
+        ],
+        "summary": "Delete Connection",
+        "operationId": "delete_connection_api_admin_model_connections__connection_id__delete",
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Connection Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Delete Connection Api Admin Model Connections  Connection Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/model-connections/{connection_id}/models": {
+      "post": {
+        "tags": [
+          "model_connections"
+        ],
+        "summary": "Fetch Models",
+        "operationId": "fetch_models_api_admin_model_connections__connection_id__models_post",
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Connection Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Fetch Models Api Admin Model Connections  Connection Id  Models Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/model-connections/preview-models": {
+      "post": {
+        "tags": [
+          "model_connections"
+        ],
+        "summary": "Preview Models",
+        "description": "Fetch models using unsaved credentials without persisting the API key.",
+        "operationId": "preview_models_api_admin_model_connections_preview_models_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelConnectionPreviewPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Preview Models Api Admin Model Connections Preview Models Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/model-connections/{connection_id}/test": {
+      "post": {
+        "tags": [
+          "model_connections"
+        ],
+        "summary": "Test Connection",
+        "operationId": "test_connection_api_admin_model_connections__connection_id__test_post",
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Connection Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Test Connection Api Admin Model Connections  Connection Id  Test Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ai-tagging/resources/{resource_id}": {
+      "post": {
+        "summary": "Tag Resource",
+        "operationId": "tag_resource_api_ai_tagging_resources__resource_id__post",
+        "parameters": [
+          {
+            "name": "resource_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Resource Id"
+            }
+          },
+          {
+            "name": "version_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Version Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Tag Resource Api Ai Tagging Resources  Resource Id  Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ai-tagging/tasks/{task_id}/apply": {
+      "post": {
+        "summary": "Apply Tags",
+        "operationId": "apply_tags_api_ai_tagging_tasks__task_id__apply_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyTaggingPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Apply Tags Api Ai Tagging Tasks  Task Id  Apply Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -11520,6 +11921,152 @@
           "tag_ids"
         ],
         "title": "TagDefaultChange"
+      },
+      "ApplyTaggingPayload": {
+        "properties": {
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 8,
+            "title": "Tags"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ApplyTaggingPayload"
+      },
+      "ModelConnectionPatchPayload": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "is_default": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Default"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ModelConnectionPatchPayload"
+      },
+      "ModelConnectionPayload": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "base_url": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Base Url"
+          },
+          "api_key": {
+            "type": "string",
+            "maxLength": 4000,
+            "title": "Api Key",
+            "default": ""
+          },
+          "model": {
+            "type": "string",
+            "maxLength": 200,
+            "title": "Model",
+            "default": ""
+          },
+          "is_default": {
+            "type": "boolean",
+            "title": "Is Default",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "base_url"
+        ],
+        "title": "ModelConnectionPayload"
+      },
+      "ModelConnectionPreviewPayload": {
+        "properties": {
+          "base_url": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Base Url"
+          },
+          "api_key": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Api Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "base_url",
+          "api_key"
+        ],
+        "title": "ModelConnectionPreviewPayload"
       }
     }
   }

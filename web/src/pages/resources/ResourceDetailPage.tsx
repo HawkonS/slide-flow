@@ -18,6 +18,7 @@ import {
   Pencil,
   RefreshCw,
   ShieldCheck,
+  Sparkles,
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -27,6 +28,7 @@ import { ResourceDownloadDialog } from "@/components/resource/ResourceDownloadDi
 import { ResourceEditDialog } from "@/components/resource/ResourceEditDialog";
 import { ResourceNewVersionDialog } from "@/components/resource/ResourceNewVersionDialog";
 import { ResourcePreviewDialog } from "@/components/resource/ResourcePreviewDialog";
+import { SmartTaggingDialog } from "@/components/common/SmartTaggingDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -331,6 +333,7 @@ export function ResourceDetailPage() {
   const [linksOpen, setLinksOpen] = React.useState(false);
   const [commonRemarkOpen, setCommonRemarkOpen] = React.useState(false);
   const [personalRemarkOpen, setPersonalRemarkOpen] = React.useState(false);
+  const [smartTaggingOpen, setSmartTaggingOpen] = React.useState(false);
   React.useEffect(() => {
     setEditOpen(false);
     setNewVersionOpen(false);
@@ -339,6 +342,7 @@ export function ResourceDetailPage() {
     setLinksOpen(false);
     setCommonRemarkOpen(false);
     setPersonalRemarkOpen(false);
+    setSmartTaggingOpen(false);
     setSwitchingResource(false);
   }, [resourceKey]);
 
@@ -505,6 +509,11 @@ export function ResourceDetailPage() {
             </Button>
           )}
           {resource.can_manage && (
+            <Button variant="outline" size="sm" className="h-8 gap-1.5 border-border/70 px-2.5 text-muted-foreground shadow-none hover:text-foreground" onClick={() => setSmartTaggingOpen(true)}>
+              <Sparkles className="h-4 w-4" />智能标注
+            </Button>
+          )}
+          {resource.can_manage && (
             <Button variant="outline" size="sm" className="h-8 gap-1.5 border-border/70 px-3 text-muted-foreground shadow-none hover:text-foreground" onClick={() => setEditOpen(true)}>
               <Pencil className="h-4 w-4" />编辑
             </Button>
@@ -656,6 +665,7 @@ export function ResourceDetailPage() {
       <ResourceNewVersionDialog open={newVersionOpen} onOpenChange={(open) => closeAndRefresh(open, setNewVersionOpen)} resource={resource} />
       <ResourceDownloadDialog open={downloadCtx != null} onOpenChange={(open) => { if (!open) setDownloadCtx(null); }} resource={downloadCtx?.resource ?? null} version={downloadCtx?.version ?? null} />
       <ResourcePreviewDialog open={previewResource != null} onOpenChange={(open) => { if (!open) setPreviewResource(null); }} resource={previewResource} />
+      <SmartTaggingDialog open={smartTaggingOpen} onOpenChange={setSmartTaggingOpen} targetId={resource.id} versionId={version.id} currentTags={tags} onApplied={() => void queryClient.invalidateQueries({ queryKey: ["resource-detail", resourceKey] })} />
       <ResourceLinksDialog open={linksOpen} onOpenChange={setLinksOpen} resource={resource} publicUrl={publicUrl} version={version} followsLatest={followsLatest} />
       <Dialog open={commonRemarkOpen} onOpenChange={setCommonRemarkOpen}>
         <DialogContent className="max-h-[90vh] max-w-2xl overflow-hidden p-0">

@@ -47,6 +47,27 @@ _TASK_PARAMS_PUBLIC_KEYS = (
     "render_stage",
     "render_completed",
     "render_total",
+    "target_type",
+    "target_id",
+    "version_id",
+    "connection_id",
+    "connection_name",
+    "model",
+)
+
+_AI_TAGGING_PUBLIC_ERROR_PREFIXES = (
+    "模型连接",
+    "模型地址",
+    "模型标注",
+    "模型服务",
+    "连接模型服务",
+    "无法连接模型服务",
+    "素材",
+    "放映中",
+    "系统中尚未配置分类标签",
+    "标注任务",
+    "尚未配置可用的模型连接",
+    "默认模型连接",
 )
 
 
@@ -83,7 +104,7 @@ def _serialize_task(row: sqlite3.Row, db: sqlite3.Connection | None = None) -> d
     if isinstance(raw_result_data, dict):
         result_data = {
             key: raw_result_data[key]
-            for key in ("total", "created", "resource_ids", "template_ids", "message", "expired", "skipped_pages")
+            for key in ("total", "created", "resource_ids", "template_ids", "message", "expired", "skipped_pages", "target_type", "target_id", "connection_id", "connection_name", "model", "suggested_tags", "existing_tags", "applied_tags", "final_tags", "tags_applied", "page_count")
             if key in raw_result_data
         }
 
@@ -144,8 +165,16 @@ def _serialize_task(row: sqlite3.Row, db: sqlite3.Connection | None = None) -> d
     raw_error = row["error_message"]
     safe_error = None
     if raw_error:
-        # 旧任务记录可能保存了异常字符串（包含绝对路径/命令行参数）；接口只返回通用提示。
-        safe_error = raw_error if raw_error in ({"服务重启，任务中断", "未能拆分 PPTX"} | PUBLIC_ERROR_MESSAGES) else "任务处理失败，请重试或联系管理员"
+        # AI service errors are selected from a bounded, user-facing catalogue.
+        if (
+            row["task_type"] == "ai_tagging"
+            and len(str(raw_error)) <= 200
+            and str(raw_error).startswith(_AI_TAGGING_PUBLIC_ERROR_PREFIXES)
+        ):
+            safe_error = str(raw_error)
+        else:
+            # 旧任务记录可能保存了异常字符串（包含绝对路径/命令行参数）；接口只返回通用提示。
+            safe_error = raw_error if raw_error in ({"服务重启，任务中断", "未能拆分 PPTX"} | PUBLIC_ERROR_MESSAGES) else "任务处理失败，请重试或联系管理员"
     return {
         "id": row["id"],
         "task_type": row["task_type"],

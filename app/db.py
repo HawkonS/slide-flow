@@ -18,7 +18,7 @@ from app.config import (
 from app.core.bootstrap import prepare_initial_admin
 from app.core.fonts import normalize_font_name
 
-DB_SCHEMA_VERSION = 28
+DB_SCHEMA_VERSION = 29
 
 
 def is_sqlite_busy_error(exc: BaseException) -> bool:
@@ -655,7 +655,7 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                task_type TEXT NOT NULL CHECK(task_type IN ('batch_split_import', 'download')),
+                task_type TEXT NOT NULL CHECK(task_type IN ('batch_split_import', 'download', 'ai_tagging')),
                 status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('uploading', 'pending', 'processing', 'completed', 'failed', 'cancelled')),
                 owner_id INTEGER NOT NULL REFERENCES users(id),
                 params TEXT NOT NULL DEFAULT '{}',
@@ -672,6 +672,21 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_tasks_owner ON tasks(owner_id);
             CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+
+            CREATE TABLE IF NOT EXISTS model_connections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                base_url TEXT NOT NULL,
+                api_key_ciphertext TEXT NOT NULL,
+                model TEXT NOT NULL DEFAULT '',
+                is_default INTEGER NOT NULL DEFAULT 0 CHECK(is_default IN (0, 1)),
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_model_connections_default
+                ON model_connections(is_default, id);
 
             CREATE TABLE IF NOT EXISTS download_records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -765,6 +780,7 @@ def init_db() -> None:
 
 def _migrate_schema(db: sqlite3.Connection, schema_version: int) -> None:
     """Apply additive, idempotent migrations without requiring data deletion."""
+    _migrate_task_type_constraint(db)
     for table in ("resources", "resource_versions"):
         columns = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
         if "deleted_at" not in columns:
@@ -883,6 +899,7 @@ def _migrate_schema(db: sqlite3.Connection, schema_version: int) -> None:
     }
     if "lease_token_hash" not in font_task_columns:
         db.execute("ALTER TABLE renderer_font_tasks ADD COLUMN lease_token_hash TEXT")
+
 
     # Version 13 adds a Unicode-aware login key. Move every row through a
     # temporary username first so normalization remains safe under the legacy
@@ -1045,6 +1062,119 @@ def _migrate_schema(db: sqlite3.Connection, schema_version: int) -> None:
         "CREATE INDEX IF NOT EXISTS idx_users_last_login_at "
         "ON users(last_login_at)"
     )
+
+
+def _migrate_task_type_constraint(db: sqlite3.Connection) -> None:
+    """Add the durable AI tagging task type to databases created before v29."""
+    row = db.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'"
+    ).fetchone()
+    if row is None or "ai_tagging" in str(row["sql"] or ""):
+        return
+
+    db.execute("CREATE TEMP TABLE __tasks_backup AS SELECT * FROM tasks")
+    child_tables = {
+        "renderer_ppt_tasks": """
+            CREATE TABLE renderer_ppt_tasks (
+                task_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                render_attempt TEXT NOT NULL,
+                parent_task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+                status TEXT NOT NULL DEFAULT 'queued'
+                    CHECK(status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
+                lease_token_hash TEXT,
+                lease_until REAL,
+                worker_id TEXT,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                source_manifest TEXT NOT NULL,
+                result_manifest TEXT,
+                error_code TEXT,
+                objects_cleaned_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(session_id, render_attempt)
+            )
+        """,
+        "task_events": """
+            CREATE TABLE task_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
+                event_type TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime'))
+            )
+        """,
+    }
+    present_children: list[str] = []
+    for table in child_tables:
+        exists = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+        ).fetchone()
+        if exists:
+            db.execute(f"CREATE TEMP TABLE __{table}_backup AS SELECT * FROM {table}")
+            present_children.append(table)
+    for table in present_children:
+        db.execute(f"DROP TABLE {table}")
+    db.execute("DROP TABLE tasks")
+    db.execute(
+        """
+        CREATE TABLE tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_type TEXT NOT NULL CHECK(task_type IN ('batch_split_import', 'download', 'ai_tagging')),
+            status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('uploading', 'pending', 'processing', 'completed', 'failed', 'cancelled')),
+            owner_id INTEGER NOT NULL REFERENCES users(id),
+            params TEXT NOT NULL DEFAULT '{}',
+            progress INTEGER NOT NULL DEFAULT 0,
+            upload_progress INTEGER NOT NULL DEFAULT 0,
+            total INTEGER NOT NULL DEFAULT 0,
+            message TEXT,
+            result_data TEXT,
+            error_message TEXT,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),
+            completed_at TEXT
+        )
+        """
+    )
+    db.execute("CREATE INDEX idx_tasks_owner ON tasks(owner_id)")
+    db.execute("CREATE INDEX idx_tasks_status ON tasks(status)")
+    task_columns = [
+        str(item["name"])
+        for item in db.execute("PRAGMA table_info(tasks)").fetchall()
+    ]
+    task_backup_columns = {
+        str(item["name"])
+        for item in db.execute("PRAGMA table_info(__tasks_backup)").fetchall()
+    }
+    task_columns = [column for column in task_columns if column in task_backup_columns]
+    db.execute(
+        f"INSERT INTO tasks ({','.join(task_columns)}) "
+        f"SELECT {','.join(task_columns)} FROM __tasks_backup"
+    )
+    for table in present_children:
+        db.execute(child_tables[table])
+        target_columns = [
+            str(item["name"])
+            for item in db.execute(f"PRAGMA table_info({table})").fetchall()
+        ]
+        backup_columns = {
+            str(item["name"])
+            for item in db.execute(f"PRAGMA table_info(__{table}_backup)").fetchall()
+        }
+        columns = [column for column in target_columns if column in backup_columns]
+        db.execute(
+            f"INSERT INTO {table} ({','.join(columns)}) SELECT {','.join(columns)} FROM __{table}_backup"
+        )
+        if table == "renderer_ppt_tasks":
+            db.execute("CREATE INDEX idx_renderer_ppt_tasks_claim ON renderer_ppt_tasks(status, lease_until, created_at)")
+            db.execute("CREATE INDEX idx_renderer_ppt_tasks_session ON renderer_ppt_tasks(session_id, created_at DESC)")
+        else:
+            db.execute("CREATE INDEX idx_task_events_owner_id ON task_events(owner_id, id)")
+            db.execute("CREATE INDEX idx_task_events_created_at ON task_events(created_at)")
+    db.execute("DROP TABLE __tasks_backup")
+    for table in present_children:
+        db.execute(f"DROP TABLE __{table}_backup")
 
 
 def _relax_resource_metadata_constraints(db: sqlite3.Connection) -> None:
@@ -1327,6 +1457,22 @@ def _recover_interrupted_tasks(db: sqlite3.Connection) -> None:
         from app.core.errors import render_public_message
 
         now = now_iso()
+        task_columns = {
+            str(row["name"])
+            for row in db.execute("PRAGMA table_info(tasks)").fetchall()
+        }
+        if "completed_at" in task_columns:
+            db.execute(
+                "UPDATE tasks SET status='failed', error_message='服务重启，任务中断', message='智能标注任务已中断', completed_at=?, updated_at=? "
+                "WHERE task_type='ai_tagging' AND status IN ('pending','processing')",
+                (now, now),
+            )
+        else:
+            db.execute(
+                "UPDATE tasks SET status='failed', error_message='服务重启，任务中断', message='智能标注任务已中断', updated_at=? "
+                "WHERE task_type='ai_tagging' AND status IN ('pending','processing')",
+                (now,),
+            )
         # A terminal parent owns the workflow lifecycle. Never let a stale
         # Windows lease continue after that parent was cancelled, failed or
         # completed.

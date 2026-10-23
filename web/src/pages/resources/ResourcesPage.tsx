@@ -3,7 +3,7 @@ import { useSceneFilters } from "@/lib/tag-defaults";
 import { useOpenDetail, useRestoreListScroll } from "@/lib/detail-navigation";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronDown, ListChecks, Loader2, Pencil, Plus, Trash2, Upload, X } from "lucide-react";
+import { Check, ChevronDown, ListChecks, Loader2, Pencil, Plus, Sparkles, Trash2, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -152,6 +152,7 @@ export function ResourcesPage() {
     Delete?: typeof import("@/components/resource/ResourceDeletionDialog").ResourceDeletionDialog;
     Preview?: typeof import("@/components/resource/ResourcePreviewDialog").ResourcePreviewDialog;
     BatchEdit?: typeof import("@/components/manage/BatchEditDialog").BatchEditDialog;
+    BatchTagging?: typeof import("@/components/resource/BatchSmartTaggingDialog").BatchSmartTaggingDialog;
   }>({});
   const pendingDialog = React.useRef<AbortController | null>(null);
   const [dialogLoading, setDialogLoading] = React.useState<string | null>(null);
@@ -312,6 +313,14 @@ export function ResourcesPage() {
       setBatchEditOpen(true);
     };
   });
+  const [batchTaggingOpen, setBatchTaggingOpen] = React.useState(false);
+  const handleBatchTagging = () => openDialog("正在打开批量智能识别", async () => {
+    const { BatchSmartTaggingDialog: BatchTagging } = await import("@/components/resource/BatchSmartTaggingDialog");
+    return () => {
+      setDialogComponents((prev) => ({ ...prev, BatchTagging }));
+      setBatchTaggingOpen(true);
+    };
+  });
   const [deleteOpen, setDeleteOpen] = React.useState(false);
   const [deleting, setDeleting] = React.useState(false);
   const deleteSelected = async () => {
@@ -426,6 +435,7 @@ export function ResourcesPage() {
               </DropdownMenuContent>
             </DropdownMenu>}
             <Button variant="outline" size="sm" className="h-8 gap-1" disabled={!allManageable} title={selectedIds.size && !allManageable ? "批量编辑仅支持所选素材全部可管理时使用" : undefined} onClick={handleBatchEdit}><Pencil className="h-3.5 w-3.5" />批量编辑</Button>
+            <Button variant="outline" size="sm" className="h-8 gap-1" disabled={!allManageable || adding} title={selectedIds.size && !allManageable ? "智能识别仅支持所选素材全部可管理时使用" : undefined} onClick={handleBatchTagging}><Sparkles className="h-3.5 w-3.5" />智能识别</Button>
             <Button variant="outline" size="sm" className="h-8 gap-1 text-destructive hover:text-destructive" disabled={!allManageable} title={selectedIds.size && !allManageable ? "批量删除仅支持所选素材全部可管理时使用" : undefined} onClick={() => setDeleteOpen(true)}><Trash2 className="h-3.5 w-3.5" />批量删除</Button>
           </div>
         </div>
@@ -563,6 +573,16 @@ export function ResourcesPage() {
         onSuccess={() => {
           clearSelection();
           queryClient.invalidateQueries({ queryKey: ["resources"] });
+        }}
+      />}
+      {dialogComponents.BatchTagging && batchTaggingOpen && <dialogComponents.BatchTagging
+        open={batchTaggingOpen}
+        onOpenChange={setBatchTaggingOpen}
+        resourceIds={[...selectedIds]}
+        resources={[...selectedIds].map((id) => resourceCacheRef.current.get(id)).filter((r): r is Resource => !!r)}
+        onComplete={() => {
+          clearSelection();
+          void queryClient.invalidateQueries({ queryKey: ["resources"] });
         }}
       />}
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>

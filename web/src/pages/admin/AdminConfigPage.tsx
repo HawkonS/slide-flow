@@ -17,6 +17,7 @@ import {
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/common/PageHeader";
+import { ModelConnectionManager } from "@/components/manage/ModelConnectionManager";
 
 interface ConfigItem {
   value: string;
@@ -187,13 +188,16 @@ export function AdminConfigPage() {
         ) : null}
       />
 
-      <Tabs defaultValue={data.groups[0]?.key} className="w-full">
+      <Tabs defaultValue={data.groups[0]?.key ?? "model-connections"} className="w-full">
         <TabsList className="h-auto flex-wrap justify-start gap-1 bg-muted/60 p-1">
           {data.groups.map((g) => (
             <TabsTrigger key={g.key} value={g.key} className="px-3 py-1.5">
               {g.label}
             </TabsTrigger>
           ))}
+          <TabsTrigger value="model-connections" className="px-3 py-1.5">
+            模型连接
+          </TabsTrigger>
         </TabsList>
 
         {data.groups.map((g) => (
@@ -320,6 +324,9 @@ export function AdminConfigPage() {
             </div>
           </TabsContent>
         ))}
+        <TabsContent value="model-connections" className="mt-6">
+          <ModelConnectionManager />
+        </TabsContent>
       </Tabs>
 
       {/* 底部操作栏 */}
