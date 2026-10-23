@@ -435,7 +435,7 @@ export function ResourcesPage() {
               </DropdownMenuContent>
             </DropdownMenu>}
             <Button variant="outline" size="sm" className="h-8 gap-1" disabled={!allManageable} title={selectedIds.size && !allManageable ? "批量编辑仅支持所选素材全部可管理时使用" : undefined} onClick={handleBatchEdit}><Pencil className="h-3.5 w-3.5" />批量编辑</Button>
-            <Button variant="outline" size="sm" className="h-8 gap-1" disabled={!allManageable || adding} title={selectedIds.size && !allManageable ? "智能识别仅支持所选素材全部可管理时使用" : undefined} onClick={handleBatchTagging}><Sparkles className="h-3.5 w-3.5" />智能识别</Button>
+            <Button variant="outline" size="sm" aria-label="智能识别" className="h-8 gap-1" disabled={!allManageable || adding} title={selectedIds.size && !allManageable ? "智能识别仅支持所选素材全部可管理时使用" : "智能识别"} onClick={handleBatchTagging}><Sparkles className="h-3.5 w-3.5" /><span className="hidden sm:inline">智能识别</span></Button>
             <Button variant="outline" size="sm" className="h-8 gap-1 text-destructive hover:text-destructive" disabled={!allManageable} title={selectedIds.size && !allManageable ? "批量删除仅支持所选素材全部可管理时使用" : undefined} onClick={() => setDeleteOpen(true)}><Trash2 className="h-3.5 w-3.5" />批量删除</Button>
           </div>
         </div>

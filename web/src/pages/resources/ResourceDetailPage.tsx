@@ -499,7 +499,7 @@ export function ResourceDetailPage() {
             </div>
           </div>
         </div>
-        <div className="flex w-full shrink-0 flex-wrap items-center gap-1.5 sm:w-auto">
+        <div className="flex min-h-[70px] w-full shrink-0 flex-wrap content-start items-center gap-1.5 sm:min-h-0 sm:w-auto">
           <Button variant="outline" size="sm" className="h-8 gap-1.5 border-border/70 px-2.5 text-muted-foreground shadow-none hover:text-foreground" onClick={() => setLinksOpen(true)}>
             <Link2 className="h-4 w-4" />链接与分享
           </Button>
@@ -509,8 +509,8 @@ export function ResourceDetailPage() {
             </Button>
           )}
           {resource.can_manage && (
-            <Button variant="outline" size="sm" className="h-8 gap-1.5 border-border/70 px-2.5 text-muted-foreground shadow-none hover:text-foreground" onClick={() => setSmartTaggingOpen(true)}>
-              <Sparkles className="h-4 w-4" />智能标注
+            <Button variant="outline" size="sm" aria-label="智能标注" className="h-8 gap-1.5 border-border/70 px-2.5 text-muted-foreground shadow-none hover:text-foreground" onClick={() => setSmartTaggingOpen(true)}>
+              <Sparkles className="h-4 w-4" /><span className="hidden sm:inline">智能标注</span>
             </Button>
           )}
           {resource.can_manage && (
