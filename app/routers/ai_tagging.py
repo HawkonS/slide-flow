@@ -13,6 +13,7 @@ from app.routers.dependencies import ApiPayload, db_dep
 from app.services.ai_tagging import (
     apply_tagging_result,
     create_tagging_task,
+    create_tagging_tasks,
 )
 from app.services.model_connections import ModelConnectionError
 
@@ -21,6 +22,11 @@ router = APIRouter()
 
 class ApplyTaggingPayload(ApiPayload):
     tags: list[str] = Field(default_factory=list, max_length=8)
+    final_tags: list[str] | None = Field(default=None, max_length=1000)
+
+
+class BatchTaggingPayload(ApiPayload):
+    resource_ids: list[int] = Field(..., min_length=1, max_length=1000)
 
 
 def _start_error(exc: Exception) -> HTTPException:
@@ -35,6 +41,19 @@ def _start_error(exc: Exception) -> HTTPException:
     if isinstance(exc, ValueError):
         return HTTPException(400, str(exc))
     return HTTPException(400, "无法开始智能标注")
+
+
+@router.post("/api/ai-tagging/resources/batch")
+async def tag_resources_batch(
+    payload: BatchTaggingPayload,
+    user: sqlite3.Row = Depends(require_user),
+    db: sqlite3.Connection = Depends(db_dep),
+) -> dict[str, Any]:
+    try:
+        tasks = create_tagging_tasks(db, user, payload.resource_ids)
+    except Exception as exc:
+        raise _start_error(exc) from exc
+    return {"tasks": tasks, "status": "pending"}
 
 
 @router.post("/api/ai-tagging/resources/{resource_id}")
@@ -59,7 +78,7 @@ def apply_tags(
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
     try:
-        result = apply_tagging_result(db, user, task_id, payload.tags)
+        result = apply_tagging_result(db, user, task_id, payload.tags, payload.final_tags)
     except Exception as exc:
         raise _start_error(exc) from exc
     return {"ok": True, **result}

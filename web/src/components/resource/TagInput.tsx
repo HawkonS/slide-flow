@@ -11,6 +11,7 @@ export interface TagInputProps {
   value: string[];
   onChange: (next: string[]) => void;
   domain?: "resource" | "user";
+  allowCustom?: boolean;
   suggestions?: string[];
   placeholder?: string;
   disabled?: boolean;
@@ -51,6 +52,7 @@ export function TagInput(props: TagInputProps) {
     value,
     onChange,
     domain = "resource",
+    allowCustom: allowCustomOverride,
     placeholder = "输入后按回车或空格添加",
     disabled,
     className,
@@ -66,11 +68,18 @@ export function TagInput(props: TagInputProps) {
 
   const groups = tagsData?.groups ?? [];
 
-  const allowCustom = domain === "user"
+  const allowCustom = allowCustomOverride ?? (domain === "user"
     ? (configData?.user_custom_tags ?? false)
-    : (configData?.resource_custom_tags ?? true);
+    : (configData?.resource_custom_tags ?? true));
 
-  if (configData === undefined || tagsLoading) {
+  if ((configData === undefined && allowCustomOverride === undefined) || tagsLoading) {
+    if (allowCustomOverride === false) {
+      return (
+        <div className={cn("flex min-h-10 items-center rounded-md border bg-muted/20 px-3 text-sm text-muted-foreground", className)}>
+          正在加载分类标签…
+        </div>
+      );
+    }
     if (domain === "user") {
       return (
         <div className={cn("flex min-h-10 items-center rounded-md border bg-muted/20 px-3 text-sm text-muted-foreground", className)}>
@@ -87,6 +96,14 @@ export function TagInput(props: TagInputProps) {
         disabled={disabled}
         className={className}
       />
+    );
+  }
+
+  if (tagsError && allowCustomOverride === false) {
+    return (
+      <div className={cn("flex min-h-10 items-center rounded-md border border-destructive/40 bg-destructive/5 px-3 text-sm text-destructive", className)}>
+        分类标签加载失败，请刷新后重试
+      </div>
     );
   }
 

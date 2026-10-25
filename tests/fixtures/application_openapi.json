@@ -9731,6 +9731,46 @@
         }
       }
     },
+    "/api/ai-tagging/resources/batch": {
+      "post": {
+        "summary": "Tag Resources Batch",
+        "operationId": "tag_resources_batch_api_ai_tagging_resources_batch_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchTaggingPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Tag Resources Batch Api Ai Tagging Resources Batch Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/ai-tagging/resources/{resource_id}": {
       "post": {
         "summary": "Tag Resource",
@@ -11931,11 +11971,45 @@
             "type": "array",
             "maxItems": 8,
             "title": "Tags"
+          },
+          "final_tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "maxItems": 1000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Tags"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "title": "ApplyTaggingPayload"
+      },
+      "BatchTaggingPayload": {
+        "properties": {
+          "resource_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "maxItems": 1000,
+            "minItems": 1,
+            "title": "Resource Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "resource_ids"
+        ],
+        "title": "BatchTaggingPayload"
       },
       "ModelConnectionPatchPayload": {
         "properties": {

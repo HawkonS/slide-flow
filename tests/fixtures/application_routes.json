@@ -1642,6 +1642,14 @@
     ]
   },
   {
+    "path": "/api/ai-tagging/resources/batch",
+    "name": "tag_resources_batch",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
     "path": "/api/ai-tagging/resources/{resource_id}",
     "name": "tag_resource",
     "kind": "http",

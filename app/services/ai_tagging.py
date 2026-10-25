@@ -26,7 +26,7 @@ from app.services.model_connections import (
     default_connection_row,
 )
 from app.services.resources import _resource_row, _version_row
-from app.services.tagging import entity_tag_names, parse_tag_names, set_entity_tags
+from app.services.tagging import entity_tag_names, parse_tag_names, set_entity_tags, validate_tag_names
 from app.services.tasks.runtime import _heavy_executor, _pending_task_futures, _task_cancel_flags
 
 logger = logging.getLogger(__name__)
@@ -251,9 +251,13 @@ def validate_resource_for_start(
         _version_row(db, resource_id, version_id)
 
 
-def create_tagging_task(db: sqlite3.Connection, user: sqlite3.Row, resource_id: int, version_id: int | None = None) -> int:
-    validate_resource_for_start(db, user, resource_id, version_id)
-    connection = default_connection_row(db)
+def _insert_tagging_task(
+    db: sqlite3.Connection,
+    user: sqlite3.Row,
+    connection: sqlite3.Row,
+    resource_id: int,
+    version_id: int | None = None,
+) -> int:
     params = {
         "target_type": "resource",
         "target_id": int(resource_id),
@@ -268,13 +272,52 @@ def create_tagging_task(db: sqlite3.Connection, user: sqlite3.Row, resource_id: 
         (int(user["id"]), _safe_json(params)),
     )
     task_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
-    db.commit()
     _task_cancel_flags[task_id] = threading.Event()
+    return task_id
+
+
+def create_tagging_task(db: sqlite3.Connection, user: sqlite3.Row, resource_id: int, version_id: int | None = None) -> int:
+    validate_resource_for_start(db, user, resource_id, version_id)
+    connection = default_connection_row(db)
+    task_id = _insert_tagging_task(db, user, connection, resource_id, version_id)
+    db.commit()
     schedule_tagging_task(task_id)
     return task_id
 
 
-def apply_tagging_result(db: sqlite3.Connection, user: sqlite3.Row, task_id: int, selected_tags: list[str]) -> dict[str, Any]:
+def create_tagging_tasks(
+    db: sqlite3.Connection,
+    user: sqlite3.Row,
+    resource_ids: list[int],
+) -> list[dict[str, int]]:
+    ids = list(dict.fromkeys(int(resource_id) for resource_id in resource_ids))
+    if not ids:
+        raise ValueError("请选择至少一个素材")
+    if len(ids) > 1000:
+        raise ValueError("单次最多识别 1000 个素材")
+    for resource_id in ids:
+        validate_resource_for_start(db, user, resource_id)
+    connection = default_connection_row(db)
+    task_items = [
+        {
+            "resource_id": resource_id,
+            "task_id": _insert_tagging_task(db, user, connection, resource_id),
+        }
+        for resource_id in ids
+    ]
+    db.commit()
+    for item in task_items:
+        schedule_tagging_task(item["task_id"])
+    return task_items
+
+
+def apply_tagging_result(
+    db: sqlite3.Connection,
+    user: sqlite3.Row,
+    task_id: int,
+    selected_tags: list[str],
+    final_tags: list[str] | None = None,
+) -> dict[str, Any]:
     row = db.execute("SELECT * FROM tasks WHERE id = ? AND task_type = 'ai_tagging'", (task_id,)).fetchone()
     if row is None:
         raise LookupError("标注任务不存在")
@@ -299,7 +342,14 @@ def apply_tagging_result(db: sqlite3.Connection, user: sqlite3.Row, task_id: int
     ]
     relation_table, entity_column, cache_table = "resource_tags", "resource_id", "resources"
     existing = entity_tag_names(db, relation_table=relation_table, entity_column=entity_column, entity_id=target_id)
-    merged = list(dict.fromkeys([*existing, *selected]))
+    if final_tags is None:
+        merged = list(dict.fromkeys([*existing, *selected]))
+    else:
+        merged = validate_tag_names(final_tags)
+        unknown = [tag for tag in merged if tag not in current_definitions]
+        if unknown:
+            raise ValueError(f"标签定义不存在：{'、'.join(unknown[:5])}")
+        selected = [tag for tag in selected if tag in merged]
     set_entity_tags(db, relation_table=relation_table, entity_column=entity_column, entity_id=target_id, names=merged, cache_table=cache_table, created_by=int(user["id"]))
     result.update({"tags_applied": True, "applied_tags": selected, "final_tags": merged})
     db.execute("UPDATE tasks SET result_data = ?, updated_at = ? WHERE id = ?", (_safe_json(result), now_iso(), task_id))

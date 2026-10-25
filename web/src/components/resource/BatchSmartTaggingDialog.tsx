@@ -3,10 +3,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, ArrowRight, Check, ImageUp, Loader2, RotateCcw, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { TagInput } from "@/components/resource/TagInput";
 import { api } from "@/lib/api";
 import { parseTags, type Resource } from "@/lib/types";
 
@@ -25,10 +25,16 @@ interface TaggingTask {
   result_data?: TaggingResult;
 }
 
+interface BatchTaggingResponse {
+  tasks: Array<{ resource_id: number; task_id: number }>;
+  status: string;
+}
+
 interface ItemState {
   taskId?: number;
   status: "idle" | "starting" | "processing" | "failed" | "applied";
   selected: string[];
+  tags?: string[];
   error?: string;
 }
 
@@ -48,7 +54,7 @@ export function BatchSmartTaggingDialog({ open, onOpenChange, resourceIds, resou
   const [activeIndex, setActiveIndex] = React.useState(0);
   const [consented, setConsented] = React.useState(false);
   const [items, setItems] = React.useState<Record<number, ItemState>>({});
-  const startedIds = React.useRef(new Set<number>());
+  const batchStarted = React.useRef(false);
   const cachedResources = React.useMemo(() => new Map(resources.map((resource) => [resource.id, resource])), [resources]);
   const activeId = resourceIds[activeIndex];
   const activeState = activeId ? items[activeId] ?? EMPTY_ITEM : EMPTY_ITEM;
@@ -58,7 +64,7 @@ export function BatchSmartTaggingDialog({ open, onOpenChange, resourceIds, resou
     setActiveIndex(0);
     setConsented(false);
     setItems({});
-    startedIds.current.clear();
+    batchStarted.current = false;
   }, [open, idsKey]);
 
   const resourceQuery = useQuery({
@@ -73,25 +79,45 @@ export function BatchSmartTaggingDialog({ open, onOpenChange, resourceIds, resou
   });
   const resource = resourceQuery.data;
 
-  const startMutation = useMutation({
-    mutationFn: (target: Resource) => api<{ task_id: number }>(`/api/ai-tagging/resources/${target.id}`, {
-      method: "POST",
-      params: target.current?.id ? { version_id: target.current.id } : undefined,
-    }),
-    onSuccess: (result, target) => {
-      setItems((current) => ({ ...current, [target.id]: { ...(current[target.id] ?? EMPTY_ITEM), taskId: result.task_id, status: "processing" } }));
-    },
-    onError: (error: Error, target) => {
-      setItems((current) => ({ ...current, [target.id]: { ...(current[target.id] ?? EMPTY_ITEM), status: "failed", error: error.message || "无法开始智能识别" } }));
-    },
-  });
+  const startTasks = React.useCallback(async (ids: number[]) => {
+    if (!ids.length) return;
+    setItems((current) => {
+      const next = { ...current };
+      for (const id of ids) next[id] = { ...(next[id] ?? EMPTY_ITEM), status: "starting", error: undefined };
+      return next;
+    });
+    try {
+      const result = await api<BatchTaggingResponse>("/api/ai-tagging/resources/batch", {
+        method: "POST",
+        json: { resource_ids: ids },
+      });
+      const taskIds = new Map(result.tasks.map((item) => [item.resource_id, item.task_id]));
+      setItems((current) => {
+        const next = { ...current };
+        for (const id of ids) {
+          const taskId = taskIds.get(id);
+          next[id] = taskId
+            ? { ...(next[id] ?? EMPTY_ITEM), taskId, status: "processing", error: undefined }
+            : { ...(next[id] ?? EMPTY_ITEM), status: "failed", error: "任务创建结果缺少当前素材" };
+        }
+        return next;
+      });
+    } catch (error) {
+      setItems((current) => {
+        const next = { ...current };
+        for (const id of ids) {
+          next[id] = { ...(next[id] ?? EMPTY_ITEM), status: "failed", error: (error as Error).message || "无法开始智能识别" };
+        }
+        return next;
+      });
+    }
+  }, []);
 
   React.useEffect(() => {
-    if (!open || !consented || !resource || activeState.taskId || activeState.status !== "idle" || startedIds.current.has(resource.id)) return;
-    startedIds.current.add(resource.id);
-    setItems((current) => ({ ...current, [resource.id]: { ...(current[resource.id] ?? EMPTY_ITEM), status: "starting" } }));
-    startMutation.mutate(resource);
-  }, [open, consented, resource, activeState.status, activeState.taskId, startMutation.mutate]);
+    if (!open || !consented || batchStarted.current) return;
+    batchStarted.current = true;
+    void startTasks(resourceIds);
+  }, [open, consented, resourceIds, idsKey, startTasks]);
 
   const taskQuery = useQuery({
     queryKey: ["ai-tagging-task", activeState.taskId],
@@ -104,14 +130,17 @@ export function BatchSmartTaggingDialog({ open, onOpenChange, resourceIds, resou
   });
   const task = taskQuery.data;
   const suggestions = task?.result_data?.suggested_tags ?? [];
-  const existingTags = task?.result_data?.existing_tags ?? (resource ? parseTags(resource.tags) : []);
+  const existingTags = activeState.tags ?? task?.result_data?.existing_tags ?? (resource ? parseTags(resource.tags) : []);
   const taskRunning = !!activeState.taskId && (!task || ["pending", "processing"].includes(task.status));
   const taskFailed = activeState.status === "failed" || task?.status === "failed";
   const taskCompleted = task?.status === "completed";
   const isApplied = activeState.status === "applied" || task?.result_data?.tags_applied === true;
 
   const applyMutation = useMutation({
-    mutationFn: () => api(`/api/ai-tagging/tasks/${activeState.taskId}/apply`, { method: "POST", json: { tags: activeState.selected } }),
+    mutationFn: () => api(`/api/ai-tagging/tasks/${activeState.taskId}/apply`, {
+      method: "POST",
+      json: { tags: activeState.selected, final_tags: Array.from(new Set([...existingTags, ...activeState.selected])) },
+    }),
     onSuccess: () => {
       if (activeId) setItems((current) => ({ ...current, [activeId]: { ...(current[activeId] ?? EMPTY_ITEM), status: "applied" } }));
       void queryClient.invalidateQueries({ queryKey: ["resources"] });
@@ -136,11 +165,31 @@ export function BatchSmartTaggingDialog({ open, onOpenChange, resourceIds, resou
     });
   };
 
+  const setExistingTags = (tags: string[]) => {
+    if (!activeId || isApplied) return;
+    setItems((current) => ({
+      ...current,
+      [activeId]: {
+        ...(current[activeId] ?? EMPTY_ITEM),
+        tags: Array.from(new Set(tags)),
+        selected: (current[activeId] ?? EMPTY_ITEM).selected.filter((tag) => existingTags.includes(tag) ? tags.includes(tag) : true),
+      },
+    }));
+  };
+
+  const setAllSuggestions = (selected: boolean) => {
+    if (!activeId || isApplied) return;
+    setItems((current) => ({
+      ...current,
+      [activeId]: { ...(current[activeId] ?? EMPTY_ITEM), selected: selected ? [...suggestions] : [] },
+    }));
+  };
+
   const retry = () => {
     if (!activeId) return;
-    startedIds.current.delete(activeId);
     setItems((current) => ({ ...current, [activeId]: { status: "idle", selected: [] } }));
     void queryClient.invalidateQueries({ queryKey: ["ai-tagging-task"] });
+    void startTasks([activeId]);
   };
 
   const goPrevious = () => setActiveIndex((index) => Math.max(0, index - 1));
@@ -151,7 +200,7 @@ export function BatchSmartTaggingDialog({ open, onOpenChange, resourceIds, resou
       <DialogContent className="max-w-5xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2"><Sparkles className="h-4 w-4 text-primary" />批量智能识别</DialogTitle>
-          <DialogDescription>{resourceIds.length ? `第 ${activeIndex + 1} / ${resourceIds.length} 项${resource ? ` · ${resource.name}` : ""}` : "没有选中的素材"}</DialogDescription>
+          <DialogDescription>{resourceIds.length ? `第 ${activeIndex + 1} / ${resourceIds.length} 项${resource ? ` · ${resource.name}` : ""}${consented ? ` · 已启动 ${resourceIds.length} 个后台识别任务` : ""}` : "没有选中的素材"}</DialogDescription>
         </DialogHeader>
 
         {!consented ? (
@@ -176,11 +225,14 @@ export function BatchSmartTaggingDialog({ open, onOpenChange, resourceIds, resou
                 <p className="mt-1 text-xs text-muted-foreground">版本 {resource.current_version} · ID {resource.id}</p>
               </div>
               <div className="space-y-2">
-                <p className="text-xs font-medium text-muted-foreground">已有标签</p>
-                {existingTags.length ? <div className="flex flex-wrap gap-1.5">{existingTags.map((tag) => <Badge key={tag} variant="outline">{tag}</Badge>)}</div> : <p className="text-xs text-muted-foreground">暂无标签</p>}
+                <p className="text-xs font-medium text-muted-foreground">已有标签（可编辑）</p>
+                <TagInput value={existingTags} onChange={setExistingTags} allowCustom={false} suggestions={suggestions} disabled={isApplied} placeholder="搜索或补充系统分类标签…" />
               </div>
               <div className="min-h-0 flex-1 space-y-2 overflow-auto">
-                <p className="text-xs font-medium text-muted-foreground">模型建议</p>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-medium text-muted-foreground">模型建议</p>
+                  {taskCompleted && suggestions.length > 0 && !isApplied && <div className="flex items-center gap-1"><Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setAllSuggestions(true)}>全选</Button><Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setAllSuggestions(false)}>取消全选</Button></div>}
+                </div>
                 {taskRunning || activeState.status === "starting" ? <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />{task?.message || "正在分析图片…"}</div> : taskFailed ? <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{activeState.error || task?.error_message || "智能识别失败"}</div> : taskCompleted && suggestions.length ? <div className="grid gap-2">{suggestions.map((tag) => <label key={tag} className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm ${isApplied ? "opacity-70" : "cursor-pointer hover:bg-muted/50"}`}><Checkbox checked={activeState.selected.includes(tag) || (isApplied && (task.result_data?.applied_tags ?? []).includes(tag))} disabled={isApplied} onCheckedChange={(checked) => setSelected(tag, checked === true)} /><span className="min-w-0 flex-1 break-words">{tag}</span>{existingTags.includes(tag) && <span className="text-[11px] text-muted-foreground">已有</span>}</label>)}</div> : taskCompleted ? <div className="rounded-md border border-dashed px-3 py-7 text-center text-sm text-muted-foreground">模型没有找到合适的系统分类标签</div> : consented && activeState.status === "idle" ? <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />准备识别…</div> : <p className="py-8 text-sm text-muted-foreground">等待识别</p>}
               </div>
               {isApplied && <p className="text-xs text-emerald-700 dark:text-emerald-400">本页已确认，写入的标签已追加到素材。</p>}
