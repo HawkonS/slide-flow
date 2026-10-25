@@ -30,7 +30,7 @@ export function ResourceListView({
 }: ResourceListViewProps) {
   return (
     <div className="surface overflow-hidden">
-      <Table className="min-w-[980px]">
+      <Table className="min-w-[900px]">
         <TableHeader>
           <TableRow>
             <TableHead className="w-10">
@@ -41,9 +41,9 @@ export function ResourceListView({
               />
             </TableHead>
             <TableHead className="w-20">预览</TableHead>
-            <TableHead>名称</TableHead>
+            <TableHead className="w-[calc(20em+1rem)]">名称</TableHead>
             <TableHead className="w-28">主体</TableHead>
-            <TableHead className="w-48">标签</TableHead>
+            <TableHead>标签</TableHead>
             <TableHead className="w-20">状态</TableHead>
             <TableHead className="w-24">更新时间</TableHead>
             <TableHead className="w-12"><span className="sr-only">操作</span></TableHead>
@@ -81,7 +81,7 @@ export function ResourceListView({
                 </TableCell>
                 <TableCell className="text-muted-foreground"><TableText text={resource.subject || DEFAULT_RESOURCE_SUBJECT} /></TableCell>
                 <TableCell>
-                  <TableTags tags={tags} />
+                  <TableTags tags={tags} fitToWidth />
                 </TableCell>
                 <TableCell><Badge variant="outline" className="max-w-full text-[11px]"><TableText text={resource.status} /></Badge></TableCell>
                 <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{new Date(resource.updated_at).toLocaleDateString("zh-CN")}</TableCell>
