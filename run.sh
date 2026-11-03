@@ -38,6 +38,23 @@ log_error() { echo -e "${RED}${PREFIX}${NC} $*"; }
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
+# deploy/nginx/slide-flow.conf uses this directory for large multipart request
+# bodies. Nginx can fail before FastAPI sees the request when its default body
+# directory is missing or owned by another user, so prepare and validate the
+# directory at the same time as the local service.
+NGINX_BODY_TEMP_DIR="/tmp/slide-flow-client-body"
+prepare_nginx_body_temp_dir() {
+  if ! mkdir -p "$NGINX_BODY_TEMP_DIR" || ! chmod 1777 "$NGINX_BODY_TEMP_DIR"; then
+    log_error "无法准备 Nginx 上传临时目录: $NGINX_BODY_TEMP_DIR"
+    log_error "请确认当前用户有权创建并设置该目录权限，并检查 Nginx 配置是否使用同一路径"
+    return 1
+  fi
+  if [ ! -d "$NGINX_BODY_TEMP_DIR" ] || [ ! -w "$NGINX_BODY_TEMP_DIR" ]; then
+    log_error "Nginx 上传临时目录不可写: $NGINX_BODY_TEMP_DIR"
+    return 1
+  fi
+}
+
 # ===========================================================
 # 运行模式解析：默认生产模式，--dev 或 SLIDEFLOW_DEV=1 进入开发模式
 # ===========================================================
@@ -677,6 +694,7 @@ if [ ! -w "$LOG_DIR" ]; then
   log_error "日志目录不可写: $LOG_DIR"
   exit 1
 fi
+prepare_nginx_body_temp_dir || exit 1
 BACKEND_LOG="$LOG_DIR/server.log"
 FRONTEND_LOG="$LOG_DIR/web.log"
 

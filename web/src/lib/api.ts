@@ -10,7 +10,7 @@ export class ApiError extends Error {
   }
 }
 
-/** Only fetch transport failures receive this type; JSON/application errors do not. */
+/** Transport failures receive this type; JSON/application errors do not. */
 export class ApiTransportError extends TypeError {
   constructor(message: string) { super(message); this.name = "ApiTransportError"; }
 }
@@ -44,6 +44,31 @@ export function responseErrorMessage(status: number, data?: unknown): string {
     return fields.length ? `请检查${fields.slice(0, 3).join("、")}的填写内容和长度` : defaultMessage;
   }
   return defaultMessage;
+}
+
+const UPLOAD_TASK_CHECK_MESSAGE = "请先到任务管理确认是否已有上传任务，确认没有后再重试";
+
+/**
+ * Keep upload failures actionable without implying that every server error
+ * created a task. A request can be lost before it reaches the application
+ * (for example, while a reverse proxy is writing its request body).
+ */
+export function uploadErrorMessage(error: unknown): string {
+  if (error instanceof ApiTransportError) {
+    return `上传连接已中断，请检查网络、VPN 或代理后重试。${UPLOAD_TASK_CHECK_MESSAGE}`;
+  }
+  if (error instanceof ApiError) {
+    if (error.status === 0) {
+      return error.message === "上传已取消"
+        ? error.message
+        : `上传连接已中断，请检查网络、VPN 或代理后重试。${UPLOAD_TASK_CHECK_MESSAGE}`;
+    }
+    if (error.status >= 500) {
+      return `服务器暂时无法处理上传，请稍后重试。${UPLOAD_TASK_CHECK_MESSAGE}`;
+    }
+    return error.message || "上传任务创建失败";
+  }
+  return error instanceof Error && error.message ? error.message : "上传任务创建失败，请稍后重试";
 }
 
 export interface FetchOptions extends RequestInit {
@@ -366,10 +391,17 @@ export function apiUploadWithProgress<T = unknown>(
       reject(new ApiError(xhr.status, detail, data));
     };
 
-    xhr.onerror = () => reject(new ApiError(0, "网络错误，上传失败"));
+    xhr.onerror = () => reject(new ApiTransportError("上传连接已中断"));
+    xhr.ontimeout = () => reject(new ApiTransportError("上传请求超时"));
     xhr.onabort = () => reject(new ApiError(0, "上传已取消"));
 
-    xhr.send(form);
+    try {
+      xhr.send(form);
+    } catch (error) {
+      // Browser send() failures are transport errors too; do not expose
+      // implementation-specific DOMException text in the upload dialog.
+      reject(new ApiTransportError("上传连接已中断"));
+    }
   });
 }
 

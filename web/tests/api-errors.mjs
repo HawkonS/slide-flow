@@ -4,7 +4,7 @@ import test from 'node:test';
 import ts from 'typescript';
 const source = await readFile(new URL('../src/lib/api.ts', import.meta.url), 'utf8');
 const js = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
-const { api, apiWithTimeout, downloadFile, responseErrorMessage, ApiTransportError, advanceApiSession, setUnauthorizedHandler } = await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'));
+const { api, apiWithTimeout, apiUploadWithProgress, downloadFile, responseErrorMessage, uploadErrorMessage, ApiError, ApiTransportError, advanceApiSession, setUnauthorizedHandler } = await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'));
 
 test('validation messages describe fields without echoing rejected secrets or internal errors', () => {
   const detail = [{ loc: ['body', 'password'], input: 'secret-password', msg: 'secret-password failed' }];
@@ -20,6 +20,40 @@ test('transport failures stay distinguishable from application failures', async 
   await assert.rejects(api('/api/me'), error => error instanceof ApiTransportError && error.message.includes('检查网络'));
   globalThis.fetch = async () => new Response('Internal Server Error', { status: 500 });
   await assert.rejects(api('/api/shows'), error => !(error instanceof ApiTransportError) && !error.message.includes('Internal'));
+});
+
+test('upload failures distinguish a broken connection from a server response', async t => {
+  const originalXhr = globalThis.XMLHttpRequest;
+  class FakeXHR {
+    static mode = 'error';
+    upload = {};
+    status = FakeXHR.mode === 'server' ? 500 : 0;
+    responseText = FakeXHR.mode === 'server' ? '{"detail":"internal details"}' : '';
+    open() {}
+    getResponseHeader(name) { return name.toLowerCase() === 'content-type' ? 'application/json' : null; }
+    send() {
+      queueMicrotask(() => {
+        if (FakeXHR.mode === 'server') this.onload?.();
+        else this.onerror?.();
+      });
+    }
+  }
+  globalThis.XMLHttpRequest = FakeXHR;
+  t.after(() => { globalThis.XMLHttpRequest = originalXhr; });
+
+  await assert.rejects(
+    apiUploadWithProgress('/api/tasks/split-import', new FormData()),
+    error => error instanceof ApiTransportError && uploadErrorMessage(error).startsWith('上传连接已中断')
+      && uploadErrorMessage(error).includes('任务管理'),
+  );
+
+  FakeXHR.mode = 'server';
+  await assert.rejects(
+    apiUploadWithProgress('/api/tasks/split-import', new FormData()),
+    error => error instanceof ApiError && error.status === 500
+      && uploadErrorMessage(error).startsWith('服务器暂时无法处理上传')
+      && !uploadErrorMessage(error).includes('可能已经创建'),
+  );
 });
 
 test('late unauthorized response cannot log out a newer session', async t => {

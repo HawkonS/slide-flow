@@ -19,7 +19,7 @@ import {
   TEMPLATE_TYPE_OPTIONS,
   VISIBILITY_SCOPE_OPTIONS,
 } from "@/lib/constants";
-import { ApiError, api, apiNdjson, apiUploadWithProgress } from "@/lib/api";
+import { ApiError, api, apiNdjson, apiUploadWithProgress, uploadErrorMessage } from "@/lib/api";
 import { setAutomaticReloadBlocked } from "@/lib/deployment-recovery";
 import { parsePreviewRenderEvent } from "@/lib/resourceImportStream";
 import { releaseImportSession, rememberPendingImport, forgetPendingImport } from "@/lib/resourceImportLifecycle";
@@ -352,10 +352,7 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, ownerId, taskId:
       if (!mountedRef.current) return;
       taskOwnedRef.current = true; autoNavigateRef.current = false; setTaskId(result.task_id); onTaskCreated?.(result.task_id); sessionRef.current = result.session_id; setSessionId(result.session_id); setStep("fonts"); toast.success("上传任务已创建，后台正在处理");
     } catch (error) {
-      const uncertain = !(error instanceof ApiError) || error.status === 0 || error.status >= 500;
-      const message = uncertain
-        ? "上传连接中断，任务可能已经创建或仍在处理中，请先到任务管理核对，不要重复上传"
-        : (error as Error).message || "上传任务创建失败";
+      const message = uploadErrorMessage(error);
       setTaskError(message);
       toast.error(message);
     }
