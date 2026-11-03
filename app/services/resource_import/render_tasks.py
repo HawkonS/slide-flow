@@ -474,6 +474,7 @@ def create_render_task(session: dict[str, Any]) -> sqlite3.Row:
             })
         manifest = {
             "version": 1,
+            "font_policy": 1,
             "session_id": session["session_id"],
             "render_attempt": attempt,
             "dpi": int(settings.render_dpi),
@@ -781,7 +782,7 @@ def _recover_completed_session(row: sqlite3.Row, session: dict[str, Any]) -> boo
         return False
 
 
-def claim_render_task(db: sqlite3.Connection, worker_id: str) -> tuple[sqlite3.Row, str] | None:
+def claim_render_task(db: sqlite3.Connection, worker_id: str, *, font_policy: int = 0) -> tuple[sqlite3.Row, str] | None:
     """Atomically reclaim an expired lease or claim one queued task."""
     now = time.time()
     db.execute("BEGIN IMMEDIATE")
@@ -826,9 +827,10 @@ def claim_render_task(db: sqlite3.Connection, worker_id: str) -> tuple[sqlite3.R
             )
         row = db.execute(
             "SELECT * FROM renderer_ppt_tasks WHERE "
-            "status='queued' OR (status='running' AND lease_until<? AND attempts<?) "
+            "(status='queued' OR (status='running' AND lease_until<? AND attempts<?)) "
+            "AND COALESCE(json_extract(source_manifest, '$.font_policy'), 0)<=? "
             "ORDER BY created_at, task_id LIMIT 1",
-            (now, MAX_ATTEMPTS),
+            (now, MAX_ATTEMPTS, font_policy),
         ).fetchone()
         token = None
         if row is not None:
@@ -918,6 +920,7 @@ def claim_payload(row: sqlite3.Row, lease_token: str) -> dict[str, Any]:
         "required_fonts": manifest.get("required_fonts", []),
         "font_hashes": manifest.get("font_hashes", []),
         "font_bindings": manifest.get("font_bindings", []),
+        "font_policy": manifest.get("font_policy", 0),
     }
     source = manifest.get("source")
     if isinstance(source, dict):

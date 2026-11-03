@@ -145,6 +145,7 @@ class ServiceTests(unittest.TestCase):
         with self.client() as client:
             health = client.get("/v1/health", headers=self.headers()).json()
         self.assertEqual(health["version"], 2)
+        self.assertEqual(health["font_policy"], 1)
         self.assertEqual(health["max_batch_pages"], self.settings.max_batch_pages)
         self.assertEqual(health["max_source_slides"], self.settings.max_source_slides)
 
@@ -164,6 +165,51 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(final["status"], "completed", final)
             self.assertEqual([page["index"] for page in final["pages"]], [0, 1, 2])
             self.assertEqual(calls, ["1,2,3"])
+
+    def test_both_protocols_normalize_job_inputs_before_conversion_and_keep_upload_intact(self):
+        class NativeFonts(FakeFonts):
+            @contextmanager
+            def activate(self, directory, manifest):
+                yield {"English Alias": "本机字体"}
+
+        xml = ('<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+               'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+               '<a:r><a:rPr b="1"><a:ea typeface="English Alias"/></a:rPr>'
+               '<a:t>English Alias</a:t></a:r></p:sld>')
+        data = pptx({"ppt/slides/slide1.xml": xml})
+        original = Path(self.temp.name) / "original.pptx"
+        original.write_bytes(data)
+        calls = []
+
+        def convert(*args):
+            with zipfile.ZipFile(args[1]) as archive:
+                self.assertEqual(archive.read("ppt/slides/slide1.xml").decode(),
+                                 xml.replace('typeface="English Alias"', 'typeface="本机字体"'))
+            calls.append(args[1])
+            return batch_converter(*args)
+
+        for version in (1, 2):
+            with self.subTest(version=version):
+                meta = {"file": "pages/0.pptx" if version == 1 else "source/deck.pptx",
+                        "sha256": hashlib.sha256(data).hexdigest()}
+                manifest = {"version": version, "dpi": 150, "required_fonts": [], "fonts": []}
+                if version == 1:
+                    manifest["pages"] = [{"index": 0, **meta}]
+                else:
+                    manifest.update(source={**meta, "slide_count": 1}, pages=[{"index": 0, "slide": 1}])
+                stream = io.BytesIO()
+                with zipfile.ZipFile(stream, "w") as archive:
+                    archive.writestr("manifest.json", json.dumps(manifest))
+                    archive.writestr(meta["file"], data)
+                with self.client(convert, NativeFonts()) as client:
+                    response = client.post("/v1/jobs", content=stream.getvalue(),
+                                           headers=self.headers(f"normalize-protocol-{version}-0001"))
+                    self.assertEqual(response.status_code, 202, response.text)
+                    self.assertEqual(self.wait(client, response.json()["id"])["status"], "completed")
+                self.assertEqual(original.read_bytes(), data)
+                with zipfile.ZipFile(io.BytesIO(stream.getvalue())) as archive:
+                    self.assertEqual(archive.read(meta["file"]), data)
+        self.assertEqual(len(calls), 2)
 
     def test_multi_page_source_rejects_declared_slide_count_mismatch(self):
         with self.client(batch_converter) as client:

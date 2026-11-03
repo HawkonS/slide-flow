@@ -130,6 +130,9 @@ Renderer 固定监听 `127.0.0.1`，仅由同机 Pull Worker 访问；主程序�
 - `Update.ps1`/`Upgrade.ps1` 会发现并暂停所有受管的生产与开发 Pull Worker，升级或回滚后恢复各自原有的启用和运行状态；不会重新注册或覆盖任一环境的 URL、token、配置路径和队列目录。所有 Worker 的 Python 代码入口统一指向原子切换后的 `current` release，避免开发任务继续导入旧的 `dev-code`。
 - 字体安装和卸载任务也使用 10 分钟租约与最多 5 次领取；旧 Worker 的过期回报不能覆盖新租约。字体文件按 SHA-256 命名，避免相同原文件名互相覆盖；主程序删除标准字体后会排队清理对应内容寻址副本。
 - 主程序在创建 PPT 渲染任务时固定本次所需字体名称与 SHA-256 清单。Pull Worker 把该清单转交本机 Renderer，由 Renderer 在 WPSCLI 子进程所在会话注册这些字体；仅把字体文件放进用户字体目录并不等于后台会话已可见。
+- Renderer 将显示别名、中英文名和 PostScript 名解析到 SHA-256 对应的具体字重。在启动 WPS 前，通过 GDI 读取实际选中字体的原始 name/head 表核验文件，再使用 `GetTextFaceW` 返回的本机字体名改写任务副本里的字体引用（含主题、母版和布局）；原始上传文件、文字、粗斜体和几何不变。WPS 对别名的支持与 GDI 不同：例如普惠体 3.0 英文名在 GDI 可选中，WPS 仍可能回退，必须使用节点实际的本机名称。
+- 名称对应多个字重/版本、字体文件不可见或实际选中回退字体时，会明确失败并保留可排查的日志，避免以字体预检通过代替实际字体选用。共享 family 的 Regular/Bold/Italic 保留样式联动；包含不同 Windows family 的集合字体必须使用明确的 face 名。
+- 字体名称修复需要同时升级主程序、Windows Renderer 和 Render Pull。`/v1/health` 的 `font_policy: 1` 表示支持本机名称解析与校验；Pull 仅向主程序声明本机 Renderer 的实际能力，新渲染任务不会发给不支持的旧节点。升级后需重新生成已错误的图片，主程序已提升渲染版本以避免复用旧结果。
 - 协议 v2 为完整源文件申请一次短时 OSS 下载 URL，输出仍在上传每页 PNG 前刷新签名 URL；协议 v1 保持逐页申请下载 URL。Worker 不保存 OSS AccessKey。
 - WPSCLI 本身不是长驻共享进程。Windows Worker 为每个批次启动一个受 Job Object 管理的 CLI 子进程，完成、取消或超时后确认整个进程树退出并释放临时字体，再处理下一批；逐页回退等价于批次大小为 1，绝不按进程名终止其他用户的 WPS。
 - 多个 Windows Worker 可以竞争领取，但 SQLite 原子事务保证一个租约只发给一个 Worker；每台 Windows 本机 Renderer 仍固定一个 WPS 转换 worker。

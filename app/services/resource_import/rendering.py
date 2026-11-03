@@ -6,7 +6,7 @@ from app.core.resource_import_fonts import replace_ppt_fonts
 
 # The split output is part of the immutable render attempt. Bump this when
 # package-level cleanup changes so old sessions cannot commit stale page files.
-RESOURCE_IMPORT_RENDERER_VERSION = "wps-pull-v4-batched"
+RESOURCE_IMPORT_RENDERER_VERSION = "wps-pull-v5-font-names"
 IMPORT_EXTENSIONS = {".pptx", ".potx", ".ppsx"}
 
 

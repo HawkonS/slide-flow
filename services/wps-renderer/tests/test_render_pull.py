@@ -23,6 +23,23 @@ TOKEN = "test-only-" + "x" * 40
 
 
 class RenderPullTests(unittest.TestCase):
+    def test_claim_advertises_only_local_renderer_font_capability(self):
+        for health, expected in (({}, 0), ({"font_policy": 1}, 1)):
+            with self.subTest(health=health), tempfile.TemporaryDirectory() as root:
+                worker = RenderPull(self.config(root))
+                with patch.object(worker, "_renderer", return_value=health), patch.object(worker, "_main", return_value={"task": None}) as main:
+                    self.assertIsNone(worker.claim())
+                self.assertIn("font_policy=" + str(expected), main.call_args.args[1])
+
+    def test_upgrade_required_stops_before_download_and_conversion(self):
+        with tempfile.TemporaryDirectory() as root:
+            worker, task, events, _, _ = self.incremental_worker(root)
+            task["font_policy"] = 1
+            with patch.object(worker, "_download") as download:
+                worker.process(task)
+            download.assert_not_called()
+            self.assertEqual(events, [("failed", "renderer_upgrade_required")])
+
     def config(self, root):
         return {
             "url": "http://127.0.0.1:18088",

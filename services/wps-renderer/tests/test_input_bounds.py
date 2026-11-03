@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from wps_renderer.errors import RenderError
 from wps_renderer.fonts import FontManager, font_metadata
+from wps_renderer.font_faces import FontFace
 from wps_renderer.office_xml import validate_xml
 from wps_renderer.validation import unpack_bundle
 from wps_renderer.config import Settings
@@ -71,6 +72,8 @@ class InputBoundsTests(unittest.TestCase):
         staged_path = Path("C:/staged")
         manager._paths = {sha: installed_path}
         manager._faces = {"internal sans": {sha}}
+        manager._profiles = {sha: (FontFace(0, frozenset({"internalsans"}), frozenset({"internalsans"}),
+                                          frozenset({"internalsans"}), "Internal Sans", "Internal Sans", 400, False, ()),)}
         manifest = {
             "required_fonts": ["Friendly Display Name"],
             "font_hashes": [sha],
@@ -79,11 +82,11 @@ class InputBoundsTests(unittest.TestCase):
         }
         with patch("wps_renderer.fonts.os.name", "nt"), patch.object(
             manager, "installed", return_value={"internal sans": {sha}},
-        ), patch("wps_renderer.fonts.ctypes.WinDLL", create=True) as win_dll:
+        ), patch("wps_renderer.fonts.ctypes.WinDLL", create=True) as win_dll, patch("wps_renderer.fonts.verify_font", return_value=True):
             win_dll.return_value.AddFontResourceExW.return_value = 1
             win_dll.return_value.RemoveFontResourceExW.return_value = 1
-            with manager.activate(staged_path, manifest):
-                pass
+            with manager.activate(staged_path, manifest) as replacements:
+                self.assertEqual(replacements, {"Friendly Display Name": "Internal Sans"})
 
     def test_font_activation_rejects_unbound_display_alias(self):
         manager = FontManager()

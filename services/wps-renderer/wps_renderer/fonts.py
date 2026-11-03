@@ -1,5 +1,6 @@
 """Temporary session-visible fonts; never overwrite or uninstall system fonts."""
 import ctypes
+import logging
 import os
 import threading
 import time
@@ -10,14 +11,14 @@ from fontTools.ttLib import TTCollection, TTFont
 
 from .errors import RenderError
 from .font_validation import preflight_font
+from .font_faces import canonical_typefaces, describe_face, normalized, resolve_faces
 from .validation import digest
+from .windows_fonts import verify_font
+
+LOG = logging.getLogger(__name__)
 
 
-def normalized(value):
-    return " ".join(value.lstrip("@").split()).casefold()
-
-
-def font_metadata(path):
+def font_details(path):
     fonts = []
     try:
         preflight_font(path)
@@ -28,28 +29,28 @@ def font_metadata(path):
             fonts = [TTFont(str(path), lazy=True)]
         if not 1 <= len(fonts) <= 64:
             raise ValueError("Invalid collection size")
-        names, faces = set(), set()
-        for font in fonts:
+        profiles = []
+        for index, font in enumerate(fonts):
             # Require genuine scalable fonts, not a filename pretending to be one.
             if "name" not in font or "head" not in font or "maxp" not in font:
                 raise ValueError("Missing mandatory font tables")
-            for record in font["name"].names:
-                if record.nameID in {1, 4, 6, 16}:
-                    name = record.toUnicode().strip()
-                    if name and len(name) <= 256:
-                        names.add(normalized(name))
-                        if record.nameID in {4, 6}:
-                            faces.add(normalized(name))
+            profiles.append(describe_face(font, index))
+        names = set().union(*(face.names for face in profiles))
+        faces = set().union(*(face.full_names for face in profiles))
         if not names:
             raise ValueError("Font has no names")
         if not faces:
             raise ValueError("Font has no unambiguous full/PostScript face name")
-        return names, faces
+        return names, faces, tuple(profiles)
     except Exception as exc:
         raise RenderError("invalid_font", "Invalid TTF/OTF font or font collection") from exc
     finally:
         for font in fonts:
             font.close()
+
+
+def font_metadata(path):
+    return font_details(path)[:2]
 
 
 def font_names(path):
@@ -62,6 +63,7 @@ class FontManager:
         self._cache = {}
         self._faces = {}
         self._paths = {}
+        self._profiles = {}
         self._inventory = {}
         self._scanned_at = 0.0
         self._healthy = True
@@ -94,7 +96,7 @@ class FontManager:
                                 candidates.add(path)
                 except OSError:
                     pass
-        result, face_result, paths, current_keys = {}, {}, {}, set()
+        result, face_result, paths, profiles, current_keys = {}, {}, {}, {}, set()
         with self._lock:
             for path in candidates:
                 try:
@@ -109,9 +111,11 @@ class FontManager:
                     key = (str(path), info.st_mtime_ns, info.st_ctime_ns, info.st_size)
                     current_keys.add(key)
                     if key not in self._cache:
-                        self._cache[key] = (*font_metadata(path), digest(path))
-                    names, faces, sha = self._cache[key]
+                        names, faces, details = font_details(path)
+                        self._cache[key] = (names, faces, digest(path), details)
+                    names, faces, sha, details = self._cache[key]
                     paths[sha] = path
+                    profiles[sha] = details
                     for name in names:
                         result.setdefault(name, set()).add(sha)
                     for face in faces:
@@ -121,6 +125,7 @@ class FontManager:
             self._cache = {k: v for k, v in self._cache.items() if k in current_keys}
             self._faces = face_result
             self._paths = paths
+            self._profiles = profiles
             self._inventory = result
             self._scanned_at = time.monotonic()
         return result
@@ -149,6 +154,7 @@ class FontManager:
         with self._lock:
             installed = self.installed(force=True)
             installed_faces, installed_paths = self._faces, self._paths
+            profiles = dict(self._profiles)
         available = set(installed)
         supplied = {}
         # HKCU font files can exist without being loaded in the scheduled/SSH
@@ -163,18 +169,17 @@ class FontManager:
                 raise RenderError("fonts_missing", "A checked font disappeared or changed while queueing")
             pending = {sha:path for sha,path in installed_paths.items() if sha in wanted}
             available = {name for name, hashes in installed.items() if hashes & wanted}
-            # The main service owns user-facing aliases and freezes each alias
-            # to an exact synchronized file hash when it queues the task. The
-            # Windows inventory only knows names embedded in the font binary,
-            # so accept a custom/display alias only through that explicit,
-            # hash-bound handoff. Unbound names still fail below.
+            # Bindings authorize aliases, but do not teach Windows/WPS a new
+            # name. Resolve them to concrete faces and rewrite render inputs
+            # only after actual selection has been verified below.
             for binding in manifest.get("font_bindings", []):
                 if binding["sha256"] in wanted:
                     available.add(normalized(binding["name"]))
         for entry in manifest.get("fonts", []):
             path = directory / entry["file"]
-            names, faces = font_metadata(path)
+            names, faces, details = font_details(path)
             sha = entry["sha256"]
+            profiles[sha] = details
             for face in faces:
                 previous = supplied.get(face)
                 if previous and previous != sha:
@@ -188,6 +193,8 @@ class FontManager:
         missing = [name for name in manifest.get("required_fonts", []) if normalized(name) not in available]
         if missing:
             raise RenderError("fonts_missing", "Required fonts are missing: " + ", ".join(missing[:12]))
+        requested_profiles = {sha: profiles[sha] for sha in pending if sha in profiles}
+        resolved = resolve_faces(manifest.get("required_fonts", []), manifest.get("font_bindings", []), requested_profiles)
         for hashes in installed_faces.values():
             if hashes & pending.keys() and len(hashes) > 1:
                 raise RenderError("font_conflict", "Windows contains ambiguous versions of a requested full font face")
@@ -203,7 +210,11 @@ class FontManager:
                     raise RenderError("font_install_failed", "Windows refused a temporary font")
                 active.append(path)
             self._broadcast()
-            yield
+            replacements = canonical_typefaces(resolved, verify_font)
+            for name, target in replacements.items():
+                LOG.info("Render font alias=%r target=%r files=%s", name, target,
+                         [(sha, face.index, face.weight, face.italic) for sha, face in resolved[name]])
+            yield replacements
         finally:
             failed = False
             for path in reversed(active):

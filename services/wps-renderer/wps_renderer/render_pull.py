@@ -161,7 +161,10 @@ class RenderPull:
         return self._request(self.renderer_url, method, path, body, timeout, headers, self.renderer_token)
 
     def claim(self):
-        query = urllib.parse.urlencode({"worker_id": self.worker_id, "wait_seconds": self.wait_seconds})
+        health = self._renderer("GET", "/v1/health", timeout=10)
+        policy = 1 if health.get("font_policy") == 1 else 0
+        query = urllib.parse.urlencode({"worker_id": self.worker_id, "wait_seconds": self.wait_seconds,
+                                       "font_policy": policy})
         return self._main("GET", "/api/renderer/render-tasks/claim?" + query,
                           timeout=self.wait_seconds + 10).get("task")
 
@@ -541,6 +544,7 @@ class RenderPull:
         required_fonts = task.get("required_fonts", [])
         font_hashes = task.get("font_hashes", [])
         font_bindings = task.get("font_bindings", [])
+        font_policy = task.get("font_policy", 0)
         requested_batch = task.get("batch_size", 1)
         incremental = task.get("incremental_results") is True
         first_batch = task.get("first_batch_size", 4) if incremental else requested_batch
@@ -548,6 +552,7 @@ class RenderPull:
                 or not 72 <= dpi <= 300 or type(lease_seconds) is not int or not 60 <= lease_seconds <= 3600
                 or type(requested_batch) is not int or not 1 <= requested_batch <= 50
                 or type(first_batch) is not int or not 1 <= first_batch <= 50
+                or type(font_policy) is not int or font_policy not in {0, 1}
                 or not isinstance(required_fonts, list) or len(required_fonts) > 128
                 or any(not isinstance(name, str) or not name.strip() or len(name) > 256 for name in required_fonts)
                 or len(set(required_fonts)) != len(required_fonts)
@@ -648,6 +653,8 @@ class RenderPull:
 
         LOG.info("render task %s started with %s page(s)", task_id, len(pages))
         try:
+            if font_policy and self._renderer("GET", "/v1/health", timeout=10).get("font_policy") != font_policy:
+                raise RuntimeError("renderer_upgrade_required")
             if batch_size > 1 and source_meta is not None:
                 signed_source = self._main(
                     "POST", f"/api/renderer/render-tasks/{task_id}/source-url",

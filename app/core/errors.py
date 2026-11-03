@@ -20,6 +20,9 @@ RENDERER_TIMEOUT_MESSAGE = "图片转换超时，请检查 Windows 转换节点�
 RENDERER_DISK_MESSAGE = "Windows 转换节点可用磁盘不足，清理空间后再重试"
 RENDERER_AUTH_MESSAGE = "图片转换服务鉴权失败，请联系管理员检查渲染密钥"
 RENDERER_GENERIC_MESSAGE = "图片转换失败，请检查 Windows 转换节点后重试"
+RENDERER_FONTS_MISSING_MESSAGE = "Windows 转换节点缺少本次所需字体，请检查字体同步后重新渲染"
+RENDERER_FONT_CONFLICT_MESSAGE = "字体名称对应多个字重或版本，请在标准字体库中使用明确的字体名称并重新渲染"
+RENDERER_FONT_UNAVAILABLE_MESSAGE = "Windows 转换节点无法正确选用所需字体，请检查字体名称、字体版本和运行会话后重新渲染"
 IMPORT_GENERIC_MESSAGE = "上传任务处理失败，请重试或联系管理员"
 
 PUBLIC_ERROR_MESSAGES = frozenset({
@@ -30,6 +33,9 @@ PUBLIC_ERROR_MESSAGES = frozenset({
     RENDERER_DISK_MESSAGE,
     RENDERER_AUTH_MESSAGE,
     RENDERER_GENERIC_MESSAGE,
+    RENDERER_FONTS_MISSING_MESSAGE,
+    RENDERER_FONT_CONFLICT_MESSAGE,
+    RENDERER_FONT_UNAVAILABLE_MESSAGE,
     IMPORT_GENERIC_MESSAGE,
     "Windows 转换节点多次超时，请重试",
     "Windows 转换节点多次未响应，请检查节点在线状态后重试",
@@ -38,6 +44,7 @@ PUBLIC_ERROR_MESSAGES = frozenset({
     "Windows 转换服务正在维护，请稍后重试",
     "渲染任务不存在，请重新生成图片",
     "该图片渲染任务已取消，请重新生成",
+    "Windows 转换节点版本过旧，请升级 Renderer 和 Render Pull 后重新渲染",
 })
 
 
@@ -96,6 +103,12 @@ def render_public_message(code: Any = None) -> str:
         "unauthorized": RENDERER_AUTH_MESSAGE,
         "queue_full": "Windows 渲染队列已满，请稍后重试",
         "renderer_draining": "Windows 转换服务正在维护，请稍后重试",
+        "fonts_missing": RENDERER_FONTS_MISSING_MESSAGE,
+        "font_conflict": RENDERER_FONT_CONFLICT_MESSAGE,
+        "font_unavailable": RENDERER_FONT_UNAVAILABLE_MESSAGE,
+        "font_install_failed": RENDERER_FONT_UNAVAILABLE_MESSAGE,
+        "font_cleanup_failed": RENDERER_FONT_UNAVAILABLE_MESSAGE,
+        "renderer_upgrade_required": "Windows 转换节点版本过旧，请升级 Renderer 和 Render Pull 后重新渲染",
         "internal_error": RENDERER_GENERIC_MESSAGE,
         "render_failed": RENDERER_GENERIC_MESSAGE,
     }.get(value, RENDERER_GENERIC_MESSAGE)

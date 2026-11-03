@@ -85,6 +85,19 @@ class RendererPptTaskTests(unittest.TestCase):
         self.assertIsNone(second)
         self.assertEqual(first[0]["attempts"], 1)
 
+    def test_new_font_policy_requires_capable_node_for_new_and_expired_tasks(self):
+        for status in ("queued", "running"):
+            with self.subTest(status=status):
+                self.db.execute("DELETE FROM renderer_ppt_tasks")
+                self.db.commit()
+                self.insert_task(status=status, attempts=1, lease_until=time.time() - 1)
+                self.db.execute("UPDATE renderer_ppt_tasks SET source_manifest=json_set(source_manifest, '$.font_policy', 1)")
+                self.db.commit()
+                self.assertIsNone(render_tasks.claim_render_task(self.db, "legacy-worker"))
+                claimed = render_tasks.claim_render_task(self.db, "capable-worker", font_policy=1)
+                self.assertIsNotNone(claimed)
+                self.assertEqual(render_tasks.claim_payload(*claimed)["font_policy"], 1)
+
     def test_renew_rejects_old_token(self):
         self.insert_task()
         row, token = render_tasks.claim_render_task(self.db, "worker-one")

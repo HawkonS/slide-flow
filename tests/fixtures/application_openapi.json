@@ -8707,6 +8707,18 @@
             }
           },
           {
+            "name": "font_policy",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1,
+              "minimum": 0,
+              "default": 0,
+              "title": "Font Policy"
+            }
+          },
+          {
             "name": "authorization",
             "in": "header",
             "required": false,

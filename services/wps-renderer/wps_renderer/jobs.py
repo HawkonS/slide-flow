@@ -14,6 +14,7 @@ from PIL import Image
 
 from .errors import RenderError
 from .fonts import FontManager
+from .font_xml import normalize_pptx
 from .process import convert
 from .storage import JOB_ID, Storage
 from .validation import digest, unpack_bundle
@@ -430,7 +431,13 @@ class JobManager:
         directory = self.storage.directory(job.id)
         output = directory / "output"
         output.mkdir()
-        with self.fonts.activate(directory / "input", job.manifest):
+        with self.fonts.activate(directory / "input", job.manifest) as replacements:
+            inputs = [job.manifest["source"]] if job.manifest.get("version") == 2 else job.manifest["pages"]
+            for entry in inputs:
+                if job.cancel.is_set():
+                    raise RenderError("cancelled", "Render cancelled", 409)
+                normalize_pptx(directory / "input" / entry["file"], replacements,
+                               self.settings.max_input_file_bytes, self.settings.max_expanded_bytes)
             if job.manifest.get("version") == 2:
                 self._render_source_batch(job, directory, output)
             else:

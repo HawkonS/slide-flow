@@ -69,6 +69,7 @@ def _lease_error(exc: Exception) -> HTTPException:
 async def claim(
     worker_id: str = Query(..., min_length=1, max_length=128),
     wait_seconds: int = Query(25, ge=0, le=25),
+    font_policy: int = Query(0, ge=0, le=1),
     _: None = Depends(_renderer_auth),
 ):
     if not WORKER_ID.fullmatch(worker_id):
@@ -90,7 +91,7 @@ async def claim(
         db = get_db()
         try:
             try:
-                claimed = claim_render_task(db, worker_id)
+                claimed = claim_render_task(db, worker_id, font_policy=font_policy)
                 if claimed is not None:
                     touch_renderer_worker(db, worker_id, state="running", task_id=str(claimed[0]["task_id"]))
                     db.commit()
