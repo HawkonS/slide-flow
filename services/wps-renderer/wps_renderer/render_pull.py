@@ -272,6 +272,9 @@ class RenderPull:
                 if response.status >= 400:
                     error = state.get("error") if isinstance(state, dict) else None
                     code = error.get("code") if isinstance(error, dict) else "renderer_unavailable"
+                    message = error.get("message") if isinstance(error, dict) else None
+                    if isinstance(message, str) and message:
+                        LOG.error("local renderer rejected upload: %s: %s", code, message)
                     raise RuntimeError(str(code or "renderer_unavailable"))
             finally:
                 connection.close()

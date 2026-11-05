@@ -8,6 +8,7 @@ from pathlib import Path, PurePosixPath
 
 from .errors import RenderError
 from .office_xml import validate_xml
+from .chart_cache import cached_chart_edits
 
 HASH = re.compile(r"^[0-9a-f]{64}$")
 PAGE = re.compile(r"^pages/[A-Za-z0-9_-]+\.pptx$")
@@ -99,6 +100,29 @@ def validate_render_source_pptx(path, expanded_limit, expected_slides):
     if type(expected_slides) is not int or expected_slides < 1:
         raise RenderError("invalid_manifest", "Invalid render-source slide count")
     _validate_pptx(path, expanded_limit, expected_slides)
+
+
+def prepare_render_pptx(path, expanded_limit, expected_slides=1):
+    """Normalize only the verified, private job input, then validate it fully."""
+    temporary = path.with_suffix(".cached.tmp")
+    try:
+        with zipfile.ZipFile(path) as archive:
+            infos = _entries(archive, expanded_limit)
+            edits, removed = cached_chart_edits(archive, infos)
+            if removed:
+                with zipfile.ZipFile(temporary, "x", zipfile.ZIP_DEFLATED) as output:
+                    for info in infos:
+                        if info.filename not in removed:
+                            output.writestr(info, edits[info.filename] if info.filename in edits else archive.read(info))
+        _validate_pptx(temporary if removed else path, expanded_limit, expected_slides)
+        if removed:
+            temporary.replace(path)
+    except RenderError:
+        raise
+    except Exception as exc:
+        raise RenderError("invalid_pptx", "Malformed or unsafe PPTX container") from exc
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def unpack_bundle(bundle, destination, settings):
@@ -229,10 +253,10 @@ def unpack_bundle(bundle, destination, settings):
 
             if version == 1:
                 for page in pages:
-                    validate_pptx(destination / page["file"], min(settings.max_expanded_bytes, 128 * 1024 * 1024))
+                    prepare_render_pptx(destination / page["file"], min(settings.max_expanded_bytes, 128 * 1024 * 1024))
             else:
                 source = manifest["source"]
-                validate_render_source_pptx(
+                prepare_render_pptx(
                     destination / source["file"], settings.max_expanded_bytes, source["slide_count"],
                 )
             manifest["dpi"] = dpi

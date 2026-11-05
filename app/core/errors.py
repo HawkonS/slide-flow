@@ -23,6 +23,8 @@ RENDERER_GENERIC_MESSAGE = "图片转换失败，请检查 Windows 转换节点�
 RENDERER_FONTS_MISSING_MESSAGE = "Windows 转换节点缺少本次所需字体，请检查字体同步后重新渲染"
 RENDERER_FONT_CONFLICT_MESSAGE = "字体名称对应多个字重或版本，请在标准字体库中使用明确的字体名称并重新渲染"
 RENDERER_FONT_UNAVAILABLE_MESSAGE = "Windows 转换节点无法正确选用所需字体，请检查字体名称、字体版本和运行会话后重新渲染"
+RENDERER_UNSAFE_PPTX_MESSAGE = "PPT 包含不支持的内嵌对象、宏、控件或外部链接资源，请移除或转为图片后重试"
+RENDERER_CHART_CACHE_MESSAGE = "PPT 图表缺少可用的显示缓存或需要刷新数据，请在 Office 中刷新并保存图表，或将图表转为图片后重试"
 IMPORT_GENERIC_MESSAGE = "上传任务处理失败，请重试或联系管理员"
 
 PUBLIC_ERROR_MESSAGES = frozenset({
@@ -36,6 +38,8 @@ PUBLIC_ERROR_MESSAGES = frozenset({
     RENDERER_FONTS_MISSING_MESSAGE,
     RENDERER_FONT_CONFLICT_MESSAGE,
     RENDERER_FONT_UNAVAILABLE_MESSAGE,
+    RENDERER_UNSAFE_PPTX_MESSAGE,
+    RENDERER_CHART_CACHE_MESSAGE,
     IMPORT_GENERIC_MESSAGE,
     "Windows 转换节点多次超时，请重试",
     "Windows 转换节点多次未响应，请检查节点在线状态后重试",
@@ -108,6 +112,8 @@ def render_public_message(code: Any = None) -> str:
         "font_unavailable": RENDERER_FONT_UNAVAILABLE_MESSAGE,
         "font_install_failed": RENDERER_FONT_UNAVAILABLE_MESSAGE,
         "font_cleanup_failed": RENDERER_FONT_UNAVAILABLE_MESSAGE,
+        "unsafe_pptx": RENDERER_UNSAFE_PPTX_MESSAGE,
+        "chart_cache_missing": RENDERER_CHART_CACHE_MESSAGE,
         "renderer_upgrade_required": "Windows 转换节点版本过旧，请升级 Renderer 和 Render Pull 后重新渲染",
         "internal_error": RENDERER_GENERIC_MESSAGE,
         "render_failed": RENDERER_GENERIC_MESSAGE,
