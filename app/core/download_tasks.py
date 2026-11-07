@@ -47,6 +47,7 @@ from app.services.downloads.cache import _get_cached_download, _save_to_cache, _
 from app.services.downloads.artifacts import require_export_asset, export_archive_names
 from app.services.downloads.access import _download_task_owner
 from app.services.downloads.embed_fonts import FontEmbeddingError, embed_fonts_in_pptx
+from app.services.downloads.fonts import normalize_export_fonts, normalized_pptx_bytes
 from app.services.downloads.fonts import _build_fonts_bundle, _write_fonts_into_zip
 from app.services.downloads.tracking import _compose_watermark_text
 from app.services.files import materialization_scope
@@ -288,7 +289,7 @@ def _generate_pptx_pages(
                         list(pool.map(lambda page: add_watermark_to_pptx(page, wm_text), pages))
                 for page_index, page in enumerate(pages, 1):
                     number += 1
-                    archive.write(page, f"{number:03d}_{safe_filename(item['name'])}_page{page_index}.pptx")
+                    archive.writestr(f"{number:03d}_{safe_filename(item['name'])}_page{page_index}.pptx", normalized_pptx_bytes(page, db))
                 if progress_callback:
                     progress_callback(10 + int(80 * (idx + 1) / len(items)), f"处理 {idx + 1}/{len(items)}")
     return out_path, f"{show_name}_逐页.zip", bool(wm_text)
@@ -360,6 +361,7 @@ def _generate_pptx(
                 raise RuntimeError(str(exc)) from exc
             out_path.write_bytes(content)
             return out_path, f"{show_name}_embedded_fonts.pptx", watermark_ok
+        normalize_export_fonts(merged_path, db)
         if not with_fonts:
             shutil.move(str(merged_path), str(out_path))
             return out_path, f"{show_name}.pptx", watermark_ok
@@ -416,7 +418,7 @@ def _generate_zip(
             with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
                 for idx, (item, ppt_path, arcname) in enumerate(valid_items):
                     src = wm_paths.get(idx, ppt_path)
-                    zf.write(src, arcname)
+                    zf.writestr(arcname, normalized_pptx_bytes(src, db))
                     if progress_callback:
                         progress_callback(10 + int(80 * (idx + 1) / len(valid_items)), f"打包 {idx + 1}/{len(valid_items)}")
                 agg = _aggregate_fonts(items)

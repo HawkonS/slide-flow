@@ -171,7 +171,7 @@ export function ShowDownloadDialog({ open, onOpenChange, show }: ShowDownloadDia
               <DownloadRow
                 icon={<FileText className="h-4 w-4" />}
                 title="PPT（内嵌字体）"
-                desc="字体直接写入 PPT，适合跨设备播放"
+                desc="字体写入 PPT，需使用支持内嵌字体的软件"
                 onClick={() => submitDownload("pptx_embedded")}
                 disabled={isBusy}
                 loading={submitting === "pptx_embedded"}

@@ -209,7 +209,8 @@ class TemplateCompositionTests(unittest.TestCase):
             "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         )
 
-        embedded = self.client.get(f"/api/templates/{template_id}/download?format=pptx-embedded")
+        with patch("app.routers.templates.embed_fonts_in_pptx", side_effect=lambda path, db, fonts: path.read_bytes()):
+            embedded = self.client.get(f"/api/templates/{template_id}/download?format=pptx-embedded")
         self.assertEqual(embedded.status_code, 200, embedded.text)
         self.assertIn("embedded_fonts.pptx", embedded.headers["content-disposition"])
         self.assertEqual(
@@ -226,6 +227,12 @@ class TemplateCompositionTests(unittest.TestCase):
         legacy = self.client.get(f"/api/templates/{template_id}/download?with_fonts=true")
         self.assertEqual(legacy.status_code, 200, legacy.text)
         self.assertEqual(legacy.headers["content-type"], "application/zip")
+
+    def test_empty_font_metadata_does_not_silently_skip_embedding(self):
+        template_id = self.insert_template(name="旧模板", owner=self.alice, text="DOWNLOAD")
+        response = self.client.get(f"/api/templates/{template_id}/download?format=pptx-embedded")
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("Calibri", response.json()["detail"])
 
     def test_commits_reviewed_ppt_as_ordered_template_series(self):
         self.db.execute("UPDATE users SET role = 'admin' WHERE id = ?", (int(self.alice["id"]),))

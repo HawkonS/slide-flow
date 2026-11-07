@@ -28,16 +28,26 @@ def _show_download_cache_key(
 
     Metadata includes hidden flags, filenames and asset references so edits do
     not reuse stale output. Font changes and the name inside a font bundle
-    also invalidate the cache. v3 excludes potentially incomplete old exports.
+    also invalidate the cache. v4 excludes exports with uncorrected typefaces.
     """
     fonts = []
-    if db is not None and dl_type in {"pptx_fonts", "zip_fonts", "pptx_embedded"}:
+    if db is not None and dl_type in {"pptx", "zip", "pptx_pages", "pptx_fonts", "zip_fonts", "pptx_embedded"}:
         fonts = [tuple(row) for row in db.execute(
             "SELECT family_name, aliases, file_path FROM fonts ORDER BY family_name, aliases, file_path"
         )]
+        from app.services.files import _uploaded_font_abs
+        sources = []
+        for row in fonts:
+            path = _uploaded_font_abs(row[2])
+            try:
+                stat = path.stat() if path else None
+                sources.append((stat.st_size, stat.st_mtime_ns) if stat else None)
+            except OSError:
+                sources.append(None)
+        fonts = [fonts, sources]
     content = json.dumps([show_name, resources, fonts], ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:24]
-    return f"show_{show_id}_{dl_type}_v3_{content_hash}"
+    return f"show_{show_id}_{dl_type}_v4_{content_hash}"
 
 
 def _get_cached_download(cache_key: str, ext: str) -> Path | None:

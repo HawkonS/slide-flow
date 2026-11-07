@@ -154,19 +154,28 @@ class EmbeddedFontDownloadTests(unittest.TestCase):
 
         self.assertEqual(len(Presentation(BytesIO(content)).slides), 1)
 
-    def test_standard_library_fonts_can_embed_even_when_source_marks_restriction(self):
+    def test_restricted_fonts_are_reported_instead_of_clearing_permission_bits(self):
         _make_font(self.font_path, fs_type=0x0002)
         with patch(
             "app.services.downloads.embed_fonts._font_rows",
             return_value=({"testsans": self.row}, [self.row]),
         ):
-            content = embed_fonts_in_pptx(self.ppt_path, None, ["Test Sans"])
+            with self.assertRaisesRegex(FontEmbeddingError, "嵌入权限"):
+                embed_fonts_in_pptx(self.ppt_path, None, ["Test Sans"])
 
+    def test_preview_permissions_are_consistent_in_container_and_font_payload(self):
+        _make_font(self.font_path, fs_type=0x0004)
+        with patch(
+            "app.services.downloads.embed_fonts._font_rows",
+            return_value=({"testsans": self.row}, [self.row]),
+        ):
+            content = embed_fonts_in_pptx(self.ppt_path, None, ["Test Sans"])
         with zipfile.ZipFile(BytesIO(content)) as package:
-            self.assertIn("ppt/fonts/font1.fntdata", package.namelist())
             font_data = package.read("ppt/fonts/font1.fntdata")
-            # The generated EOT payload clears source-level restriction bits.
-            self.assertEqual(int.from_bytes(font_data[32:34], "little") & 0x0202, 0)
+            self.assertEqual(int.from_bytes(font_data[32:34], "little"), 4)
+            payload_size = int.from_bytes(font_data[4:8], "little")
+            with TTFont(BytesIO(font_data[-payload_size:])) as font:
+                self.assertEqual(font["OS/2"].fsType, 4)
 
     def test_converts_cff_font_to_truetype_payload(self):
         cff_path = self.root / "test.otf"

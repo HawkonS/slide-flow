@@ -112,7 +112,7 @@ export function ResourceDownloadDialog({
             <DownloadOption
               icon={Presentation}
               title="PPT（内嵌字体）"
-              detail="打开时无需另行安装字体"
+              detail="字体写入 PPT，需使用支持内嵌字体的软件"
               disabled={downloading}
               progress={activeFormat === "pptx-embedded" ? progress : null}
               onClick={() => void runDownload("pptx-embedded")}

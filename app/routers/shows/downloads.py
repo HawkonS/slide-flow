@@ -13,6 +13,8 @@ from app.core.ppt import build_image_pptx
 from app.core.ppt import determine_pdf_canvas_size
 from app.core.ppt import fit_image_to_canvas
 from app.core.ppt import merge_pptx_files
+from app.core.fonts import FontResolutionError
+from app.services.downloads.fonts import normalize_export_fonts, normalized_pptx_bytes
 from app.routers.dependencies import (
     db_dep,
     db_read_dep,
@@ -104,6 +106,8 @@ def _cleanup_oss_materialized(endpoint: Callable[..., _T]) -> Callable[..., _T]:
                 response.cleanup_export = workspace.cleanup
                 retained = True
             return response
+        except FontResolutionError as exc:
+            raise HTTPException(422, str(exc)) from exc
         finally:
             _export_dir.reset(token)
             if not retained:
@@ -308,6 +312,11 @@ def download_show_pptx(
     merge_pptx_files(input_paths, merged_path, hidden_flags=hidden_flags)
     if wm_text:
         add_watermark_to_pptx(merged_path, wm_text)
+    try:
+        normalize_export_fonts(merged_path, db)
+    except FontResolutionError as exc:
+        merged_path.unlink(missing_ok=True)
+        raise HTTPException(422, str(exc)) from exc
     if not with_fonts:
         # 无水印时写入缓存
         if cache_key:
@@ -371,11 +380,11 @@ def download_show_zip(
                 try:
                     shutil.copy2(ppt_path, wm_tmp_path)
                     add_watermark_to_pptx(wm_tmp_path, wm_text)
-                    zf.write(wm_tmp_path, arcname)
+                    zf.writestr(arcname, normalized_pptx_bytes(wm_tmp_path, db))
                 finally:
                     wm_tmp_path.unlink(missing_ok=True)
             else:
-                zf.write(ppt_path, arcname)
+                zf.writestr(arcname, normalized_pptx_bytes(ppt_path, db))
             written += 1
         if not written:
             tmp_path.unlink(missing_ok=True)

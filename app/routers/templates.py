@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.config import settings
-from app.core.fonts import missing_fonts
+from app.core.fonts import FontResolutionError, missing_fonts
 from app.core.permissions import is_system_admin
 from app.core.permissions import require_admin
 from app.core.permissions import require_user
@@ -29,6 +29,8 @@ from app.services.common import (
 from app.services.downloads.fonts import (
     _build_fonts_bundle,
     _write_fonts_into_zip,
+    normalize_export_fonts,
+    normalized_pptx_bytes,
 )
 from app.services.downloads.embed_fonts import FontEmbeddingError, embed_fonts_in_pptx
 from app.services.files import (
@@ -355,6 +357,10 @@ def compose_template_download(
     handle.close()
     try:
         merge_pptx_files(input_paths, output_path)
+        normalize_export_fonts(output_path, db)
+    except FontResolutionError as exc:
+        output_path.unlink(missing_ok=True)
+        raise HTTPException(422, str(exc)) from exc
     except (ValueError, zipfile.BadZipFile) as exc:
         output_path.unlink(missing_ok=True)
         raise HTTPException(400, f"模板组合失败：{exc}") from exc
@@ -652,15 +658,14 @@ def download_template(
     filename = row["office_file_name"] or path.name
     download_format = format or ("zip" if with_fonts else "pptx")
     if download_format == "pptx":
-        background = None
-        if is_oss_ref(row["office_path"]):
-            from app.services.files import cleanup_materialized, defer_materialized_cleanup
-            defer_materialized_cleanup(path)
-            background = BackgroundTask(cleanup_materialized, [path])
-        return FileResponse(
-            path,
+        try:
+            content = normalized_pptx_bytes(path, db)
+        except FontResolutionError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return Response(
+            content=content,
+            media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
             headers={"Content-Disposition": _content_disposition(filename)},
-            background=background,
         )
 
     if download_format == "pptx-embedded":
@@ -679,6 +684,10 @@ def download_template(
     fonts, _ = _build_fonts_bundle(db, font_names)
     missing = _json_loads(row["missing_fonts"], [])
     filename_base = Path(filename).stem
+    try:
+        ppt_content = normalized_pptx_bytes(path, db)
+    except FontResolutionError as exc:
+        raise HTTPException(422, str(exc)) from exc
     settings.downloads_dir.mkdir(parents=True, exist_ok=True)
     handle = tempfile.NamedTemporaryFile(
         prefix="template_fonts_", suffix=".zip",
@@ -688,7 +697,7 @@ def download_template(
     handle.close()
     try:
         with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as package:
-            package.write(path, arcname=filename)
+            package.writestr(filename, ppt_content)
             _write_fonts_into_zip(package, fonts, missing)
     except Exception:
         archive_path.unlink(missing_ok=True)

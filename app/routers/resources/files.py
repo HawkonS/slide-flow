@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.core.permissions import can_manage_resource
+from app.core.fonts import FontResolutionError
 from app.core.permissions import can_view_resource
 from app.core.permissions import require_user
 from app.routers.dependencies import (
@@ -14,13 +15,12 @@ from app.services.common import (
 from app.services.downloads.fonts import (
     _build_fonts_bundle,
     _write_fonts_into_zip,
+    normalized_pptx_bytes,
 )
 from app.services.downloads.embed_fonts import FontEmbeddingError, embed_fonts_in_pptx
 from app.services.files import (
     asset_preview_url,
-    cleanup_materialized,
     _content_disposition,
-    defer_materialized_cleanup,
     _ensure_preview_thumb,
     _resource_file_abs,
     _safe_abs,
@@ -44,7 +44,6 @@ import sqlite3
 import zipfile
 from io import BytesIO
 from PIL import Image
-from starlette.background import BackgroundTask
 from typing import Any, Callable, TypeVar
 
 router = APIRouter()
@@ -155,19 +154,14 @@ def download_resource(
     if ppt_path is None or not ppt_path.exists():
         raise HTTPException(404, "PPT 文件不存在")
     if download_format == "pptx":
-        background = None
-        if is_oss_ref(version["ppt_path"]):
-            # Progress downloads use fetch(), which cannot reliably read a
-            # cross-origin OSS redirect without bucket CORS configuration.
-            # Proxy the original PPT through this same-origin response and
-            # remove the materialized temp file only after streaming finishes.
-            defer_materialized_cleanup(ppt_path)
-            background = BackgroundTask(cleanup_materialized, [ppt_path])
-        return FileResponse(
-            ppt_path,
+        try:
+            content = normalized_pptx_bytes(ppt_path, db)
+        except FontResolutionError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return Response(
+            content=content,
             media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
             headers={"Content-Disposition": _content_disposition(f"{filename_base}.pptx")},
-            background=background,
         )
 
     if download_format == "pptx-embedded":
@@ -186,8 +180,12 @@ def download_resource(
     fonts, _ = _build_fonts_bundle(db, font_names)
     missing = _json_loads(version["missing_fonts"], [])
     buffer = io.BytesIO()
+    try:
+        ppt_content = normalized_pptx_bytes(ppt_path, db)
+    except FontResolutionError as exc:
+        raise HTTPException(422, str(exc)) from exc
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as package:
-        package.write(ppt_path, arcname=ppt_path.name)
+        package.writestr(ppt_path.name, ppt_content)
         _write_fonts_into_zip(package, fonts, missing)
     content = buffer.getvalue()
     return Response(

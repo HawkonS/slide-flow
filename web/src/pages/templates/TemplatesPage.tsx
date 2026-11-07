@@ -848,7 +848,7 @@ function TemplateDetailDialog({
                 <TemplateDownloadOption
                   icon={Presentation}
                   title="PPT（内嵌字体）"
-                  detail="交付首选，打开时无需安装字体"
+                  detail="字体写入 PPT，需使用支持内嵌字体的软件"
                   recommended={recommendEmbedded}
                   active={activeFormat === "pptx-embedded"}
                   disabled={progress != null}

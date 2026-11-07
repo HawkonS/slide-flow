@@ -2,14 +2,109 @@
 
 from __future__ import annotations
 
-from app.core.fonts import normalize_font_name
+from app.core.fonts import FontResolutionError, normalize_font_name, read_font_faces
+from app.core.ppt_modules.fonts import FONT_NAMESPACES, replace_typefaces, strip_embedded_fonts
 from app.services.files import (
     _uploaded_font_abs,
 )
 from pathlib import Path
+from dataclasses import dataclass
+from io import BytesIO
 import json
 import sqlite3
 import zipfile
+import xml.etree.ElementTree as ET
+
+
+@dataclass(frozen=True)
+class FontMatch:
+    source_index: int
+    face_index: int
+    typeface: str
+
+
+def resolve_font_typefaces(
+    names: list[str], sources: list[tuple[str, tuple[str, ...], Path]],
+) -> dict[str, tuple[FontMatch, ...]]:
+    """Resolve aliases through the name table, rejecting ambiguous weights."""
+    candidates = []
+    for index, (display_name, aliases, path) in enumerate(sources):
+        if not path.is_file():
+            continue
+        try:
+            faces = read_font_faces(path)
+        except Exception as exc:
+            # A broken unrelated library entry must not prevent other exports.
+            if any(normalize_font_name(name) in {normalize_font_name(a) for a in (display_name, *aliases)} for name in names):
+                raise FontResolutionError(f"字体「{display_name}」文件无法解析") from exc
+            continue
+        for face in faces:
+            actual = {normalize_font_name(name) for name in face.aliases}
+            specific = {normalize_font_name(name) for name in face.specific_aliases}
+            stored = {normalize_font_name(name) for name in (display_name, *aliases)}
+            # A collection's display alias cannot select an arbitrary face.
+            candidates.append((FontMatch(index, face.index, face.family), specific, actual, stored))
+    result = {}
+    for name in names:
+        key = normalize_font_name(name)
+        if not key or name.lstrip("@").startswith("+"):
+            continue
+        exact = [match for match, specific, _, _ in candidates if key in specific]
+        actual = [match for match, _, aliases, _ in candidates if key in aliases]
+        stored = [match for match, _, _, aliases in candidates if key in aliases]
+        matches = exact or actual or stored
+        if not matches:
+            continue
+        if len({normalize_font_name(match.typeface) for match in matches}) != 1:
+            raise FontResolutionError(f"字体「{name}」对应多个字重或家族，请指定具体字体名称")
+        result[name] = tuple(matches)
+    return result
+
+
+def normalized_pptx_bytes(ppt_path: Path, db: sqlite3.Connection) -> bytes:
+    """Return an export copy with actual families in every font declaration."""
+    content = ppt_path.read_bytes()
+    rows = db.execute("SELECT family_name, aliases, file_path FROM fonts").fetchall()
+    sources = []
+    for row in rows:
+        path = _uploaded_font_abs(row["file_path"])
+        if path is not None:
+            sources.append((row["family_name"] or "", tuple(_font_aliases_from_row(row)), path))
+    # Legacy callers can serve non-ZIP files; name repair only applies to PPTX.
+    if not zipfile.is_zipfile(BytesIO(content)):
+        return content
+    with zipfile.ZipFile(BytesIO(content)) as original:
+        parts = {info.filename: original.read(info.filename) for info in original.infolist()}
+        changed = strip_embedded_fonts(parts)
+        names = set()
+        for name, data in parts.items():
+            if name.startswith("ppt/") and name.lower().endswith(".xml"):
+                for node in ET.fromstring(data).iter():
+                    namespace, _, local = node.tag.rpartition("}")
+                    if namespace.removeprefix("{") in FONT_NAMESPACES and local in {"latin", "ea", "cs", "sym", "font", "buFont"}:
+                        if value := node.get("typeface"):
+                            names.add(value)
+        resolved = resolve_font_typefaces(sorted(names), sources)
+        replacements = {name: matches[0].typeface for name, matches in resolved.items()}
+        for name, data in parts.items():
+            if name.startswith("ppt/") and name.lower().endswith(".xml"):
+                parts[name] = replace_typefaces(data, replacements)
+                changed |= parts[name] != data
+        if not changed:
+            return content
+        output = BytesIO()
+        with zipfile.ZipFile(output, "w") as package:
+            package.comment = original.comment
+            for info in original.infolist():
+                if info.filename in parts:
+                    package.writestr(info, parts[info.filename])
+        return output.getvalue()
+
+
+def normalize_export_fonts(ppt_path: Path, db: sqlite3.Connection) -> None:
+    """Normalize a generated temporary export, never a stored source asset."""
+    content = normalized_pptx_bytes(ppt_path, db)
+    ppt_path.write_bytes(content)
 
 
 def _font_aliases_from_row(row: sqlite3.Row) -> list[str]:

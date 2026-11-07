@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import dataclass
+from functools import lru_cache
 
 from fontTools.ttLib import TTCollection, TTFont
 
@@ -8,9 +10,78 @@ from fontTools.ttLib import TTCollection, TTFont
 FONT_EXTENSIONS = {".ttf", ".otf", ".ttc", ".otc"}
 
 
+class FontResolutionError(ValueError):
+    """A known alias cannot safely identify a font face."""
+
+
+@dataclass(frozen=True)
+class FontFaceNames:
+    index: int
+    family: str
+    aliases: tuple[str, ...]
+    specific_aliases: tuple[str, ...]
+
+
+def preferred_font_name(font: TTFont, name_id: int) -> str:
+    """Use a consistent Windows/English name record for Office metadata."""
+    candidates = []
+    for record in font["name"].names:
+        if record.nameID != name_id:
+            continue
+        try:
+            value = record.toUnicode().strip()
+        except Exception:
+            continue
+        if value:
+            candidates.append((record, value))
+    candidates.sort(key=lambda item: (
+        item[0].platformID != 3, item[0].langID != 0x409,
+        item[0].langID, item[1],
+    ))
+    return candidates[0][1] if candidates else ""
+
+
+def describe_font_names(font: TTFont, index: int = 0) -> FontFaceNames:
+    records = []
+    for record in font["name"].names:
+        if record.nameID not in {1, 4, 6, 16}:
+            continue
+        try:
+            name = record.toUnicode().strip()
+        except Exception:
+            continue
+        if name:
+            records.append((record, name))
+    # Name ID 1 is the style-linked family Office can actually select. ID 16
+    # may span many weights with distinct ID 1 families; filenames and custom
+    # display labels are lookup aliases only, never output typefaces.
+    family = preferred_font_name(font, 1)
+    if not family:
+        raise FontResolutionError("字体文件缺少真实家族名称（name ID 1）")
+    return FontFaceNames(
+        index, family,
+        tuple(dict.fromkeys(name for _, name in records)),
+        tuple(dict.fromkeys(name for record, name in records if record.nameID in {1, 4, 6})),
+    )
+
+
+@lru_cache(maxsize=256)
+def _cached_font_faces(path: str, size: int, modified: int) -> tuple[FontFaceNames, ...]:
+    if Path(path).suffix.lower() in {".ttc", ".otc"}:
+        with TTCollection(path, lazy=True) as collection:
+            return tuple(describe_font_names(font, index) for index, font in enumerate(collection.fonts))
+    with TTFont(path, lazy=True) as font:
+        return (describe_font_names(font),)
+
+
+def read_font_faces(path: Path) -> tuple[FontFaceNames, ...]:
+    stat = path.stat()
+    return _cached_font_faces(str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+
+
 def normalize_font_name(name: str) -> str:
     """归一化字体名：小写、去连字符/下划线、压缩空白，便于匹配。"""
-    return "".join(name.lower().replace("-", "").replace("_", "").split())
+    return "".join(name.lstrip("@").casefold().replace("-", "").replace("_", "").split())
 
 
 def is_font_extension(path: Path) -> bool:
@@ -38,9 +109,9 @@ def read_font_names(path: Path) -> set[str]:
     names: set[str] = set()
     try:
         if path.suffix.lower() in {".ttc", ".otc"}:
-            collection = TTCollection(str(path))
-            for font in collection.fonts:
-                names.update(_names_from_ttfont(font))
+            with TTCollection(str(path)) as collection:
+                for font in collection.fonts:
+                    names.update(_names_from_ttfont(font))
         else:
             font = TTFont(str(path), lazy=True)
             names.update(_names_from_ttfont(font))

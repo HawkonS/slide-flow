@@ -22,7 +22,9 @@ from fontTools.ttLib import TTCollection, TTFont, newTable
 
 from app.config import settings
 from app.core.oss import is_oss_ref, storage as oss_storage
-from app.core.fonts import normalize_font_name
+from app.core.fonts import FontResolutionError, describe_font_names, normalize_font_name, preferred_font_name
+from app.core.ppt_modules.fonts import replace_package_typefaces
+from app.services.downloads.fonts import resolve_font_typefaces
 from app.db import now_iso
 from app.services.files import _uploaded_font_abs
 
@@ -33,7 +35,7 @@ REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 CT_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
 FONT_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/font"
 FONT_CONTENT_TYPE = "application/x-fontdata"
-EMBEDDED_FONT_CACHE_VERSION = "v1"
+EMBEDDED_FONT_CACHE_VERSION = "v2"
 
 ET.register_namespace("p", P_NS)
 ET.register_namespace("r", R_NS)
@@ -43,7 +45,7 @@ logger = logging.getLogger(__name__)
 _EMBEDDED_CACHE_LOCK = threading.RLock()
 
 
-class FontEmbeddingError(ValueError):
+class FontEmbeddingError(FontResolutionError):
     """The resource cannot be safely packaged with all referenced fonts."""
 
 
@@ -153,11 +155,7 @@ def _font_face_profiles(row: FontRow) -> tuple[FontFaceProfile, ...]:
         used_keys: set[str] = set()
         for index, face in enumerate(faces):
             names = _face_name_values(face)
-            target_name = (
-                row.family_name
-                if len(faces) == 1 and row.family_name
-                else (names[0] if names else row.family_name)
-            )
+            target_name = describe_font_names(face, index).family if len(faces) == 1 else (names[0] if names else "")
             if not target_name:
                 raise FontEmbeddingError(f"字体「{row.family_name}」缺少可识别的字形名称")
             aliases = list(dict.fromkeys(names))
@@ -280,7 +278,10 @@ def _cached_font_data(db: sqlite3.Connection, row: FontRow, target_name: str) ->
         return None
     requested = normalize_font_name(target_name)
     rows = _cache_rows(db, row.font_id)
+    source_sha256 = _font_source_sha256(row.path) if row.path.is_file() else None
     for cached in rows:
+        if source_sha256 is not None and cached["source_sha256"] != source_sha256:
+            continue
         try:
             aliases = json.loads(cached["aliases"] or "[]")
         except (TypeError, ValueError):
@@ -354,12 +355,16 @@ def _open_face(path: Path, target_name: str, aliases: tuple[str, ...]) -> tuple[
     try:
         if path.suffix.lower() in {".ttc", ".otc"}:
             collection = TTCollection(str(path), lazy=False)
-            targets = {normalize_font_name(name) for name in (target_name, *aliases)}
-            selected = next((face for face in collection.fonts if _names(face) & targets), None)
-            if selected is None:
+            try:
+                target = normalize_font_name(target_name)
+                selected = [face for face in collection.fonts if target in _names(face)]
+                if len(selected) != 1:
+                    raise FontEmbeddingError(f"字体库文件中找不到「{target_name}」唯一对应的字形")
+                output = BytesIO()
+                selected[0].save(output)
+                return TTFont(BytesIO(output.getvalue()), lazy=False), True
+            finally:
                 collection.close()
-                raise FontEmbeddingError(f"字体库文件中找不到「{target_name}」对应字形")
-            return selected, True
         return TTFont(str(path), lazy=False), True
     except FontEmbeddingError:
         raise
@@ -434,12 +439,23 @@ def _font_data(row: FontRow, target_name: str) -> tuple[bytes, str]:
     try:
         os2 = font["OS/2"] if "OS/2" in font else None
         fs_type = int(os2.fsType) if os2 is not None else 0
+        if fs_type & 0x0202:
+            raise FontEmbeddingError(f"字体「{target_name}」的嵌入权限禁止嵌入字形，请使用 PPT + 字体包或更换字体")
         if "glyf" not in font:
             _convert_cff_to_truetype(font)
         weight = int(os2.usWeightClass) if os2 is not None else 400
-        is_bold = weight >= 600 or bool(os2 and int(os2.fsSelection) & 0x20)
+        # Heavy/Light faces often have their own ID 1 family and a Regular
+        # ID 2 subfamily. Weight alone (and sometimes fsSelection) mislabels
+        # those as Bold, leaving normal text without an embedded regular face.
+        subfamily = preferred_font_name(font, 2).casefold()
+        is_bold = bool(os2 and int(os2.fsSelection) & 0x20)
         italic_angle = float(font["post"].italicAngle) if "post" in font else 0
         is_italic = italic_angle != 0 or bool(os2 and int(os2.fsSelection) & 0x01)
+        if subfamily in {"regular", "normal", "roman", "book"}:
+            is_bold = is_italic = False
+        elif subfamily:
+            is_bold = "bold" in subfamily or is_bold
+            is_italic = "italic" in subfamily or "oblique" in subfamily or is_italic
         variant = "boldItalic" if is_bold and is_italic else "bold" if is_bold else "italic" if is_italic else "regular"
         output = BytesIO()
         try:
@@ -449,10 +465,10 @@ def _font_data(row: FontRow, target_name: str) -> tuple[bytes, str]:
         ttf_data = output.getvalue()
         if not ttf_data.startswith(b"\x00\x01\x00\x00"):
             raise FontEmbeddingError(f"字体「{target_name}」必须是 TTF/TrueType 字形格式")
-        # Fonts in the standard library are approved for this product's
-        # embedding workflow. Do not carry source-level restricted/bitmap-only
-        # flags into the generated editable package.
-        return _wrap_as_eot(ttf_data, font, target_name, fs_type & ~0x0202, weight, is_italic), variant
+        family = describe_font_names(font).family
+        # EOT metadata, SFNT name tables and p:font must identify the same
+        # installed family. Preserve licensing bits in both representations.
+        return _wrap_as_eot(ttf_data, font, family, fs_type, weight, is_italic), variant
     finally:
         if should_close:
             font.close()
@@ -641,12 +657,15 @@ def _wrap_as_eot(
         ),
         0,
     )
-    check_sum_adjustment = int(getattr(font["head"], "checkSumAdjustment", 0)) if "head" in font else 0
+    # Saving/converting changes this checksum in the serialized SFNT, without
+    # necessarily updating the in-memory head table used by fontTools.
+    with TTFont(BytesIO(font_data), lazy=True) as saved:
+        check_sum_adjustment = int(saved["head"].checkSumAdjustment)
     family = family_name.encode("utf-16le")
-    style_record = font["name"].getDebugName(2) if "name" in font else None
+    style_record = preferred_font_name(font, 2) if "name" in font else None
     style = (style_record or ("Italic" if italic else "Regular")).encode("utf-16le")
-    version = "Version 1.0".encode("utf-16le")
-    full_name = (font["name"].getDebugName(4) if "name" in font else None) or family_name
+    version = ((preferred_font_name(font, 5) if "name" in font else None) or "Version 1.0").encode("utf-16le")
+    full_name = (preferred_font_name(font, 4) if "name" in font else None) or family_name
     full = full_name.encode("utf-16le")
 
     header = bytearray()
@@ -662,7 +681,7 @@ def _wrap_as_eot(
         header.extend(struct.pack("<H", 0))  # Padding
         header.extend(struct.pack("<H", len(value)))
         header.extend(value)
-    header.extend(struct.pack("<HH", 0, 0))  # Padding5 and Padding6
+    header.extend(struct.pack("<HH", 0, 0))  # Padding5 and empty RootStringSize (EOT v2.1)
     total_size = len(header) + len(font_data)
     struct.pack_into("<I", header, 0, total_size)
     return bytes(header) + font_data
@@ -685,10 +704,16 @@ def _remove_existing_fonts(parts: dict[str, bytes], presentation: ET.Element) ->
             continue
         target = rel.attrib.get("Target", "")
         if target and rel.attrib.get("TargetMode", "Internal") != "External":
-            removed_targets.append(posixpath.normpath(posixpath.join("ppt", target)))
+            removed_targets.append(posixpath.normpath(target.lstrip("/") if target.startswith("/") else posixpath.join("ppt", target)))
         rels_root.remove(rel)
     for target in removed_targets:
         parts.pop(target, None)
+    if removed_targets and "[Content_Types].xml" in parts:
+        content_types = ET.fromstring(parts["[Content_Types].xml"])
+        for node in list(content_types):
+            if node.get("PartName", "").lstrip("/") in removed_targets:
+                content_types.remove(node)
+        parts["[Content_Types].xml"] = ET.tostring(content_types, encoding="utf-8", xml_declaration=True)
 
     existing = presentation.find(f"{{{P_NS}}}embeddedFontLst")
     if existing is not None:
@@ -699,11 +724,25 @@ def _remove_existing_fonts(parts: dict[str, bytes], presentation: ET.Element) ->
     return rels_root
 
 
-def _font_metadata(name: str) -> ET.Element:
+def _font_metadata(name: str, data: bytes) -> ET.Element:
     return ET.Element(
         f"{{{P_NS}}}font",
-        {"typeface": name, "pitchFamily": "34", "charset": "0"},
+        {"typeface": name, "panose": data[16:26].hex().upper(), "charset": str(data[26])},
     )
+
+
+def _embedded_family(data: bytes) -> str:
+    """Read the canonical family from a v2 EOT cache, even without its source."""
+    try:
+        if data[34:36] != b"LP":
+            raise ValueError("invalid EOT signature")
+        size = struct.unpack_from("<H", data, 82)[0]
+        name = data[84:84 + size].decode("utf-16le").strip()
+        if not name:
+            raise ValueError("empty family")
+        return name
+    except (ValueError, struct.error, UnicodeError) as exc:
+        raise FontEmbeddingError("字体嵌入缓存缺少有效的真实家族名称，请重新上传字体") from exc
 
 
 def embed_fonts_in_pptx(
@@ -719,6 +758,10 @@ def embed_fonts_in_pptx(
             if name and name.strip() and not name.startswith("+")
         )
     )
+    if not requested:
+        from app.core.ppt import detect_ppt_fonts
+
+        requested = detect_ppt_fonts(ppt_path)
     if not requested:
         return ppt_path.read_bytes()
     try:
@@ -737,47 +780,86 @@ def embed_fonts_in_pptx(
     except ET.ParseError as exc:
         raise FontEmbeddingError("PPT 字体结构无法解析，无法嵌入字体") from exc
 
-    alias_rows, _ = _font_rows(db)
-    missing = [name for name in requested if normalize_font_name(name) not in alias_rows]
+    alias_rows, all_rows = _font_rows(db)
+    try:
+        resolved = resolve_font_typefaces(requested, [(row.family_name, row.aliases, row.path) for row in all_rows])
+    except FontResolutionError as exc:
+        raise FontEmbeddingError(str(exc)) from exc
+    missing = [name for name in requested if name not in resolved and normalize_font_name(name) not in alias_rows]
     if missing:
         raise FontEmbeddingError("字体库中缺少：" + "、".join(missing))
 
     embedded = ET.Element(f"{{{P_NS}}}embeddedFontLst")
     file_relationships: dict[tuple[Path, str], tuple[str, str, str]] = {}
+    entries: dict[str, ET.Element] = {}
+    replacements: dict[str, str] = {}
+    profiles_by_row: dict[FontRow, tuple[FontFaceProfile, ...]] = {}
+    loaded_faces: dict[tuple[Path, str], tuple[bytes, str]] = {}
     font_index = 1
     for name in requested:
-        row = alias_rows[normalize_font_name(name)]
-        cached = _cached_font_data(db, row, name)
-        if cached is None:
-            with _EMBEDDED_CACHE_LOCK:
-                cached = _cached_font_data(db, row, name)
-                if cached is None:
-                    profile = _profile_for_target(row, name)
-                    data, variant = _font_data(row, profile.target_name)
-                    _persist_generated_cache(row, profile.target_name, data, variant)
-                else:
-                    data, variant = cached
+        matches = resolved.get(name)
+        if matches:
+            targets = []
+            for match in matches:
+                row = all_rows[match.source_index]
+                if row not in profiles_by_row:
+                    profiles_by_row[row] = _font_face_profiles(row)
+                profile = profiles_by_row[row][match.face_index]
+                targets.append((row, profile.target_name))
         else:
-            data, variant = cached
-        relationship_key = (row.path, hashlib.sha256(data).hexdigest())
-        relationship = file_relationships.get(relationship_key)
-        if relationship is None:
-            part_name = f"ppt/fonts/font{font_index}.fntdata"
-            rel_id = _next_relationship_id(rels_root)
-            rels_root.append(
-                ET.Element(
-                    f"{{{REL_NS}}}Relationship",
-                    {"Id": rel_id, "Type": FONT_REL_TYPE, "Target": f"fonts/font{font_index}.fntdata"},
+            targets = [(alias_rows[normalize_font_name(name)], name)]
+        for row, target_name in targets:
+            loaded_key = (row.path, target_name)
+            cached = loaded_faces.get(loaded_key)
+            if cached is None:
+                cached = _cached_font_data(db, row, target_name)
+            if cached is None:
+                with _EMBEDDED_CACHE_LOCK:
+                    cached = _cached_font_data(db, row, target_name)
+                    if cached is None:
+                        data, variant = _font_data(row, target_name)
+                        _persist_generated_cache(row, target_name, data, variant)
+                    else:
+                        data, variant = cached
+            else:
+                data, variant = cached
+            loaded_faces[loaded_key] = (data, variant)
+            family = _embedded_family(data)
+            replacements[name] = family
+            relationship_key = (row.path, hashlib.sha256(data).hexdigest())
+            relationship = file_relationships.get(relationship_key)
+            if relationship is None:
+                part_name = f"ppt/fonts/font{font_index}.fntdata"
+                rel_id = _next_relationship_id(rels_root)
+                rels_root.append(
+                    ET.Element(
+                        f"{{{REL_NS}}}Relationship",
+                        {"Id": rel_id, "Type": FONT_REL_TYPE, "Target": f"fonts/font{font_index}.fntdata"},
+                    )
                 )
-            )
-            parts[part_name] = data
-            relationship = (rel_id, part_name, variant)
-            file_relationships[relationship_key] = relationship
-            font_index += 1
-        rel_id, _, variant = relationship
-        entry = ET.SubElement(embedded, f"{{{P_NS}}}embeddedFont")
-        entry.append(_font_metadata(name))
-        ET.SubElement(entry, f"{{{P_NS}}}{variant}", {f"{{{R_NS}}}id": rel_id})
+                parts[part_name] = data
+                relationship = (rel_id, part_name, variant)
+                file_relationships[relationship_key] = relationship
+                font_index += 1
+            rel_id, _, variant = relationship
+            entry = entries.get(family)
+            if entry is None:
+                entry = ET.SubElement(embedded, f"{{{P_NS}}}embeddedFont")
+                entry.append(_font_metadata(family, data))
+                entries[family] = entry
+            existing = entry.find(f"{{{P_NS}}}{variant}")
+            if existing is not None:
+                if existing.get(f"{{{R_NS}}}id") != rel_id:
+                    raise FontEmbeddingError(f"字体「{family}」的 {variant} 字形存在冲突")
+            else:
+                ET.SubElement(entry, f"{{{P_NS}}}{variant}", {f"{{{R_NS}}}id": rel_id})
+
+    for entry in embedded:
+        # CT_EmbeddedFont requires this order even when aliases are encountered
+        # in a different order (e.g. a bold run precedes a regular run).
+        children = list(entry)
+        order = {name: index for index, name in enumerate(("font", "regular", "bold", "italic", "boldItalic"))}
+        entry[:] = sorted(children, key=lambda child: order[child.tag.rsplit("}", 1)[-1]])
 
     if requested:
         presentation.set("embedTrueTypeFonts", "1")
@@ -803,6 +885,7 @@ def embed_fonts_in_pptx(
 
     parts["ppt/presentation.xml"] = ET.tostring(presentation, encoding="utf-8", xml_declaration=True)
     parts["ppt/_rels/presentation.xml.rels"] = ET.tostring(rels_root, encoding="utf-8", xml_declaration=True)
+    replace_package_typefaces(parts, replacements)
 
     content_types_path = "[Content_Types].xml"
     try:
