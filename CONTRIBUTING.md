@@ -70,18 +70,41 @@ npm run test:pwa:browser
 
 ## Commit messages
 
-Commit messages and pull request titles must use this format:
+Use [Conventional Commits](https://www.conventionalcommits.org/) for every commit message and pull request title:
 
 ```text
-type(scope): description
+type(scope): summary
 ```
 
-- Write the entire title in English. The description must be a concise imperative phrase starting with a lowercase verb, such as `add`, `fix`, `update` or `document`.
-- A scope is required. Use a short, lowercase name for the affected area.
-- Use exactly one title line. Do not add a commit body or a second `-m` argument.
-- Keep the title lowercase, do not end it with a period or add emoji, and aim for 72 characters or fewer.
-- Keep each commit focused on one logical change.
-- For an incompatible change, put `!` before the colon, for example `feat(api)!: change the resource payload`.
+- **English is required** for the entire title, including the scope and summary.
+- **A scope is required**. Start it with a lowercase English letter and use only lowercase English letters, digits, and hyphens.
+- **The entire commit message must be a single title line**. Do not add a body, footers, trailers, or a second `-m` argument.
+- **The complete title must be 72 characters or fewer**, including the type, scope, spaces, and punctuation.
+- Keep the type and scope lowercase. Start the summary with a lowercase imperative verb, such as `add`, `fix`, `remove`, `update`, or `document`.
+- Proper names and technical identifiers in the summary may retain their original capitalization, such as `Android`, `GitHub`, `SDK`, and `JAVA_HOME`.
+- Do not end the title with a period or whitespace, and do not use emoji.
+- Keep each commit focused on one logical change. Describe the actual change; avoid vague summaries such as `update code` or `fix bug`.
+- For an incompatible change, put `!` after the scope and before the colon: `type(scope)!: summary`.
+- Put context, issue references, validation details, and migration notes in the pull request description.
+- Apply the same rules to pull request titles and final squash-merge commit messages. When squash-merging, keep only the title and remove any automatically generated body or trailers.
+
+Use one of these types:
+
+| Type | Use for |
+| --- | --- |
+| `feat` | New user-visible functionality |
+| `fix` | Bug, regression, or compatibility fixes |
+| `refactor` | Code restructuring without behavior changes |
+| `ui` | Visual styling or interaction adjustments |
+| `perf` | Performance improvements |
+| `docs` | Documentation changes |
+| `test` | Test additions or updates |
+| `build` | Build configuration, dependencies, tooling, or packaging |
+| `ci` | CI workflows and automation |
+| `chore` | Maintenance that fits no other type |
+| `revert` | Reverting an earlier commit |
+
+Use `feat` for new functionality and `fix` for defects, including changes to the UI. Use `ui` for other visual or interaction adjustments.
 
 Preferred scopes:
 
@@ -89,27 +112,15 @@ Preferred scopes:
 | --- | --- |
 | `app` | FastAPI backend in `app/` |
 | `web` | React frontend in `web/` |
-| `ppt` | Presentation rendering, export and playback/download flows |
+| `ppt` | Presentation rendering, export, playback, and download flows |
 | `tools` | Local and operations scripts in `tools/` |
 | `deploy` | Deployment configuration in `deploy/` |
-| `build` | Dependencies, packaging and build configuration |
-| `docs` | README files and documentation in `docs/` |
-| `repo` | Repository-level configuration and contribution conventions |
+| `build` | Build configuration, dependencies, tooling, and packaging |
+| `ci` | CI workflows and automation |
+| `docs` | README files and project documentation |
+| `repo` | Repository-level configuration and contribution guidelines |
 
-Use a new, concise scope only when the change belongs to a distinct area not covered above, and keep that scope consistent. Tests should normally use the scope of the code they cover.
-
-Common types:
-
-| Type | Use |
-| --- | --- |
-| `feat` | Add a user-facing capability |
-| `fix` | Fix a defect or compatibility issue |
-| `refactor` | Restructure code without changing behavior |
-| `perf` | Improve performance |
-| `docs` | Change documentation |
-| `test` | Add or update tests |
-| `build` | Change dependencies or build configuration |
-| `chore` | Perform maintenance that does not fit another type |
+Prefer the scopes listed above. Use another concise scope only for a distinct area not covered by them, and keep it consistent. Tests should normally use the scope of the code they cover.
 
 Examples:
 
@@ -117,6 +128,7 @@ Examples:
 feat(web): add offline playback status
 fix(app): preserve resource remarks in show details
 docs(repo): document the contribution workflow
+feat(app)!: change the resource payload
 ```
 
 ## License
