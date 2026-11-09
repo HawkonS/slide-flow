@@ -1,5 +1,5 @@
 import { Suspense, useEffect, useState } from "react";
-import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   FolderOpen,
   Home,
@@ -75,28 +75,47 @@ const NAV_SECTIONS: { title: string; items: NavItem[] }[] = [
   },
 ];
 
+const HOME_ITEM: NavItem = { key: "home", to: "/home", label: "用户首页", icon: Home };
+const STANDARD_SHOW_ITEM: NavItem = { key: "standard-show", to: "/shows", label: "标准放映", icon: MonitorPlay };
+const OFFLINE_ITEM: NavItem = { key: "offline-cache", to: "/manage/offline-cache", label: "离线缓存", icon: MonitorPlay };
+
 // 运营管理员和系统管理员都可进行运营管理与用户管理；运行管理、配置管理、
 // 日志管理属于系统管理，仅系统管理员可见。
 const ADMIN_ONLY_KEYS = new Set(["tags", "users"]);
 const SYSTEM_ADMIN_ONLY_KEYS = new Set(["runtime", "config", "logs"]);
 
-function NavItemLink({ item }: { item: NavItem }) {
+function NavItemLink({ item, active }: { item: NavItem; active: boolean }) {
   const Icon = item.icon;
   return (
-    <NavLink
+    <Link
       to={item.to}
-      className={({ isActive }) =>
-        cn(
-          "relative flex items-center gap-3 rounded-md px-3 py-2.5 text-sm text-foreground/75 transition-colors hover:bg-accent hover:text-foreground",
-          isActive &&
-            "bg-[hsl(var(--sidebar-active))] font-medium text-foreground before:absolute before:inset-y-1.5 before:left-0 before:w-0.5 before:rounded-full before:bg-foreground/60 hover:bg-[hsl(var(--sidebar-active))]",
-        )
-      }
+      aria-current={active ? "page" : undefined}
+      className={cn(
+        "relative flex items-center gap-3 rounded-md px-3 py-2.5 text-sm text-foreground/75 transition-colors hover:bg-accent hover:text-foreground",
+        active &&
+          "bg-[hsl(var(--sidebar-active))] font-medium text-foreground before:absolute before:inset-y-1.5 before:left-0 before:w-0.5 before:rounded-full before:bg-foreground/60 hover:bg-[hsl(var(--sidebar-active))]",
+      )}
     >
       <Icon className="h-4 w-4 shrink-0" />
       <span>{item.label}</span>
-    </NavLink>
+    </Link>
   );
+}
+
+/** Lists share one detail route (`/shows/:id`), so the sidebar follows the list
+ *  that opened the detail instead of the pathname. Direct links have no origin
+ *  and keep the standard-show entry highlighted. */
+function showSectionKey(pathname: string, state: unknown): "standard-show" | "show-resources" | null {
+  if (!/^\/shows\/[^/]+(?:\/|$)/.test(pathname)) return null;
+  const origin = (state as { detailOrigin?: { url?: unknown } } | null)?.detailOrigin?.url;
+  return typeof origin === "string" && origin.startsWith("/manage/shows") ? "show-resources" : "standard-show";
+}
+
+function navItemActive(item: NavItem, pathname: string, sectionKey: ReturnType<typeof showSectionKey>): boolean {
+  if (sectionKey && (item.key === "standard-show" || item.key === "show-resources")) {
+    return sectionKey === item.key;
+  }
+  return pathname === item.to || pathname.startsWith(item.to.endsWith("/") ? item.to : `${item.to}/`);
 }
 
 function SectionLabel({ title }: { title: string }) {
@@ -111,13 +130,15 @@ function SectionLabel({ title }: { title: string }) {
 
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const { user, offline } = useAuth();
+  const location = useLocation();
+  const sectionKey = showSectionKey(location.pathname, location.state);
   const versionCommit = useSiteConfig((s) => s.versionCommit);
   const versionUpdatedAt = useSiteConfig((s) => s.versionUpdatedAt);
   const isAdmin = isAdminRole(user?.role);
   const isSystemAdmin = isSystemAdminRole(user?.role);
   if (offline) return (
     <div className="flex h-full flex-col px-3 py-3">
-      <div onClick={onNavigate}><NavItemLink item={{ key: "offline-cache", to: "/manage/offline-cache", label: "离线缓存", icon: MonitorPlay }} /></div>
+      <div onClick={onNavigate}><NavItemLink item={OFFLINE_ITEM} active={navItemActive(OFFLINE_ITEM, location.pathname, sectionKey)} /></div>
       <p className="px-3 py-3 text-xs text-muted-foreground">当前离线，仅可使用已授权的缓存放映。</p>
     </div>
   );
@@ -127,14 +148,10 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       {/* 常驻一级入口 */}
       <div className="shrink-0 px-3 pt-3 pb-1">
         <div onClick={onNavigate}>
-          <NavItemLink
-            item={{ key: "home", to: "/home", label: "用户首页", icon: Home }}
-          />
+          <NavItemLink item={HOME_ITEM} active={navItemActive(HOME_ITEM, location.pathname, sectionKey)} />
         </div>
         <div className="mt-0.5" onClick={onNavigate}>
-          <NavItemLink
-            item={{ key: "standard-show", to: "/shows", label: "标准放映", icon: MonitorPlay }}
-          />
+          <NavItemLink item={STANDARD_SHOW_ITEM} active={navItemActive(STANDARD_SHOW_ITEM, location.pathname, sectionKey)} />
         </div>
       </div>
 
@@ -153,7 +170,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
               <div className="mt-0.5 flex flex-col gap-0.5 px-3">
                 {visible.map((item) => (
                   <div key={item.to} onClick={onNavigate}>
-                    <NavItemLink item={item} />
+                    <NavItemLink item={item} active={navItemActive(item, location.pathname, sectionKey)} />
                   </div>
                 ))}
               </div>

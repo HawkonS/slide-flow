@@ -36,7 +36,7 @@ before(async () => {
 });
 after(async () => { await browser?.close(); server?.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
 
-async function fixture(t, { width = 390, configGate, onList } = {}) {
+async function fixture(t, { width = 390, configGate, onList, shows = [] } = {}) {
   const context = await browser.newContext({ viewport: { width, height: width < 768 ? 844 : 1000 }, serviceWorkers: 'block' });
   t.after(() => context.close());
   if (configGate) t.after(() => configGate.release());
@@ -53,6 +53,9 @@ async function fixture(t, { width = 390, configGate, onList } = {}) {
     if (p === '/api/resources/1') return json({ resource: { ...resource, versions: [version] } });
     if (p === '/api/resources/delete-preview') return json({ targets: [{ id: 1, name: resource.name, version_count: 1, selected_version_count: 1, version_nos: [1], delete_resource: true }], has_references: false, show_count: 0, share_count: 0, shows: [], confirmation_token: 'test', available_actions: ['remove'] });
     if (p === '/api/me/home/stats') return json({ resources: {}, shows: {}, templates: {}, fonts: {} });
+    if (p === '/api/shows') return json({ items: shows, total: shows.length, page: 1, page_size: 20, all_tags: [], all_subjects: [] });
+    if (p === '/api/shows/36') return json({ show: shows[0] ?? null });
+    if (p === '/api/shows/36/check-updates') return json({ updates: [] });
     return json({ items: [], tags: [], users: [], resources: [], shows: [], pins: [], preferences: {} });
   });
   const page = await context.newPage();
@@ -66,6 +69,15 @@ async function fixture(t, { width = 390, configGate, onList } = {}) {
 async function menu(page, action) {
   await page.getByRole('button', { name: /更多操作$/ }).click();
   await page.getByRole('menuitem', { name: action, exact: true }).click();
+}
+/** URL updates before React commits the new location; poll the attribute. */
+async function waitForCurrent(locator, expected, message) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (await locator.getAttribute('aria-current') === expected) return;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.equal(await locator.getAttribute('aria-current'), expected, message);
 }
 const modalChunk = /\/(?:Resource(?:Edit|Download|Deletion|Preview)Dialog|BatchEditDialog)-/;
 
@@ -120,6 +132,36 @@ test('sidebar navigation remains usable while the resources route chunk waits', 
   await page.getByRole('link', { name: '用户首页', exact: true }).click();
   await page.waitForURL('**/home');
   chunkGate.release();
+});
+
+test('show detail keeps the sidebar entry of the list that opened it', async t => {
+  const navShow = {
+    id: 36, name: '导航测试放映', owner_id: 1, owner: user, subject: '产品', tags: '', status: 'active',
+    visibility_scope: 'public', management_scope: 'private', can_manage: true, is_standard: false,
+    series_id: 'nav', version_no: 1, version_count: 1, has_other_versions: false,
+    created_at: stamp, updated_at: stamp, all_resource_ids: [], resources: [],
+  };
+  const { page } = await fixture(t, { width: 1360, shows: [navShow] });
+  const showResources = page.getByRole('link', { name: '放映素材', exact: true });
+  const standardShows = page.getByRole('link', { name: '标准放映', exact: true });
+
+  await page.goto(origin + '/manage/shows');
+  await waitForCurrent(showResources, 'page', '放映素材 list');
+  await waitForCurrent(standardShows, null, '标准放映 must stay idle on the 放映素材 list');
+
+  await page.getByRole('button', { name: /导航测试放映/ }).click();
+  await page.waitForURL('**/shows/36');
+  await waitForCurrent(showResources, 'page', 'opened from 放映素材');
+  await waitForCurrent(standardShows, null, '标准放映 must stay idle after opening from 放映素材');
+
+  await standardShows.click();
+  await page.waitForURL('**/shows');
+  await waitForCurrent(standardShows, 'page', 'standard list');
+
+  await page.getByRole('button', { name: /导航测试放映/ }).click();
+  await page.waitForURL('**/shows/36');
+  await waitForCurrent(standardShows, 'page', 'opened from 标准放映');
+  await waitForCurrent(showResources, null, '放映素材 must stay idle after opening from 标准放映');
 });
 
 test('download loads its own dialog without edit, deletion, batch-edit or detail requests', async t => {
