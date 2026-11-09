@@ -75,6 +75,7 @@ export function ResourceImportPage() {
         setSearchParams(next, { replace: true });
       }}
       onSuccess={() => { void queryClient.invalidateQueries({ queryKey: ["resources"] }); }}
+      onShowCreated={() => { void queryClient.invalidateQueries({ queryKey: ["shows"] }); }}
       onOpenChange={(open) => {
         if (!open) {
           queryClient.invalidateQueries({ queryKey: ["resources"] });

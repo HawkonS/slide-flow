@@ -1,18 +1,48 @@
 // Browser regression coverage for the durable four-step resource import flow.
-// Run against a built, running app (default http://127.0.0.1:8088).
+// Self-hosts the built app and mocks every /api route; set SLIDEFLOW_TEST_URL
+// to run the same suite against a live deployment instead.
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import http from "node:http";
+import path from "node:path";
 import { after, before, test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || "playwright");
-const baseUrl = process.env.SLIDEFLOW_TEST_URL || "http://127.0.0.1:8088";
+const dist = fileURLToPath(new URL("../../app/static/dist/", import.meta.url));
 const png = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aJ1sAAAAASUVORK5CYII=",
   "base64",
 );
 const sessionId = "b".repeat(32);
+const mime = (file) => file.endsWith(".js") ? "text/javascript"
+  : file.endsWith(".css") ? "text/css"
+    : file.endsWith(".svg") ? "image/svg+xml"
+      : file.endsWith(".png") ? "image/png"
+        : file.endsWith(".webmanifest") ? "application/manifest+json"
+          : file.endsWith(".woff2") ? "font/woff2"
+            : "text/html";
+let baseUrl = process.env.SLIDEFLOW_TEST_URL;
+let staticServer;
 let browser;
 
 before(async () => {
+  if (!baseUrl) {
+    staticServer = http.createServer(async (request, response) => {
+      const pathname = new URL(request.url, "http://localhost").pathname;
+      const file = pathname === "/" ? "index.html" : pathname.slice(1);
+      try {
+        const body = await readFile(path.join(dist, file));
+        response.setHeader("Content-Type", mime(file));
+        response.end(body);
+      } catch {
+        response.setHeader("Content-Type", "text/html");
+        response.end(await readFile(path.join(dist, "index.html")));
+      }
+    });
+    await new Promise((resolve) => staticServer.listen(0, "127.0.0.1", resolve));
+    baseUrl = `http://127.0.0.1:${staticServer.address().port}`;
+  }
   browser = await chromium.launch({
     headless: true,
     ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH
@@ -21,7 +51,10 @@ before(async () => {
   });
 });
 
-after(async () => { await browser?.close(); });
+after(async () => {
+  await browser?.close();
+  if (staticServer) await new Promise((resolve) => staticServer.close(resolve));
+});
 
 function deferred() {
   let resolve;
@@ -129,12 +162,12 @@ async function clickTwiceInOneTurn(locator) {
 }
 
 async function createHarness(t, options = {}) {
-  const context = await browser.newContext({ viewport: { width: 1360, height: 960 } });
+  const context = await browser.newContext({ viewport: { width: 1360, height: 960 }, serviceWorkers: "block" });
   t.after(() => context.close());
   const page = await context.newPage();
   const pageErrors = [];
-  const calls = { upload: 0, replace: 0, render: 0, commit: 0 };
-  const submitted = { uploadName: null, commitName: null, polls: 0 };
+  const calls = { upload: 0, replace: 0, render: 0, commit: 0, show: 0 };
+  const submitted = { uploadName: null, commitName: null, showBody: null, polls: 0 };
   const slideCount = options.slideCount ?? 2;
   const gates = {
     upload: deferred(),
@@ -200,7 +233,15 @@ async function createHarness(t, options = {}) {
       calls.commit += 1;
       submitted.commitName = request.postDataJSON().name_prefix;
       await gates.commit.promise;
-      return ok({ created: slideCount });
+      return ok({
+        created: slideCount,
+        resource_ids: Array.from({ length: slideCount }, (_, index) => 100 + index),
+      });
+    }
+    if (path === "/api/shows" && request.method() === "POST") {
+      calls.show += 1;
+      submitted.showBody = request.postDataJSON();
+      return ok({ show: { id: 9, name: submitted.showBody.name } });
     }
     if (path === `/api/resource-import/${sessionId}/status`) {
       return ok({ status: "processing", progress: 0, total: slideCount, message: "正在保存" });
@@ -272,6 +313,42 @@ for (const slideCount of [1, 2]) {
   });
 }
 
+test("confirmation can create a show prefilled from the upload metadata", async (t) => {
+  const { page, calls, gates, submitted } = await createHarness(t, { missingFont: false, slideCount: 2 });
+  await fillUploadStep(page);
+  gates.upload.resolve();
+  gates.render.resolve();
+  gates.commit.resolve();
+  await page.getByRole("button", { name: "创建上传任务", exact: true }).click();
+  await page.getByText("字体检测通过，请确认后继续。", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "字体已确认，下一步", exact: true }).click();
+  await page.getByText("共 2 页，已生成 2 页、已加载 2 张。", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "图片已确认，下一步", exact: true }).click();
+  await page.getByRole("heading", { name: "4. 确认导入", exact: true }).waitFor();
+
+  const showOption = page.getByRole("checkbox", { name: /同时创建放映素材/ });
+  assert.equal(await showOption.isChecked(), false);
+  assert.equal(await page.locator("#import-show-name").count(), 0);
+
+  await showOption.check();
+  assert.equal(await page.locator("#import-show-name").inputValue(), "四步回归");
+  await page.locator("#import-show-name").fill("发布会放映");
+
+  await page.getByRole("button", { name: "确认导入并创建放映素材", exact: true }).click();
+  await page.getByText("导入完成，已保存 2 个单页素材", { exact: true }).waitFor();
+  await page.getByText(/已创建放映素材《发布会放映》。/).waitFor();
+
+  assert.equal(calls.commit, 1);
+  assert.equal(calls.show, 1);
+  assert.deepEqual(submitted.showBody.resource_ids, [100, 101]);
+  assert.equal(submitted.showBody.name, "发布会放映");
+  assert.equal(submitted.showBody.subject, "产品");
+  assert.equal(submitted.showBody.status, "active");
+  assert.equal(submitted.showBody.visibility_scope, "public");
+  assert.equal(submitted.showBody.management_scope, "public");
+  assert.equal(await page.getByRole("link", { name: "查看放映素材" }).getAttribute("href"), "/shows/9");
+});
+
 test("four-step import survives refresh and same-turn double clicks never duplicate work", async (t) => {
   const { page, calls, gates } = await createHarness(t);
   await fillUploadStep(page);
@@ -314,11 +391,11 @@ test("four-step import survives refresh and same-turn double clicks never duplic
   gates.commit.resolve();
 
   await page.getByText("导入完成，已保存 2 个单页素材", { exact: true }).waitFor();
-  assert.deepEqual(calls, { upload: 1, replace: 1, render: 1, commit: 1 });
+  assert.deepEqual(calls, { upload: 1, replace: 1, render: 1, commit: 1, show: 0 });
 });
 
 test("an existing task URL restores a completed image render without another render request", async (t) => {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: "block" });
   t.after(() => context.close());
   const page = await context.newPage();
   let renderCalls = 0;

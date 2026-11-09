@@ -29,7 +29,7 @@ It ships as one web service (asset, template, font and show libraries in the fro
 
 ## Features
 
-- Single-slide asset library: font detection and image rendering run asynchronously after upload, and the task can be resumed after closing the page.
+- Single-slide asset library: font detection and image rendering run asynchronously after upload; confirmation can optionally assemble the pages into a new show, and the task can be resumed after closing the page.
 - Show library: assemble slides into a show with editing, version iteration, downloads and watermarking.
 - Templates and fonts: templates are grouped by subject or series and filterable on several dimensions; the font library supports upload, preview, embedding and missing-font detection.
 - Access control: roles combined with scopes, where visible, downloadable and manageable are three separate boundaries.
