@@ -15,6 +15,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
+
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -45,8 +46,6 @@ export function ShowCard({ show, onOpen, onEdit, onDuplicate, onIterate, onDelet
 
   const firstPreview =
     accessibleResources[0]?.preview_url || accessibleResources[0]?.original_preview_url || null;
-  const secondPreview =
-    accessibleResources[1]?.preview_url || accessibleResources[1]?.original_preview_url || null;
 
   const hasResources = show.resources.length > 0;
   const hasAccessible = accessibleResources.length > 0;
@@ -97,33 +96,17 @@ export function ShowCard({ show, onOpen, onEdit, onDuplicate, onIterate, onDelet
           <div className="flex h-full w-full items-center justify-center bg-muted-foreground/10 text-muted-foreground">
             <Layers className="h-8 w-8 opacity-40" />
           </div>
+        ) : firstPreview ? (
+          <img
+            src={firstPreview}
+            alt={show.name}
+            loading="lazy"
+            className="absolute inset-0 h-full w-full object-cover"
+          />
         ) : (
-          <>
-            {/* 第二张（底层，稍微偏移） */}
-            {secondPreview && (
-              <div className="absolute inset-0 translate-x-1 translate-y-1 rounded bg-muted-foreground/10">
-                <img
-                  src={secondPreview}
-                  alt=""
-                  loading="lazy"
-                  className="h-full w-full object-cover opacity-60"
-                />
-              </div>
-            )}
-            {/* 第一张（顶层） */}
-            {firstPreview ? (
-              <img
-                src={firstPreview}
-                alt={show.name}
-                loading="lazy"
-                className="relative h-full w-full object-cover"
-              />
-            ) : (
-              <div className="flex h-full w-full items-center justify-center text-muted-foreground">
-                <Layers className="h-8 w-8" />
-              </div>
-            )}
-          </>
+          <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+            <Layers className="h-8 w-8" />
+          </div>
         )}
 
         {/* 版本徽章 */}
