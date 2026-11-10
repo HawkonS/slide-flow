@@ -229,7 +229,7 @@ export function AppShell() {
   const pwaNeedsAttention = pwaStatus.status === "development" || pwaStatus.status === "update-available" || pwaStatus.status === "error" || pwaStatus.status === "not-deployed";
         
   return (
-    <div className="flex h-screen flex-col bg-background">
+    <div className="flex h-full flex-col overflow-hidden bg-background">
       {/* 顶部栏 */}
       <header
         className="flex h-14 shrink-0 items-center border-b bg-card px-4 shadow-[0_1px_0_rgba(15,23,42,0.02)] md:px-6"
@@ -308,14 +308,14 @@ export function AppShell() {
       <div className="flex flex-1 overflow-hidden">
         {/* 桌面端固定 Sidebar */}
         <aside
-          className="hidden w-56 shrink-0 flex-col overflow-y-auto border-r bg-card md:flex scrollbar-hide"
+          className="hidden w-56 shrink-0 flex-col overflow-y-auto overscroll-contain border-r bg-card md:flex scrollbar-hide"
           style={{ userSelect: 'none', WebkitUserSelect: 'none' }}
         >
           <SidebarContent />
         </aside>
 
         {/* 主内容 */}
-        <main data-list-scroll="app" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto px-3 py-3 sm:px-4 sm:py-4 md:px-6 md:py-5">
+        <main data-list-scroll="app" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-contain px-3 py-3 sm:px-4 sm:py-4 md:px-6 md:py-5">
           <Suspense fallback={<PageLoadingSkeleton />}>
             {/* Keep the boundary mounted so a transition paints the old page until the next chunk is ready. */}
             <Outlet key={pageKey} />
