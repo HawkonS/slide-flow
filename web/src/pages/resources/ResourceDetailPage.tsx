@@ -40,6 +40,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import {
   DEFAULT_RESOURCE_SUBJECT,
   RESOURCE_SCOPE_LABEL,
@@ -476,7 +477,7 @@ export function ResourceDetailPage() {
 
   return (
     <div className="min-h-full w-full pb-8">
-      <header className="flex flex-col justify-between gap-x-4 gap-y-2 border-b px-1 py-2 sm:flex-row sm:items-center sm:px-2">
+      <header className="flex flex-col justify-between gap-x-4 gap-y-2 sm:flex-row sm:items-center">
         <div className="flex min-w-0 flex-1 items-center gap-2.5">
           <Button
             variant="ghost"
@@ -490,7 +491,7 @@ export function ResourceDetailPage() {
           </Button>
           <div className="min-w-0">
             <div className="flex h-9 min-w-0 items-center gap-2">
-              <h1 title={resource.name} className="min-w-0 truncate text-xl font-semibold tracking-tight sm:text-2xl">{resource.name}</h1>
+              <h1 title={resource.name} className="page-title min-w-0 truncate">{resource.name}</h1>
               {statusLabel && (
                 <Badge variant={resource.status === "active" ? "secondary" : "outline"} className="h-5 shrink-0 px-1.5 text-[10px]">
                   {statusLabel}
@@ -568,20 +569,23 @@ export function ResourceDetailPage() {
                   共 {versionOptions.length} 个版本
                 </span>
               </div>
-              <Select value={followsLatest ? "latest" : String(version.version_no)} onValueChange={selectVersion}>
+              <Select value={String(version.version_no)} onValueChange={selectVersion}>
                 <SelectTrigger className="mt-3 h-10 w-full border-border/70 bg-muted/30 px-3 text-sm font-medium hover:bg-muted/60" aria-label="切换版本">
                   <SelectValue placeholder="选择版本" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="latest">最新版 · v{resource.current.version_no}</SelectItem>
                   {versionOptions.map((item) => (
                     <SelectItem key={item.id} value={String(item.version_no)}>
-                      v{item.version_no}{item.id === resource.current.id ? "（当前）" : ""}{item.change_note ? ` · ${item.change_note}` : ""}
+                      v{item.version_no}{item.version_no === resource.current.version_no ? " · 最新" : ""}{item.change_note ? ` · ${item.change_note}` : ""}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-              <p className="mt-2 text-xs text-muted-foreground">{followsLatest ? "自动跟随最新版" : `已固定到 v${version.version_no}，切换至最新版可自动跟随更新`}</p>
+              <label className="mt-2 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                <span>自动跟随最新版</span>
+                <Switch checked={followsLatest} onCheckedChange={(checked) => selectVersion(checked ? "latest" : String(version.version_no))} aria-label="自动跟随最新版" />
+              </label>
+              <p className="mt-1 text-[11px] text-muted-foreground">{followsLatest ? "新版本发布后自动切换" : `已固定到 v${version.version_no}`}</p>
             </section>
 
             <section className="rounded-lg border bg-card p-3 shadow-sm">

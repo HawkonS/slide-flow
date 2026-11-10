@@ -64,6 +64,23 @@ before(async () => {
 });
 after(async () => { await browser?.close(); server?.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
 
+/** Pick a version from the merged list; "latest" turns the follow switch on. */
+async function pickVersion(page, comboboxName, no) {
+  const follow = page.getByRole('switch', { name: '自动跟随最新版' });
+  const following = (await follow.getAttribute('aria-checked')) === 'true';
+  if (no === 'latest') {
+    if (!following) await follow.click();
+    return;
+  }
+  const selected = (await page.getByRole('combobox', { name: comboboxName }).textContent()) ?? '';
+  if (following && selected.includes(`v${no}`)) {
+    await follow.click();
+    return;
+  }
+  await page.getByRole('combobox', { name: comboboxName }).click();
+  await page.getByRole('option', { name: new RegExp(`^v${no}(?:（| ·|$)`) }).click();
+}
+
 async function versionedResourcePage(t) {
   const context = await browser.newContext({ serviceWorkers: 'block' });
   t.after(() => context.close());
@@ -92,8 +109,7 @@ async function versionedResourcePage(t) {
     await page.getByRole('button', { name: /个人备注/ }).getByText(`版本 ID ${no * 10 + 1} 的个人备注`, { exact: true }).waitFor();
   };
   const chooseVersion = async no => {
-    await page.getByRole('combobox', { name: '切换版本' }).click();
-    await page.getByRole('option', { name: no === 'latest' ? /^最新版/ : new RegExp(`^v${no}(?:（| ·)`), exact: false }).click();
+    await pickVersion(page, '切换版本', no);
   };
   return { page, path: `/resources/${detailToken}`, assertVersion, chooseVersion, update: no => { current = no; } };
 }
@@ -204,8 +220,7 @@ async function versionedShowPage(t) {
     await page.waitForFunction(() => document.querySelector('[aria-label="切换放映版本"]')?.textContent?.includes('v'));
   };
   const chooseVersion = async no => {
-    await page.getByRole('combobox', { name: '切换放映版本' }).click();
-    await page.getByRole('option', { name: no === 'latest' ? /^最新版/ : new RegExp(`^v${no}(?:（| ·)`) }).click();
+    await pickVersion(page, '切换放映版本', no);
   };
   return { page, calls, assertVersion, chooseVersion, update: no => { current = no; } };
 }
@@ -327,7 +342,7 @@ for (const viewport of [{ width: 1360, height: 960 }, { width: 390, height: 844 
     await page.getByRole('combobox', { name: '切换版本' }).click();
     await page.getByRole('option', { name: /^v1/ }).click();
     await page.waitForURL(url => url.searchParams.get('version') === '1');
-    await page.getByText('已固定到 v1，切换至最新版可自动跟随更新', { exact: true }).waitFor();
+    await page.getByText('已固定到 v1', { exact: true }).waitFor();
     await next.and(page.locator(':enabled')).waitFor();
     const originalCard = await card.boundingBox();
     const originalNext = await next.boundingBox();
