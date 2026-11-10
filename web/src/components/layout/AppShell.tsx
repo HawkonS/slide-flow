@@ -316,8 +316,9 @@ export function AppShell() {
 
         {/* 主内容 */}
         <main data-list-scroll="app" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto px-3 py-3 sm:px-4 sm:py-4 md:px-6 md:py-5">
-          <Suspense key={pageKey} fallback={<PageLoadingSkeleton />}>
-            <Outlet />
+          <Suspense fallback={<PageLoadingSkeleton />}>
+            {/* Keep the boundary mounted so a transition paints the old page until the next chunk is ready. */}
+            <Outlet key={pageKey} />
           </Suspense>
         </main>
       </div>

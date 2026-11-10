@@ -119,19 +119,51 @@ test('invalid URL state still waits for defaults; explicit list state does not',
   assert.equal(lists[0].query.status, undefined);
 });
 
-test('sidebar navigation remains usable while the resources route chunk waits', async t => {
-  const { page } = await fixture(t);
+test('switching sections keeps the current page until the next chunk is ready', async t => {
+  const { page } = await fixture(t, { width: 1280 });
   const chunkGate = gate();
   t.after(() => chunkGate.release());
   await page.route('**/assets/ResourcesPage-*.js', async route => { await chunkGate.promise; await route.continue(); });
-  await page.goto(origin + '/');
-  await page.getByRole('button', { name: '打开菜单' }).click();
+  await page.goto(origin + '/home');
+  await page.getByRole('heading', { name: /好，/ }).waitFor();
+  const homeTitle = await page.locator('main h1').first().textContent();
+
   await page.getByRole('link', { name: '单页素材', exact: true }).click();
-  await page.getByRole('status', { name: '正在加载列表' }).waitFor();
-  await page.getByRole('button', { name: '打开菜单' }).click();
-  await page.getByRole('link', { name: '用户首页', exact: true }).click();
-  await page.waitForURL('**/home');
+  await page.waitForURL('**/resources');
+  await page.waitForTimeout(300);
+  assert.equal(await page.getByRole('status', { name: '正在加载列表' }).count(), 0, 'no full-page skeleton while the chunk loads');
+  assert.equal(await page.locator('main h1').first().textContent(), homeTitle, 'the previous page stays visible until the next one is ready');
+
   chunkGate.release();
+  await page.getByRole('heading', { name: '单页素材', exact: true }).waitFor({ timeout: 10_000 });
+});
+
+test('the sidebar keeps its position and DOM while sections change', async t => {
+  const { page } = await fixture(t, { width: 1280 });
+  await page.goto(origin + '/home');
+  await page.getByRole('heading', { name: /好，/ }).waitFor();
+  const before = await page.evaluate(() => {
+    const aside = document.querySelector('aside');
+    aside.dataset.probe = 'kept';
+    const rect = aside.getBoundingClientRect();
+    return { x: Math.round(rect.x), width: Math.round(rect.width) };
+  });
+
+  await page.getByRole('link', { name: '放映素材', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('main h1')?.textContent?.trim() === '放映素材');
+  const after = await page.evaluate(() => {
+    const aside = document.querySelector('aside');
+    const rect = aside.getBoundingClientRect();
+    return {
+      x: Math.round(rect.x),
+      width: Math.round(rect.width),
+      kept: aside.dataset.probe === 'kept',
+      active: aside.querySelector('a[aria-current="page"]')?.textContent ?? null,
+    };
+  });
+
+  assert.deepEqual({ x: after.x, width: after.width, kept: after.kept }, { ...before, kept: true });
+  assert.equal(after.active, '放映素材');
 });
 
 test('show detail keeps the sidebar entry of the list that opened it', async t => {
