@@ -2,7 +2,7 @@ import * as React from "react";
 import { useSceneFilters } from "@/lib/tag-defaults";
 import { useOpenDetail, useRestoreListScroll } from "@/lib/detail-navigation";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, Check, ChevronDown, ClipboardList, ListChecks, Loader2, Plus, Star, Trash2, X } from "lucide-react";
+import { ArrowRight, Check, ChevronDown, ClipboardList, ListChecks, Plus, Star, Trash2, X } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,7 @@ import {
 } from "@/components/common/DeleteScopeDialog";
 import { ConfirmDialog, PromptDialog } from "@/components/common/ConfirmDialog";
 import { PageHeader } from "@/components/common/PageHeader";
+import { ResultsLoadingSkeleton } from "@/components/common/PageLoadingSkeleton";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { toast } from "sonner";
@@ -59,17 +60,21 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
 
   // 分页
   const contentRef = React.useRef<HTMLDivElement>(null);
-  const { pageSize: cardPageSize, gridStyle } = useResponsiveGrid(contentRef, {
+  const { pageSize: cardPageSize, gridStyle, ready: gridReady } = useResponsiveGrid(contentRef, {
     columnStep: standardOnly ? 360 : 300,
     maxCols: standardOnly ? 3 : 4,
     titleHeight: 48,
   });
   const [listPageSize, setListPageSize] = React.useState(12);
+  const [listPageReady, setListPageReady] = React.useState(false);
   React.useEffect(() => {
     const el = contentRef.current;
     if (!el) return;
     const compute = () => {
-      if (el.clientHeight) setListPageSize(Math.max(5, Math.floor((el.clientHeight - 42) / 48)));
+      if (el.clientHeight) {
+        setListPageSize(Math.max(5, Math.floor((el.clientHeight - 42) / 48)));
+        setListPageReady(true);
+      }
     };
     compute();
     const observer = new ResizeObserver(compute);
@@ -78,9 +83,10 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
   }, []);
 
   // 筛选 + 页码统一编码到 URL ?s=…
-  const { state: urlState, setState: setUrlState, filters } = useSceneFilters(standardOnly ? "standard_show_list" : "show_list", URL_DEFAULTS);
+  const { state: urlState, setState: setUrlState, filters, ready: filtersReady } = useSceneFilters(standardOnly ? "standard_show_list" : "show_list", URL_DEFAULTS);
   const viewMode = standardOnly ? "card" : urlState.view === "list" ? "list" : "card";
   const pageSize = viewMode === "list" ? listPageSize : cardPageSize;
+  const queryReady = filtersReady && (viewMode === "list" ? listPageReady : gridReady);
   const setViewMode = (view: "card" | "list") => {
     if (standardOnly) return;
     setUrlState((prev) => ({ ...prev, view, p: 1 }));
@@ -128,9 +134,10 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
     params: apiParams,
     page,
     pageSize,
+    enabled: queryReady,
   });
 
-  useRestoreListScroll(!isLoading && !isFetching && !isError);
+  useRestoreListScroll(queryReady && !isLoading && !isFetching && !isError);
 
   // 页码越界检查
   // 增加 page !== 1 守卫，避免与其他 setPage 调用产生竞态、
@@ -445,10 +452,8 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
 
       {/* 内容区 */}
       <div ref={contentRef} data-list-scroll="results" className="min-h-0 flex-1 overflow-auto">
-        {isLoading ? (
-          <div className="flex items-center justify-center py-16 text-muted-foreground">
-            <Loader2 className="mr-2 h-5 w-5 animate-spin" /> 加载中…
-          </div>
+        {!queryReady || isLoading ? (
+          <ResultsLoadingSkeleton viewMode={viewMode} count={pageSize} gridStyle={gridStyle} />
         ) : isError ? (
           <div className="rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
             加载失败：{error?.message || "未知错误"}
@@ -492,7 +497,7 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
       </div>
 
       {/* 分页条 */}
-      {!isLoading && !isError && shows.length > 0 && (
+      {queryReady && !isLoading && !isError && shows.length > 0 && (
         <div className="flex shrink-0 items-center justify-between border-t pt-3 text-sm text-muted-foreground select-none">
           <span>
             显示 {pageStart + 1}-{Math.min(pageStart + pageSize, total)}，共{" "}

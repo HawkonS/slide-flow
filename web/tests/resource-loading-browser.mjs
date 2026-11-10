@@ -104,6 +104,16 @@ for (const width of [320, 390, 768, 1024, 1440]) {
   });
 }
 
+test('show lists wait for the measured grid before their first request', async t => {
+  const { page, requests } = await fixture(t, { width: 1024 });
+  await page.goto(origin + '/manage/shows');
+  await page.getByRole('heading', { name: '放映素材', exact: true }).waitFor();
+  await page.waitForTimeout(600);
+  const lists = requests.filter(r => r.p === '/api/shows');
+  assert.equal(lists.length, 1, JSON.stringify(lists));
+  assert.ok(Number(lists[0].query.page_size) >= 6, JSON.stringify(lists[0]));
+});
+
 test('invalid URL state still waits for defaults; explicit list state does not', async t => {
   const configGate = gate();
   const { page, requests } = await fixture(t, { configGate });
