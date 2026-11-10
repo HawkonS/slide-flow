@@ -5,23 +5,18 @@ import {
   ArrowLeft,
   ArrowRight,
   CheckCircle2,
-  ExternalLink,
-  GripVertical,
   Link2,
-  ImageOff,
   Loader2,
-  Minus,
-  Plus,
   CircleHelp,
   Save,
   Trash2,
-  ZoomIn,
   X,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/common/PageHeader";
+import { PageOrderGrid } from "@/components/show/PageOrderGrid";
 import { ResourcePicker, type PickerResource } from "@/components/show/ResourcePicker";
 import { TagInput } from "@/components/resource/TagInput";
 import { UserPicker } from "@/components/resource/UserPicker";
@@ -54,7 +49,6 @@ import { ApiError, api, apiWithTimeout } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { Resource, Show } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   readShowCreateDraft,
   showCreateDraftKey,
@@ -167,50 +161,11 @@ export function ShowCreatePage() {
   const [step, setStep] = React.useState(initialDraft?.step ?? 0);
   const [hydratedOwnerId, setHydratedOwnerId] = React.useState<number | null>(user?.id ?? null);
   const [draftSavedAt, setDraftSavedAt] = React.useState(initialDraft?.savedAt ?? "");
-  const [draggingId, setDraggingId] = React.useState<number | null>(null);
-  const [dragOverId, setDragOverId] = React.useState<number | null>(null);
-  const [moveFromPage, setMoveFromPage] = React.useState("");
-  const [moveToPosition, setMoveToPosition] = React.useState("1");
-  const [thumbnailColumns, setThumbnailColumns] = React.useState(4);
-  const thumbnailScale = 8 - thumbnailColumns;
-  const sortGridRef = React.useRef<HTMLOListElement>(null);
-  const [previewResourceId, setPreviewResourceId] = React.useState<number | null>(null);
   const [urlImportOpen, setUrlImportOpen] = React.useState(false);
   const [urlImportText, setUrlImportText] = React.useState("");
   const [urlImportItems, setUrlImportItems] = React.useState<UrlImportItem[]>([]);
   const [urlImporting, setUrlImporting] = React.useState(false);
   const urlImportRequestRef = React.useRef<AbortController | null>(null);
-  const sortAutoScrollRef = React.useRef<{ clientY: number; frame: number | null }>({ clientY: 0, frame: null });
-
-  const stopSortAutoScroll = React.useCallback(() => {
-    const frame = sortAutoScrollRef.current.frame;
-    if (frame != null) window.cancelAnimationFrame(frame);
-    sortAutoScrollRef.current.frame = null;
-  }, []);
-
-  const autoScrollSortGrid = React.useCallback((clientY: number) => {
-    sortAutoScrollRef.current.clientY = clientY;
-    if (sortAutoScrollRef.current.frame != null) return;
-    const tick = () => {
-      const container = sortGridRef.current;
-      if (!container) return stopSortAutoScroll();
-      const rect = container.getBoundingClientRect();
-      const edge = Math.min(96, rect.height * 0.2);
-      const y = sortAutoScrollRef.current.clientY;
-      const distance = y < rect.top + edge
-        ? (rect.top + edge - y) / edge
-        : y > rect.bottom - edge
-          ? (y - (rect.bottom - edge)) / edge
-          : 0;
-      if (distance <= 0) return stopSortAutoScroll();
-      const direction = y < rect.top + edge ? -1 : 1;
-      container.scrollTop += direction * Math.min(28, Math.max(2, Math.round(distance * 24)));
-      sortAutoScrollRef.current.frame = window.requestAnimationFrame(tick);
-    };
-    sortAutoScrollRef.current.frame = window.requestAnimationFrame(tick);
-  }, [stopSortAutoScroll]);
-
-  React.useEffect(() => stopSortAutoScroll, [stopSortAutoScroll]);
   React.useEffect(() => () => urlImportRequestRef.current?.abort(), []);
 
   const closeUrlImport = () => {
@@ -486,56 +441,6 @@ export function ShowCreatePage() {
       },
   );
 
-  const startSortDrag = (id: number) => (event: React.DragEvent<HTMLElement>) => {
-    setDraggingId(id);
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("text/plain", String(id));
-  };
-
-  const dropSortDrag = (targetId: number) => (event: React.DragEvent<HTMLElement>) => {
-    event.preventDefault();
-    stopSortAutoScroll();
-    const sourceId = draggingId ?? Number(event.dataTransfer.getData("text/plain"));
-    if (!Number.isInteger(sourceId) || sourceId === targetId) return;
-    setResourceIds((current) => {
-      const from = current.indexOf(sourceId);
-      const target = current.indexOf(targetId);
-      if (from < 0 || target < 0) return current;
-      const targetRect = event.currentTarget.getBoundingClientRect();
-      const insertAfter = event.clientX > targetRect.left + targetRect.width / 2 || event.clientY > targetRect.top + targetRect.height / 2;
-      const next = [...current];
-      next.splice(from, 1);
-      const targetAfterRemoval = next.indexOf(targetId);
-      const destination = targetAfterRemoval + (insertAfter ? 1 : 0);
-      next.splice(Math.max(0, destination), 0, sourceId);
-      return next;
-    });
-    setDraggingId(null);
-    setDragOverId(null);
-  };
-
-  const moveToPagePosition = () => {
-    const from = Number(moveFromPage);
-    const to = Number(moveToPosition);
-    if (!Number.isInteger(from) || from < 1 || from > resourceIds.length) {
-      toast.error(`起始页码需在 1 到 ${resourceIds.length} 之间`);
-      return;
-    }
-    if (!Number.isInteger(to) || to < 1 || to > resourceIds.length) {
-      toast.error(`目标位置需在 1 到 ${resourceIds.length} 之间`);
-      return;
-    }
-    setResourceIds((current) => {
-      const next = [...current];
-      const [resourceId] = next.splice(from - 1, 1);
-      next.splice(to - 1, 0, resourceId);
-      return next;
-    });
-    setMoveFromPage("");
-  };
-
-  const previewResource = orderedResources.find((resource) => resource.id === previewResourceId) ?? null;
-
   const ownerId = user?.id;
 
   return (
@@ -740,169 +645,14 @@ export function ShowCreatePage() {
         )}
 
         {step === 2 && (
-          <section className="flex h-full min-h-0 flex-col">
-            <div className="mb-3 flex shrink-0 flex-wrap items-center gap-3 border-b pb-3">
-              <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                  <h2 className="min-w-0 truncate text-base font-semibold">确认播放顺序</h2>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button type="button" className="inline-flex h-5 w-5 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="查看排序规则">
-                        <CircleHelp className="h-4 w-4" />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom" align="start" className="space-y-1 text-xs">
-                      <p>拖到卡片左侧或上半部：插入到目标之前</p>
-                      <p>拖到卡片右侧或下半部：插入到目标之后</p>
-                    </TooltipContent>
-                  </Tooltip>
-              </div>
-              <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
-                <div className="flex items-center gap-2 rounded-lg border bg-muted/30 px-2 py-1.5 shadow-sm">
-                  <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">移动页面</span>
-                  <div className="flex items-center gap-1">
-                    <Input
-                      id="show-create-move-from"
-                      type="number"
-                      min={1}
-                      max={resourceIds.length}
-                      value={moveFromPage}
-                      onChange={(event) => setMoveFromPage(event.target.value)}
-                      onKeyDown={(event) => { if (event.key === "Enter") moveToPagePosition(); }}
-                      className="h-8 w-14 bg-muted/30 text-center"
-                      aria-label="当前页码"
-                      placeholder="原页"
-                    />
-                    <span className="px-0.5 text-muted-foreground">→</span>
-                    <Input
-                      id="show-create-move-to"
-                      type="number"
-                      min={1}
-                      max={resourceIds.length}
-                      value={moveToPosition}
-                      onChange={(event) => setMoveToPosition(event.target.value)}
-                      onKeyDown={(event) => { if (event.key === "Enter") moveToPagePosition(); }}
-                      className="h-8 w-14 bg-muted/30 text-center"
-                      aria-label="目标位置"
-                      placeholder="目标"
-                    />
-                    <Button type="button" size="sm" className="h-8 px-2.5" onClick={moveToPagePosition}>移动</Button>
-                  </div>
-                </div>
-                <div className="flex items-center gap-1.5 rounded-lg border bg-muted/30 px-2 py-1.5 shadow-sm">
-                  <span className="mr-0.5 text-xs font-medium text-muted-foreground">缩略图</span>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="icon"
-                    className="h-8 w-8 border-0 shadow-none"
-                    title="缩小缩略图"
-                    aria-label="缩小缩略图"
-                    disabled={thumbnailColumns >= 6}
-                    onClick={() => setThumbnailColumns((columns) => Math.min(6, columns + 1))}
-                  ><Minus className="h-4 w-4" /></Button>
-                  <input
-                    type="range"
-                    min={2}
-                    max={6}
-                    step={1}
-                    value={thumbnailScale}
-                    onChange={(event) => setThumbnailColumns(8 - Number(event.target.value))}
-                    className="w-24 accent-primary"
-                    aria-label="缩略图大小"
-                    title="缩略图大小"
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="icon"
-                    className="h-8 w-8 border-0 shadow-none"
-                    title="放大缩略图"
-                    aria-label="放大缩略图"
-                    disabled={thumbnailColumns <= 2}
-                    onClick={() => setThumbnailColumns((columns) => Math.max(2, columns - 1))}
-                  ><Plus className="h-4 w-4" /></Button>
-                </div>
-              </div>
-            </div>
-            {orderedResources.length === 0 ? (
-              <div className="surface flex flex-1 items-center justify-center text-sm text-muted-foreground">
-                还没有选择素材，请返回上一步添加。
-              </div>
-            ) : (
-              <ol
-                ref={sortGridRef}
-                className="grid min-h-0 flex-1 auto-rows-max grid-cols-1 gap-3 overflow-x-hidden overflow-y-auto overscroll-contain pb-1 pr-1 sm:grid-cols-2 lg:grid-cols-[repeat(var(--sort-columns),minmax(0,1fr))]"
-                style={{ "--sort-columns": thumbnailColumns } as React.CSSProperties}
-              >
-                  {orderedResources.map((resource, index) => {
-                    return (
-                      <li
-                        key={resource.id}
-                        data-sort-resource-id={resource.id}
-                        draggable
-                        onDragStart={startSortDrag(resource.id)}
-                        onDragOver={(event) => {
-                          event.preventDefault();
-                          event.dataTransfer.dropEffect = "move";
-                          setDragOverId(resource.id);
-                          autoScrollSortGrid(event.clientY);
-                        }}
-                        onDrop={dropSortDrag(resource.id)}
-                        onDragEnd={() => { stopSortAutoScroll(); setDraggingId(null); setDragOverId(null); }}
-                        className={cn(
-                          "group relative min-w-0 cursor-grab select-none overflow-hidden rounded-md border bg-background text-left transition active:cursor-grabbing",
-                          "hover:border-primary/50 hover:shadow-sm",
-                          draggingId === resource.id && "opacity-40",
-                          dragOverId === resource.id && "ring-2 ring-primary",
-                        )}
-                      >
-                        <div className="relative aspect-video min-h-28 w-full bg-muted">
-                          {resource.preview_url ? (
-                            <img src={resource.preview_url} alt={resource.name} loading="lazy" decoding="async" className="h-full w-full object-contain" />
-                          ) : (
-                            <div className="flex h-full items-center justify-center text-muted-foreground"><ImageOff className="h-8 w-8" /></div>
-                          )}
-                          <span className="absolute left-2 top-2 flex h-7 min-w-7 items-center justify-center rounded bg-black/75 px-2 text-sm font-semibold text-white">{index + 1}</span>
-                          <div className="absolute right-2 top-2 z-10 flex flex-col overflow-hidden rounded-md bg-black/70 text-white shadow-sm backdrop-blur-sm">
-                            <button
-                              type="button"
-                              onMouseDown={(event) => event.stopPropagation()}
-                              className="flex h-8 w-8 items-center justify-center transition hover:bg-black/85"
-                              aria-label={`拖动第 ${index + 1} 页调整顺序`}
-                              title="按住拖动排序"
-                            ><GripVertical className="h-4 w-4" /></button>
-                            <button
-                              type="button"
-                              onMouseDown={(event) => event.stopPropagation()}
-                              onClick={() => setPreviewResourceId(resource.id)}
-                              className="flex h-8 w-8 items-center justify-center border-t border-white/20 transition hover:bg-black/85 focus-visible:outline-none"
-                              aria-label={`放大查看 ${resource.name}`}
-                              title="放大查看"
-                            ><ZoomIn className="h-4 w-4" /></button>
-                            <button
-                              type="button"
-                              onMouseDown={(event) => event.stopPropagation()}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                setResourceIds((current) => current.filter((id) => id !== resource.id));
-                              }}
-                              disabled={mutation.isPending}
-                              className="flex h-8 w-8 items-center justify-center border-t border-white/20 transition hover:bg-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white disabled:pointer-events-none disabled:opacity-50"
-                              aria-label={`移除 ${resource.name}`}
-                              title="从放映中移除"
-                            ><Trash2 className="h-4 w-4" /></button>
-                          </div>
-                        </div>
-                        <div className="flex min-w-0 items-center gap-2 px-3 py-2.5">
-                          <p className="min-w-0 flex-1 truncate text-sm font-medium" title={resource.name}>{resource.name}</p>
-                          <span className="shrink-0 text-xs text-muted-foreground">ID {resource.id}</span>
-                        </div>
-                      </li>
-                    );
-                  })}
-              </ol>
-            )}
-          </section>
+          <PageOrderGrid
+            title="确认播放顺序"
+            resources={orderedResources}
+            onChange={setResourceIds}
+            onRemove={(id) => setResourceIds((current) => current.filter((resourceId) => resourceId !== id))}
+            disabled={mutation.isPending}
+            emptyHint="还没有选择素材，请返回上一步添加。"
+          />
         )}
       </main>
 
@@ -971,31 +721,6 @@ export function ShowCreatePage() {
               {urlImporting ? "导入中…" : "导入并选中"}
             </Button>
           </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={previewResource != null} onOpenChange={(open) => { if (!open) setPreviewResourceId(null); }}>
-        <DialogContent className="flex h-[min(92vh,900px)] w-[min(96vw,1440px)] max-w-none flex-col gap-0 p-0">
-          {previewResource && (
-            <>
-              <div className="flex shrink-0 items-center justify-between gap-3 border-b px-4 py-3 pr-12">
-                <div className="min-w-0">
-                  <DialogTitle className="truncate text-sm">{previewResource.name}</DialogTitle>
-                  <DialogDescription className="mt-1">第 {resourceIds.indexOf(previewResource.id) + 1} / {resourceIds.length} 页 · 素材 ID {previewResource.id}</DialogDescription>
-                </div>
-                <Button type="button" variant="outline" size="sm" className="shrink-0" onClick={() => window.open(`/api/resources/${previewResource.id}/preview`, "_blank", "noopener,noreferrer")}>
-                  <ExternalLink className="h-4 w-4" />打开原图
-                </Button>
-              </div>
-              <div className="flex min-h-0 flex-1 items-center justify-center bg-black/90 p-2 sm:p-5">
-                {previewResource.preview_url ? (
-                  <img src={`/api/resources/${previewResource.id}/preview`} alt={previewResource.name} className="max-h-full max-w-full object-contain" />
-                ) : (
-                  <div className="flex flex-col items-center gap-2 text-white/70"><ImageOff className="h-10 w-10" /><span>暂无预览图</span></div>
-                )}
-              </div>
-            </>
-          )}
         </DialogContent>
       </Dialog>
 
