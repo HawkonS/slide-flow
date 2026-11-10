@@ -94,7 +94,9 @@ export function AdminConfigPage() {
       const baseline = item.secret && secretOriginals[key] !== undefined
         ? secretOriginals[key]
         : item.value;
-      if ((draft[key] ?? "") !== baseline) keys.push(key);
+      // Before the draft is hydrated, fall back to the loaded value so the
+      // form does not look dirty (and invalid) for one frame.
+      if ((draft[key] ?? item.value) !== baseline) keys.push(key);
     }
     return keys;
   }, [data, draft, secretOriginals]);
@@ -104,7 +106,7 @@ export function AdminConfigPage() {
     return dirtyKeys.filter((key) => {
       const meta = data.config[key];
       if (!meta) return false;
-      return !isValidValue(draft[key] ?? "", meta.type);
+      return !isValidValue(draft[key] ?? meta.value, meta.type);
     });
   }, [data, draft, dirtyKeys]);
 
@@ -134,7 +136,7 @@ export function AdminConfigPage() {
     }
     const items: Record<string, string> = {};
     for (const key of dirtyKeys) {
-      items[key] = draft[key] ?? "";
+      items[key] = draft[key] ?? data.config[key]?.value ?? "";
     }
     saveMut.mutate(items);
   };
@@ -206,7 +208,7 @@ export function AdminConfigPage() {
               <div className="divide-y divide-border">
                 {(groupedKeys[g.key] || []).map((key, index) => {
                   const item = data.config[key];
-                  const value = draft[key] ?? "";
+                  const value = draft[key] ?? item.value;
                   const valid = isValidValue(value, item.type);
                   const baseline = item.secret && secretOriginals[key] !== undefined
                     ? secretOriginals[key]
