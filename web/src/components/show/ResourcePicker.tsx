@@ -82,6 +82,10 @@ export interface ResourcePickerProps {
   showViewModeSwitch?: boolean;
   /** 是否显示卡片密度切换（默认开启） */
   showDensitySwitch?: boolean;
+  /** 已选清单是否支持拖动排序（默认开启；关闭后顺序只在专门的排序视图调整） */
+  sortable?: boolean;
+  /** 已选清单只用缩略图网格展示（版本迭代的组织页面场景） */
+  selectedThumbnails?: boolean;
   viewMode?: "card" | "list";
   onViewModeChange?: (value: "card" | "list") => void;
 }
@@ -109,6 +113,8 @@ export function ResourcePicker({
   selectedResources,
   showViewModeSwitch = false,
   showDensitySwitch = true,
+  sortable = true,
+  selectedThumbnails = false,
   viewMode: controlledViewMode,
   onViewModeChange,
 }: ResourcePickerProps) {
@@ -313,6 +319,8 @@ export function ResourcePicker({
   // Reorder selected resources with a pointer drag and an explicit insertion line.
   const [draggingId, setDraggingId] = React.useState<number | null>(null);
   const [dragInsertIndex, setDragInsertIndex] = React.useState<number | null>(null);
+  const [dragOverId, setDragOverId] = React.useState<number | null>(null);
+  const [dragOverSide, setDragOverSide] = React.useState<"before" | "after" | null>(null);
   const pointerDragRef = React.useRef<{ id: number; pointerId: number } | null>(null);
   const selectedScrollRef = React.useRef<HTMLDivElement>(null);
   const selectedAutoScrollRef = React.useRef<{ clientY: number; frame: number | null }>({ clientY: 0, frame: null });
@@ -364,8 +372,23 @@ export function ResourcePicker({
     if (from >= 0 && target >= 0) reorderSelectedAt(id, target + (target > from ? 1 : 0));
   };
 
+  const dropPointAt = (clientX: number, clientY: number): { id: number; index: number; side: "before" | "after" } | null => {
+    const target = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>("[data-selected-resource-id]");
+    if (!target) return null;
+    const index = Number(target.dataset.selectedIndex);
+    const id = Number(target.dataset.selectedResourceId);
+    if (!Number.isInteger(index) || index < 0) return null;
+    const rect = target.getBoundingClientRect();
+    const after = selectedThumbnails
+      ? clientX > rect.left + rect.width / 2
+      : clientY >= rect.top + rect.height / 2;
+    return { id, index: index + (after ? 1 : 0), side: after ? "after" as const : "before" as const };
+  };
+
   const handleSortPointerDown = (id: number) => (event: React.PointerEvent<HTMLElement>) => {
     if (event.button !== 0) return;
+    // Thumbnail grids stay scrollable on touch; mobile reorders in the dedicated tab.
+    if (selectedThumbnails && event.pointerType !== "mouse") return;
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     pointerDragRef.current = { id, pointerId: event.pointerId };
@@ -376,14 +399,12 @@ export function ResourcePicker({
   const handleSortPointerMove = (event: React.PointerEvent<HTMLElement>) => {
     if (pointerDragRef.current?.pointerId !== event.pointerId) return;
     autoScrollSelected(event.clientY);
-    const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-selected-resource-id]");
-    const targetIndex = Number(target?.dataset.selectedIndex);
-    if (Number.isInteger(targetIndex) && targetIndex >= 0) {
-      const targetRect = target?.getBoundingClientRect();
-      if (targetRect) {
-        const insertIndex = event.clientY < targetRect.top + targetRect.height / 2 ? targetIndex : targetIndex + 1;
-        setDragInsertIndex((current) => current === insertIndex ? current : insertIndex);
-      }
+    const point = dropPointAt(event.clientX, event.clientY);
+    if (!point) return;
+    setDragInsertIndex((current) => current === point.index ? current : point.index);
+    if (selectedThumbnails) {
+      setDragOverId(point.id);
+      setDragOverSide(point.side);
     }
   };
 
@@ -391,17 +412,14 @@ export function ResourcePicker({
     const drag = pointerDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     stopSelectedAutoScroll();
-    const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-selected-resource-id]");
-    const targetIndex = Number(target?.dataset.selectedIndex);
-    let insertIndex = dragInsertIndex;
-    if (Number.isInteger(targetIndex) && targetIndex >= 0 && target) {
-      const targetRect = target.getBoundingClientRect();
-      insertIndex = event.clientY < targetRect.top + targetRect.height / 2 ? targetIndex : targetIndex + 1;
-    }
+    const point = dropPointAt(event.clientX, event.clientY);
+    const insertIndex = point?.index ?? dragInsertIndex;
     if (insertIndex != null) reorderSelectedAt(drag.id, insertIndex);
     pointerDragRef.current = null;
     setDraggingId(null);
     setDragInsertIndex(null);
+    setDragOverId(null);
+    setDragOverSide(null);
   };
 
   const handleSortKeyDown = (id: number) => (event: React.KeyboardEvent<HTMLButtonElement>) => {
@@ -735,8 +753,56 @@ export function ResourcePicker({
             <div ref={selectedScrollRef} className="min-h-0 flex-1 overflow-auto p-2">
               {selectedItems.length === 0 ? (
                 <div className="flex h-full items-center justify-center px-2 py-6 text-center text-xs text-muted-foreground">
-                  从左侧选择资源后会出现在这里，可拖拽排序
+                  从左侧选择资源后会出现在这里
                 </div>
+              ) : selectedThumbnails ? (
+                <ul className="grid grid-cols-2 gap-1.5">
+                  {selectedItems.map((r, idx) => (
+                    <li
+                      key={r.id}
+                      data-selected-resource-id={r.id}
+                      data-selected-index={idx}
+                      onPointerDown={sortable ? handleSortPointerDown(r.id) : undefined}
+                      onPointerMove={sortable ? handleSortPointerMove : undefined}
+                      onPointerUp={sortable ? finishSortPointer : undefined}
+                      onPointerCancel={sortable ? finishSortPointer : undefined}
+                      title={sortable ? "拖动缩略图调整顺序" : undefined}
+                      className={cn(
+                        "group relative overflow-hidden rounded-md border bg-background",
+                        sortable && "cursor-grab active:cursor-grabbing",
+                        draggingId === r.id && "opacity-40",
+                      )}
+                    >
+                      {dragOverId === r.id && dragOverSide === "before" && (
+                        <span aria-hidden="true" className="pointer-events-none absolute inset-y-0 left-0 z-20 w-0.5 bg-primary" />
+                      )}
+                      {dragOverId === r.id && dragOverSide === "after" && (
+                        <span aria-hidden="true" className="pointer-events-none absolute inset-y-0 right-0 z-20 w-0.5 bg-primary" />
+                      )}
+                      <div className="relative aspect-video w-full bg-muted">
+                        {r.preview_url ? (
+                          <img src={r.preview_url} alt="" className="h-full w-full object-contain" loading="lazy" />
+                        ) : (
+                          <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+                            <ImageOff className="h-4 w-4" />
+                          </div>
+                        )}
+                        <span className="absolute left-1 top-1 flex h-5 min-w-5 items-center justify-center rounded bg-black/65 px-1 text-[10px] font-semibold text-white">{idx + 1}</span>
+                        <button
+                          type="button"
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={() => onChange(value.filter((id) => id !== r.id))}
+                          aria-label={`移除 ${r.name}`}
+                          title={`移除 ${r.name}`}
+                          className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded bg-black/55 text-white transition hover:bg-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                      <span className="sr-only">{r.name}</span>
+                    </li>
+                  ))}
+                </ul>
               ) : (
                 <ul className="space-y-1.5">
                   {selectedItems.map((r, idx) => {
@@ -751,24 +817,27 @@ export function ResourcePicker({
                         <li
                           data-selected-resource-id={r.id}
                           data-selected-index={idx}
-                          onPointerDown={handleSortPointerDown(r.id)}
-                          onPointerMove={handleSortPointerMove}
-                          onPointerUp={finishSortPointer}
-                          onPointerCancel={finishSortPointer}
+                          onPointerDown={sortable ? handleSortPointerDown(r.id) : undefined}
+                          onPointerMove={sortable ? handleSortPointerMove : undefined}
+                          onPointerUp={sortable ? finishSortPointer : undefined}
+                          onPointerCancel={sortable ? finishSortPointer : undefined}
                           className={cn(
-                            "group flex min-w-0 cursor-grab select-none items-center gap-2 rounded-md border bg-background p-2 transition active:cursor-grabbing",
+                            "group flex min-w-0 select-none items-center gap-2 rounded-md border bg-background p-2 transition",
+                            sortable && "cursor-grab active:cursor-grabbing",
                             isDragging && "opacity-40",
                           )}
                         >
-                          <button
-                            type="button"
-                            className="flex h-8 w-6 shrink-0 touch-none items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                            aria-label={`拖动调整 ${r.name} 的顺序`}
-                            title="拖动排序；也可用上下方向键"
-                            onKeyDown={handleSortKeyDown(r.id)}
-                          >
-                            <GripVertical className="h-4 w-4" />
-                          </button>
+                          {sortable && (
+                            <button
+                              type="button"
+                              className="flex h-8 w-6 shrink-0 touch-none items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                              aria-label={`拖动调整 ${r.name} 的顺序`}
+                              title="拖动排序；也可用上下方向键"
+                              onKeyDown={handleSortKeyDown(r.id)}
+                            >
+                              <GripVertical className="h-4 w-4" />
+                            </button>
+                          )}
                           <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10 text-xs font-semibold text-primary">
                             {idx + 1}
                           </span>

@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, GitBranch, Loader2 } from "lucide-react";
+import { ArrowLeft, Loader2 } from "lucide-react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { ShowUpgradeDialog } from "@/components/show/ShowUpgradeDialog";
@@ -16,7 +16,9 @@ export function ShowIterationPage() {
   const returnToList = useDetailReturn("/manage/shows");
   const { id } = useParams();
   const [searchParams] = useSearchParams();
-  const initialTab = searchParams.get("tab") === "reorganize" ? "reorganize" : "upgrade";
+  const tabParam = searchParams.get("tab");
+  const initialTab: "upgrade" | "reorganize" | "order" =
+    tabParam === "reorganize" || tabParam === "order" ? tabParam : "upgrade";
   const showId = Number(id);
   const validId = Number.isInteger(showId) && showId > 0;
 
@@ -42,24 +44,16 @@ export function ShowIterationPage() {
   }
 
   return (
-    <div className="min-h-full w-full px-1 pb-10 sm:px-2">
-      <header className="mx-auto flex w-full max-w-7xl items-center justify-between gap-3 border-b py-3">
-        <div className="flex min-w-0 items-center gap-2.5">
-          <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0" title="返回放映详情" aria-label="返回放映详情" onClick={() => navigate(`/shows/${show.id}`, { state: location.state })}>
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="truncate text-xl font-semibold tracking-tight">版本迭代</h1>
-              <Badge variant="outline" className="text-xs">{show.name} · v{show.version_no}</Badge>
-            </div>
-            <p className="mt-1 text-xs text-muted-foreground">创建新版本，升级资源或重新组织放映页面。</p>
-          </div>
-        </div>
-        <GitBranch className="hidden h-5 w-5 shrink-0 text-primary sm:block" />
+    <div className="page-shell">
+      <header className="flex min-w-0 flex-wrap items-center gap-2.5">
+        <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0" title="返回放映详情" aria-label="返回放映详情" onClick={() => navigate(`/shows/${show.id}`, { state: location.state })}>
+          <ArrowLeft className="h-4 w-4" />
+        </Button>
+        <h1 className="page-title">版本迭代</h1>
+        <Badge variant="outline" className="text-xs">{show.name} · v{show.version_no}</Badge>
       </header>
 
-      <main className="mx-auto mt-5 w-full max-w-7xl">
+      <main className="min-h-0 flex-1">
         <ShowUpgradeDialog
           open
           page

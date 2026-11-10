@@ -2,6 +2,7 @@ import * as React from "react";
 import {
   ArrowLeft,
   ArrowUpCircle,
+  ListPlus,
   Check,
   ChevronRight,
   CircleHelp,
@@ -28,6 +29,7 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -35,6 +37,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tooltip, TooltipContent, TooltipPortal, TooltipTrigger } from "@/components/ui/tooltip";
 import { RichTextEditor } from "@/components/resource/RichTextEditor";
+import { PageOrderGrid } from "./PageOrderGrid";
 import { ResourcePicker, PickerResource } from "./ResourcePicker";
 import { cn } from "@/lib/utils";
 import { api, fetchResourceDiff, iterateShow, iterateUpgradeShow, updateShowResources } from "@/lib/api";
@@ -50,7 +53,7 @@ import {
 const DRAFT_KEY_PREFIX = "show-iteration-draft-";
 
 interface IterationDraft {
-  activeTab: "upgrade" | "reorganize";
+  activeTab: TabMode;
   selectedIds: number[];
   remarkDrafts: Record<string, string>;
   changeNote: string;
@@ -93,13 +96,13 @@ interface ShowUpgradeDialogProps {
   /** 页面模式：复用迭代内容，但不渲染 Dialog 遮罩和弹窗容器。 */
   page?: boolean;
   /** 页面首次进入时默认展示的工作模式。草稿存在时仍优先恢复草稿。 */
-  initialTab?: "upgrade" | "reorganize";
+  initialTab?: TabMode;
   /** 创建成功回调，参数为新创建的版本 Show */
   onSuccess?: (newShow: Show) => void;
 }
 
 type View = "list" | "detail";
-type TabMode = "upgrade" | "reorganize";
+type TabMode = "upgrade" | "reorganize" | "order";
 
 interface OrganizedResource {
   id: number;
@@ -124,6 +127,8 @@ export function ShowUpgradeDialog({
 
   // ── Tab 模式 ──
   const [activeTab, setActiveTab] = React.useState<TabMode>(initialTab);
+  // 创建版本前统一在弹窗里补变更说明和名称
+  const [versionDialogOpen, setVersionDialogOpen] = React.useState(false);
 
   // ── 选中资源（升级 Tab） ──
   const [selectedIds, setSelectedIds] = React.useState<Set<number>>(new Set());
@@ -157,8 +162,12 @@ export function ShowUpgradeDialog({
 
       const draft = loadDraft(show.id);
       if (draft) {
-        // 恢复草稿
-        setActiveTab(draft.activeTab);
+        // 恢复草稿（旧草稿只有 upgrade/reorganize 两种模式）
+        setActiveTab(
+          draft.activeTab === "reorganize" || draft.activeTab === "order"
+            ? draft.activeTab
+            : "upgrade",
+        );
         setSelectedIds(new Set(draft.selectedIds));
         setRemarkDrafts(draft.remarkDrafts);
         setChangeNote(draft.changeNote);
@@ -188,7 +197,7 @@ export function ShowUpgradeDialog({
   // 切换 Tab 时，如果在详情视图自动返回列表
   const handleTabChange = (tab: TabMode) => {
     setActiveTab(tab);
-    if (tab === "reorganize" && view === "detail") {
+    if (tab !== "upgrade" && view === "detail") {
       setView("list");
       setDetailResourceId(null);
     }
@@ -359,13 +368,16 @@ export function ShowUpgradeDialog({
     [organizedIds, initialOrganizedIds],
   );
   const hasUpgradeChange = activeTab === "upgrade" && selectedIds.size > 0;
-  const hasVersionChange = hasResourceSetChange || hasUpgradeChange;
-  const hasAction = activeTab === "upgrade" ? hasUpgradeChange : hasVersionChange || hasOrderChange;
+  const hasOrderOnlyChange = hasOrderChange && !hasResourceSetChange;
+  const hasAction = activeTab === "upgrade"
+    ? hasUpgradeChange
+    : hasResourceSetChange || hasOrderOnlyChange;
 
   // ── 提交逻辑 ──
-  const handleSubmit = () => {
+  const submitVersion = () => {
+    if (!changeNote.trim() || !hasAction) return;
     if (activeTab === "upgrade") {
-      if (!changeNote.trim() || selectedIds.size === 0) return;
+      if (selectedIds.size === 0) return;
       const ids = Array.from(selectedIds);
       const remarks: Record<string, string> = {};
       for (const [key, val] of Object.entries(remarkDrafts)) {
@@ -379,12 +391,20 @@ export function ShowUpgradeDialog({
       });
       return;
     }
-    if (hasOrderChange && !hasResourceSetChange) {
-      reorderMutation.mutate(organizedIds);
+    if (hasResourceSetChange) iterateMutation.mutate(organizedIds);
+  };
+
+  const handlePrimaryAction = () => {
+    if (activeTab === "upgrade") {
+      if (selectedIds.size === 0) return;
+      setVersionDialogOpen(true);
       return;
     }
-    if (!changeNote.trim() || !hasResourceSetChange) return;
-    iterateMutation.mutate(organizedIds);
+    if (hasResourceSetChange) {
+      setVersionDialogOpen(true);
+      return;
+    }
+    if (hasOrderOnlyChange) reorderMutation.mutate(organizedIds);
   };
 
   // ── 提交按钮文案 ──
@@ -416,7 +436,8 @@ export function ShowUpgradeDialog({
     return (
       <>
         <Shuffle className="mr-1.5 h-4 w-4" />
-        保存播放顺序（不创建新版本）
+        <span className="sm:hidden">保存顺序</span>
+        <span className="hidden sm:inline">保存播放顺序（不创建新版本）</span>
       </>
     );
   };
@@ -523,6 +544,20 @@ export function ShowUpgradeDialog({
 
   if (!show) return null;
 
+  const draftChip = hasDraft && draftSavedAt ? (
+    <span className="flex items-center gap-1 text-xs text-amber-600">
+      有暂存草稿 ({relativeTime(draftSavedAt)})
+      <button
+        type="button"
+        onClick={handleClearDraft}
+        className="ml-1 inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs text-amber-700 transition hover:bg-amber-100"
+        title="清除草稿并重置表单"
+      >
+        <Eraser className="h-3 w-3" />
+        清除
+      </button>
+    </span>
+  ) : null;
   const titleContent = (
     <>
       <GitBranch className="h-5 w-5 text-primary" />
@@ -530,113 +565,50 @@ export function ShowUpgradeDialog({
       <Badge variant="outline" className="ml-1 text-xs font-normal">
         基于 v{show.version_no}
       </Badge>
-      {hasDraft && draftSavedAt && (
-        <span className="flex items-center gap-1 text-xs text-amber-600">
-          有暂存草稿 ({relativeTime(draftSavedAt)})
-          <button
-            type="button"
-            onClick={handleClearDraft}
-            className="ml-1 inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs text-amber-700 transition hover:bg-amber-100"
-            title="清除草稿并重置表单"
-          >
-            <Eraser className="h-3 w-3" />
-            清除
-          </button>
-        </span>
-      )}
+      {draftChip}
     </>
   );
   const content = (
     <>
-        {/* 标题栏 */}
-        <DialogHeader className="shrink-0 border-b px-6 py-4">
-          {page ? <h2 className="flex items-center gap-2 text-base font-semibold">{titleContent}</h2> : <DialogTitle className="flex items-center gap-2 text-base">{titleContent}</DialogTitle>}
-          {page ? <p className="sr-only">创建放映的新版本，可选升级资源或重新组织资源</p> : <DialogDescription className="sr-only">创建放映的新版本，可选升级资源或重新组织资源</DialogDescription>}
-        </DialogHeader>
+        {/* 弹窗模式才需要自己的标题栏；页面模式由外层页头承担 */}
+        {!page && (
+          <DialogHeader className="shrink-0 border-b px-6 py-4">
+            <DialogTitle className="flex items-center gap-2 text-base">{titleContent}</DialogTitle>
+            <DialogDescription className="sr-only">创建放映的新版本，可选升级资源或重新组织资源</DialogDescription>
+          </DialogHeader>
+        )}
 
-        {/* 顶部表单区 */}
-        <div className="shrink-0 space-y-4 border-b bg-muted/20 px-6 py-5">
-          <div className="grid gap-4 lg:grid-cols-2">
-            <div className="space-y-1.5">
-              <div className="flex h-5 items-center gap-1.5">
-                <Label htmlFor={`${formId}-change-note`}>变更说明 <span className="text-destructive" aria-hidden="true">*</span></Label>
-                <span id={`${formId}-change-note-requirement`} className="text-xs text-muted-foreground">创建版本时必填</span>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button type="button" className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label="查看版本创建规则">
-                      <CircleHelp className="h-4 w-4" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipPortal>
-                    <TooltipContent side="bottom" align="start" className="max-w-xs leading-5">
-                      只有资源新增、删除或升级才会创建版本，播放顺序单独调整会直接保存。
-                    </TooltipContent>
-                  </TooltipPortal>
-                </Tooltip>
-              </div>
-              <Input
-                id={`${formId}-change-note`}
-                placeholder="说明本次新增、删除或升级的内容"
-                value={changeNote}
-                onChange={(e) => setChangeNote(e.target.value)}
-                required={hasVersionChange}
-                aria-required={hasVersionChange}
-                aria-describedby={`${formId}-change-note-requirement`}
-                className="h-9 bg-background"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor={`${formId}-name`} className="flex h-5 items-center gap-1">名称 <span className="text-xs font-normal text-muted-foreground">（选填）</span></Label>
-              <Input
-                id={`${formId}-name`}
-                placeholder={show.name}
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                aria-describedby={`${formId}-name-hint`}
-                className="h-9 bg-background"
-              />
-              <p id={`${formId}-name-hint`} className="text-xs text-muted-foreground">留空则继承当前名称</p>
-            </div>
-          </div>
-
-          {/* 两步工作区 */}
-          <nav aria-label="版本迭代步骤" className="grid gap-2 sm:grid-cols-2">
-            <button
-              type="button"
-              onClick={() => handleTabChange("upgrade")}
-              className={cn(
-                "flex items-center gap-3 rounded-lg border px-4 py-3 text-left transition",
-                activeTab === "upgrade"
-                  ? "border-primary/40 bg-background shadow-sm"
-                  : "border-transparent bg-muted/50 text-muted-foreground hover:border-border hover:bg-background",
-              )}
-              aria-current={activeTab === "upgrade" ? "step" : undefined}
-            >
-              <span className={cn("flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold", activeTab === "upgrade" ? "bg-primary text-primary-foreground" : "bg-muted")}>1</span>
-              <span className="min-w-0">
-                <span className="block text-sm font-medium text-foreground">资源升级</span>
-                <span className="mt-0.5 block text-xs">先确认需要带入新版本的资源</span>
-              </span>
-              <Badge variant="secondary" className="ml-auto shrink-0">{updates.length}</Badge>
-            </button>
-            <button
-              type="button"
-              onClick={() => handleTabChange("reorganize")}
-              className={cn(
-                "flex items-center gap-3 rounded-lg border px-4 py-3 text-left transition",
-                activeTab === "reorganize"
-                  ? "border-primary/40 bg-background shadow-sm"
-                  : "border-transparent bg-muted/50 text-muted-foreground hover:border-border hover:bg-background",
-              )}
-              aria-current={activeTab === "reorganize" ? "step" : undefined}
-            >
-              <span className={cn("flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold", activeTab === "reorganize" ? "bg-primary text-primary-foreground" : "bg-muted")}>2</span>
-              <span className="min-w-0">
-                <span className="block text-sm font-medium text-foreground">组织页面</span>
-                <span className="mt-0.5 block text-xs">添加、移除资源并确认播放顺序</span>
-              </span>
-              <Badge variant="secondary" className="ml-auto shrink-0">{organizedResources.length}</Badge>
-            </button>
+        <div className="shrink-0 border-b px-6 py-3">
+          <nav aria-label="版本迭代操作" className="grid grid-cols-3 gap-1.5 sm:gap-2">
+            {([
+              { id: "upgrade" as const, icon: ArrowUpCircle, title: "资源升级", hint: "带入新版本的资源", meta: `${updates.length} 待升级` },
+              { id: "reorganize" as const, icon: ListPlus, title: "组织页面", hint: "增删页面", meta: `${organizedResources.length} 页` },
+              { id: "order" as const, icon: Shuffle, title: "调整顺序", hint: "拖动卡片排序", meta: hasOrderOnlyChange ? "顺序已调整" : `${organizedResources.length} 页`, dirty: hasOrderOnlyChange },
+            ]).map((tab) => {
+              const Icon = tab.icon;
+              const selected = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => handleTabChange(tab.id)}
+                  aria-current={selected ? "true" : undefined}
+                  className={cn(
+                    "flex min-w-0 items-center gap-2 rounded-lg border px-2.5 py-2 text-left transition sm:gap-3 sm:px-3.5 sm:py-2.5",
+                    selected
+                      ? "border-primary/40 bg-background shadow-sm"
+                      : "border-transparent bg-muted/50 text-muted-foreground hover:border-border hover:bg-background",
+                  )}
+                >
+                  <Icon className={cn("h-4 w-4 shrink-0 sm:h-5 sm:w-5", selected ? "text-primary" : "text-muted-foreground/70")} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-xs font-medium text-foreground sm:text-sm">{tab.title}</span>
+                    <span className="mt-0.5 hidden truncate text-[11px] leading-4 sm:block">{tab.hint}</span>
+                  </span>
+                  <span className={cn("hidden shrink-0 whitespace-nowrap rounded-full px-1.5 py-0.5 text-[10px] font-medium sm:inline-block", tab.dirty ? "bg-amber-100 text-amber-700" : "bg-muted text-muted-foreground")}>{tab.meta}</span>
+                </button>
+              );
+            })}
           </nav>
         </div>
 
@@ -670,6 +642,15 @@ export function ShowUpgradeDialog({
               toggleAll={toggleAll}
               openDetail={openDetail}
             />
+          ) : activeTab === "order" ? (
+            <PageOrderGrid
+              ariaLabel="调整播放顺序"
+              className="px-5 pb-4 pt-1"
+              resources={organizedResources}
+              onChange={(ids) => handlePickerChange(ids)}
+              disabled={isAnyPending}
+              emptyHint="当前放映没有页面，请先在「组织页面」中添加。"
+            />
           ) : (
             <ReorganizeContent
               organizedResources={organizedResources}
@@ -681,15 +662,18 @@ export function ShowUpgradeDialog({
         </div>
 
         {/* 底部操作栏 */}
-        <div className="flex shrink-0 items-center justify-between border-t px-6 py-3">
-          <div className="min-w-0 text-xs text-muted-foreground">
-            {activeTab === "upgrade"
-              ? (hasUpgradeChange ? `已选择 ${selectedIds.size} 个资源升级` : "请选择要升级的资源")
-              : hasResourceSetChange
-                ? "资源集合已变化，将创建新版本"
-                : hasOrderChange
-                  ? "仅播放顺序变化，不创建新版本"
-                  : "尚未产生资源变更"}
+        <div className="flex shrink-0 flex-col gap-2 border-t px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            {page && draftChip}
+            <span className="min-w-0">
+              {activeTab === "upgrade"
+                ? (hasUpgradeChange ? `已选择 ${selectedIds.size} 个资源升级` : "请选择要升级的资源")
+                : hasResourceSetChange
+                  ? "资源集合已变化，将创建新版本"
+                  : hasOrderChange
+                    ? "仅播放顺序变化，不创建新版本"
+                    : activeTab === "order" ? <><span className="hidden sm:inline">拖动卡片或</span>按页码移动调整顺序</> : "尚未产生资源变更"}
+            </span>
           </div>
           <div className="flex items-center gap-2">
             <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isAnyPending}>
@@ -700,20 +684,66 @@ export function ShowUpgradeDialog({
               暂存
             </Button>
             <Button
-              disabled={!hasAction || (hasVersionChange && !changeNote.trim()) || isAnyPending}
-              onClick={handleSubmit}
+              disabled={!hasAction || isAnyPending}
+              onClick={handlePrimaryAction}
             >
               {isAnyPending && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
               {getSubmitLabel()}
             </Button>
           </div>
         </div>
+
+        <Dialog open={versionDialogOpen} onOpenChange={(next) => { if (!isAnyPending) setVersionDialogOpen(next); }}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>创建新版本</DialogTitle>
+              <DialogDescription>
+                基于 v{show.version_no} 创建新版本。
+                {activeTab === "upgrade"
+                  ? `将把 ${selectedIds.size} 个资源升级到新版本。`
+                  : `放映页面将由 ${initialOrganizedIds.length} 页调整为 ${organizedIds.length} 页。`}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-1">
+              <div className="space-y-1.5">
+                <Label htmlFor={`${formId}-dialog-change-note`}>变更说明 <span className="text-destructive" aria-hidden="true">*</span></Label>
+                <Input
+                  id={`${formId}-dialog-change-note`}
+                  placeholder="说明本次新增、删除或升级的内容"
+                  value={changeNote}
+                  onChange={(event) => setChangeNote(event.target.value)}
+                  autoFocus
+                  className="h-9 bg-background"
+                />
+                <p className="text-xs leading-5 text-muted-foreground">只有资源新增、删除或升级才会创建版本；播放顺序单独调整会直接保存。</p>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor={`${formId}-dialog-name`} className="flex items-center gap-1">名称 <span className="text-xs font-normal text-muted-foreground">（选填）</span></Label>
+                <Input
+                  id={`${formId}-dialog-name`}
+                  placeholder={show.name}
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  className="h-9 bg-background"
+                />
+                <p className="text-xs text-muted-foreground">留空则继承当前名称</p>
+              </div>
+            </div>
+            <DialogFooter className="gap-2">
+              <Button variant="outline" onClick={() => setVersionDialogOpen(false)} disabled={isAnyPending}>取消</Button>
+              <Button onClick={submitVersion} disabled={!changeNote.trim() || isAnyPending}>
+                {isAnyPending && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+                创建新版本
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
     </>
   );
 
   if (page) {
     return (
-      <div className="mx-auto flex min-h-[min(860px,calc(100vh-5rem))] w-full max-w-7xl flex-col overflow-hidden rounded-xl border bg-card shadow-sm">
+      <div className="flex h-full min-h-0 w-full flex-col overflow-hidden rounded-xl border bg-card shadow-sm">
         {content}
       </div>
     );
@@ -823,7 +853,7 @@ function ReorganizeContent({
       <div className="flex shrink-0 flex-wrap items-end justify-between gap-3">
         <div>
           <h3 className="text-base font-semibold">组织放映页面</h3>
-          <p className="mt-1 text-sm text-muted-foreground">在左侧清单中拖动调整顺序，右侧筛选并添加或移除资源。</p>
+          <p className="mt-1 text-sm text-muted-foreground">左侧拖动缩略图调整顺序，右侧筛选并添加或移除页面。</p>
         </div>
         <div className="rounded-md border bg-muted/30 px-3 py-2 text-right">
           <div className="text-lg font-semibold leading-none">{organizedResources.length}</div>
@@ -845,6 +875,7 @@ function ReorganizeContent({
           selectedSidebarPosition="left"
           showViewModeSwitch
           showDensitySwitch={false}
+          selectedThumbnails
           className="h-full"
         />
       </div>
