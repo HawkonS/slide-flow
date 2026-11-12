@@ -1,12 +1,13 @@
 import * as React from "react";
 import { Link } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowLeft, CheckCircle2, Copy, Loader2, RefreshCw } from "lucide-react";
+import { AlertTriangle, ArrowLeft, CheckCircle2, Copy, EyeOff, Loader2, RefreshCw, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -44,7 +45,16 @@ interface DuplicateScan {
   checked: number;
   remaining: number;
   text_remaining?: number;
+  ignored_count?: number;
   groups: DuplicateGroup[];
+}
+
+interface IgnoredGroup {
+  id: number;
+  group_key: string;
+  resource_ids: number[];
+  resources: { id: number; name: string; preview_url: string }[];
+  created_at: string;
 }
 
 interface MergeResult {
@@ -63,6 +73,13 @@ export function ResourceDuplicatesPage() {
   const [confirming, setConfirming] = React.useState<number | null>(null);
   const [acknowledged, setAcknowledged] = React.useState<Record<number, boolean>>({});
   const [merging, setMerging] = React.useState<number | null>(null);
+  const [ignoring, setIgnoring] = React.useState<number | null>(null);
+  const [ignoredCount, setIgnoredCount] = React.useState(0);
+  const [ignoredOpen, setIgnoredOpen] = React.useState(false);
+  const [ignoredGroups, setIgnoredGroups] = React.useState<IgnoredGroup[]>([]);
+  const [ignoredLoading, setIgnoredLoading] = React.useState(false);
+  const [ignoredError, setIgnoredError] = React.useState<string | null>(null);
+  const [restoring, setRestoring] = React.useState<number | null>(null);
   const [mergeError, setMergeError] = React.useState<Record<number, string>>({});
   const runRef = React.useRef(0);
 
@@ -80,6 +97,7 @@ export function ResourceDuplicatesPage() {
         const result = await api<DuplicateScan>("/api/resources/duplicates/scan", { method: "POST" });
         if (cancelled || runRef.current !== runId) return;
         setScan(result);
+        setIgnoredCount(result.ignored_count ?? 0);
         setStatus(result.status === "ready" ? "ready" : "warming");
         setSelected((previous) => {
           const next = { ...previous };
@@ -137,6 +155,60 @@ export function ResourceDuplicatesPage() {
     }
   };
 
+  const ignoreGroup = async (group: DuplicateGroup, groupIndex: number) => {
+    if (merging !== null || ignoring !== null) return;
+    setIgnoring(groupIndex);
+    try {
+      const result = await api<{ ok: boolean; id: number; ignored_count: number }>("/api/resources/duplicates/ignores", {
+        method: "POST",
+        json: { resource_ids: group.resources.map((resource) => resource.id) },
+      });
+      setScan((previous) => previous ? {
+        ...previous,
+        groups: previous.groups.filter((_, index) => index !== groupIndex),
+        ignored_count: result.ignored_count,
+      } : previous);
+      setIgnoredCount(result.ignored_count);
+      setSelected({});
+      toast.success("已忽略此组，可在「已忽略」中恢复");
+    } catch (ignoreFailure) {
+      toast.error((ignoreFailure as Error).message || "忽略失败");
+    } finally {
+      setIgnoring(null);
+    }
+  };
+
+  const openIgnored = async () => {
+    setIgnoredOpen(true);
+    setIgnoredLoading(true);
+    setIgnoredError(null);
+    try {
+      const result = await api<{ items: IgnoredGroup[]; total: number }>("/api/resources/duplicates/ignores");
+      setIgnoredGroups(result.items);
+      setIgnoredCount(result.total);
+    } catch (ignoredFailure) {
+      setIgnoredError((ignoredFailure as Error).message || "读取已忽略记录失败");
+    } finally {
+      setIgnoredLoading(false);
+    }
+  };
+
+  const restoreIgnored = async (ignoreId: number) => {
+    setRestoring(ignoreId);
+    try {
+      const result = await api<{ ok: boolean; ignored_count: number }>(`/api/resources/duplicates/ignores/${ignoreId}`, { method: "DELETE" });
+      setIgnoredGroups((previous) => previous.filter((item) => item.id !== ignoreId));
+      setIgnoredCount(result.ignored_count);
+      setIgnoredOpen(false);
+      toast.success("已恢复该组，重新扫描后可再次处理");
+      void startScan();
+    } catch (restoreFailure) {
+      toast.error((restoreFailure as Error).message || "恢复失败");
+    } finally {
+      setRestoring(null);
+    }
+  };
+
   const groups = scan?.groups ?? [];
   const progress = scan && scan.total > 0 ? Math.min(100, Math.round((scan.checked / scan.total) * 100)) : 0;
 
@@ -150,10 +222,18 @@ export function ResourceDuplicatesPage() {
           <h1 className="page-title">查重</h1>
           {status === "ready" && <Badge variant="outline">{groups.length} 组疑似重复</Badge>}
         </div>
-        <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5" onClick={() => void startScan()} disabled={status === "checking" || status === "warming"}>
-          <RefreshCw className={cn("h-3.5 w-3.5", (status === "checking" || status === "warming") && "animate-spin")} />
-          重新扫描
-        </Button>
+        <div className="flex items-center gap-2">
+          {ignoredCount > 0 && (
+            <Button type="button" variant="ghost" size="sm" className="h-8 gap-1.5" onClick={() => void openIgnored()}>
+              <EyeOff className="h-3.5 w-3.5" />
+              已忽略 {ignoredCount}
+            </Button>
+          )}
+          <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5" onClick={() => void startScan()} disabled={status === "checking" || status === "warming"}>
+            <RefreshCw className={cn("h-3.5 w-3.5", (status === "checking" || status === "warming") && "animate-spin")} />
+            重新扫描
+          </Button>
+        </div>
       </header>
 
       <p className="text-sm text-muted-foreground">
@@ -284,6 +364,16 @@ export function ResourceDuplicatesPage() {
               <footer className="mt-3 flex flex-wrap items-center justify-between gap-2">
                 <p className="text-xs text-muted-foreground">合并不可撤销；被删素材的标签、备注、个人备注和分享会一并移除；有生效分享链接的素材需先撤销分享。</p>
                 <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    disabled={merging !== null || ignoring !== null}
+                    onClick={() => void ignoreGroup(group, groupIndex)}
+                  >
+                    {ignoring === groupIndex ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <EyeOff className="mr-1.5 h-4 w-4" />}
+                    忽略此组
+                  </Button>
                   {confirming === groupIndex && <Button type="button" size="sm" variant="ghost" onClick={() => setConfirming(null)} disabled={merging !== null}>取消</Button>}
                   <Button
                     type="button"
@@ -301,6 +391,49 @@ export function ResourceDuplicatesPage() {
           );
         })}
       </div>
+
+      <Dialog open={ignoredOpen} onOpenChange={setIgnoredOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>已忽略的查重组</DialogTitle>
+            <DialogDescription>忽略只影响你自己的查重列表，不会删除或修改任何素材。</DialogDescription>
+          </DialogHeader>
+          {ignoredLoading ? (
+            <p className="flex items-center gap-2 py-6 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />正在读取…</p>
+          ) : ignoredError ? (
+            <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{ignoredError}</p>
+          ) : ignoredGroups.length === 0 ? (
+            <p className="py-6 text-center text-sm text-muted-foreground">还没有忽略任何查重组。</p>
+          ) : (
+            <div className="max-h-[60vh] space-y-2 overflow-y-auto pr-1">
+              {ignoredGroups.map((item) => (
+                <div key={item.id} className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-2">
+                  <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                    {item.resources.slice(0, 4).map((resource) => (
+                      <div key={resource.id} className="flex min-w-0 items-center gap-1.5">
+                        {resource.preview_url ? (
+                          <img src={resource.preview_url} alt={resource.name} className="h-10 w-16 rounded-sm border bg-muted object-contain" loading="lazy" />
+                        ) : (
+                          <span className="flex h-10 w-16 items-center justify-center rounded-sm border bg-muted text-[10px] text-muted-foreground">无预览</span>
+                        )}
+                        <span className="max-w-[120px] truncate text-xs">{resource.name}</span>
+                      </div>
+                    ))}
+                    {item.resources.length > 4 && <span className="text-xs text-muted-foreground">等 {item.resources.length} 个</span>}
+                  </div>
+                  <Button type="button" size="sm" variant="outline" disabled={restoring !== null} onClick={() => void restoreIgnored(item.id)}>
+                    {restoring === item.id ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="mr-1 h-3.5 w-3.5" />}
+                    恢复
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setIgnoredOpen(false)}>关闭</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -61,6 +61,19 @@ async function fixture(t, { width = 390, configGate, onList, shows = [] } = {}) 
         show_count: 1, mergeable: true, reason: null,
       }],
     });
+    if (p === '/api/resources/duplicates/ignores') {
+      if (request.method() === 'POST') return json({ ok: true, id: 1, ignored_count: 1 });
+      return json({
+        items: [{
+          id: 1, group_key: 'fixture-group', resource_ids: [1, 2], created_at: stamp,
+          resources: [
+            { id: 1, name: resource.name, preview_url: '/fixture.png' },
+            { id: 2, name: '重复封面', preview_url: '/fixture.png' },
+          ],
+        }], total: 1,
+      });
+    }
+    if (p.startsWith('/api/resources/duplicates/ignores/')) return json({ ok: true, ignored_count: 0 });
     if (p === '/api/resources/delete-preview') return json({ targets: [{ id: 1, name: resource.name, version_count: 1, selected_version_count: 1, version_nos: [1], delete_resource: true }], has_references: false, show_count: 0, share_count: 0, shows: [], confirmation_token: 'test', available_actions: ['remove'] });
     if (p === '/api/me/home/stats') return json({ resources: {}, shows: {}, templates: {}, fonts: {} });
     if (p === '/api/shows') return json({ items: shows, total: shows.length, page: 1, page_size: 20, all_tags: [], all_subjects: [] });
@@ -184,6 +197,47 @@ test('the sidebar keeps its position and DOM while sections change', async t => 
 
   assert.deepEqual({ x: after.x, width: after.width, kept: after.kept }, { ...before, kept: true });
   assert.equal(after.active, '放映素材');
+});
+
+test('duplicate scan can ignore and restore a group', async t => {
+  const { page } = await fixture(t, { width: 1280 });
+  const ignored = [];
+  const restored = [];
+  await page.route('**/api/resources/duplicates/ignores', route => {
+    const method = route.request().method();
+    if (method === 'POST') {
+      ignored.push(route.request().postDataJSON());
+      return route.fulfill({ json: { ok: true, id: 1, ignored_count: 1 } });
+    }
+    return route.fulfill({
+      json: {
+        items: [{
+          id: 1, group_key: 'fixture-group', resource_ids: [1, 2], created_at: stamp,
+          resources: [
+            { id: 1, name: resource.name, preview_url: '/fixture.png' },
+            { id: 2, name: '重复封面', preview_url: '/fixture.png' },
+          ],
+        }], total: 1,
+      },
+    });
+  });
+  await page.route('**/api/resources/duplicates/ignores/*', route => {
+    restored.push(route.request().url());
+    return route.fulfill({ json: { ok: true, ignored_count: 0 } });
+  });
+
+  await page.goto(origin + '/resources/duplicates');
+  await page.getByRole('heading', { name: '查重', exact: true }).waitFor();
+  await page.getByText('2 个素材疑似相同').waitFor();
+  await page.getByRole('button', { name: '忽略此组', exact: true }).click();
+  await page.getByText(/已忽略此组/).waitFor();
+  assert.deepEqual(ignored, [{ resource_ids: [1, 2] }]);
+  await page.getByRole('button', { name: /已忽略 1/ }).click();
+  await page.getByRole('dialog').getByText('重复封面').waitFor();
+  await page.getByRole('button', { name: '恢复', exact: true }).click();
+  await page.getByRole('dialog').waitFor({ state: 'hidden' });
+  assert.equal(restored.length, 1);
+  await page.getByText('2 个素材疑似相同').waitFor();
 });
 
 test('duplicate scan merges a group into the selected resource', async t => {
