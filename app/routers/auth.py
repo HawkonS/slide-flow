@@ -155,12 +155,27 @@ _DUMMY_PASSWORD_HASH = hash_password("slide-flow-invalid-login-password")
 
 
 def _get_client_ip(request: Request) -> str:
-    """获取连接对端 IP。
+    """获取真实客户端 IP。
 
-    不直接信任客户端提交的 X-Forwarded-For，否则攻击者可伪造来源 IP 绕过限流。
-    若部署在反向代理之后，应在代理层限制并覆盖来源地址。
+    只有连接对端是回环地址（本机 Nginx/Gunicorn 代理）时才信任
+    X-Real-IP / X-Forwarded-For；直连互联网的请求不能伪造来源 IP 绕过限流。
     """
-    return request.client.host if request.client else "unknown"
+    peer = request.client.host if request.client else "unknown"
+    if not _is_loopback_host(peer):
+        return peer
+    candidates = [
+        request.headers.get("x-real-ip", "").strip(),
+        request.headers.get("x-forwarded-for", "").split(",")[-1].strip(),
+    ]
+    for value in candidates:
+        if not value:
+            continue
+        try:
+            ipaddress.ip_address(value)
+        except ValueError:
+            continue
+        return value
+    return peer
 
 
 def _normalise_username(username: str) -> str:
@@ -176,7 +191,7 @@ def _check_login_rate_limit(
     """检查 IP 和用户名是否处于临时封禁中，返回 (允许, 最大剩余秒数)。"""
     now = time.time()
     remaining = 0
-    for key in (f"ip:{ip}", f"user:{username_key}"):
+    for key in (f"ip:{ip}", f"pair:{ip}:{username_key}"):
         record = db.execute(
             "SELECT locked_until, window_started_at FROM auth_login_attempts WHERE key = ?",
             (key,),
@@ -200,7 +215,7 @@ def _record_login_failure(db: sqlite3.Connection, ip: str, username_key: str) ->
             "DELETE FROM auth_login_attempts WHERE updated_at < ?",
             (now - _LOGIN_BAN_DURATION - _LOGIN_WINDOW,),
         )
-        for key in (f"ip:{ip}", f"user:{username_key}"):
+        for key in (f"ip:{ip}", f"pair:{ip}:{username_key}"):
             record = db.execute(
                 "SELECT failure_count, window_started_at, locked_until FROM auth_login_attempts WHERE key = ?",
                 (key,),
@@ -234,9 +249,12 @@ def _record_login_failure(db: sqlite3.Connection, ip: str, username_key: str) ->
         raise
 
 
-def _clear_login_failures(db: sqlite3.Connection, username_key: str) -> None:
-    """登录成功后只清除该用户名的失败记录，不重置 IP 全局计数。"""
-    db.execute("DELETE FROM auth_login_attempts WHERE key = ?", (f"user:{username_key}",))
+def _clear_login_failures(db: sqlite3.Connection, ip: str, username_key: str) -> None:
+    """登录成功后只清除当前 IP+用户名的记录，不重置 IP 全局计数。"""
+    db.execute(
+        "DELETE FROM auth_login_attempts WHERE key IN (?, ?)",
+        (f"pair:{ip}:{username_key}", f"user:{username_key}"),
+    )
     db.commit()
 
 
@@ -276,7 +294,7 @@ def login(
         _record_login_failure(db, ip, username_key)
         raise HTTPException(401, "用户名或密码错误")
 
-    _clear_login_failures(db, username_key)
+    _clear_login_failures(db, ip, username_key)
     login_at = now_iso()
     db.execute(
         "UPDATE users SET last_login_at = ? WHERE id = ?",
@@ -350,7 +368,7 @@ def verify_offline_login(
         ):
             _record_login_failure(db, ip, username_key)
             return {"success": False}
-        _clear_login_failures(db, username_key)
+        _clear_login_failures(db, ip, username_key)
         return {"success": True}
     
     data = verify_present_token(token or "", settings.secret_key)
