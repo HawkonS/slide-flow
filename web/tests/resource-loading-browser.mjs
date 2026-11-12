@@ -51,6 +51,16 @@ async function fixture(t, { width = 390, configGate, onList, shows = [] } = {}) 
     if (p === '/api/version') return json({ commit: 'test', updated_at: stamp });
     if (p === '/api/resources') return onList ? onList(route, query) : json(list(query));
     if (p === '/api/resources/1') return json({ resource: { ...resource, versions: [version] } });
+    if (p === '/api/resources/duplicates/scan') return json({
+      status: 'ready', total: 2, checked: 2, remaining: 0,
+      groups: [{
+        resources: [
+          { id: 1, name: resource.name, version_no: 1, preview_url: '/fixture.png', owner_name: '管理员', used_by_shows: 2, created_at: stamp },
+          { id: 2, name: '重复封面', version_no: 1, preview_url: '/fixture.png', owner_name: '管理员', used_by_shows: 0, created_at: stamp },
+        ],
+        show_count: 1, mergeable: true, reason: null,
+      }],
+    });
     if (p === '/api/resources/delete-preview') return json({ targets: [{ id: 1, name: resource.name, version_count: 1, selected_version_count: 1, version_nos: [1], delete_resource: true }], has_references: false, show_count: 0, share_count: 0, shows: [], confirmation_token: 'test', available_actions: ['remove'] });
     if (p === '/api/me/home/stats') return json({ resources: {}, shows: {}, templates: {}, fonts: {} });
     if (p === '/api/shows') return json({ items: shows, total: shows.length, page: 1, page_size: 20, all_tags: [], all_subjects: [] });
@@ -135,7 +145,7 @@ test('switching sections keeps the current page until the next chunk is ready', 
   t.after(() => chunkGate.release());
   await page.route('**/assets/ResourcesPage-*.js', async route => { await chunkGate.promise; await route.continue(); });
   await page.goto(origin + '/home');
-  await page.getByRole('heading', { name: /好，/ }).waitFor();
+  await page.locator('main h1').first().waitFor();
   const homeTitle = await page.locator('main h1').first().textContent();
 
   await page.getByRole('link', { name: '单页素材', exact: true }).click();
@@ -151,7 +161,7 @@ test('switching sections keeps the current page until the next chunk is ready', 
 test('the sidebar keeps its position and DOM while sections change', async t => {
   const { page } = await fixture(t, { width: 1280 });
   await page.goto(origin + '/home');
-  await page.getByRole('heading', { name: /好，/ }).waitFor();
+  await page.locator('main h1').first().waitFor();
   const before = await page.evaluate(() => {
     const aside = document.querySelector('aside');
     aside.dataset.probe = 'kept';
@@ -174,6 +184,25 @@ test('the sidebar keeps its position and DOM while sections change', async t => 
 
   assert.deepEqual({ x: after.x, width: after.width, kept: after.kept }, { ...before, kept: true });
   assert.equal(after.active, '放映素材');
+});
+
+test('duplicate scan merges a group into the selected resource', async t => {
+  const { page } = await fixture(t, { width: 1280 });
+  const merges = [];
+  await page.route('**/api/resources/duplicates/merge', route => {
+    merges.push(route.request().postDataJSON());
+    return route.fulfill({ json: { ok: true, merged: 1, deleted: [1], moved_pages: 1, collapsed_pages: 0 } });
+  });
+  await page.goto(origin + '/resources/duplicates');
+  await page.getByRole('heading', { name: '查重', exact: true }).waitFor();
+  await page.getByText('2 个素材疑似相同').waitFor();
+
+  await page.getByRole('button', { name: /重复封面/ }).click();
+  await page.getByRole('button', { name: /保留《重复封面》并合并其余/ }).click();
+  await page.getByText(/确定继续吗/).waitFor();
+  await page.getByRole('button', { name: '确认合并', exact: true }).click();
+  await page.getByText(/已合并 1 个重复素材/).waitFor();
+  assert.deepEqual(merges, [{ canonical_id: 2, duplicate_ids: [1] }]);
 });
 
 test('show detail keeps the sidebar entry of the list that opened it', async t => {

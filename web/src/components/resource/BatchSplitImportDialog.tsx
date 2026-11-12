@@ -1,16 +1,17 @@
 import { useNewFormDefaults } from "@/lib/tag-defaults";
 import * as React from "react";
-import { AlertCircle, ArrowLeft, ArrowRight, CheckCircle2, FileText, Loader2, RefreshCw, Upload, X } from "lucide-react";
+import { AlertCircle, ArrowLeft, ArrowRight, CheckCircle2, Loader2, RefreshCw, Upload, UploadCloud, X } from "lucide-react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TagInput } from "@/components/resource/TagInput";
 import { MetadataTagSelect } from "@/components/resource/MetadataTagSelect";
 import { EMPTY_SHOW_DRAFT, ImportShowOption, type ShowDraft } from "@/components/resource/ImportShowOption";
+import { ImportDuplicatePanel, type DuplicateAction, type DuplicateChoice, type DuplicatesResponse } from "@/components/resource/ImportDuplicatePanel";
 import { UserPicker } from "@/components/resource/UserPicker";
 import { RichTextEditor } from "@/components/resource/RichTextEditor";
 import {
@@ -37,12 +38,12 @@ export interface ResourceImportWizardProps {
   onTaskCreated?: (taskId: number) => void;
   target?: "resources" | "templates";
 }
-type Step = "upload" | "fonts" | "render" | "confirm";
+type Step = "upload" | "fonts" | "render" | "duplicates" | "confirm";
 type Operation = "upload" | "replace" | "render" | "commit" | null;
 type PreviewStatus = "pending" | "blocked" | "ready" | "error" | "rendering";
 type CommitProgress = { status: "processing" | "completed" | "failed"; progress: number; total: number; message: string };
 type ScopeValue = "public" | "partial" | "private";
-const STEPS: { id: Step; label: string }[] = [{ id: "upload", label: "上传与信息" }, { id: "fonts", label: "字体检测" }, { id: "render", label: "图片渲染" }, { id: "confirm", label: "确认导入" }];
+const STEPS: { id: Step; label: string }[] = [{ id: "upload", label: "上传与信息" }, { id: "fonts", label: "字体检测" }, { id: "render", label: "图片渲染" }, { id: "duplicates", label: "重复检查" }, { id: "confirm", label: "确认导入" }];
 const PPT_EXTENSIONS = new Set([".pptx", ".potx", ".ppsx"]);
 const PPT_FORMAT_HINT = "仅支持 PPTX/POTX/PPSX；旧版 PPT/POT/PPS 请先在 PowerPoint 或 WPS 中另存为 PPTX";
 const MIB = 1024 * 1024;
@@ -67,6 +68,7 @@ const formatSize = (bytes: number) => bytes >= 1024 * MIB ? `${(bytes / (1024 * 
 
 export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, ownerId, taskId: initialTaskId, onTaskCreated, target = "resources" }: ResourceImportWizardProps) {
   const templateMode = target === "templates";
+  const steps = React.useMemo(() => templateMode ? STEPS.filter((item) => item.id !== "duplicates") : STEPS, [templateMode]);
   const [step, setStep] = React.useState<Step>(initialTaskId ? "fonts" : "upload");
   const [taskId, setTaskId] = React.useState<number | null>(initialTaskId ?? null);
   const [sessionId, setSessionId] = React.useState<string | null>(null);
@@ -91,6 +93,7 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
   const [renderStartedAt, setRenderStartedAt] = React.useState<number | null>(null);
   const [renderElapsedSeconds, setRenderElapsedSeconds] = React.useState(0);
   const [fileError, setFileError] = React.useState<string | null>(null);
+  const [dragActive, setDragActive] = React.useState(false);
   const [metadataError, setMetadataError] = React.useState<string | null>(null);
   const [taskError, setTaskError] = React.useState<string | null>(null);
   const [workflowState, setWorkflowState] = React.useState("");
@@ -102,6 +105,13 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
   const [uploadUncertain, setUploadUncertain] = React.useState(false);
   const [uploadError, setUploadError] = React.useState<string | null>(null);
   const [commitProgress, setCommitProgress] = React.useState<CommitProgress | null>(null);
+  const [duplicateStatus, setDuplicateStatus] = React.useState<"idle" | "checking" | "warming" | "ready" | "error">("idle");
+  const [duplicateData, setDuplicateData] = React.useState<DuplicatesResponse | null>(null);
+  const [duplicateError, setDuplicateError] = React.useState<string | null>(null);
+  const [duplicateSkipped, setDuplicateSkipped] = React.useState(false);
+  const [duplicateChoices, setDuplicateChoices] = React.useState<Record<number, DuplicateChoice>>({});
+  const duplicateTouchedRef = React.useRef<Set<number>>(new Set());
+  const [reusedCount, setReusedCount] = React.useState(0);
   const [namePrefix, setNamePrefix] = React.useState("");
   const nameEditedRef = React.useRef(false);
   const [subject, setSubject] = React.useState(DEFAULT_RESOURCE_SUBJECT);
@@ -114,6 +124,7 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
   }, templateMode || Boolean(initialTaskId) || Boolean(taskId));
   const [visibilityScope, setVisibilityScope] = React.useState<ScopeValue | "">("");
   const [managementScope, setManagementScope] = React.useState<ScopeValue | "">("");
+  const [scopePicker, setScopePicker] = React.useState<"visibility" | "management" | null>(null);
   const [visibleUserIds, setVisibleUserIds] = React.useState<number[]>([]);
   const [visibleUserTags, setVisibleUserTags] = React.useState<string[]>([]);
   const [manageUserIds, setManageUserIds] = React.useState<number[]>([]);
@@ -152,7 +163,7 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
   const failedPreviewCount = Object.values(previewLoads).filter((value) => value === "error").length;
   const previewsReviewed = previewStatus === "ready" && slideCount > 0 && loadedPreviewCount === slideCount;
   const previewPageCount = Math.max(1, Math.ceil(slideCount / PREVIEW_PAGE_SIZE));
-  const stepIndex = STEPS.findIndex((item) => item.id === step);
+  const stepIndex = steps.findIndex((item) => item.id === step);
   const setOperationSafe = (value: Operation) => {
     operationRef.current = value;
     setOperation(value);
@@ -333,6 +344,76 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
     });
     return () => { cancelled = true; images.forEach((image) => { image.onload = null; image.onerror = null; image.removeAttribute("src"); }); };
   }, [sessionId, previewStatus, slideCount]);
+  React.useEffect(() => {
+    if (templateMode || step !== "duplicates" || !sessionId || !previewsReviewed || duplicateSkipped) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const run = async () => {
+      if (cancelled) return;
+      setDuplicateStatus((current) => (current === "ready" ? current : "checking"));
+      setDuplicateError(null);
+      try {
+        const result = await api<DuplicatesResponse>(`/api/resource-import/${sessionId}/duplicates`, { method: "POST" });
+        if (cancelled) return;
+        if (!Array.isArray(result.items) || (result.status !== "ready" && result.status !== "warming")) {
+          throw new Error("查重服务返回格式不正确");
+        }
+        setDuplicateData(result);
+        setDuplicateStatus(result.status === "ready" ? "ready" : "warming");
+        setDuplicateChoices((previous) => {
+          const next = { ...previous };
+          const touched = duplicateTouchedRef.current;
+          for (const item of result.items ?? []) {
+            if (touched.has(item.index)) continue;
+            const best = item.matches[0];
+            const needsReview = best?.content_changed || best?.text_state === "changed" || best?.text_state === "uncompared";
+            next[item.index] = needsReview
+              ? { action: "new", resourceId: null }
+              : { action: "reuse", resourceId: best?.resource_id ?? null };
+          }
+          return next;
+        });
+        if (result.status !== "ready") timer = setTimeout(run, 800);
+      } catch (error) {
+        if (cancelled) return;
+        setDuplicateError((error as Error).message || "查重失败");
+        setDuplicateStatus("error");
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [templateMode, step, sessionId, previewsReviewed, duplicateSkipped]);
+
+  React.useEffect(() => {
+    setDuplicateStatus("idle");
+    setDuplicateData(null);
+    setDuplicateError(null);
+    setDuplicateSkipped(false);
+    setDuplicateChoices({});
+    duplicateTouchedRef.current.clear();
+    setReusedCount(0);
+  }, [sessionId]);
+
+  const duplicatesReady = templateMode || duplicateSkipped || duplicateStatus === "ready" || duplicateStatus === "error";
+  const duplicateCounts = React.useMemo(() => {
+    const counts: Record<DuplicateAction, number> = { reuse: 0, iterate: 0, overwrite: 0, new: 0 };
+    for (const item of duplicateData?.items ?? []) {
+      const choice = duplicateChoices[item.index];
+      if (choice) counts[choice.action] += 1;
+    }
+    return counts;
+  }, [duplicateData, duplicateChoices]);
+  const applyAllDuplicates = (action: DuplicateAction) => {
+    const next: Record<number, DuplicateChoice> = {};
+    for (const item of duplicateData?.items ?? []) {
+      duplicateTouchedRef.current.add(item.index);
+      next[item.index] = { action, resourceId: action === "new" ? null : item.matches[0]?.resource_id ?? null };
+    }
+    setDuplicateChoices(next);
+  };
 
   React.useEffect(() => {
     if (previewStatus !== "rendering" || !renderStartedAt) return;
@@ -383,8 +464,8 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
         if (typeof p.preview_error === "string" && p.preview_error.trim()) setPreviewError(p.preview_error); else if (p.preview_error === null || p.preview_status === "ready") setPreviewError(null);
         if (task.status === "failed") { setTaskError(task.error_message || task.message || "上传任务处理失败"); setWorkflowState("failed"); } if (task.status === "completed" && task.result_data?.created) setCreatedCount(task.result_data.created);
         if (autoNavigateRef.current) {
-          if (p.workflow_state === "awaiting_confirmation" && step !== "confirm") setStep("render");
-          else if ((p.workflow_state === "rendering" || p.workflow_state === "awaiting_render") && step !== "render" && step !== "confirm") setStep("render");
+          if (p.workflow_state === "awaiting_confirmation" && step !== "confirm" && step !== "duplicates") setStep("render");
+          else if ((p.workflow_state === "rendering" || p.workflow_state === "awaiting_render") && step !== "render" && step !== "confirm" && step !== "duplicates") setStep("render");
         }
         if (!["completed", "failed", "cancelled"].includes(task.status)) timer = setTimeout(poll, 2000);
       } catch (error) { if (!cancelled && error instanceof ApiError && error.status === 404) setTaskError("任务不存在或已被删除"); if (!cancelled) timer = setTimeout(poll, 4000); }
@@ -461,18 +542,19 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
   };
 
   const replaceFonts = async () => {
-    if (!sessionId || !selectedReplacementCount || !startOperation("replace")) return;
+    if (!sessionId || !selectedReplacementCount || !startOperation("replace")) return null;
     autoNavigateRef.current = false;
     try {
       const selected = Object.fromEntries(Object.entries(replacements).filter(([, value]) => value));
       const result = await api<{ fonts: string[]; missing_fonts: string[]; preview_status?: PreviewStatus }>(`/api/resource-import/${sessionId}/replace-fonts`, { method: "POST", json: selected });
       setFonts(result.fonts || []); setMissingFonts(result.missing_fonts || []); setPreviewStatus(result.preview_status || (result.missing_fonts?.length ? "blocked" : "pending")); setPreviewUrls({}); setPreviewLoads({}); setPreviewRetries({}); setReplacements({}); toast.success(result.missing_fonts?.length ? "字体替换完成，请继续处理剩余字体" : "字体替换完成，接下来生成图片");
-    } catch (error) { setTaskError((error as Error).message || "字体替换失败"); }
+      return result;
+    } catch (error) { setTaskError((error as Error).message || "字体替换失败"); return null; }
     finally { setOperationSafe(null); }
   };
 
-  const generatePreviews = async () => {
-    if (!sessionId || missingFonts.length || selectedReplacementCount || !startOperation("render")) return;
+  const generatePreviews = async (force = false) => {
+    if (!sessionId || (!force && (missingFonts.length || selectedReplacementCount)) || !startOperation("render")) return;
     autoNavigateRef.current = false;
     const attachToActiveRender = workflowState === "rendering" || previewStatus === "rendering";
     const controller = new AbortController(); renderAbortRef.current = controller; renderErrorRef.current = false; setPreviewStatus("rendering"); setPreviewError(null); if (!attachToActiveRender) { setPreviewUrls({}); setPreviewLoads({}); } setRenderStartedAt((value) => value ?? Date.now()); if (!renderStartedAt) setRenderElapsedSeconds(0); setRenderMessage("正在接入 Windows 图片渲染进度…");
@@ -536,8 +618,15 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
     if (!startOperation("commit")) return;
     commitCompletedRef.current = false; setCommitProgress({ status: "processing", progress: 0, total: slideCount, message: `正在准备保存${templateMode ? "标准模板" : "单页素材"}…` }); setUploadError(null); setUploadUncertain(false); uploadingRef.current = true; if (!templateMode) rememberPendingImport(ownerId, { sessionId, slideCount });
     try {
-      const result = await api<{ created: number; resource_ids?: number[] }>(`/api/resource-import/${sessionId}/commit`, { method: "POST", json: templateMode ? { series: templateSeries.trim(), subject: subject.trim(), platform: templatePlatform, ratio: templateRatio, template_type: templateType, visibility_scope: visibilityScope, management_scope: managementScope, visible_user_ids: visibleUserIds, visible_user_tags: visibleUserTags, manage_user_ids: manageUserIds, manage_user_tags: manageUserTags } : { name_prefix: namePrefix.trim(), subject: subject.trim() || DEFAULT_RESOURCE_SUBJECT, tags: serializeTags(tagList), status, visibility_scope: visibilityScope, management_scope: managementScope, visible_user_ids: visibleUserIds, visible_user_tags: visibleUserTags, manage_user_ids: manageUserIds, manage_user_tags: manageUserTags, remark_html: remarkHtml } });
+      const actions = Object.fromEntries(
+        Object.entries(duplicateChoices).map(([index, choice]) => [
+          index,
+          choice.action === "new" ? { action: "new" } : { action: choice.action, resource_id: choice.resourceId },
+        ]),
+      );
+      const result = await api<{ created: number; reused?: number; iterated?: number; overwritten?: number; resource_ids?: number[] }>(`/api/resource-import/${sessionId}/commit`, { method: "POST", json: templateMode ? { series: templateSeries.trim(), subject: subject.trim(), platform: templatePlatform, ratio: templateRatio, template_type: templateType, visibility_scope: visibilityScope, management_scope: managementScope, visible_user_ids: visibleUserIds, visible_user_tags: visibleUserTags, manage_user_ids: manageUserIds, manage_user_tags: manageUserTags } : { name_prefix: namePrefix.trim(), subject: subject.trim() || DEFAULT_RESOURCE_SUBJECT, tags: serializeTags(tagList), status, visibility_scope: visibilityScope, management_scope: managementScope, visible_user_ids: visibleUserIds, visible_user_tags: visibleUserTags, manage_user_ids: manageUserIds, manage_user_tags: manageUserTags, remark_html: remarkHtml, ...(Object.keys(actions).length > 0 ? { actions } : {}) } });
       if (result.created !== slideCount) throw new Error("服务器返回的保存数量异常，请核对任务结果");
+      setReusedCount(result.reused ?? 0);
       if (!templateMode && showEnabled) {
         const resourceIds = result.resource_ids ?? [];
         if (resourceIds.length === result.created) await createShowForImport(resourceIds);
@@ -559,8 +648,28 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
     finally { uploadingRef.current = false; setOperationSafe(null); }
   };
 
-  const next = () => { if (operationRef.current !== null) return; autoNavigateRef.current = false; if (step === "upload") void createTask(); else if (step === "fonts" && sessionId && !missingFonts.length && !selectedReplacementCount && !standardFontsLoading && !standardFontsError) { setStep("render"); void generatePreviews(); } else if (step === "render" && previewsReviewed) setStep("confirm"); };
-  const previous = () => { if (operationRef.current === null) { autoNavigateRef.current = false; setStep(STEPS[Math.max(0, stepIndex - 1)].id); } };
+  const next = async () => {
+    if (operationRef.current !== null) return;
+    autoNavigateRef.current = false;
+    if (step === "upload") { void createTask(); return; }
+    if (step === "fonts") {
+      if (!sessionId || standardFontsLoading || standardFontsError) return;
+      if (missingFonts.length) {
+        if (!selectedReplacementCount) return;
+        const result = await replaceFonts();
+        if (!result || result.missing_fonts?.length) return;
+        setStep("render");
+        void generatePreviews(true);
+        return;
+      }
+      setStep("render");
+      void generatePreviews();
+      return;
+    }
+    if (step === "render" && previewsReviewed) setStep(templateMode ? "confirm" : "duplicates");
+    else if (step === "duplicates") setStep("confirm");
+  };
+  const previous = () => { if (operationRef.current === null) { autoNavigateRef.current = false; setStep(steps[Math.max(0, stepIndex - 1)].id); } };
   const close = () => {
     if (operationRef.current === "upload") {
       toast.info("文件仍在上传，请等待上传完成后再关闭页面");
@@ -590,10 +699,10 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
 
   return <div onChangeCapture={markDefaultsTouched} className="relative flex h-full min-h-0 flex-col bg-background"><div className="flex h-full min-h-0 w-full flex-col gap-4 overflow-hidden">
     <header className="shrink-0"><h1 className="text-xl font-semibold tracking-tight">{templateMode ? "导入标准模板系列" : "导入单页素材"}</h1><p className="mt-1 text-sm text-muted-foreground">上传 PPT 并填写信息后，平台会在后台完成字体检测和图片渲染；{templateMode ? "每页将按 PPT 顺序保存为同一系列。" : "可留在此处继续，也可稍后从任务管理恢复。"}</p></header>
-    <nav aria-label="素材导入步骤" className="shrink-0"><ol className="grid grid-cols-4 gap-1 sm:gap-3">{STEPS.map((item, index) => { const current = item.id === step; const completed = index < stepIndex || createdCount !== null; return <li key={item.id} aria-current={current ? "step" : undefined} className={cn("flex flex-col items-center gap-1.5 rounded-md border px-1 py-2 text-center text-xs sm:flex-row sm:justify-center sm:gap-2 sm:px-3 sm:text-sm", current ? "border-foreground/25 bg-primary-weak font-medium text-foreground" : completed ? "border-foreground/15 text-foreground" : "border-transparent bg-muted/40 text-muted-foreground")}><span className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-full", current ? "bg-primary text-primary-foreground" : "bg-muted")}>{completed ? <CheckCircle2 className="h-4 w-4" /> : index + 1}</span>{item.label}</li>; })}</ol></nav>
+    <nav aria-label="素材导入步骤" className="shrink-0"><ol className={cn("grid gap-1 sm:gap-3", templateMode ? "grid-cols-4" : "grid-cols-5")}>{steps.map((item, index) => { const current = item.id === step; const completed = index < stepIndex || createdCount !== null; return <li key={item.id} aria-current={current ? "step" : undefined} className={cn("flex flex-col items-center gap-1.5 rounded-md border px-1 py-2 text-center text-xs sm:flex-row sm:justify-center sm:gap-2 sm:px-3 sm:text-sm", current ? "border-foreground/25 bg-primary-weak font-medium text-foreground" : completed ? "border-foreground/15 text-foreground" : "border-transparent bg-muted/40 text-muted-foreground")}><span className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-full", current ? "bg-primary text-primary-foreground" : "bg-muted")}>{completed ? <CheckCircle2 className="h-4 w-4" /> : index + 1}</span>{item.label}</li>; })}</ol></nav>
     <div ref={contentRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-0.5 pb-1" aria-busy={busy}>
-      {step === "upload" && <section className="grid gap-4 rounded-lg border bg-muted/30 p-4"><div><h2 className="font-medium">1. 上传与信息</h2><p className="mt-1 text-sm text-muted-foreground">这里只上传 PPT，图片由平台统一渲染。上传完成后可以关闭页面，后续字体检测和图片渲染会在任务管理中继续。</p></div><label tabIndex={0} role="button" aria-controls="import-ppt-file" onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); document.getElementById("import-ppt-file")?.click(); } }} className="flex cursor-pointer flex-col gap-1 rounded-md border border-dashed bg-background px-3 py-3 text-sm outline-none hover:border-primary focus-visible:ring-2 focus-visible:ring-primary"><span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground"><FileText className="h-4 w-4" />PPT 文件</span><span className="truncate font-medium">{pptFile?.name || "点击选择 PPT 文件"}</span><input id="import-ppt-file" aria-label="选择 PPT 文件" type="file" accept=".pptx,.potx,.ppsx" className="hidden" onChange={(event) => { handlePptChange(event.target.files?.[0] || null); event.currentTarget.value = ""; }} /></label>{fileError && <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{fileError}</p>}{taskError && <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{taskError}</p>}<p className="text-xs text-muted-foreground">{PPT_FORMAT_HINT}。PPT ≤ 10 GB、最多 500 页。{pptFile && ` 当前文件 ${formatSize(pptFile.size)}。`}</p>
-        <div className="border-t pt-4">
+      {step === "upload" && <section className="grid min-h-full gap-4 rounded-lg border bg-muted/30 p-4"><h2 className="sr-only">1. 上传与信息</h2><div className="grid min-h-0 gap-5 lg:grid-cols-[240px_minmax(0,1fr)]"><div className="flex min-h-0 flex-col gap-3"><label tabIndex={0} role="button" aria-controls="import-ppt-file" onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); document.getElementById("import-ppt-file")?.click(); } }} onDragOver={(event) => { event.preventDefault(); if (!busy) setDragActive(true); }} onDragLeave={(event) => { event.preventDefault(); setDragActive(false); }} onDrop={(event) => { event.preventDefault(); setDragActive(false); if (!busy) { const file = event.dataTransfer.files?.[0] ?? null; if (file) handlePptChange(file); } }} className={cn("flex min-h-[180px] flex-1 cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed bg-background px-6 py-8 text-center outline-none transition focus-visible:ring-2 focus-visible:ring-primary", dragActive ? "border-primary bg-primary/5" : "border-border hover:border-primary hover:bg-primary/[0.03]")}><span className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary"><UploadCloud className="h-6 w-6" /></span>{pptFile ? <><span className="max-w-full truncate text-base font-medium">{pptFile.name}</span><span className="text-xs text-muted-foreground">{formatSize(pptFile.size)} · 点击或拖拽可重新选择</span></> : <><span className="text-base font-medium">{dragActive ? "松开即可选择这个 PPT" : "点击选择，或把 PPT 拖到这里"}</span><span className="text-xs text-muted-foreground">支持 PPTX / POTX / PPSX · 最大 10 GB · 最多 500 页</span><span className="rounded-md bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground shadow-sm">选择 PPT 文件</span></>}<input id="import-ppt-file" aria-label="选择 PPT 文件" type="file" accept=".pptx,.potx,.ppsx" className="hidden" onChange={(event) => { handlePptChange(event.target.files?.[0] || null); event.currentTarget.value = ""; }} /></label>{fileError && <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{fileError}</p>}{taskError && <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{taskError}</p>}</div>
+        <div className="flex min-h-0 flex-col border-t pt-4 lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0">
           <h3 className="mb-3 text-sm font-medium">{templateMode ? "模板系列信息" : "素材信息"}</h3>
           {metadataError && <p role="alert" className="mb-3 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{metadataError}</p>}
           {templateMode ? <>
@@ -623,17 +732,17 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
           </div>
           <div className="mt-4 grid gap-1.5"><Label>分类标签</Label><TagInput value={tagList} onChange={(value) => { markDefaultsTouched(); setTagList(value); }} suggestions={[]} /></div>
           </>}
-          <div className="mt-4 grid gap-4 sm:grid-cols-2"><div className="grid gap-1.5"><Label htmlFor="import-visibility">可见范围 <span className="text-destructive">*</span></Label><Select value={visibilityScope} onValueChange={(value) => setVisibilityScope(value as ScopeValue)}><SelectTrigger id="import-visibility"><SelectValue placeholder="请选择可见范围" /></SelectTrigger><SelectContent>{VISIBILITY_SCOPE_OPTIONS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></div><div className="grid gap-1.5"><Label htmlFor="import-management">管理范围 <span className="text-destructive">*</span></Label><Select value={managementScope} onValueChange={(value) => setManagementScope(value as ScopeValue)}><SelectTrigger id="import-management"><SelectValue placeholder="请选择管理范围" /></SelectTrigger><SelectContent>{MANAGEMENT_SCOPE_OPTIONS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></div></div>{visibilityScope === "partial" && <div className="mt-4 space-y-2"><Label>可见用户或用户标签（至少选 1 项）</Label><UserPicker value={visibleUserIds} onChange={setVisibleUserIds} tagValue={visibleUserTags} onTagChange={setVisibleUserTags} allowTagSelection lockedIds={ownerId ? [ownerId] : undefined} /></div>}{managementScope === "partial" && <div className="mt-4 space-y-2"><Label>管理用户或用户标签（至少选 1 项）</Label><UserPicker value={manageUserIds} onChange={setManageUserIds} tagValue={manageUserTags} onTagChange={setManageUserTags} allowTagSelection lockedIds={ownerId ? [ownerId] : undefined} /></div>}{!templateMode && <div className="mt-4 grid gap-2"><Label id="import-remark-label">通用备注</Label><RichTextEditor ariaLabelledBy="import-remark-label" value={remarkHtml} onChange={setRemarkHtml} minHeight={100} /></div>}
-        </div></section>}
+          <div className="mt-4 grid gap-4 sm:grid-cols-2"><div className="grid gap-1.5"><Label htmlFor="import-visibility">可见范围 <span className="text-destructive">*</span></Label><Select value={visibilityScope} onValueChange={(value) => { setVisibilityScope(value as ScopeValue); if (value === "partial" && !visibleUserIds.length && !visibleUserTags.length) setScopePicker("visibility"); }}><SelectTrigger id="import-visibility"><SelectValue placeholder="请选择可见范围" /></SelectTrigger><SelectContent>{VISIBILITY_SCOPE_OPTIONS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></div><div className="grid gap-1.5"><Label htmlFor="import-management">管理范围 <span className="text-destructive">*</span></Label><Select value={managementScope} onValueChange={(value) => { setManagementScope(value as ScopeValue); if (value === "partial" && !manageUserIds.length && !manageUserTags.length) setScopePicker("management"); }}><SelectTrigger id="import-management"><SelectValue placeholder="请选择管理范围" /></SelectTrigger><SelectContent>{MANAGEMENT_SCOPE_OPTIONS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></div></div>{(visibilityScope === "partial" || managementScope === "partial") && <div className={cn("mt-4 grid gap-3", visibilityScope === "partial" && managementScope === "partial" && "sm:grid-cols-2")}>{visibilityScope === "partial" && <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-background px-3 py-2 text-sm"><div><p className="font-medium">可见用户或标签</p><p className="text-xs text-muted-foreground">{visibleUserIds.length || visibleUserTags.length ? `已选 ${visibleUserIds.length} 位用户、${visibleUserTags.length} 个标签` : "尚未选择，至少需要 1 项"}</p></div><Button type="button" size="sm" variant="outline" onClick={() => setScopePicker("visibility")}>选择用户/标签</Button></div>}{managementScope === "partial" && <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-background px-3 py-2 text-sm"><div><p className="font-medium">管理用户或标签</p><p className="text-xs text-muted-foreground">{manageUserIds.length || manageUserTags.length ? `已选 ${manageUserIds.length} 位用户、${manageUserTags.length} 个标签` : "尚未选择，至少需要 1 项"}</p></div><Button type="button" size="sm" variant="outline" onClick={() => setScopePicker("management")}>选择用户/标签</Button></div>}</div>}{!templateMode && <div className="mt-4 flex min-h-[140px] flex-1 flex-col gap-2"><Label id="import-remark-label">通用备注</Label><RichTextEditor ariaLabelledBy="import-remark-label" value={remarkHtml} onChange={setRemarkHtml} minHeight={0} className="flex-1" /></div>}
+        </div></div></section>}
 
-      {step === "fonts" && <section className="grid gap-4 rounded-lg border p-4"><div><h2 className="font-medium">2. 字体检测</h2><p className="mt-1 text-sm text-muted-foreground">后台任务会先检测页数和字体；页面关闭后也会保留任务。</p></div>{taskError && <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{taskError}</p>}{!sessionId || !fonts.length ? <div className="flex items-center gap-2 rounded-md bg-muted/40 p-4 text-sm"><Loader2 className="h-4 w-4 animate-spin" />{sessionId ? "正在检测 PPT 页数和字体…" : "正在等待上传任务完成…"}</div> : <><p className="text-sm text-muted-foreground">共 {slideCount} 页，检测到 {fonts.length} 种字体。</p><div className={cn("rounded-md border px-3 py-2 text-sm", missingFonts.length ? "border-amber-300 bg-amber-50 text-amber-900" : "border-green-300 bg-green-50 text-green-900")}>{missingFonts.length ? <><AlertCircle className="mr-1 inline h-4 w-4" />检测到 {missingFonts.length} 个非标准字体，请替换后继续。</> : <><CheckCircle2 className="mr-1 inline h-4 w-4" />字体检测通过，请确认后继续。</>}</div><div className="space-y-3 rounded-md border bg-muted/20 p-3">{fonts.map((font) => <div key={font} className="grid items-center gap-2 sm:grid-cols-[1fr_1.5fr]"><span className={cn("break-words text-sm", missingFonts.includes(font) && "font-medium text-amber-800")}>{font}{missingFonts.includes(font) && <span className="ml-1 text-xs">（非标准字体）</span>}</span><Select disabled={busy || standardFontsLoading || !!standardFontsError} value={replacements[font] || "__keep__"} onValueChange={(value) => setReplacements((old) => { const next = { ...old }; if (value === "__keep__") delete next[font]; else next[font] = value; return next; })}><SelectTrigger aria-label={`替换字体 ${font}`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__keep__">保留原字体</SelectItem>{standardFonts.filter((item) => item.family !== font).map((item) => <SelectItem key={item.id} value={item.family}>{item.family}</SelectItem>)}</SelectContent></Select></div>)}<Button type="button" variant="outline" onClick={replaceFonts} disabled={busy || !selectedReplacementCount || standardFontsLoading || !!standardFontsError}>{operation === "replace" ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : null}{operation === "replace" ? "替换中…" : "应用字体替换"}</Button></div></>}</section>}
+      {step === "fonts" && <section className="grid gap-4 rounded-lg border p-4"><h2 className="sr-only">2. 字体检测</h2>{taskError && <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{taskError}</p>}{!sessionId || !fonts.length ? <div className="flex items-center gap-2 rounded-md bg-muted/40 p-4 text-sm"><Loader2 className="h-4 w-4 animate-spin" />{sessionId ? "正在检测 PPT 页数和字体…" : "正在等待上传任务完成…"}</div> : <><p className="text-sm text-muted-foreground">共 {slideCount} 页，检测到 {fonts.length} 种字体。</p><div className={cn("rounded-md border px-3 py-2 text-sm", missingFonts.length ? "border-amber-300 bg-amber-50 text-amber-900" : "border-green-300 bg-green-50 text-green-900")}>{missingFonts.length ? <><AlertCircle className="mr-1 inline h-4 w-4" />检测到 {missingFonts.length} 个非标准字体，请替换后继续。</> : <><CheckCircle2 className="mr-1 inline h-4 w-4" />字体检测通过，请确认后继续。</>}</div><div className="space-y-3 rounded-md border bg-muted/20 p-3">{fonts.map((font) => <div key={font} className="grid items-center gap-2 sm:grid-cols-[1fr_1.5fr]"><span className={cn("break-words text-sm", missingFonts.includes(font) && "font-medium text-amber-800")}>{font}{missingFonts.includes(font) && <span className="ml-1 text-xs">（非标准字体）</span>}</span><Select disabled={busy || standardFontsLoading || !!standardFontsError} value={replacements[font] || "__keep__"} onValueChange={(value) => setReplacements((old) => { const next = { ...old }; if (value === "__keep__") delete next[font]; else next[font] = value; return next; })}><SelectTrigger aria-label={`替换字体 ${font}`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__keep__">保留原字体</SelectItem>{standardFonts.filter((item) => item.family !== font).map((item) => <SelectItem key={item.id} value={item.family}>{item.family}</SelectItem>)}</SelectContent></Select></div>)}</div></>}</section>}
 
       {step === "render" && <section className="grid gap-4 rounded-lg border p-4">
-        <div><h2 className="font-medium">3. 图片渲染</h2><p className="mt-1 text-sm text-muted-foreground">Windows 节点完成整批转换后，平台会统一校验并展示全部高清图片。</p></div>
+        <h2 className="sr-only">3. 图片渲染</h2>
         {previewError && <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{previewError}</p>}
         {previewStatus !== "ready" && <div className="space-y-3 rounded-md border border-dashed p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <Button type="button" variant="outline" onClick={generatePreviews} disabled={busy || !sessionId || !!missingFonts.length}>
+            <Button type="button" variant="outline" onClick={() => void generatePreviews()} disabled={busy || !sessionId || !!missingFonts.length}>
               <RefreshCw className={cn("mr-1 h-4 w-4", (operation === "render" || workflowState === "rendering") && "animate-spin")} />
               {operation === "render" ? "正在渲染高清图片…" : workflowState === "rendering" ? "接入后台渲染进度" : previewStatus === "error" ? "重试图片渲染" : "开始图片渲染"}
             </Button>
@@ -648,7 +757,10 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
           </div>
         </div>}
         {sessionId && (previewStatus === "ready" || Object.keys(previewUrls).length > 0) && <>
-          <div className="space-y-1"><p className="text-sm text-muted-foreground">共 {slideCount} 页，已生成 {renderedPageCount} 页、已加载 {loadedPreviewCount} 张{failedPreviewCount ? `，${failedPreviewCount} 张加载失败` : ""}。</p><p className="text-xs text-muted-foreground">点击图片可放大查看，支持左右切换页面。</p></div>
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+            <p>点击图片可放大查看，支持左右切换页面。</p>
+            <p className="shrink-0 tabular-nums">共 {slideCount} 页，已生成 {renderedPageCount} 页、已加载 {loadedPreviewCount} 张{failedPreviewCount ? `，${failedPreviewCount} 张加载失败` : ""}。</p>
+          </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">{Array.from({ length: Math.min(PREVIEW_PAGE_SIZE, Math.max(0, slideCount - previewPage * PREVIEW_PAGE_SIZE)) }, (_, offset) => {
             const index = previewPage * PREVIEW_PAGE_SIZE + offset;
             const url = getPreviewUrl(index);
@@ -665,10 +777,30 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
         </>}
       </section>}
 
-          {step === "confirm" && <section className="grid gap-4 rounded-lg border p-4"><h2 className="font-medium">4. 确认导入</h2>{createdCount !== null ? <div className="rounded-md border border-green-300 bg-green-50 p-5 text-green-900"><p className="flex items-center gap-2 font-medium"><CheckCircle2 className="h-5 w-5" />导入完成，已保存 {createdCount} 个{templateMode ? "标准模板" : "单页素材"}</p>{!templateMode && createdShow && <p className="mt-2 flex flex-wrap items-center gap-2 text-sm">已创建放映素材《{createdShow.name}》。<Button asChild size="sm" variant="outline"><Link to={`/shows/${createdShow.id}`} state={{ detailOrigin: { url: "/manage/shows", key: "", scroll: {} } }}>查看放映素材</Link></Button></p>}{!templateMode && showError && <div className="mt-2 space-y-2 text-sm text-amber-800"><p role="alert">素材已导入，但放映素材未创建：{showError}</p>{showRetryIds && !createdShow && <Button type="button" size="sm" variant="outline" disabled={showCreating} onClick={() => { if (!showCreating && showRetryIds) void createShowForImport(showRetryIds); }}>{showCreating ? "正在创建…" : "重试创建放映素材"}</Button>}</div>}</div> : <><p className="text-sm text-muted-foreground">字体和高清图片均已确认。确认后平台会拆分 PPT 并统一保存到{templateMode ? "标准模板库" : "素材库"}。</p><dl className="grid gap-4 rounded-md bg-muted/30 p-4 text-sm sm:grid-cols-2"><div><dt className="text-muted-foreground">源文件</dt><dd className="mt-1 break-all font-medium">{pptFile?.name}</dd></div><div><dt className="text-muted-foreground">{templateMode ? "模板数量" : "素材数量"}</dt><dd className="mt-1 font-medium">{slideCount} 个{templateMode ? "标准模板" : "单页素材"}</dd></div><div><dt className="text-muted-foreground">{templateMode ? "系列" : "名称"}</dt><dd className="mt-1 break-all font-medium">{templateMode ? templateSeries.trim() : <div className="space-y-2"><Input aria-label="修改素材名称" maxLength={120} value={namePrefix} disabled={busy || commitProgress?.status === "processing"} onChange={(event) => { nameEditedRef.current = true; setNamePrefix(event.target.value); }} /><p className="text-xs font-normal text-muted-foreground">{importNamePreview}</p></div>}</dd></div><div><dt className="text-muted-foreground">主体</dt><dd className="mt-1 font-medium">{subject.trim() || "未设置"}</dd></div></dl>{!templateMode && <ImportShowOption enabled={showEnabled} onEnabledChange={toggleShowOption} draft={showDraft} onDraftChange={(next) => { if (next.name !== showDraft.name) showNameEditedRef.current = true; setShowDraft(next); setShowError(null); }} disabled={busy || commitProgress?.status === "processing"} ownerId={ownerId} error={showError} />}{(operation === "commit" || commitProgress?.status === "processing") && <div className="space-y-2 rounded-md border border-primary/20 bg-primary/5 p-4" role="status" aria-live="polite"><p className="flex items-center gap-2 text-sm font-medium"><Loader2 className="h-4 w-4 animate-spin" />{commitProgress?.message || "该导入会话正在处理中，请稍候…"}</p>{(commitProgress?.total || slideCount) > 0 && <><div className="h-2 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuemin={0} aria-valuemax={commitProgress?.total || slideCount} aria-valuenow={commitProgress?.progress || 0} aria-label="导入保存进度"><div className="h-full bg-primary transition-all" style={{ width: `${Math.min(100, Math.round(((commitProgress?.progress || 0) / (commitProgress?.total || slideCount)) * 100))}%` }} /></div><p className="text-xs text-muted-foreground">已保存 {commitProgress?.progress || 0} / {commitProgress?.total || slideCount} 个{templateMode ? "标准模板" : "单页素材"}</p></>}</div>}{uploadError && <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{uploadError}</p>}{uploadUncertain && <p className="text-sm text-amber-700">服务器响应中断，任务可能已经保存，请到任务管理核对，不要重复导入。</p>}</>}</section>}
+          {step === "duplicates" && !templateMode && <section className="grid gap-4 rounded-lg border p-4"><h2 className="sr-only">4. 重复检查</h2><div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground"><p>点击图片可放大对比，支持闪烁查看差异。</p><p className="shrink-0 tabular-nums">{duplicateStatus === "checking" || duplicateStatus === "warming" ? (duplicateData?.text_remaining ? "正在补齐文字比对…" : "正在比对素材库…") : `共 ${slideCount} 页，${duplicateData?.items.length ?? 0} 页可处理`}</p></div><ImportDuplicatePanel status={duplicateStatus} data={duplicateData} error={duplicateError} skipped={duplicateSkipped} choices={duplicateChoices} pagePreviewUrl={getPreviewUrl} onChoiceChange={(index, choice) => { duplicateTouchedRef.current.add(index); setDuplicateChoices((previous) => ({ ...previous, [index]: choice })); }} onApplyAll={applyAllDuplicates} onSkip={() => setDuplicateSkipped(true)} disabled={busy || commitProgress?.status === "processing"} /></section>}
+      {step === "confirm" && <section className="grid gap-4 rounded-lg border p-4"><h2 className="sr-only">{templateMode ? "4" : "5"}. 确认导入</h2>{createdCount !== null ? <div className="rounded-md border border-green-300 bg-green-50 p-5 text-green-900"><p className="flex items-center gap-2 font-medium"><CheckCircle2 className="h-5 w-5" />导入完成，已保存 {createdCount} 个{templateMode ? "标准模板" : "单页素材"}{reusedCount > 0 ? `（复用 ${reusedCount} 个已有素材）` : ""}</p>{!templateMode && createdShow && <p className="mt-2 flex flex-wrap items-center gap-2 text-sm">已创建放映素材《{createdShow.name}》。<Button asChild size="sm" variant="outline"><Link to={`/shows/${createdShow.id}`} state={{ detailOrigin: { url: "/manage/shows", key: "", scroll: {} } }}>查看放映素材</Link></Button></p>}{!templateMode && showError && <div className="mt-2 space-y-2 text-sm text-amber-800"><p role="alert">素材已导入，但放映素材未创建：{showError}</p>{showRetryIds && !createdShow && <Button type="button" size="sm" variant="outline" disabled={showCreating} onClick={() => { if (!showCreating && showRetryIds) void createShowForImport(showRetryIds); }}>{showCreating ? "正在创建…" : "重试创建放映素材"}</Button>}</div>}</div> : <><dl className="grid gap-4 rounded-md bg-muted/30 p-4 text-sm sm:grid-cols-2"><div><dt className="text-muted-foreground">源文件</dt><dd className="mt-1 break-all font-medium">{pptFile?.name}</dd></div><div><dt className="text-muted-foreground">{templateMode ? "模板数量" : "素材数量"}</dt><dd className="mt-1 font-medium">{slideCount} 个{templateMode ? "标准模板" : "单页素材"}</dd></div><div><dt className="text-muted-foreground">{templateMode ? "系列" : "名称"}</dt><dd className="mt-1 break-all font-medium">{templateMode ? templateSeries.trim() : <div className="space-y-2"><Input aria-label="修改素材名称" maxLength={120} value={namePrefix} disabled={busy || commitProgress?.status === "processing"} onChange={(event) => { nameEditedRef.current = true; setNamePrefix(event.target.value); }} /><p className="text-xs font-normal text-muted-foreground">{importNamePreview}</p></div>}</dd></div><div><dt className="text-muted-foreground">主体</dt><dd className="mt-1 font-medium">{subject.trim() || "未设置"}</dd></div></dl>{!templateMode && <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/20 p-3 text-sm"><p>{duplicateSkipped ? "已跳过查重，本批页面将全部新建。" : `重复页面处理：复用 ${duplicateCounts.reuse} · 迭代 ${duplicateCounts.iterate} · 覆盖 ${duplicateCounts.overwrite} · 新建 ${duplicateCounts.new}`}</p><Button type="button" variant="ghost" size="sm" onClick={() => setStep("duplicates")}>返回修改</Button></div>}{!templateMode && <ImportShowOption enabled={showEnabled} onEnabledChange={toggleShowOption} draft={showDraft} onDraftChange={(next) => { if (next.name !== showDraft.name) showNameEditedRef.current = true; setShowDraft(next); setShowError(null); }} disabled={busy || commitProgress?.status === "processing"} ownerId={ownerId} error={showError} />}{(operation === "commit" || commitProgress?.status === "processing") && <div className="space-y-2 rounded-md border border-primary/20 bg-primary/5 p-4" role="status" aria-live="polite"><p className="flex items-center gap-2 text-sm font-medium"><Loader2 className="h-4 w-4 animate-spin" />{commitProgress?.message || "该导入会话正在处理中，请稍候…"}</p>{(commitProgress?.total || slideCount) > 0 && <><div className="h-2 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuemin={0} aria-valuemax={commitProgress?.total || slideCount} aria-valuenow={commitProgress?.progress || 0} aria-label="导入保存进度"><div className="h-full bg-primary transition-all" style={{ width: `${Math.min(100, Math.round(((commitProgress?.progress || 0) / (commitProgress?.total || slideCount)) * 100))}%` }} /></div><p className="text-xs text-muted-foreground">已保存 {commitProgress?.progress || 0} / {commitProgress?.total || slideCount} 个{templateMode ? "标准模板" : "单页素材"}</p></>}</div>}{uploadError && <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{uploadError}</p>}{uploadUncertain && <p className="text-sm text-amber-700">服务器响应中断，任务可能已经保存，请到任务管理核对，不要重复导入。</p>}</>}</section>}
     </div>
-    <footer className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t pt-3"><span role="status" className="text-xs text-muted-foreground">第 {stepIndex + 1} / {STEPS.length} 步 · {STEPS[stepIndex].label}</span><div className="flex flex-wrap justify-end gap-2">{createdCount !== null ? <Button type="button" onClick={close}>{templateMode ? "返回标准模板" : "返回素材库"}</Button> : <><Button type="button" variant="ghost" onClick={close} disabled={busy && operation !== "render"}><X className="mr-1 h-4 w-4" />关闭</Button>{stepIndex > 0 && <Button type="button" variant="outline" onClick={previous} disabled={busy}><ArrowLeft className="mr-1 h-4 w-4" />上一步</Button>}{step === "confirm" ? <Button type="button" onClick={commit} disabled={busy || !previewsReviewed || !!missingFonts.length || !!selectedReplacementCount || !sessionId}><Upload className="mr-1 h-4 w-4" />{showEnabled ? "确认导入并创建放映素材" : "确认导入"}</Button> : <Button type="button" onClick={next} disabled={busy || (step === "upload" ? !pptFile : step === "fonts" ? !sessionId || !!missingFonts.length || !!selectedReplacementCount || standardFontsLoading || !!standardFontsError : !previewsReviewed)}>{step === "upload" ? "创建上传任务" : step === "fonts" ? "字体已确认，下一步" : "图片已确认，下一步"}<ArrowRight className="ml-1 h-4 w-4" /></Button>}</>}</div></footer>
+    <footer className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t pt-3"><span role="status" className="text-xs text-muted-foreground">第 {stepIndex + 1} / {steps.length} 步 · {steps[stepIndex].label}</span><div className="flex flex-wrap justify-end gap-2">{createdCount !== null ? <Button type="button" onClick={close}>{templateMode ? "返回标准模板" : "返回素材库"}</Button> : <><Button type="button" variant="ghost" onClick={close} disabled={busy && operation !== "render"}><X className="mr-1 h-4 w-4" />关闭</Button>{stepIndex > 0 && <Button type="button" variant="outline" onClick={previous} disabled={busy}><ArrowLeft className="mr-1 h-4 w-4" />上一步</Button>}{step === "confirm" ? <Button type="button" onClick={commit} disabled={busy || !previewsReviewed || !!missingFonts.length || !!selectedReplacementCount || !sessionId || !duplicatesReady}><Upload className="mr-1 h-4 w-4" />{showEnabled ? "确认导入并创建放映素材" : "确认导入"}</Button> : step === "duplicates" ? <Button type="button" onClick={() => setStep("confirm")} disabled={busy || !duplicatesReady}>下一步：确认导入<ArrowRight className="ml-1 h-4 w-4" /></Button> : <Button type="button" onClick={next} disabled={busy || (step === "upload" ? !pptFile : step === "fonts" ? !sessionId || standardFontsLoading || !!standardFontsError || (!!missingFonts.length && !selectedReplacementCount) : !previewsReviewed)}>{step === "upload" ? "创建上传任务" : step === "fonts" ? (missingFonts.length ? "应用替换并下一步" : "字体已确认，下一步") : "图片已确认，下一步"}<ArrowRight className="ml-1 h-4 w-4" /></Button>}</>}</div></footer>
   </div>
+    <Dialog open={scopePicker !== null} onOpenChange={(open) => { if (!open) setScopePicker(null); }}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>{scopePicker === "visibility" ? "选择可见用户或用户标签" : "选择管理用户或用户标签"}</DialogTitle>
+          <DialogDescription>可以按用户，也可以按用户标签授权；至少选择 1 项。</DialogDescription>
+        </DialogHeader>
+        <div className="max-h-[60vh] overflow-y-auto pr-1">
+          {scopePicker === "visibility" ? (
+            <UserPicker value={visibleUserIds} onChange={setVisibleUserIds} tagValue={visibleUserTags} onTagChange={setVisibleUserTags} allowTagSelection lockedIds={ownerId ? [ownerId] : undefined} />
+          ) : scopePicker === "management" ? (
+            <UserPicker value={manageUserIds} onChange={setManageUserIds} tagValue={manageUserTags} onTagChange={setManageUserTags} allowTagSelection lockedIds={ownerId ? [ownerId] : undefined} />
+          ) : null}
+        </div>
+        <DialogFooter>
+          <Button type="button" onClick={() => setScopePicker(null)}>完成</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
     <Dialog open={previewIndex !== null} onOpenChange={(open) => { if (!open) setPreviewIndex(null); }}>
       <DialogContent
         hideClose

@@ -3,7 +3,7 @@ import { useSceneFilters } from "@/lib/tag-defaults";
 import { useOpenDetail, useRestoreListScroll } from "@/lib/detail-navigation";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronDown, ListChecks, Loader2, Pencil, Plus, Sparkles, Trash2, Upload, X } from "lucide-react";
+import { Check, ChevronDown, Copy, ListChecks, Loader2, Pencil, Plus, Sparkles, Trash2, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -406,6 +406,15 @@ export function ResourcesPage() {
               >
                 <Upload className="h-3.5 w-3.5" />
                 导入素材
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => navigate("/resources/duplicates")}
+                className="h-8 gap-1.5 px-3 text-sm"
+              >
+                <Copy className="h-3.5 w-3.5" />
+                查重
               </Button>
             </>
           ) : null

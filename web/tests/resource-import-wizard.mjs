@@ -71,6 +71,13 @@ async function waitForCount(read, expected, message) {
   assert.equal(read(), expected, message);
 }
 
+async function toConfirm(page) {
+  await page.getByRole("button", { name: "图片已确认，下一步", exact: true }).click();
+  await page.getByRole("heading", { name: "4. 重复检查", exact: true }).waitFor();
+  await page.getByRole("button", { name: "下一步：确认导入", exact: true }).click();
+  await page.getByRole("heading", { name: "5. 确认导入", exact: true }).waitFor();
+}
+
 function metadataTags(domain) {
   const values = {
     subject: ["产品"],
@@ -167,8 +174,9 @@ async function createHarness(t, options = {}) {
   const page = await context.newPage();
   const pageErrors = [];
   const calls = { upload: 0, replace: 0, render: 0, commit: 0, show: 0 };
-  const submitted = { uploadName: null, commitName: null, showBody: null, polls: 0 };
+  const submitted = { uploadName: null, commitName: null, commitActions: null, showBody: null, polls: 0 };
   const slideCount = options.slideCount ?? 2;
+  const duplicateItems = options.duplicateItems ?? [];
   const gates = {
     upload: deferred(),
     replace: deferred(),
@@ -232,6 +240,7 @@ async function createHarness(t, options = {}) {
     if (path === `/api/resource-import/${sessionId}/commit`) {
       calls.commit += 1;
       submitted.commitName = request.postDataJSON().name_prefix;
+      submitted.commitActions = request.postDataJSON().actions ?? null;
       await gates.commit.promise;
       return ok({
         created: slideCount,
@@ -243,6 +252,9 @@ async function createHarness(t, options = {}) {
       submitted.showBody = request.postDataJSON();
       return ok({ show: { id: 9, name: submitted.showBody.name } });
     }
+    if (path === `/api/resource-import/${sessionId}/duplicates`) {
+      return ok({ status: "ready", total: duplicateItems.length, checked: duplicateItems.length, remaining: 0, items: duplicateItems });
+    }
     if (path === `/api/resource-import/${sessionId}/status`) {
       return ok({ status: "processing", progress: 0, total: slideCount, message: "正在保存" });
     }
@@ -253,7 +265,7 @@ async function createHarness(t, options = {}) {
   await page.getByRole("heading", { name: "1. 上传与信息", exact: true }).waitFor();
   assert.equal(
     await page.getByRole("navigation", { name: "素材导入步骤" }).getByRole("listitem").count(),
-    4,
+    5,
   );
   return { page, calls, gates, submitted };
 }
@@ -294,8 +306,7 @@ for (const slideCount of [1, 2]) {
     let expectedName = "产品介绍.v2";
     await page.getByRole("button", { name: "字体已确认，下一步", exact: true }).click();
     await page.getByText(`共 ${slideCount} 页，已生成 ${slideCount} 页、已加载 ${slideCount} 张。`, { exact: true }).waitFor();
-    await page.getByRole("button", { name: "图片已确认，下一步", exact: true }).click();
-    await page.getByRole("heading", { name: "4. 确认导入", exact: true }).waitFor();
+    await toConfirm(page);
     assert.equal(await page.getByRole("textbox", { name: "修改素材名称", exact: true }).inputValue(), expectedName);
     if (slideCount === 2) {
       expectedName = "上传后修改的名称";
@@ -323,8 +334,7 @@ test("confirmation can create a show prefilled from the upload metadata", async 
   await page.getByText("字体检测通过，请确认后继续。", { exact: true }).waitFor();
   await page.getByRole("button", { name: "字体已确认，下一步", exact: true }).click();
   await page.getByText("共 2 页，已生成 2 页、已加载 2 张。", { exact: true }).waitFor();
-  await page.getByRole("button", { name: "图片已确认，下一步", exact: true }).click();
-  await page.getByRole("heading", { name: "4. 确认导入", exact: true }).waitFor();
+  await toConfirm(page);
 
   const showOption = page.getByRole("checkbox", { name: /同时创建放映素材/ });
   assert.equal(await showOption.isChecked(), false);
@@ -369,14 +379,10 @@ test("four-step import survives refresh and same-turn double clicks never duplic
   assert.match(page.url(), /[?&]task_id=101(?:&|$)/);
 
   await selectOption(page, "替换字体 旧字体", "Arial");
-  const replaceButton = page.getByRole("button", { name: "应用字体替换", exact: true });
-  await clickTwiceInOneTurn(replaceButton);
+  const fontsNext = page.getByRole("button", { name: "应用替换并下一步", exact: true });
+  await clickTwiceInOneTurn(fontsNext);
   await waitForCount(() => calls.replace, 1, "font replacement must be submitted once");
   gates.replace.resolve();
-  await page.getByText("字体检测通过，请确认后继续。", { exact: true }).waitFor();
-
-  const fontsNext = page.getByRole("button", { name: "字体已确认，下一步", exact: true });
-  await clickTwiceInOneTurn(fontsNext);
   await waitForCount(() => calls.render, 1, "image render must be submitted once");
   await page.getByRole("heading", { name: "3. 图片渲染", exact: true }).waitFor();
   gates.render.resolve();
@@ -384,7 +390,10 @@ test("four-step import survives refresh and same-turn double clicks never duplic
   assert.equal(calls.render, 1);
 
   await page.getByRole("button", { name: "图片已确认，下一步", exact: true }).click();
-  await page.getByRole("heading", { name: "4. 确认导入", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "4. 重复检查", exact: true }).waitFor();
+  await page.getByText("没有发现与素材库重复的页面", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "下一步：确认导入", exact: true }).click();
+  await page.getByRole("heading", { name: "5. 确认导入", exact: true }).waitFor();
   const commitButton = page.getByRole("button", { name: "确认导入", exact: true });
   await clickTwiceInOneTurn(commitButton);
   await waitForCount(() => calls.commit, 1, "commit must be submitted once");
@@ -392,6 +401,184 @@ test("four-step import survives refresh and same-turn double clicks never duplic
 
   await page.getByText("导入完成，已保存 2 个单页素材", { exact: true }).waitFor();
   assert.deepEqual(calls, { upload: 1, replace: 1, render: 1, commit: 1, show: 0 });
+});
+
+test("a duplicate page can reuse the existing resource", async (t) => {
+  const { page, gates, submitted } = await createHarness(t, {
+    missingFont: false,
+    slideCount: 2,
+    duplicateItems: [{
+      index: 0,
+      matches: [{
+        resource_id: 77, name: "已有封面", version_no: 2, distance: 0,
+        preview_url: "/api/resources/77/preview-thumb?version_id=9", owner_name: "Tester", used_by_shows: 3,
+      }],
+    }],
+  });
+  await fillUploadStep(page);
+  gates.upload.resolve();
+  gates.render.resolve();
+  gates.commit.resolve();
+  await page.getByRole("button", { name: "创建上传任务", exact: true }).click();
+  await page.getByText("字体检测通过，请确认后继续。", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "字体已确认，下一步", exact: true }).click();
+  await page.getByText("共 2 页，已生成 2 页、已加载 2 张。", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "图片已确认，下一步", exact: true }).click();
+  await page.getByText("第 1 页 高度相似于《已有封面》", { exact: false }).waitFor();
+  assert.match(await page.getByRole("combobox", { name: "第 1 页处理方式" }).textContent(), /复用已有素材/);
+  await page.getByRole("button", { name: "放大对比第 1 页（本次导入）", exact: true }).click();
+  await page.getByRole("dialog", { name: /第 1 页对比/ }).waitFor();
+  await page.getByRole("button", { name: "本次导入", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "下一步：确认导入", exact: true }).click();
+  await page.getByRole("heading", { name: "5. 确认导入", exact: true }).waitFor();
+  await page.getByRole("button", { name: "确认导入", exact: true }).click();
+  await page.getByText(/导入完成，已保存 2 个单页素材/).waitFor();
+  assert.deepEqual(submitted.commitActions, { "0": { action: "reuse", resource_id: 77 } });
+});
+
+test("a changed duplicate page defaults to a new resource", async (t) => {
+  const { page, gates } = await createHarness(t, {
+    missingFont: false,
+    slideCount: 1,
+    duplicateItems: [{
+      index: 0,
+      matches: [{
+        resource_id: 77, name: "已有封面", version_no: 2, distance: 0, text_checked: false, content_changed: true,
+        preview_url: "/api/resources/77/preview-thumb?version_id=9", owner_name: "Tester", used_by_shows: 3,
+      }],
+    }],
+  });
+  await fillUploadStep(page);
+  gates.upload.resolve();
+  gates.render.resolve();
+  await page.getByRole("button", { name: "创建上传任务", exact: true }).click();
+  await page.getByText("字体检测通过，请确认后继续。", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "字体已确认，下一步", exact: true }).click();
+  await page.getByText("共 1 页，已生成 1 页、已加载 1 张。", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "图片已确认，下一步", exact: true }).click();
+  const select = page.getByRole("combobox", { name: "第 1 页处理方式" });
+  await select.waitFor();
+  assert.match(await select.textContent(), /作为新素材/);
+  await page.getByText("文字有变化", { exact: false }).first().waitFor();
+});
+
+test("an uncompared duplicate page defaults to a new resource", async (t) => {
+  const { page, gates } = await createHarness(t, {
+    missingFont: false,
+    slideCount: 1,
+    duplicateItems: [{
+      index: 0,
+      matches: [{
+        resource_id: 78, name: "未比文字封面", version_no: 1, distance: 2, text_state: "uncompared",
+        preview_url: "/api/resources/78/preview-thumb?version_id=9", owner_name: "Tester", used_by_shows: 0,
+      }],
+    }],
+  });
+  await fillUploadStep(page);
+  gates.upload.resolve();
+  gates.render.resolve();
+  await page.getByRole("button", { name: "创建上传任务", exact: true }).click();
+  await page.getByText("字体检测通过，请确认后继续。", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "字体已确认，下一步", exact: true }).click();
+  await page.getByText("共 1 页，已生成 1 页、已加载 1 张。", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "图片已确认，下一步", exact: true }).click();
+  const select = page.getByRole("combobox", { name: "第 1 页处理方式" });
+  await select.waitFor();
+  assert.match(await select.textContent(), /作为新素材/);
+  await page.getByText("文字未比对", { exact: false }).first().waitFor();
+});
+
+test("the compare dialog can switch between multiple matching resources", async (t) => {
+  const { page, gates } = await createHarness(t, {
+    missingFont: false,
+    slideCount: 1,
+    duplicateItems: [{
+      index: 0,
+      matches: [
+        { resource_id: 81, name: "候选A", version_no: 1, distance: 0, text_state: "changed", text_diff: "删「旧标题」增「新标题」", preview_url: "/api/resources/81/preview-thumb?version_id=9", owner_name: "Tester", used_by_shows: 0 },
+        { resource_id: 82, name: "候选B", version_no: 2, distance: 2, text_state: "same", preview_url: "/api/resources/82/preview-thumb?version_id=9", owner_name: "Tester", used_by_shows: 1 },
+      ],
+    }],
+  });
+  await fillUploadStep(page);
+  gates.upload.resolve();
+  gates.render.resolve();
+  await page.getByRole("button", { name: "创建上传任务", exact: true }).click();
+  await page.getByText("字体检测通过，请确认后继续。", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "字体已确认，下一步", exact: true }).click();
+  await page.getByText("共 1 页，已生成 1 页、已加载 1 张。", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "图片已确认，下一步", exact: true }).click();
+  await page.getByText("还有 1 个相同素材，点开切换", { exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByText(/素材库候选（1\/2）/).waitFor();
+  await dialog.getByRole("button", { name: /2\. 候选B/ }).click();
+  await dialog.getByRole("heading", { name: /第 1 页对比 · 候选B/ }).waitFor();
+  await dialog.getByText(/素材库候选（2\/2）/).waitFor();
+  await dialog.getByRole("button", { name: "选为处理目标", exact: true }).click();
+  await dialog.waitFor({ state: "hidden" });
+  await page.getByText(/第 1 页 .*于《候选B》/).waitFor();
+  assert.match(await page.getByRole("combobox", { name: "第 1 页处理方式" }).textContent(), /复用已有素材/);
+});
+
+test("bulk duplicate actions cover reuse, iterate, overwrite and new", async (t) => {
+  const { page, gates } = await createHarness(t, {
+    missingFont: false,
+    slideCount: 1,
+    duplicateItems: [{
+      index: 0,
+      matches: [{
+        resource_id: 77, name: "已有封面", version_no: 2, distance: 0,
+        preview_url: "/api/resources/77/preview-thumb?version_id=9", owner_name: "Tester", used_by_shows: 3,
+      }],
+    }],
+  });
+  await fillUploadStep(page);
+  gates.upload.resolve();
+  gates.render.resolve();
+  await page.getByRole("button", { name: "创建上传任务", exact: true }).click();
+  await page.getByText("字体检测通过，请确认后继续。", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "字体已确认，下一步", exact: true }).click();
+  await page.getByText("共 1 页，已生成 1 页、已加载 1 张。", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "图片已确认，下一步", exact: true }).click();
+  const select = page.getByRole("combobox", { name: "第 1 页处理方式" });
+  await select.waitFor();
+
+  await page.getByRole("button", { name: "全部迭代", exact: true }).click();
+  assert.match(await select.textContent(), /迭代为新版本/);
+  await page.getByRole("button", { name: "全部覆盖", exact: true }).click();
+  await page.getByRole("button", { name: "确认全部覆盖", exact: true }).click();
+  assert.match(await select.textContent(), /覆盖当前版本/);
+  await page.getByRole("button", { name: "全部新建", exact: true }).click();
+  assert.match(await select.textContent(), /作为新素材/);
+  await page.getByRole("button", { name: "全部复用", exact: true }).click();
+  assert.match(await select.textContent(), /复用已有素材/);
+});
+
+test("large duplicate lists paginate and can filter to changed pages", async (t) => {
+  const duplicateItems = Array.from({ length: 25 }, (_, index) => ({
+    index,
+    matches: [{
+      resource_id: 1000 + index, name: `已有${index + 1}`, version_no: 1, distance: index % 3,
+      preview_url: "/api/resources/77/preview-thumb?version_id=9", owner_name: "Tester", used_by_shows: 1,
+      text_checked: index % 5 !== 0, content_changed: index % 5 === 0,
+    }],
+  }));
+  const { page, gates } = await createHarness(t, { missingFont: false, slideCount: 25, duplicateItems });
+  await fillUploadStep(page);
+  gates.upload.resolve();
+  gates.render.resolve();
+  await page.getByRole("button", { name: "创建上传任务", exact: true }).click();
+  await page.getByText("字体检测通过，请确认后继续。", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "字体已确认，下一步", exact: true }).click();
+  await page.getByText("共 25 页，已生成 25 页、已加载 25 张。", { exact: true }).waitFor({ timeout: 15_000 });
+  await page.getByRole("button", { name: "图片已确认，下一步", exact: true }).click();
+  await page.getByText(/显示 1–20 \/ 25 页/).waitFor();
+  await page.getByRole("button", { name: "下一页", exact: true }).click();
+  await page.getByText(/显示 21–25 \/ 25 页/).waitFor();
+  await page.getByRole("button", { name: /内容有变化/ }).click();
+  await page.getByText(/显示 1–5 \/ 5 页/).waitFor();
+  assert.equal(await page.getByRole("button", { name: /内容有变化/ }).getAttribute("aria-pressed"), "true");
 });
 
 test("an existing task URL restores a completed image render without another render request", async (t) => {

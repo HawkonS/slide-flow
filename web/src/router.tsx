@@ -13,6 +13,7 @@ const SetupPage = lazy(() => import("@/pages/auth/SetupPage").then((m) => ({ def
 const HomePage = lazy(() => import("@/pages/home/HomePage").then((m) => ({ default: m.HomePage })));
 const ResourcesPage = lazy(() => import("@/pages/resources/ResourcesPage").then((m) => ({ default: m.ResourcesPage })));
 const ResourceImportPage = lazy(() => import("@/pages/resources/ResourceImportPage").then((m) => ({ default: m.ResourceImportPage })));
+const ResourceDuplicatesPage = lazy(() => import("@/pages/resources/ResourceDuplicatesPage").then((m) => ({ default: m.ResourceDuplicatesPage })));
 const ResourceDetailPage = lazy(() => import("@/pages/resources/ResourceDetailPage").then((m) => ({ default: m.ResourceDetailPage })));
 const ResourceSharePage = lazy(() => import("@/pages/resources/ResourceDetailPage").then((m) => ({ default: m.ResourceSharePage })));
 const TemplatesPage = lazy(() => import("@/pages/templates/TemplatesPage").then((m) => ({ default: m.TemplatesPage })));
@@ -123,6 +124,7 @@ export const router = createBrowserRouter([
       { path: "/home", element: <HomePage /> },
       { path: "/resources", element: <ResourcesPage /> },
       { path: "/resources/import", element: <ResourceImportPage /> },
+      { path: "/resources/duplicates", element: <ResourceDuplicatesPage /> },
       { path: "/resources/:resourceKey", element: <ResourceDetailPage /> },
       { path: "/templates", element: <TemplatesPage /> },
       {
