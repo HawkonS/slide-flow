@@ -9995,6 +9995,107 @@
           }
         }
       }
+    },
+    "/api/resources/duplicates/ignores": {
+      "get": {
+        "summary": "List Duplicate Ignores",
+        "operationId": "list_duplicate_ignores_api_resources_duplicates_ignores_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response List Duplicate Ignores Api Resources Duplicates Ignores Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Ignore Duplicate Group Route",
+        "operationId": "ignore_duplicate_group_route_api_resources_duplicates_ignores_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Payload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Ignore Duplicate Group Route Api Resources Duplicates Ignores Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/resources/duplicates/ignores/{ignore_id}": {
+      "delete": {
+        "summary": "Restore Duplicate Ignore",
+        "operationId": "restore_duplicate_ignore_api_resources_duplicates_ignores__ignore_id__delete",
+        "parameters": [
+          {
+            "name": "ignore_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Ignore Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Restore Duplicate Ignore Api Resources Duplicates Ignores  Ignore Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {

@@ -18,7 +18,7 @@ from app.config import (
 from app.core.bootstrap import prepare_initial_admin
 from app.core.fonts import normalize_font_name
 
-DB_SCHEMA_VERSION = 30
+DB_SCHEMA_VERSION = 31
 
 
 def is_sqlite_busy_error(exc: BaseException) -> bool:
@@ -410,6 +410,18 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_resource_dedup_events_created
                 ON resource_dedup_events(created_at DESC, id DESC);
+
+            CREATE TABLE IF NOT EXISTS resource_duplicate_ignores (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                group_key TEXT NOT NULL,
+                resource_ids TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(user_id, group_key)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_resource_duplicate_ignores_user
+                ON resource_duplicate_ignores(user_id, created_at DESC, id DESC);
 
             CREATE TABLE IF NOT EXISTS resource_duplicate_merges (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -1704,5 +1704,29 @@
     "methods": [
       "GET"
     ]
+  },
+  {
+    "path": "/api/resources/duplicates/ignores",
+    "name": "list_duplicate_ignores",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/resources/duplicates/ignores",
+    "name": "ignore_duplicate_group_route",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/resources/duplicates/ignores/{ignore_id}",
+    "name": "restore_duplicate_ignore",
+    "kind": "http",
+    "methods": [
+      "DELETE"
+    ]
   }
 ]

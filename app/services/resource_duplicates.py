@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sqlite3
@@ -9,7 +10,12 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from app.core.permissions import can_manage_resource, can_manage_show, manageable_resource_ids
+from app.core.permissions import (
+    can_manage_resource,
+    can_manage_show,
+    can_view_resource,
+    manageable_resource_ids,
+)
 from app.db import now_iso
 from app.services.files import asset_preview_url
 from app.services.fingerprints import (
@@ -26,6 +32,126 @@ from app.services.resource_deletion import delete_resources
 logger = logging.getLogger(__name__)
 
 MAX_MERGE_GROUP = 50
+MAX_IGNORE_GROUP = 200
+
+
+def _group_key(resource_ids: list[int]) -> str:
+    values = sorted({int(value) for value in resource_ids})
+    return hashlib.sha256(",".join(str(value) for value in values).encode("ascii")).hexdigest()
+
+
+def _ignored_keys(db: sqlite3.Connection, user: sqlite3.Row) -> set[str]:
+    return {
+        str(row["group_key"])
+        for row in db.execute(
+            "SELECT group_key FROM resource_duplicate_ignores WHERE user_id = ?",
+            (int(user["id"]),),
+        )
+    }
+
+
+def ignore_duplicate_group(
+    db: sqlite3.Connection,
+    user: sqlite3.Row,
+    resource_ids: list[int],
+) -> dict[str, Any]:
+    if (
+        not isinstance(resource_ids, list)
+        or len(resource_ids) < 2
+        or len(resource_ids) > MAX_IGNORE_GROUP
+        or any(type(value) is not int or value <= 0 for value in resource_ids)
+    ):
+        raise HTTPException(400, f"请选择 2 至 {MAX_IGNORE_GROUP} 个素材")
+    ids = sorted(set(resource_ids))
+    placeholders = ",".join("?" for _ in ids)
+    rows = db.execute(
+        f"SELECT * FROM resources WHERE id IN ({placeholders}) AND deleted_at IS NULL",
+        ids,
+    ).fetchall()
+    if len(rows) != len(ids):
+        raise HTTPException(404, "部分素材已删除，请重新扫描")
+    for row in rows:
+        if not can_view_resource(db, row, user):
+            raise HTTPException(403, "部分素材无查看权限")
+    key = _group_key(ids)
+    db.execute(
+        """INSERT OR IGNORE INTO resource_duplicate_ignores
+           (user_id, group_key, resource_ids, created_at) VALUES (?, ?, ?, ?)""",
+        (int(user["id"]), key, json.dumps(ids), now_iso()),
+    )
+    row = db.execute(
+        "SELECT id FROM resource_duplicate_ignores WHERE user_id = ? AND group_key = ?",
+        (int(user["id"]), key),
+    ).fetchone()
+    db.execute(
+        "INSERT INTO resource_dedup_events (actor_id, action, resource_id, related_resource_id, details, created_at) VALUES (?, 'duplicate_ignore', ?, NULL, ?, ?)",
+        (int(user["id"]), ids[0], json.dumps({"group_key": key, "resource_ids": ids}, ensure_ascii=False), now_iso()),
+    )
+    db.commit()
+    return {"ok": True, "id": int(row["id"]), "group_key": key, "ignored_count": len(_ignored_keys(db, user))}
+
+
+def list_ignored_duplicate_groups(db: sqlite3.Connection, user: sqlite3.Row) -> dict[str, Any]:
+    rows = db.execute(
+        """SELECT id, group_key, resource_ids, created_at
+           FROM resource_duplicate_ignores
+           WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT 200""",
+        (int(user["id"]),),
+    ).fetchall()
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            ids = [int(value) for value in json.loads(row["resource_ids"] or "[]")]
+        except (TypeError, ValueError):
+            ids = []
+        names: dict[int, sqlite3.Row] = {}
+        if ids:
+            placeholders = ",".join("?" for _ in ids)
+            names = {
+                int(resource["id"]): resource
+                for resource in db.execute(
+                    f"""SELECT r.id, r.name, v.id AS version_id, v.png_path
+                        FROM resources r
+                        JOIN resource_versions v ON v.resource_id = r.id AND v.version_no = r.current_version AND v.deleted_at IS NULL
+                        WHERE r.id IN ({placeholders}) AND r.deleted_at IS NULL""",
+                    ids,
+                )
+            }
+        resources = []
+        for resource_id in ids:
+            resource = names.get(resource_id)
+            preview = ""
+            if resource is not None:
+                preview = asset_preview_url(resource["png_path"], thumb=True) or f"/api/resources/{resource_id}/preview-thumb?version_id={resource['version_id']}"
+            resources.append({
+                "id": resource_id,
+                "name": resource["name"] if resource is not None else f"已删除素材 #{resource_id}",
+                "preview_url": preview,
+            })
+        items.append({
+            "id": int(row["id"]),
+            "group_key": row["group_key"],
+            "resource_ids": ids,
+            "resources": resources,
+            "created_at": row["created_at"],
+        })
+    return {"items": items, "total": len(items)}
+
+
+def restore_ignored_duplicate_group(db: sqlite3.Connection, user: sqlite3.Row, ignore_id: int) -> dict[str, Any]:
+    row = db.execute(
+        "SELECT * FROM resource_duplicate_ignores WHERE id = ? AND user_id = ?",
+        (ignore_id, int(user["id"])),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(404, "忽略记录不存在")
+    db.execute("DELETE FROM resource_duplicate_ignores WHERE id = ? AND user_id = ?", (ignore_id, int(user["id"])))
+    db.execute(
+        "INSERT INTO resource_dedup_events (actor_id, action, resource_id, related_resource_id, details, created_at) VALUES (?, 'duplicate_restore', NULL, NULL, ?, ?)",
+        (int(user["id"]), json.dumps({"group_key": row["group_key"]}, ensure_ascii=False), now_iso()),
+    )
+    db.commit()
+    return {"ok": True, "ignored_count": len(_ignored_keys(db, user))}
 
 
 def _manageable_rows(db: sqlite3.Connection, user: sqlite3.Row) -> list[sqlite3.Row]:
@@ -155,6 +281,7 @@ def scan_duplicates(db: sqlite3.Connection, user: sqlite3.Row, *, limit: int = 1
         else:
             clusters.append({"fingerprint": value, "members": [row]})
 
+    ignored_keys = _ignored_keys(db, user)
     text_remaining = 0
     for cluster in clusters:
         members = cluster["members"]
@@ -187,6 +314,8 @@ def scan_duplicates(db: sqlite3.Connection, user: sqlite3.Row, *, limit: int = 1
                 continue
             members = text_members
             ids = [int(member["resource_id"]) for member in members]
+            if _group_key(ids) in ignored_keys:
+                continue
             usage = _usage_counts(db, ids)
             show_ids = _show_ids_for(db, ids)
             mergeable = True
@@ -229,6 +358,7 @@ def scan_duplicates(db: sqlite3.Connection, user: sqlite3.Row, *, limit: int = 1
         "checked": max(0, len(rows) - remaining),
         "remaining": remaining,
         "text_remaining": text_remaining,
+        "ignored_count": len(ignored_keys),
         "groups": groups,
     }
 

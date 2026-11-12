@@ -55,6 +55,14 @@ class ResourceDuplicateMergeTests(unittest.TestCase):
             );
             CREATE TABLE show_share_pages (share_id INTEGER, version_id INTEGER);
             CREATE TABLE show_share_tokens (id INTEGER PRIMARY KEY, revoked_at TEXT, expires_at TEXT);
+            CREATE TABLE resource_duplicate_ignores (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, group_key TEXT,
+                resource_ids TEXT, created_at TEXT, UNIQUE(user_id, group_key)
+            );
+            CREATE TABLE resource_dedup_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id INTEGER, action TEXT,
+                resource_id INTEGER, related_resource_id INTEGER, details TEXT, created_at TEXT
+            );
             CREATE TABLE resource_duplicate_merges (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id INTEGER, canonical_id INTEGER,
                 duplicate_ids TEXT, moved_pages INTEGER, collapsed_pages INTEGER,
@@ -179,6 +187,26 @@ class ResourceDuplicateMergeTests(unittest.TestCase):
         group = next(group for group in result["groups"] if any(entry["id"] == 2 for entry in group["resources"]))
         self.assertFalse(group["mergeable"])
         self.assertIn("无管理权限", group["reason"] or "")
+
+    def test_ignored_group_is_hidden_until_restored(self):
+        first = resource_duplicates.scan_duplicates(self.db, self.user, limit=10)
+        self.assertEqual(len(first["groups"]), 1)
+        ids = [entry["id"] for entry in first["groups"][0]["resources"]]
+
+        ignored = resource_duplicates.ignore_duplicate_group(self.db, self.user, ids)
+        self.assertEqual(ignored["ignored_count"], 1)
+        hidden = resource_duplicates.scan_duplicates(self.db, self.user, limit=10)
+        self.assertEqual(hidden["groups"], [])
+        self.assertEqual(hidden["ignored_count"], 1)
+
+        listed = resource_duplicates.list_ignored_duplicate_groups(self.db, self.user)
+        self.assertEqual(listed["total"], 1)
+        self.assertEqual([resource["id"] for resource in listed["items"][0]["resources"]], sorted(ids))
+
+        resource_duplicates.restore_ignored_duplicate_group(self.db, self.user, ignored["id"])
+        restored = resource_duplicates.scan_duplicates(self.db, self.user, limit=10)
+        self.assertEqual(len(restored["groups"]), 1)
+        self.assertEqual(restored["ignored_count"], 0)
 
     def test_merge_rejects_different_text_even_when_images_match(self):
         self.db.execute("UPDATE resource_text_fingerprints SET text = '另一页' WHERE resource_id = 2")
