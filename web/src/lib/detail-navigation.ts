@@ -81,16 +81,46 @@ export function useRestoreListScroll(ready: boolean) {
     if (!ready || restoredKey.current === location.key) return;
     const scroll = (location.state as NavigationState | null)?.listScroll ?? savedScroll.get(location.key);
     if (!scroll) return;
-    const frame = requestAnimationFrame(() => {
+    // Pinned cards and thumbnails can grow the list after the first frame,
+    // especially on slow CI runners. Re-apply during a short settle window.
+    let attempts = 0;
+    let cancelled = false;
+    const timers = new Set<number>();
+    const cancel = () => {
+      cancelled = true;
+      timers.forEach((timer) => window.clearTimeout(timer));
+      timers.clear();
+    };
+    const apply = () => {
+      if (cancelled) return;
       document.querySelectorAll<HTMLElement>(scrollSelector).forEach((element) => {
         const position = scroll[element.dataset.listScroll!];
-        if (position) {
-          element.scrollTop = position.top;
-          element.scrollLeft = position.left;
-        }
+        if (!position) return;
+        element.scrollTop = position.top;
+        element.scrollLeft = position.left;
       });
-      restoredKey.current = location.key;
-    });
-    return () => cancelAnimationFrame(frame);
+      attempts += 1;
+      // Scroll anchoring and late-loading thumbnails can move the container
+      // even after the first apply. Keep re-applying for a short settle window
+      // instead of trusting the first successful measurement.
+      if (attempts < 30) {
+        const timer = window.setTimeout(apply, 50);
+        timers.add(timer);
+      }
+    };
+    // A user gesture wins over the settle window.
+    window.addEventListener("wheel", cancel, { passive: true, once: true });
+    window.addEventListener("touchstart", cancel, { passive: true, once: true });
+    window.addEventListener("pointerdown", cancel, { once: true });
+    window.addEventListener("keydown", cancel, { once: true });
+    apply();
+    restoredKey.current = location.key;
+    return () => {
+      timers.forEach((timer) => window.clearTimeout(timer));
+      window.removeEventListener("wheel", cancel);
+      window.removeEventListener("touchstart", cancel);
+      window.removeEventListener("pointerdown", cancel);
+      window.removeEventListener("keydown", cancel);
+    };
   }, [ready, location.key, location.state]);
 }
