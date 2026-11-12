@@ -67,6 +67,7 @@ import { downloadWithProgress } from "@/lib/fonts";
 import { TemplateItem, VisibilityScope } from "@/lib/types";
 import { useUrlPage } from "@/lib/use-url-page";
 import { cn } from "@/lib/utils";
+import { ListFooter } from "@/components/common/ListFooter";
 import { PageHeader } from "@/components/common/PageHeader";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 
@@ -411,35 +412,13 @@ export function AdminTemplatesPage() {
       </div>
 
       {/* 分页条 */}
-      {!isLoading && !isError && filtered.length > 0 && (
-        <div className="flex shrink-0 items-center justify-between border-t pt-3 text-sm text-muted-foreground select-none">
-          <span>
-            显示 {pageStart + 1}-{Math.min(pageStart + pageSize, filtered.length)}，共{" "}
-            {filtered.length} 条
-          </span>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page <= 1}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-            >
-              上一页
-            </Button>
-            <span className="min-w-[52px] text-center text-foreground select-none">
-              {page} / {totalPages}
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page >= totalPages}
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-            >
-              下一页
-            </Button>
-          </div>
-        </div>
-      )}
+      <ListFooter
+        page={page}
+        pageSize={pageSize}
+        total={!isLoading && !isError ? filtered.length : 0}
+        onPageChange={setPage}
+        loading={isLoading}
+      />
 
       <TemplateFormDialog
         open={createOpen}

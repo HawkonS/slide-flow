@@ -29,6 +29,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { FilterChip as ResourceFilterChip, type ChipOption } from "@/components/resource/filter-chips";
+import { ListFooter } from "@/components/common/ListFooter";
 import { PageHeader } from "@/components/common/PageHeader";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import {
@@ -935,51 +936,6 @@ function TaskFilterBar({
 
 /* ---------- Pagination ---------- */
 
-function TasksPagination({
-  page,
-  totalPages,
-  total,
-  pageSize,
-  onChange,
-}: {
-  page: number;
-  totalPages: number;
-  total: number;
-  pageSize: number;
-  onChange: (next: number) => void;
-}) {
-  const start = total === 0 ? 0 : (page - 1) * pageSize + 1;
-  const end = Math.min(page * pageSize, total);
-  return (
-    <div className="flex shrink-0 items-center justify-between border-t pt-3 text-sm text-muted-foreground select-none">
-      <span>
-        显示 {start}-{end}，共 {total} 条
-      </span>
-      <div className="flex items-center gap-2">
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={page <= 1}
-          onClick={() => onChange(Math.max(1, page - 1))}
-        >
-          上一页
-        </Button>
-        <span className="min-w-[52px] select-none text-center text-foreground">
-          {page} / {totalPages}
-        </span>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={page >= totalPages}
-          onClick={() => onChange(Math.min(totalPages, page + 1))}
-        >
-          下一页
-        </Button>
-      </div>
-    </div>
-  );
-}
-
 /* ---------- Main component ---------- */
 
 export default function TasksPage() {
@@ -1244,15 +1200,13 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
       </div>
 
       {/* 分页 */}
-      {!isLoading && !isError && total > 0 && pageSize > 0 && (
-        <TasksPagination
-          page={page}
-          totalPages={totalPages}
-          total={total}
-          pageSize={pageSize}
-          onChange={setPage}
-        />
-      )}
+      <ListFooter
+        page={page}
+        pageSize={pageSize}
+        total={!isLoading && !isError ? total : 0}
+        onPageChange={setPage}
+        loading={isLoading}
+      />
 
       <Dialog
         open={!!detailTask}
@@ -1533,15 +1487,13 @@ function DownloadTasksTab({ canManage }: { canManage: boolean }) {
       </div>
 
       {/* 分页 */}
-      {!isLoading && !isError && total > 0 && pageSize > 0 && (
-        <TasksPagination
-          page={page}
-          totalPages={totalPages}
-          total={total}
-          pageSize={pageSize}
-          onChange={setPage}
-        />
-      )}
+      <ListFooter
+        page={page}
+        pageSize={pageSize}
+        total={!isLoading && !isError ? total : 0}
+        onPageChange={setPage}
+        loading={isLoading}
+      />
       <ConfirmDialog
         open={bulkDeleteOpen}
         onOpenChange={setBulkDeleteOpen}

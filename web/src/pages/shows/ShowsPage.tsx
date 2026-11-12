@@ -17,6 +17,7 @@ import {
   type DeleteScope,
 } from "@/components/common/DeleteScopeDialog";
 import { ConfirmDialog, PromptDialog } from "@/components/common/ConfirmDialog";
+import { ListFooter } from "@/components/common/ListFooter";
 import { PageHeader } from "@/components/common/PageHeader";
 import { ResultsLoadingSkeleton } from "@/components/common/PageLoadingSkeleton";
 import { api } from "@/lib/api";
@@ -372,7 +373,6 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
     }
   };
 
-  const pageStart = (page - 1) * pageSize;
 
   return (
     <div className="page-shell">
@@ -497,35 +497,13 @@ export function ShowsPage({ standardOnly = false }: ShowsPageProps) {
       </div>
 
       {/* 分页条 */}
-      {queryReady && !isLoading && !isError && shows.length > 0 && (
-        <div className="flex shrink-0 items-center justify-between border-t pt-3 text-sm text-muted-foreground select-none">
-          <span>
-            显示 {pageStart + 1}-{Math.min(pageStart + pageSize, total)}，共{" "}
-            {total} 条
-          </span>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page <= 1}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-            >
-              上一页
-            </Button>
-            <span className="min-w-[52px] text-center text-foreground select-none">
-              {page} / {totalPages}
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page >= totalPages}
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-            >
-              下一页
-            </Button>
-          </div>
-        </div>
-      )}
+      <ListFooter
+        page={page}
+        pageSize={pageSize}
+        total={queryReady && !isLoading && !isError && shows.length > 0 ? total : 0}
+        onPageChange={setPage}
+        loading={isLoading}
+      />
 
       <ShowEditDialog
         open={editOpen}
