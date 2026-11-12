@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 
 from app.config import settings
 from app.db import init_db
+from app.services.backup import backup_loop
 from app.services.downloads.cleanup import _download_cleanup_loop
 from app.services.files import _init_allowed_file_dirs
 from app.services.resource_deletion import archive_cleanup_loop
@@ -34,6 +35,7 @@ async def lifespan(app):
         asyncio.create_task(_download_cleanup_loop(), name="download-cleanup"),
         asyncio.create_task(_resource_import_cleanup_loop(), name="resource-import-cleanup"),
         asyncio.create_task(render_task_cleanup_loop(), name="render-task-object-cleanup"),
+        asyncio.create_task(backup_loop(), name="database-backup"),
     ]
     try:
         yield

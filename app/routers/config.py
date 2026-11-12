@@ -11,9 +11,22 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Response
 from app.config import CONFIG_GROUPS, CONFIG_META, CONFIG_SECRET_MASK, PROPERTIES_FILE, ROOT_DIR, _coerce_value, read_config_secret, read_config_view, settings, write_properties
 from app.core.permissions import require_system_admin
-from app.routers.dependencies import ApiPayload, db_read_dep
+from app.db import now_iso
+from app.routers.dependencies import ApiPayload, db_dep, db_read_dep
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _audit_config_event(db: sqlite3.Connection, user: sqlite3.Row, action: str, details: dict[str, Any]) -> None:
+    try:
+        db.execute(
+            "INSERT INTO admin_audit_events (actor_user_id, subject_user_id, action, details, created_at) VALUES (?, NULL, ?, ?, ?)",
+            (int(user["id"]), action, json.dumps(details, ensure_ascii=False, separators=(",", ":")), now_iso()),
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.warning("写入配置审计事件失败: %s", action, exc_info=True)
 
 
 class AdminConfigUpdatePayload(ApiPayload):
@@ -47,7 +60,8 @@ def api_admin_config_get(
 def api_admin_config_secret(
     key: str,
     response: Response,
-    _: Any = Depends(require_system_admin),
+    admin: sqlite3.Row = Depends(require_system_admin),
+    db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, str]:
     """按需读取单个敏感配置；不会在普通配置列表中返回。"""
     try:
@@ -56,15 +70,17 @@ def api_admin_config_secret(
         raise HTTPException(404, "敏感配置项不存在") from None
     response.headers["Cache-Control"] = "private, no-store"
     response.headers["Pragma"] = "no-cache"
+    _audit_config_event(db, admin, "admin.config.secret_read", {"key": key})
     return {"key": key, "value": value}
 
 
 @router.put("/admin/config")
 def api_admin_config_put(
     payload: AdminConfigUpdatePayload,
-    _: Any = Depends(require_system_admin),
+    admin: sqlite3.Row = Depends(require_system_admin),
+    db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
-    """修改配置项（仅系统管理员）。所有配置修改需重启服务后生效。"""
+    """修改配置项（仅系统管理员）。备份项由后台循环实时读取，其余需重启。"""
     invalid = [k for k in payload.items.keys() if k not in CONFIG_META]
     if invalid:
         raise HTTPException(400, f"未知配置项: {', '.join(invalid)}")
@@ -80,19 +96,33 @@ def api_admin_config_put(
         if key == "security.secret_key" and not raw.strip():
             raise HTTPException(400, "会话签名密钥不能为空")
         try:
-            _coerce_value(raw, meta["type"])
+            coerced = _coerce_value(raw, meta["type"])
         except Exception:
             raise HTTPException(400, f"配置项 {key} 类型不正确，应为 {meta['type']}")
+        if key == "backup.storage" and str(coerced).lower() not in {"oss", "local"}:
+            raise HTTPException(400, "备份存储位置只能是 oss 或 local")
+        if key == "backup.interval_hours" and not 1 <= int(coerced) <= 720:
+            raise HTTPException(400, "备份周期必须在 1–720 小时之间")
+        if key == "backup.retention" and not 1 <= int(coerced) <= 100:
+            raise HTTPException(400, "备份保留版本数必须在 1–100 之间")
 
     if not updates:
         return {"applied": [], "pending_restart": []}
 
     write_properties(updates)
+    _audit_config_event(
+        db,
+        admin,
+        "admin.config.update",
+        {"keys": sorted(updates)},
+    )
 
-    # 所有配置都需要重启生效
-    pending: list[str] = list(updates.keys())
+    # Backup settings are read from the properties file on every check, so
+    # they take effect without restarting the four Gunicorn workers.
+    applied = [key for key in updates if key.startswith("backup.")]
+    pending = [key for key in updates if not key.startswith("backup.")]
 
-    return {"applied": [], "pending_restart": pending}
+    return {"applied": applied, "pending_restart": pending}
 
 
 @router.get("/config")

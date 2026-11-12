@@ -138,6 +138,18 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
         ],
     },
     {
+        "key": "backup",
+        "label": "数据库备份",
+        "items": [
+            {"key": "backup.enabled", "label": "启用自动备份", "default": "true", "type": "bool", "hot_reload": True, "desc": "后台每分钟检查一次；到期后自动备份当前 SQLite 数据库"},
+            {"key": "backup.storage", "label": "备份存储位置", "default": "oss", "type": "str", "hot_reload": True, "desc": "oss（阿里云 OSS，默认）或 local（本地目录）；本地始终保留一份副本，OSS 上传失败不会丢失本地备份"},
+            {"key": "backup.interval_hours", "label": "备份周期（小时）", "default": "24", "type": "int", "hot_reload": True, "desc": "1–720 小时；修改后从下一次备份开始生效"},
+            {"key": "backup.retention", "label": "保留版本数", "default": "7", "type": "int", "hot_reload": True, "desc": "本地和 OSS 各保留最近 N 份，1–100；超出的自动清理"},
+            {"key": "backup.local_dir", "label": "本地备份目录", "default": "data/backups/auto", "type": "str", "hot_reload": True, "desc": "相对路径基于项目根目录；建议放在受控磁盘并限制访问权限"},
+            {"key": "backup.oss_prefix", "label": "OSS 备份目录", "default": "backups/db", "type": "str", "hot_reload": True, "desc": "相对于 oss.prefix 的目录，例如 backups/db；使用私有 Bucket 并配置生命周期规则"},
+        ],
+    },
+    {
         "key": "appearance",
         "label": "外观配置",
         "items": [
