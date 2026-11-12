@@ -77,7 +77,7 @@ class ResourceDuplicateMergeTests(unittest.TestCase):
             [(1, 2, same, ts), (2, 1, same, ts)],
         )
         self.db.executemany(
-            "INSERT INTO resource_text_fingerprints (resource_id, version_no, text, extractor_version, updated_at) VALUES (?, ?, '同一页', 2, ?)",
+            "INSERT INTO resource_text_fingerprints (resource_id, version_no, text, extractor_version, updated_at) VALUES (?, ?, '同一页', 3, ?)",
             [(1, 2, ts), (2, 1, ts)],
         )
         self.db.executemany(
@@ -213,7 +213,7 @@ class ResourceDuplicateMergeTests(unittest.TestCase):
             fingerprints,
         )
         self.db.executemany(
-            "INSERT INTO resource_text_fingerprints (resource_id, version_no, text, extractor_version, updated_at) VALUES (?, ?, '同一页', 2, ?)",
+            "INSERT INTO resource_text_fingerprints (resource_id, version_no, text, extractor_version, updated_at) VALUES (?, ?, '同一页', 3, ?)",
             [(row[0], row[1], row[3]) for row in texts],
         )
         self.db.commit()
