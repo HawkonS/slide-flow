@@ -418,6 +418,16 @@ class OSSStorage:
         )
         return oss_ref(key)
 
+    def read_bytes(self, ref: str, *, process: str | None = None) -> bytes:
+        """Read an object (optionally through OSS image processing) without a temp file."""
+        key = oss_key(ref)
+
+        def read(bucket):
+            result = bucket.get_object(key, process=process) if process else bucket.get_object(key)
+            return result.read()
+
+        return self._with_endpoint_fallback("object read", read)
+
     def download_file(self, ref: str, destination: Path) -> Path:
         destination.parent.mkdir(parents=True, exist_ok=True)
         key = oss_key(ref)
@@ -428,6 +438,20 @@ class OSSStorage:
 
         self._with_endpoint_fallback("file download", download)
         return destination
+
+    def list_objects(self, prefix: str) -> list[dict[str, object]]:
+        """List objects under a key prefix (used by backup retention)."""
+        def list_(bucket):
+            return [
+                {
+                    "key": obj.key,
+                    "size": int(getattr(obj, "size", 0) or 0),
+                    "last_modified": int(getattr(obj, "last_modified", 0) or 0),
+                }
+                for obj in oss2.ObjectIterator(bucket, prefix=prefix)
+            ]
+
+        return self._with_endpoint_fallback("object list", list_)
 
     def delete(self, ref: str | None) -> None:
         if not ref or not is_oss_ref(ref):

@@ -5,7 +5,7 @@ from __future__ import annotations
 from app.core.fonts import missing_fonts
 from app.core.errors import storage_public_message
 from app.core.oss import StorageConfigurationError, StorageUnavailableError
-from app.core.permissions import is_admin, require_user
+from app.core.permissions import can_manage_resource, manageable_resource_ids, is_admin, require_user
 from app.core.ppt import detect_ppt_fonts
 from app.core.ppt import slide_count
 from app.db import get_db, known_font_aliases
@@ -19,10 +19,22 @@ from app.services.common import (
 from app.services.files import (
     OFFICE_EXTENSIONS,
     _compress_hd_image,
+    asset_compare_url,
+    asset_preview_url,
 )
 from app.services.resource_import.commit import (
     _commit_resource_iteration_sync,
     _commit_resource_import_sync,
+)
+from app.services.fingerprints import (
+    HASH_VERSION,
+    compute_dhash_path,
+    ensure_fingerprints,
+    ensure_text_fingerprints,
+    extract_pptx_text,
+    match_fingerprints,
+    parse_dhash,
+    text_for_resources,
 )
 from app.services.template_import import _commit_template_import_sync
 from app.services.resource_import.jobs import (
@@ -82,6 +94,8 @@ from fastapi.responses import FileResponse
 from pathlib import Path
 from typing import Any
 import asyncio
+import difflib
+import hashlib
 import json
 import logging
 import shutil
@@ -418,6 +432,195 @@ async def replace_resource_import_fonts(
         target.unlink(missing_ok=True)
         logger.exception("Resource import font replacement failed session_id=%s", session_id)
         raise HTTPException(400, "字体替换失败，请检查 PPT 和替换字体后重试") from exc
+
+
+_TEXT_STATE_PRIORITY = {"same": 0, "image_only": 1, "uncompared": 2, "changed": 3}
+
+
+def sort_duplicate_matches(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Prefer a text-confirmed duplicate over a merely closer image."""
+    return sorted(
+        matches,
+        key=lambda match: (
+            _TEXT_STATE_PRIORITY.get(str(match.get("text_state") or "uncompared"), 2),
+            int(match.get("distance") or 0),
+            int(match.get("resource_id") or 0),
+        ),
+    )
+
+
+def _summarize_text_diff(before: str, after: str) -> str:
+    """Describe the first few text edits so "内容有变化" is actionable."""
+    matcher = difflib.SequenceMatcher(None, before, after, autojunk=False)
+    parts: list[str] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        if tag in ("replace", "delete") and before[i1:i2]:
+            parts.append(f"删「{before[i1:i2][:20]}」")
+        if tag in ("replace", "insert") and after[j1:j2]:
+            parts.append(f"增「{after[j1:j2][:20]}」")
+        if len("；".join(parts)) > 100:
+            break
+    return "；".join(parts)[:120]
+
+
+@router.post("/api/resource-import/{session_id}/duplicates")
+def resource_import_duplicates(
+    session_id: str,
+    user: sqlite3.Row = Depends(require_user),
+    db: sqlite3.Connection = Depends(db_dep),
+    session: dict[str, Any] = Depends(_resource_import_locked_session),
+    _: None = Depends(_require_resource_import_origin),
+) -> dict[str, Any]:
+    """Compare the reviewed pages with the caller's manageable resources.
+
+    Missing fingerprints are filled in batches so a large library only pays the
+    scan cost once; the client polls while ``status`` is ``warming``.
+    """
+    if session.get("import_target") == "templates":
+        raise HTTPException(400, "标准模板导入不需要查重")
+    if session.get("preview_status") != "ready":
+        raise HTTPException(400, "请先生成 PPT 预览图")
+    paths = list(session.get("image_paths") or session.get("preview_paths") or [])
+    if not paths:
+        raise HTTPException(400, "导入会话没有可检查的页面图片")
+    split_paths = list(session.get("split_paths") or [])
+    cache_key = hashlib.sha256(json.dumps({
+        "preview": session.get("preview_hashes"),
+        "split": session.get("split_hashes"),
+        "pages": len(paths),
+        "hash_version": HASH_VERSION,
+    }, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    cached_hashes = session.get("duplicate_page_hashes")
+    cached_texts = session.get("duplicate_page_texts")
+    if session.get("duplicate_cache_key") == cache_key and isinstance(cached_hashes, list) and isinstance(cached_texts, list) and len(cached_hashes) == len(paths) and len(cached_texts) == len(paths):
+        page_hashes = [int(value, 16) if isinstance(value, str) and value else None for value in cached_hashes]
+        page_texts = [value if isinstance(value, str) else None for value in cached_texts]
+    else:
+        page_texts = [None] * len(paths)
+        if len(split_paths) == len(paths):
+            for index, raw in enumerate(split_paths):
+                try:
+                    page_texts[index] = extract_pptx_text(_resource_import_file(session, raw))
+                except Exception:
+                    page_texts[index] = None
+        page_hashes = []
+        for raw in paths:
+            try:
+                page_hashes.append(compute_dhash_path(_resource_import_file(session, raw)))
+            except Exception:
+                logger.warning("导入页面指纹计算失败 session_id=%s", session_id, exc_info=True)
+                page_hashes.append(None)
+        session["duplicate_cache_key"] = cache_key
+        session["duplicate_page_hashes"] = [f"{value:016x}" if value is not None else "" for value in page_hashes]
+        session["duplicate_page_texts"] = page_texts
+        _write_resource_import_session(session)
+
+    rows = db.execute(
+        """
+        SELECT r.id AS id, r.id AS resource_id, r.name, r.tags, r.owner_id, r.visibility_scope, r.management_scope,
+               r.current_version AS version_no, v.png_path, v.id AS version_id, v.ppt_path,
+               f.dhash AS fp_dhash, f.version_no AS fp_version, f.hash_version AS fp_hash_version,
+               tf.text AS text_value, tf.version_no AS text_version,
+               tf.extractor_version AS text_extractor_version,
+               u.name AS owner_name, u.username AS owner_username
+        FROM resources r
+        JOIN resource_versions v
+          ON v.resource_id = r.id AND v.version_no = r.current_version AND v.deleted_at IS NULL
+        LEFT JOIN resource_fingerprints f ON f.resource_id = r.id
+        LEFT JOIN resource_text_fingerprints tf ON tf.resource_id = r.id
+        LEFT JOIN users u ON u.id = r.owner_id
+        WHERE r.deleted_at IS NULL
+        ORDER BY r.id
+        """
+    ).fetchall()
+    manageable_ids = manageable_resource_ids(db, user)
+    manageable = [row for row in rows if int(row["id"]) in manageable_ids]
+    processed, remaining = ensure_fingerprints(db, manageable)
+    if processed:
+        db.commit()
+
+    stored = {
+        int(row["resource_id"]): (int(row["version_no"]), row["dhash"])
+        for row in db.execute("SELECT resource_id, version_no, dhash FROM resource_fingerprints WHERE hash_version = ?", (HASH_VERSION,))
+    }
+    fingerprints: list[tuple[int, int, int]] = []
+    meta: dict[int, sqlite3.Row] = {}
+    for row in manageable:
+        entry = stored.get(int(row["resource_id"]))
+        if entry is None or not entry[1] or entry[0] != int(row["version_no"]):
+            continue
+        fingerprints.append((int(row["resource_id"]), int(row["version_no"]), parse_dhash(entry[1])))
+        meta[int(row["resource_id"])] = row
+
+    matches = match_fingerprints([h for h in page_hashes if h is not None], fingerprints, per_page=5)
+    candidate_ids = {resource_id for page_matches in matches for resource_id, _, _ in page_matches}
+    candidate_rows = [meta[resource_id] for resource_id in candidate_ids if resource_id in meta]
+    text_processed, text_remaining = ensure_text_fingerprints(db, candidate_rows, limit=60)
+    if text_processed:
+        db.commit()
+    candidate_texts = text_for_resources(db, candidate_ids)
+    for row in candidate_rows:
+        resource_id = int(row["resource_id"])
+        if resource_id not in candidate_texts and not row["ppt_path"]:
+            candidate_texts[resource_id] = ""
+    match_iter = iter(matches)
+    used_counts: dict[int, int] = {}
+    candidate_list = sorted(candidate_ids)
+    for offset in range(0, len(candidate_list), 500):
+        chunk = candidate_list[offset:offset + 500]
+        placeholders = ",".join("?" for _ in chunk)
+        for count_row in db.execute(
+            f"SELECT resource_id, COUNT(*) AS total FROM show_resources WHERE resource_id IN ({placeholders}) GROUP BY resource_id",
+            chunk,
+        ):
+            used_counts[int(count_row["resource_id"])] = int(count_row["total"])
+
+    items: list[dict[str, Any]] = []
+    for index, page_hash in enumerate(page_hashes):
+        if page_hash is None:
+            continue
+        page_matches = next(match_iter)
+        page_text = page_texts[index]
+        rendered = []
+        for resource_id, version_no, distance in page_matches:
+            candidate_text = candidate_texts.get(resource_id)
+            if page_text is None or candidate_text is None:
+                text_state = "uncompared"
+            elif page_text == candidate_text:
+                text_state = "image_only" if page_text == "" else "same"
+            else:
+                text_state = "changed"
+            text_checked = text_state in {"same", "image_only"}
+            content_changed = text_state == "changed"
+            row = meta[resource_id]
+            preview = asset_preview_url(row["png_path"], thumb=True) or f"/api/resources/{resource_id}/preview-thumb?version_id={row['version_id']}"
+            rendered.append({
+                "resource_id": resource_id,
+                "name": row["name"],
+                "version_no": version_no,
+                "distance": distance,
+                "preview_url": preview,
+                "compare_preview_url": asset_compare_url(row["png_path"]) or f"/api/resources/{resource_id}/preview?version_id={row['version_id']}",
+                "owner_name": row["owner_name"] or row["owner_username"] or "",
+                "tags": row["tags"] or "",
+                "used_by_shows": used_counts.get(resource_id, 0),
+                "text_checked": text_checked,
+                "content_changed": content_changed,
+                "text_state": text_state,
+                "text_diff": _summarize_text_diff(candidate_text or "", page_text or "") if content_changed else "",
+            })
+        if rendered:
+            items.append({"index": index, "matches": sort_duplicate_matches(rendered)})
+    return {
+        "status": "warming" if remaining > 0 or text_remaining > 0 else "ready",
+        "total": len(manageable),
+        "checked": max(0, len(manageable) - remaining),
+        "remaining": remaining,
+        "text_remaining": text_remaining,
+        "items": items,
+    }
 
 
 @router.post("/api/resource-import/{session_id}/commit")

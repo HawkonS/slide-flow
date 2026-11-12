@@ -18,7 +18,7 @@ from app.config import (
 from app.core.bootstrap import prepare_initial_admin
 from app.core.fonts import normalize_font_name
 
-DB_SCHEMA_VERSION = 29
+DB_SCHEMA_VERSION = 30
 
 
 def is_sqlite_busy_error(exc: BaseException) -> bool:
@@ -375,6 +375,61 @@ def init_db() -> None:
                 created_by INTEGER NOT NULL REFERENCES users(id),
                 created_at TEXT NOT NULL,
                 UNIQUE(resource_id, version_no)
+            );
+
+            CREATE TABLE IF NOT EXISTS resource_text_fingerprints (
+                resource_id INTEGER PRIMARY KEY REFERENCES resources(id) ON DELETE CASCADE,
+                version_no INTEGER NOT NULL,
+                text TEXT NOT NULL,
+                extractor_version INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS backup_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                last_started_at TEXT,
+                last_completed_at TEXT,
+                next_due_at TEXT,
+                status TEXT NOT NULL DEFAULT 'idle',
+                message TEXT NOT NULL DEFAULT ''
+            );
+
+            INSERT OR IGNORE INTO backup_state
+                (id, last_started_at, last_completed_at, next_due_at, status, message)
+                VALUES (1, NULL, NULL, NULL, 'idle', '');
+
+            CREATE TABLE IF NOT EXISTS resource_dedup_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor_id INTEGER NOT NULL REFERENCES users(id),
+                action TEXT NOT NULL,
+                resource_id INTEGER,
+                related_resource_id INTEGER,
+                details TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_resource_dedup_events_created
+                ON resource_dedup_events(created_at DESC, id DESC);
+
+            CREATE TABLE IF NOT EXISTS resource_duplicate_merges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor_id INTEGER NOT NULL REFERENCES users(id),
+                canonical_id INTEGER NOT NULL,
+                duplicate_ids TEXT NOT NULL,
+                moved_pages INTEGER NOT NULL DEFAULT 0,
+                collapsed_pages INTEGER NOT NULL DEFAULT 0,
+                affected_show_ids TEXT NOT NULL DEFAULT '[]',
+                foreign_resource_ids TEXT NOT NULL DEFAULT '[]',
+                foreign_show_ids TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS resource_fingerprints (
+                resource_id INTEGER PRIMARY KEY REFERENCES resources(id) ON DELETE CASCADE,
+                version_no INTEGER NOT NULL,
+                dhash TEXT NOT NULL,
+                hash_version INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS templates (
@@ -856,6 +911,18 @@ def _migrate_schema(db: sqlite3.Connection, schema_version: int) -> None:
     username_key_missing = "username_key" not in columns
     if username_key_missing:
         db.execute("ALTER TABLE users ADD COLUMN username_key TEXT NOT NULL DEFAULT ''")
+    fingerprint_columns = {
+        row["name"] for row in db.execute("PRAGMA table_info(resource_fingerprints)").fetchall()
+    }
+    if "hash_version" not in fingerprint_columns:
+        db.execute("ALTER TABLE resource_fingerprints ADD COLUMN hash_version INTEGER NOT NULL DEFAULT 0")
+
+    text_fingerprint_columns = {
+        row["name"] for row in db.execute("PRAGMA table_info(resource_text_fingerprints)").fetchall()
+    }
+    if "extractor_version" not in text_fingerprint_columns:
+        db.execute("ALTER TABLE resource_text_fingerprints ADD COLUMN extractor_version INTEGER NOT NULL DEFAULT 0")
+
     render_columns = {
         row["name"]
         for row in db.execute("PRAGMA table_info(renderer_ppt_tasks)").fetchall()

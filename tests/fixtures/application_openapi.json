@@ -55,7 +55,7 @@
           "config"
         ],
         "summary": "Api Admin Config Put",
-        "description": "修改配置项（仅系统管理员）。所有配置修改需重启服务后生效。",
+        "description": "修改配置项（仅系统管理员）。备份项由后台循环实时读取，其余需重启。",
         "operationId": "api_admin_config_put_api_admin_config_put",
         "requestBody": {
           "content": {
@@ -9875,6 +9875,110 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Apply Tags Api Ai Tagging Tasks  Task Id  Apply Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/resource-import/{session_id}/duplicates": {
+      "post": {
+        "summary": "Resource Import Duplicates",
+        "description": "Compare the reviewed pages with the caller's manageable resources.\n\nMissing fingerprints are filled in batches so a large library only pays the\nscan cost once; the client polls while ``status`` is ``warming``.",
+        "operationId": "resource_import_duplicates_api_resource_import__session_id__duplicates_post",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Resource Import Duplicates Api Resource Import  Session Id  Duplicates Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/resources/duplicates/scan": {
+      "post": {
+        "summary": "Scan Resource Duplicates",
+        "operationId": "scan_resource_duplicates_api_resources_duplicates_scan_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Scan Resource Duplicates Api Resources Duplicates Scan Post"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/resources/duplicates/merge": {
+      "post": {
+        "summary": "Merge Resource Duplicates",
+        "operationId": "merge_resource_duplicates_api_resources_duplicates_merge_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Payload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Merge Resource Duplicates Api Resources Duplicates Merge Post"
                 }
               }
             }

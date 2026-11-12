@@ -126,6 +126,18 @@ def asset_preview_url(ref: str | None, *, thumb: bool = False) -> str | None:
         return None
 
 
+def asset_compare_url(ref: str | None) -> str | None:
+    """Return a larger OSS-rendered image for side-by-side comparison views."""
+    if not ref or not is_oss_ref(ref):
+        return None
+    process = "image/resize,m_lfit,w_1600/quality,q_85/format,jpg"
+    try:
+        return _oss_asset_url(ref, process=process)
+    except Exception:
+        logger.exception("生成 OSS 对比图签名 URL 失败: %s", ref)
+        return None
+
+
 def _init_allowed_file_dirs() -> None:
     """初始化允许访问的目录列表（在应用启动后调用以确保路径已解析）"""
     global _ALLOWED_FILE_DIRS

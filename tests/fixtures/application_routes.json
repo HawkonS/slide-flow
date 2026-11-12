@@ -1664,5 +1664,45 @@
     "methods": [
       "POST"
     ]
+  },
+  {
+    "path": "/api/resource-import/{session_id}/duplicates",
+    "name": "resource_import_duplicates",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/resources/duplicates/scan",
+    "name": "scan_resource_duplicates",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/resources/duplicates/merge",
+    "name": "merge_resource_duplicates",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/health",
+    "name": "health",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/health",
+    "name": "health_check",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
   }
 ]

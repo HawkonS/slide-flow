@@ -18,6 +18,7 @@ from PIL import Image
 from app.config import settings
 from app.db import now_iso
 from app.routers.resource_import import commit_resource_import
+from app.routers.resource_import import resource_import_duplicates
 from app.routers.resource_import import resource_import_result
 from app.routers.resource_import import resource_import_status
 from app.services import files as import_files
@@ -29,6 +30,27 @@ from app.services.resource_import.remote_fonts import sha256_file
 from app.services.resource_import.rendering import RESOURCE_IMPORT_RENDERER_VERSION
 from app.services.resources import _insert_version
 import logging
+
+
+class DuplicateMatchOrderTests(unittest.TestCase):
+    def test_prefers_text_confirmed_match_over_closer_changed_image(self):
+        from app.routers.resource_import import sort_duplicate_matches
+        matches = [
+            {"resource_id": 1, "distance": 0, "text_state": "changed"},
+            {"resource_id": 2, "distance": 4, "text_state": "same"},
+            {"resource_id": 3, "distance": 2, "text_state": "uncompared"},
+        ]
+        self.assertEqual([m["resource_id"] for m in sort_duplicate_matches(matches)], [2, 3, 1])
+        self.assertEqual([m["resource_id"] for m in sort_duplicate_matches(matches)], [2, 3, 1])
+
+    def test_prefers_closer_image_within_same_text_state(self):
+        from app.routers.resource_import import sort_duplicate_matches
+        matches = [
+            {"resource_id": 3, "distance": 4, "text_state": "same"},
+            {"resource_id": 1, "distance": 1, "text_state": "same"},
+            {"resource_id": 2, "distance": 2, "text_state": "same"},
+        ]
+        self.assertEqual([m["resource_id"] for m in sort_duplicate_matches(matches)], [1, 2, 3])
 
 
 class ResourceImportTransactionTests(unittest.TestCase):
@@ -79,21 +101,38 @@ class ResourceImportTransactionTests(unittest.TestCase):
         database_patch.start()
         self.addCleanup(database_patch.stop)
         self.db.executescript("""
-            CREATE TABLE users (id INTEGER PRIMARY KEY);
-            INSERT INTO users (id) VALUES (1), (2);
+            CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, username TEXT);
+            INSERT INTO users (id, name, username) VALUES (1, '测试用户', 'tester'), (2, NULL, 'other');
             CREATE TABLE resources (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, detail_token TEXT,
                 name TEXT, owner_id INTEGER,
                 subject TEXT, tags TEXT, status TEXT, visibility_scope TEXT,
                 management_scope TEXT, secrecy_level TEXT, current_version INTEGER,
-                updated_by INTEGER, created_at TEXT, updated_at TEXT
+                next_version_no INTEGER NOT NULL DEFAULT 2,
+                updated_by INTEGER, created_at TEXT, updated_at TEXT, deleted_at TEXT
             );
             CREATE TABLE resource_versions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, resource_id INTEGER REFERENCES resources(id),
                 version_no INTEGER, ppt_path TEXT, png_path TEXT, font_names TEXT,
                 missing_fonts TEXT, common_remark_html TEXT, change_note TEXT,
-                created_by INTEGER, created_at TEXT
+                created_by INTEGER, created_at TEXT, deleted_at TEXT
             );
+            CREATE TABLE resource_dedup_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id INTEGER, action TEXT,
+                resource_id INTEGER, related_resource_id INTEGER, details TEXT, created_at TEXT
+            );
+            CREATE TABLE resource_fingerprints (
+                resource_id INTEGER PRIMARY KEY REFERENCES resources(id),
+                version_no INTEGER NOT NULL, dhash TEXT NOT NULL, hash_version INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE resource_text_fingerprints (
+                resource_id INTEGER PRIMARY KEY REFERENCES resources(id),
+                version_no INTEGER NOT NULL, text TEXT NOT NULL,
+                extractor_version INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE show_resources (resource_id INTEGER, show_id INTEGER, version_no INTEGER);
+            CREATE TABLE show_share_pages (share_id INTEGER, version_id INTEGER);
+            CREATE TABLE show_share_tokens (id INTEGER PRIMARY KEY, revoked_at TEXT, expires_at TEXT);
             CREATE TABLE resource_visibility (resource_id INTEGER REFERENCES resources(id), user_id INTEGER REFERENCES users(id));
             CREATE TABLE resource_management (resource_id INTEGER REFERENCES resources(id), user_id INTEGER REFERENCES users(id));
             CREATE TABLE user_tag_definitions (name TEXT PRIMARY KEY);
@@ -107,7 +146,7 @@ class ResourceImportTransactionTests(unittest.TestCase):
             );
         """)
         self.db.commit()
-        self.user = {"id": 1}
+        self.user = {"id": 1, "role": "user"}
         self.payload = {
             "name_prefix": "事务测试",
             "subject": "测试主体",
@@ -130,6 +169,7 @@ class ResourceImportTransactionTests(unittest.TestCase):
     def insert_version_fixture(
         self, db, *, resource_id, version_no, ppt_path, png_path,
         common_remark_html, change_note, created_by, ppt_ref=None, png_ref=None,
+        detected_fonts=None,
     ):
         """Insert a minimal version row without parsing the fake PPT bytes."""
         ts = now_iso()
@@ -207,6 +247,172 @@ class ResourceImportTransactionTests(unittest.TestCase):
         self.assertEqual(caught.exception.status_code, 404)
         self.assertTrue(Path(session["temp_dir"]).is_dir())
         self.assertEqual(self.count("resources"), 0)
+
+    def test_assets_are_staged_before_the_database_transaction(self):
+        session = self.session(sid="e" * 32, slides=2)
+        actual_persist = import_commit.persist_asset
+        in_transaction: list[bool] = []
+
+        def spy(path, kind):
+            in_transaction.append(bool(self.db.in_transaction))
+            return actual_persist(path, kind)
+
+        with patch.object(import_commit, "persist_asset", side_effect=spy):
+            result = asyncio.run(self.commit(session["session_id"], payload=self.payload))
+
+        self.assertEqual(result["created"], 2)
+        self.assertTrue(in_transaction)
+        self.assertEqual(set(in_transaction), {False})
+
+    def test_commit_reuses_an_existing_resource_for_a_duplicate_page(self):
+        session = self.session(sid="d" * 32, slides=2)
+        existing_png = self.imports / "existing.png"
+        Image.new("RGB", (160, 90), (1, 2, 3)).save(existing_png)
+        self.db.execute(
+            """INSERT INTO resources (detail_token, name, owner_id, subject, tags, status,
+               visibility_scope, management_scope, secrecy_level, current_version,
+               updated_by, created_at, updated_at)
+               VALUES ('existing-token', '已有素材', 1, '', '', '可用', 'private', 'private', '', 1, 1, ?, ?)""",
+            (now_iso(), now_iso()),
+        )
+        existing_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+        self.insert_version_fixture(
+            self.db, resource_id=existing_id, version_no=1, ppt_path=existing_png,
+            png_path=existing_png, common_remark_html="", change_note="", created_by=1,
+        )
+        self.db.commit()
+
+        payload = dict(self.payload, reuse={"0": existing_id})
+        result = asyncio.run(self.commit(session["session_id"], payload=payload))
+
+        self.assertEqual(result["created"], 2)
+        self.assertEqual(result["reused"], 1)
+        self.assertEqual(result["resource_ids"][0], existing_id)
+        self.assertEqual(self.count("resources"), 2)  # existing + one new page
+        new_id = result["resource_ids"][1]
+        self.assertEqual(
+            self.db.execute("SELECT COUNT(*) FROM resource_versions WHERE resource_id = ?", (new_id,)).fetchone()[0],
+            1,
+        )
+        self.assertEqual(
+            [tuple(row) for row in self.db.execute("SELECT action, resource_id FROM resource_dedup_events").fetchall()],
+            [("import_reuse", existing_id)],
+        )
+
+    def test_duplicate_check_finds_an_existing_page(self):
+        session = self.session(sid="f" * 32, slides=2)
+        existing_png = self.imports / "existing.png"
+        Image.new("RGB", (160, 90), (0, 100, 200)).save(existing_png)
+        self.db.execute(
+            """INSERT INTO resources (detail_token, name, owner_id, subject, tags, status,
+               visibility_scope, management_scope, secrecy_level, current_version,
+               updated_by, created_at, updated_at, deleted_at)
+               VALUES ('existing-token', '已有封面', 1, '', '', '可用', 'private', 'private', '', 1, 1, ?, ?, NULL)""",
+            (now_iso(), now_iso()),
+        )
+        existing_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+        self.insert_version_fixture(
+            self.db, resource_id=existing_id, version_no=1, ppt_path=existing_png,
+            png_path=existing_png, common_remark_html="", change_note="", created_by=1,
+        )
+        self.db.commit()
+
+        result = resource_import_duplicates(
+            session["session_id"], user=self.user, db=self.db, session=session,
+        )
+        self.assertEqual(result["status"], "ready")
+        item = next(entry for entry in result["items"] if entry["index"] == 0)
+        self.assertEqual(item["matches"][0]["resource_id"], existing_id)
+        self.assertEqual(item["matches"][0]["distance"], 0)
+        self.assertTrue(item["matches"][0]["compare_preview_url"].startswith("/api/resources/"))
+
+    def test_commit_iterates_an_existing_resource(self):
+        session = self.session(sid="1" * 32, slides=1)
+        existing_png = self.imports / "existing.png"
+        Image.new("RGB", (160, 90), (1, 2, 3)).save(existing_png)
+        self.db.execute(
+            """INSERT INTO resources (detail_token, name, owner_id, subject, tags, status,
+               visibility_scope, management_scope, secrecy_level, current_version,
+               updated_by, created_at, updated_at, deleted_at)
+               VALUES ('iterate-token', '待迭代素材', 1, '', '', '可用', 'private', 'private', '', 1, 1, ?, ?, NULL)""",
+            (now_iso(), now_iso()),
+        )
+        existing_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+        self.insert_version_fixture(
+            self.db, resource_id=existing_id, version_no=1, ppt_path=existing_png,
+            png_path=existing_png, common_remark_html="", change_note="", created_by=1,
+        )
+        self.db.commit()
+
+        payload = dict(self.payload, actions={"0": {"action": "iterate", "resource_id": existing_id}})
+        result = asyncio.run(self.commit(session["session_id"], payload=payload))
+
+        self.assertEqual(result["iterated"], 1)
+        self.assertEqual(result["resource_ids"], [existing_id])
+        self.assertEqual(self.count("resources"), 1)
+        current = self.db.execute("SELECT current_version FROM resources WHERE id = ?", (existing_id,)).fetchone()[0]
+        self.assertEqual(current, 2)
+        versions = self.db.execute(
+            "SELECT version_no, change_note FROM resource_versions WHERE resource_id = ? ORDER BY version_no",
+            (existing_id,),
+        ).fetchall()
+        self.assertEqual([(row[0], row[1]) for row in versions], [(1, ""), (2, "导入迭代")])
+        self.assertEqual(
+            [tuple(row) for row in self.db.execute("SELECT action, resource_id FROM resource_dedup_events").fetchall()],
+            [("import_iterate", existing_id)],
+        )
+
+    def test_commit_overwrites_the_current_version_in_place(self):
+        session = self.session(sid="2" * 32, slides=1)
+        existing_png = self.imports / "existing.png"
+        Image.new("RGB", (160, 90), (1, 2, 3)).save(existing_png)
+        self.db.execute(
+            """INSERT INTO resources (detail_token, name, owner_id, subject, tags, status,
+               visibility_scope, management_scope, secrecy_level, current_version,
+               updated_by, created_at, updated_at, deleted_at)
+               VALUES ('overwrite-token', '待覆盖素材', 1, '', '', '可用', 'private', 'private', '', 1, 1, ?, ?, NULL)""",
+            (now_iso(), now_iso()),
+        )
+        existing_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+        self.insert_version_fixture(
+            self.db, resource_id=existing_id, version_no=1, ppt_path=existing_png,
+            png_path=existing_png, common_remark_html="", change_note="", created_by=1,
+        )
+        self.db.commit()
+        before = self.db.execute("SELECT ppt_path FROM resource_versions WHERE resource_id = ?", (existing_id,)).fetchone()[0]
+
+        payload = dict(self.payload, actions={"0": {"action": "overwrite", "resource_id": existing_id}})
+        result = asyncio.run(self.commit(session["session_id"], payload=payload))
+
+        self.assertEqual(result["overwritten"], 1)
+        self.assertEqual(
+            [tuple(row) for row in self.db.execute("SELECT action, resource_id FROM resource_dedup_events").fetchall()],
+            [("import_overwrite", existing_id)],
+        )
+        self.assertEqual(result["resource_ids"], [existing_id])
+        self.assertEqual(self.count("resource_versions"), 1)
+        after = self.db.execute("SELECT ppt_path, version_no FROM resource_versions WHERE resource_id = ?", (existing_id,)).fetchone()
+        self.assertEqual(after["version_no"], 1)
+        self.assertNotEqual(after["ppt_path"], before)
+        current = self.db.execute("SELECT current_version FROM resources WHERE id = ?", (existing_id,)).fetchone()[0]
+        self.assertEqual(current, 1)
+
+    def test_commit_rejects_reusing_the_same_resource_twice(self):
+        session = self.session(sid="e" * 32, slides=2)
+        self.db.execute(
+            """INSERT INTO resources (detail_token, name, owner_id, subject, tags, status,
+               visibility_scope, management_scope, secrecy_level, current_version,
+               updated_by, created_at, updated_at)
+               VALUES ('existing-token', '已有素材', 1, '', '', '可用', 'private', 'private', '', 1, 1, ?, ?)""",
+            (now_iso(), now_iso()),
+        )
+        existing_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+        self.db.commit()
+        payload = dict(self.payload, reuse={"0": existing_id, "1": existing_id})
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(self.commit(session["session_id"], payload=payload))
+        self.assertEqual(caught.exception.status_code, 400)
+        self.assertEqual(self.count("resources"), 1)
 
     def test_commit_requires_explicit_visibility_and_management_scopes(self):
         for missing in ("visibility_scope", "management_scope"):

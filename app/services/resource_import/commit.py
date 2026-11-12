@@ -4,17 +4,19 @@ from __future__ import annotations
 
 from app.config import settings
 from app.core.errors import storage_public_message
-from app.core.permissions import can_manage_resource
-from app.core.ppt import split_pptx_to_single_pages
+from app.core.permissions import can_manage_resource, can_view_resource
+from app.core.fonts import missing_fonts
+from app.core.ppt import detect_ppt_fonts, split_pptx_to_single_pages
 from app.core.sanitize import sanitize_html
 from app.core.storage import copy_into
-from app.db import new_resource_detail_token, now_iso
+from app.db import known_font_aliases, new_resource_detail_token, now_iso
 from app.services.common import (
     DEFAULT_RESOURCE_SUBJECT,
     _validate_resource_status,
     _validate_resource_subject,
     _validate_required_scope,
 )
+from app.services.fingerprints import compute_dhash_path, dhash_hex, store_fingerprint
 from app.services.files import _delete_resource_files, persist_asset
 from app.services.resource_import.limits import (
     RESOURCE_IMPORT_MAX_NAME_LENGTH,
@@ -213,6 +215,8 @@ def _commit_resource_import_sync(
     created_dirs: list[Path] = []
     uploaded_refs: list[str] = []
     resource_ids: list[int] = []
+    replaced_files: list[str] = []
+    replaced_version_ids: list[int] = []
     try:
         if session.get("mode") == "ppt":
             split_files = [_resource_import_file(session, p) for p in session["split_paths"]]
@@ -222,6 +226,79 @@ def _commit_resource_import_sync(
             split_files = split_pptx_to_single_pages(source_path, temp_dir / "split")
         if len(split_files) != int(session["slide_count"]):
             raise RuntimeError("PPT 拆分页数发生变化")
+        actions: dict[int, dict[str, Any]] = {}
+        raw_actions = payload.get("actions")
+        if raw_actions not in (None, {}):
+            if not isinstance(raw_actions, dict):
+                raise HTTPException(400, "页面处理方式参数格式不正确")
+            for raw_index, raw_action in raw_actions.items():
+                if isinstance(raw_index, bool) or not isinstance(raw_action, dict):
+                    raise HTTPException(400, "页面处理方式参数格式不正确")
+                try:
+                    page_index = int(raw_index)
+                except (TypeError, ValueError):
+                    raise HTTPException(400, "页面处理方式参数格式不正确")
+                action = str(raw_action.get("action") or "")
+                if action not in {"reuse", "iterate", "overwrite", "new"}:
+                    raise HTTPException(400, "页面处理方式不正确")
+                resource_id = raw_action.get("resource_id")
+                if action != "new" and (type(resource_id) is not int or resource_id <= 0):
+                    raise HTTPException(400, "页面处理方式缺少要处理的素材")
+                actions[page_index] = {"action": action, "resource_id": resource_id}
+        raw_reuse = payload.get("reuse")
+        if raw_reuse not in (None, {}):
+            if not isinstance(raw_reuse, dict):
+                raise HTTPException(400, "复用素材参数格式不正确")
+            for raw_index, raw_resource in raw_reuse.items():
+                if isinstance(raw_index, bool) or isinstance(raw_resource, bool):
+                    raise HTTPException(400, "复用素材参数格式不正确")
+                try:
+                    page_index = int(raw_index)
+                    reuse_resource_id = int(raw_resource)
+                except (TypeError, ValueError):
+                    raise HTTPException(400, "复用素材参数格式不正确")
+                actions[page_index] = {"action": "reuse", "resource_id": reuse_resource_id}
+
+        if any(page_index < 0 or page_index >= len(split_files) for page_index in actions):
+            raise HTTPException(400, "页面处理方式超出当前导入范围")
+        target_ids = [int(entry["resource_id"]) for entry in actions.values() if entry["action"] != "new"]
+        if len(target_ids) != len(set(target_ids)):
+            raise HTTPException(400, "同一已有素材不能在一份导入里被多个页面处理")
+        existing_rows: dict[int, sqlite3.Row] = {}
+        if target_ids:
+            placeholders = ",".join("?" for _ in target_ids)
+            existing_rows = {
+                int(row["id"]): row
+                for row in db.execute(
+                    f"SELECT * FROM resources WHERE id IN ({placeholders}) AND deleted_at IS NULL",
+                    target_ids,
+                )
+            }
+            if len(existing_rows) != len(set(target_ids)):
+                raise HTTPException(400, "要处理的素材不存在或已从库中移除")
+            for entry in actions.values():
+                action = entry["action"]
+                if action == "new":
+                    continue
+                row = existing_rows[int(entry["resource_id"])]
+                if action == "reuse":
+                    if not can_view_resource(db, row, user):
+                        raise HTTPException(403, "部分要复用的素材已无可见权限，请重新选择")
+                elif not can_manage_resource(db, row, user):
+                    raise HTTPException(403, "迭代或覆盖已有素材需要管理权限")
+        overwrite_ids = [int(entry["resource_id"]) for entry in actions.values() if entry["action"] == "overwrite"]
+        if overwrite_ids:
+            placeholders = ",".join("?" for _ in overwrite_ids)
+            active_shares = db.execute(
+                f"""SELECT COUNT(*) FROM show_share_pages p
+                    JOIN resource_versions v ON v.id = p.version_id
+                    JOIN show_share_tokens st ON st.id = p.share_id
+                    WHERE v.resource_id IN ({placeholders}) AND st.revoked_at IS NULL AND st.expires_at > ?""",
+                [*overwrite_ids, now_iso()],
+            ).fetchone()[0]
+            if active_shares:
+                raise HTTPException(409, "部分素材当前版本仍被生效中的分享链接引用，请先撤销分享")
+
         # The commit request holds the session lease for the whole transaction,
         # so publish progress through the session snapshot instead of committing
         # the task row halfway through an otherwise atomic database operation.
@@ -231,6 +308,9 @@ def _commit_resource_import_sync(
         session["commit_message"] = f"正在准备保存，共 {len(split_files)} 个单页素材…"
         session["expires_at"] = time.time() + RESOURCE_IMPORT_TTL
         _write_resource_import_session(session)
+        reused_count = 0
+        iterated_count = 0
+        overwritten_count = 0
         image_paths = [_resource_import_file(session, p) for p in session.get("image_paths", [])]
         if not image_paths:
             image_paths = [_resource_import_file(session, p) for p in session.get("preview_paths", [])]
@@ -242,28 +322,177 @@ def _commit_resource_import_sync(
         if len(source_indexes) != len(split_files):
             raise RuntimeError("PPT 有效页码清单不一致")
         name_width = max(2, len(str(max(source_indexes, default=0) + 1)))
+
+        # Stage all OSS writes before opening the SQLite write transaction.
+        # Uploading a large deck used to keep the single writer lock for the
+        # whole batch, blocking every other request behind busy_timeout.
+        prepared: list[dict[str, Any]] = []
         for index, split_ppt in enumerate(split_files, start=1):
             source_page = int(source_indexes[index - 1]) + 1
-            # split_ppt and the reviewed PNG are temporary working files. They
-            # are uploaded directly; no persistent local asset directory is
-            # created for a committed resource.
-            v1_path = split_ppt
-            # The preview was already normalized before the user confirmed it.
-            # Copy that exact verified file; applying current settings again at
-            # commit time could silently change the bytes the user reviewed
-            # when an administrator edits image limits between the two steps.
             png_path = image_paths[index - 1] if image_paths else None
-            ppt_ref = persist_asset(v1_path, "resources/ppt")
-            uploaded_refs.append(ppt_ref)
-            png_ref = persist_asset(png_path, "resources/png") if png_path else None
-            if png_ref:
-                uploaded_refs.append(png_ref)
+            entry = actions.get(index - 1)
+            action = entry["action"] if entry else "new"
+            item: dict[str, Any] = {
+                "index": index,
+                "source_page": source_page,
+                "split_ppt": split_ppt,
+                "png_path": png_path,
+                "action": action,
+                "target_id": int(entry["resource_id"]) if action != "new" else None,
+                "ppt_ref": None,
+                "png_ref": None,
+                "dhash": None,
+                "fonts": [],
+                "missing": [],
+                "current_id": None,
+                "current_version_no": None,
+            }
+            if action != "reuse":
+                ppt_ref = persist_asset(split_ppt, "resources/ppt")
+                uploaded_refs.append(ppt_ref)
+                png_ref = persist_asset(png_path, "resources/png") if png_path else None
+                if png_ref:
+                    uploaded_refs.append(png_ref)
+                item["ppt_ref"] = ppt_ref
+                item["png_ref"] = png_ref
+                if png_path:
+                    try:
+                        item["dhash"] = dhash_hex(compute_dhash_path(png_path))
+                    except Exception:
+                        logger.warning("导入页面指纹计算失败，提交后由查重扫描补齐", exc_info=True)
+                if action == "overwrite":
+                    current = _version_row(db, int(item["target_id"]))
+                    item["current_id"] = int(current["id"])
+                    item["current_version_no"] = int(current["version_no"])
+                    try:
+                        fonts = detect_ppt_fonts(split_ppt)
+                        item["fonts"] = fonts
+                        item["missing"] = missing_fonts(fonts, known_font_aliases(db))
+                    except Exception:
+                        logger.warning("覆盖版本字体检测失败，保留原字体信息", exc_info=True)
+                        item["fonts"] = json.loads(current["font_names"] or "[]")
+                        item["missing"] = json.loads(current["missing_fonts"] or "[]")
+                else:
+                    try:
+                        item["fonts"] = detect_ppt_fonts(split_ppt)
+                    except Exception:
+                        # Invalid/fake single-page files are re-checked by
+                        # _insert_version; do not fail before the DB phase.
+                        logger.warning("导入页面字体预检测失败", exc_info=True)
+                        item["fonts"] = None
+            prepared.append(item)
+            session["commit_progress"] = index
+            session["commit_message"] = (
+                f"第 {index}/{len(split_files)} 页复用已有素材…"
+                if action == "reuse"
+                else f"正在上传第 {index}/{len(split_files)} 页{'迭代' if action == 'iterate' else '覆盖' if action == 'overwrite' else ''}素材…"
+            )
+            _write_resource_import_session(session)
+
+        # From here on only fast SQLite work happens. Keep it in one short
+        # IMMEDIATE transaction so validation and writes stay atomic.
+        if not db.in_transaction:
+            db.execute("BEGIN IMMEDIATE")
+        overwrite_ids = [int(item["target_id"]) for item in prepared if item["action"] == "overwrite"]
+        if overwrite_ids:
+            placeholders = ",".join("?" for _ in overwrite_ids)
+            active_shares = db.execute(
+                f"""SELECT COUNT(*) FROM show_share_pages p
+                    JOIN resource_versions v ON v.id = p.version_id
+                    JOIN show_share_tokens st ON st.id = p.share_id
+                    WHERE v.resource_id IN ({placeholders}) AND st.revoked_at IS NULL AND st.expires_at > ?""",
+                [*overwrite_ids, now_iso()],
+            ).fetchone()[0]
+            if active_shares:
+                raise HTTPException(409, "部分素材当前版本仍被生效中的分享链接引用，请先撤销分享")
+
+        session["commit_message"] = "正在写入素材库…"
+        for item in prepared:
+            index = int(item["index"])
+            action = item["action"]
+            target_id = item["target_id"]
+            split_ppt = item["split_ppt"]
+            png_path = item["png_path"]
+            ppt_ref = item["ppt_ref"]
+            png_ref = item["png_ref"]
+            if action != "new":
+                target = db.execute("SELECT * FROM resources WHERE id = ? AND deleted_at IS NULL", (target_id,)).fetchone()
+                if target is None:
+                    raise RuntimeError("要处理的素材已从库中移除，请重新选择")
+                if action == "reuse":
+                    if not can_view_resource(db, target, user):
+                        raise HTTPException(403, "部分要复用的素材已无可见权限，请重新选择")
+                elif not can_manage_resource(db, target, user):
+                    raise HTTPException(403, "迭代或覆盖已有素材需要管理权限")
+            if action == "reuse":
+                resource_ids.append(int(target_id))
+                db.execute(
+                    "INSERT INTO resource_dedup_events (actor_id, action, resource_id, related_resource_id, details, created_at) VALUES (?, 'import_reuse', ?, NULL, ?, ?)",
+                    (int(user["id"]), int(target_id), json.dumps({"session_id": session_id, "page": index}, ensure_ascii=False), now_iso()),
+                )
+                reused_count += 1
+                continue
+            if action == "iterate":
+                version_no = _allocate_version_number(db, int(target_id))
+                _insert_version(
+                    db,
+                    resource_id=int(target_id),
+                    version_no=version_no,
+                    ppt_path=split_ppt,
+                    png_path=png_path,
+                    ppt_ref=ppt_ref,
+                    png_ref=png_ref,
+                    common_remark_html="",
+                    change_note="导入迭代",
+                    created_by=int(user["id"]),
+                    detected_fonts=item["fonts"],
+                )
+                db.execute(
+                    "UPDATE resources SET current_version = ?, updated_at = ?, updated_by = ? WHERE id = ?",
+                    (version_no, batch_ts, int(user["id"]), int(target_id)),
+                )
+                db.execute(
+                    "INSERT INTO resource_dedup_events (actor_id, action, resource_id, related_resource_id, details, created_at) VALUES (?, 'import_iterate', ?, NULL, ?, ?)",
+                    (int(user["id"]), int(target_id), json.dumps({"session_id": session_id, "page": index, "version_no": version_no}, ensure_ascii=False), now_iso()),
+                )
+                if item["dhash"]:
+                    store_fingerprint(db, int(target_id), version_no, item["dhash"])
+                db.execute("DELETE FROM resource_text_fingerprints WHERE resource_id = ?", (int(target_id),))
+                resource_ids.append(int(target_id))
+                iterated_count += 1
+                continue
+            if action == "overwrite":
+                current = _version_row(db, int(target_id))
+                if int(current["id"]) != int(item["current_id"]) or int(current["version_no"]) != int(item["current_version_no"]):
+                    raise HTTPException(409, "素材版本已变化，请重新选择后再提交")
+                replaced_files.extend([current["ppt_path"], current["png_path"]] if current["png_path"] else [current["ppt_path"]])
+                replaced_version_ids.append(int(current["id"]))
+                db.execute(
+                    "UPDATE resource_versions SET ppt_path = ?, png_path = ?, font_names = ?, missing_fonts = ? WHERE id = ?",
+                    (ppt_ref, png_ref, json.dumps(item["fonts"], ensure_ascii=False), json.dumps(item["missing"], ensure_ascii=False), current["id"]),
+                )
+                db.execute(
+                    "UPDATE resources SET updated_at = ?, updated_by = ? WHERE id = ?",
+                    (batch_ts, int(user["id"]), int(target_id)),
+                )
+                db.execute(
+                    "INSERT INTO resource_dedup_events (actor_id, action, resource_id, related_resource_id, details, created_at) VALUES (?, 'import_overwrite', ?, NULL, ?, ?)",
+                    (int(user["id"]), int(target_id), json.dumps({"session_id": session_id, "page": index, "version_no": int(current["version_no"])}, ensure_ascii=False), now_iso()),
+                )
+                if item["dhash"]:
+                    store_fingerprint(db, int(target_id), int(current["version_no"]), item["dhash"])
+                db.execute("DELETE FROM resource_text_fingerprints WHERE resource_id = ?", (int(target_id),))
+                resource_ids.append(int(target_id))
+                overwritten_count += 1
+                continue
+
+            name = name_prefix if len(split_files) == 1 else f"{name_prefix}_{item['source_page']:0{name_width}d}"
             db.execute(
                 """INSERT INTO resources (detail_token, name, owner_id, subject, tags, status,
                    visibility_scope, management_scope, secrecy_level, current_version,
                    updated_by, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', 1, ?, ?, ?)""",
-                (new_resource_detail_token(), name_prefix if len(split_files) == 1 else f"{name_prefix}_{source_page:0{name_width}d}", user["id"], subject, tags, status,
+                (new_resource_detail_token(), name, user["id"], subject, tags, status,
                  visibility_scope, management_scope, user["id"], batch_ts, batch_ts),
             )
             resource_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
@@ -281,24 +510,28 @@ def _commit_resource_import_sync(
             _set_scope_users(db, "resource_management", resource_id, [int(x) for x in manage_user_ids])
             _set_scope_tags(db, "resource_visibility_tags", resource_id, visible_user_tags)
             _set_scope_tags(db, "resource_management_tags", resource_id, manage_user_tags)
-            version = _insert_version(
+            _insert_version(
                 db,
                 resource_id=resource_id,
                 version_no=1,
-                ppt_path=v1_path,
+                ppt_path=split_ppt,
                 png_path=png_path,
                 ppt_ref=ppt_ref,
                 png_ref=png_ref,
                 common_remark_html=sanitize_html(str(payload.get("remark_html", ""))),
                 change_note="统一导入",
                 created_by=int(user["id"]),
+                detected_fonts=item["fonts"],
             )
-            session["commit_progress"] = index
-            session["commit_message"] = f"已保存第 {index}/{len(split_files)} 个单页素材…"
-            _write_resource_import_session(session)
+            if item["dhash"]:
+                store_fingerprint(db, resource_id, 1, item["dhash"])
+
         result = {
             "resource_ids": resource_ids,
             "created": len(resource_ids),
+            "reused": reused_count,
+            "iterated": iterated_count,
+            "overwritten": overwritten_count,
             "total": int(session.get("source_slide_count") or session["slide_count"]),
             "skipped_pages": skipped_pages,
         }
@@ -329,6 +562,11 @@ def _commit_resource_import_sync(
         if storage_message:
             raise HTTPException(503, storage_message) from exc
         raise HTTPException(400, "导入提交失败，临时文件已清理，请重试") from exc
+    if replaced_files:
+        try:
+            _delete_resource_files(replaced_files, replaced_version_ids)
+        except Exception:
+            logger.warning("删除被覆盖版本的旧文件失败", exc_info=True)
     # Never turn a successful COMMIT into file rollback if cleanup fails.
     try:
         _cleanup_resource_import_session(session_id, session)

@@ -137,6 +137,34 @@ def can_view_resource(db: sqlite3.Connection, resource: sqlite3.Row, user: sqlit
     return False
 
 
+def manageable_resource_ids(db: sqlite3.Connection, user: sqlite3.Row) -> set[int]:
+    """Bulk equivalent of can_manage_resource for scan/import queries."""
+    if is_system_admin(user):
+        return {
+            int(row["id"])
+            for row in db.execute("SELECT id FROM resources WHERE deleted_at IS NULL").fetchall()
+        }
+    user_id = int(user["id"])
+    tag_join = tag_relation_join(db, "resource_management_tags", "rt")
+    rows = db.execute(
+        f"""SELECT r.id FROM resources r
+            WHERE r.deleted_at IS NULL AND (
+                r.owner_id = ? OR r.management_scope = 'public' OR (
+                    r.management_scope = 'partial' AND (
+                        EXISTS (SELECT 1 FROM resource_management m WHERE m.resource_id = r.id AND m.user_id = ?)
+                        OR EXISTS (
+                            SELECT 1 FROM resource_management_tags rt
+                            JOIN user_tags ut ON {tag_join}
+                            WHERE rt.resource_id = r.id AND ut.user_id = ?
+                        )
+                    )
+                )
+            )""",
+        (user_id, user_id, user_id),
+    ).fetchall()
+    return {int(row["id"]) for row in rows}
+
+
 def can_manage_resource(db: sqlite3.Connection, resource: sqlite3.Row, user: sqlite3.Row) -> bool:
     if is_system_admin(user):
         return True

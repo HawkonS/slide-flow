@@ -405,6 +405,17 @@ def _read_log_tail(
     return bounded_lines, truncated, stat
 
 
+@router.get("/health", include_in_schema=False)
+def health() -> dict[str, str]:
+    """Liveness/readiness probe usable by load balancers and run.sh."""
+    db = get_db()
+    try:
+        db.execute("SELECT 1").fetchone()
+    finally:
+        db.close()
+    return {"status": "ok"}
+
+
 @router.get("/admin/system/status")
 def api_admin_system_status(
     _: Any = Depends(require_system_admin),

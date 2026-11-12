@@ -367,6 +367,10 @@ async def create_resource_version(
                     ),
                 )
                 db.execute("UPDATE resources SET updated_by = ?, updated_at = ? WHERE id = ?", (user["id"], now_iso(), resource_id))
+                # The bytes of the current version changed without a version bump,
+                # so cached dedup fingerprints must be recomputed lazily.
+                db.execute("DELETE FROM resource_fingerprints WHERE resource_id = ?", (resource_id,))
+                db.execute("DELETE FROM resource_text_fingerprints WHERE resource_id = ?", (resource_id,))
                 db.commit()
         except Exception:
             db.rollback()
