@@ -276,6 +276,11 @@ def _pptx_text_for_ref(ref: str | None) -> str | None:
             return ""
         try:
             return extract_pptx_text(path)
+        except (ModuleNotFoundError, ImportError):
+            # A missing parser is a deployment problem, not an empty page.
+            # Keep the row pending so a later run retries after installing it.
+            logger.error("缺少 python-pptx，无法提取 PPTX 文字: %s", ref, exc_info=True)
+            return None
         except Exception:
             logger.warning("解析 PPTX 文字失败（文件不可解析）: %s", ref, exc_info=True)
             return ""
@@ -284,7 +289,7 @@ def _pptx_text_for_ref(ref: str | None) -> str | None:
             cleanup.unlink(missing_ok=True)
 
 
-TEXT_EXTRACTOR_VERSION = 2
+TEXT_EXTRACTOR_VERSION = 3
 
 
 def ensure_text_fingerprints(

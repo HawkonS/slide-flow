@@ -103,6 +103,15 @@ class PptxTextTests(unittest.TestCase):
             self.assertEqual(extract_pptx_text(path), "主要涉及场景")
 
 
+class PptxTextDependencyTests(unittest.TestCase):
+    def test_missing_pptx_parser_keeps_the_text_fingerprint_pending(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "page.pptx"
+            path.write_bytes(b"not-a-real-pptx")
+            with patch.object(fingerprints, "extract_pptx_text", side_effect=ModuleNotFoundError("No module named 'pptx'")):
+                self.assertIsNone(fingerprints._pptx_text_for_ref(str(path)))
+
+
 class EnsureFingerprintsTests(unittest.TestCase):
     def test_missing_fingerprint_is_computed_and_stored(self):
         import sqlite3
