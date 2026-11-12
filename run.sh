@@ -409,7 +409,7 @@ import sys
 import urllib.request
 
 try:
-    with urllib.request.urlopen(f"http://127.0.0.1:{sys.argv[1]}/api/config", timeout=1) as response:
+    with urllib.request.urlopen(f"http://127.0.0.1:{sys.argv[1]}/api/health", timeout=1) as response:
         raise SystemExit(0 if response.status == 200 else 1)
 except Exception:
     raise SystemExit(1)
@@ -716,10 +716,29 @@ fi
 # ===========================================================
 BACKEND_PID=""
 FRONTEND_PID=""
+ACTIVE_BACKEND_SERVER=""
+BACKEND_PID_FILE="$ROOT_DIR/data/run/backend.pid"
+mkdir -p "$(dirname "$BACKEND_PID_FILE")"
+rm -f "$BACKEND_PID_FILE"
 
 # 清理函数：捕获退出信号时停止子进程
 # 注意：kill 之后必须紧跟 wait "$PID" 2>/dev/null，bash 会静默回收该后台
 #       作业的退出状态，从而不再打印 "Terminated: 15" 这样的提示信息。
+resolve_backend_pid() {
+  # Gunicorn writes its master pid; prefer it over a stale $! or a wrapper.
+  if [ -f "$BACKEND_PID_FILE" ]; then
+    local pid
+    pid="$(cat "$BACKEND_PID_FILE" 2>/dev/null || true)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      echo "$pid"
+      return 0
+    fi
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | head -n 1
+  fi
+}
+
 cleanup() {
   trap - INT TERM EXIT
   echo ""
@@ -729,11 +748,17 @@ cleanup() {
     # 静默等待前端子进程退出，吞掉 bash 的 "Terminated: 15" 输出
     wait "$FRONTEND_PID" 2>/dev/null || true
   fi
-  if [ -n "$BACKEND_PID" ] && kill -0 "$BACKEND_PID" 2>/dev/null; then
-    kill "$BACKEND_PID" 2>/dev/null || true
-    # 静默等待后端子进程退出
-    wait "$BACKEND_PID" 2>/dev/null || true
+  if [ "$ACTIVE_BACKEND_SERVER" = "gunicorn" ] || [ "$ACTIVE_BACKEND_SERVER" = "uvicorn" ]; then
+    local actual_pid="${BACKEND_PID:-}"
+    if [ -z "$actual_pid" ] || ! kill -0 "$actual_pid" 2>/dev/null; then
+      actual_pid="$(resolve_backend_pid || true)"
+    fi
+    if [ -n "$actual_pid" ] && kill -0 "$actual_pid" 2>/dev/null; then
+      kill "$actual_pid" 2>/dev/null || true
+      wait "$actual_pid" 2>/dev/null || true
+    fi
   fi
+  rm -f "$BACKEND_PID_FILE"
   # 兜底：回收任何尚未收割的后台作业
   wait 2>/dev/null || true
   log_info "服务已停止"
@@ -743,6 +768,7 @@ trap cleanup INT TERM EXIT
 # 启动后端。Gunicorn 安装或启动失败时自动回退到 Uvicorn。
 start_uvicorn_backend() {
   local log_mode="${1:-truncate}"
+  rm -f "$BACKEND_PID_FILE"
   if [ "$log_mode" = "append" ]; then
     "$PYTHON_BIN" -m uvicorn app.main:app --host 0.0.0.0 --port "$PORT" --workers "$WORKERS" --no-access-log \
       >>"$BACKEND_LOG" 2>&1 &
@@ -761,6 +787,7 @@ start_gunicorn_backend() {
     --worker-class uvicorn_worker.UvicornWorker \
     --timeout 0 \
     --graceful-timeout 30 \
+    --pid "$BACKEND_PID_FILE" \
     --error-logfile - \
     --capture-output \
     >"$BACKEND_LOG" 2>&1 &
@@ -774,7 +801,7 @@ import sys
 import urllib.request
 
 try:
-    with urllib.request.urlopen(f"http://127.0.0.1:{sys.argv[1]}/api/config", timeout=1) as response:
+    with urllib.request.urlopen(f"http://127.0.0.1:{sys.argv[1]}/api/health", timeout=1) as response:
         raise SystemExit(0 if response.status == 200 else 1)
 except Exception:
     raise SystemExit(1)
@@ -802,11 +829,11 @@ raise SystemExit(0 if status.get("required") is True else 1)
 wait_for_backend() {
   local attempt
   for attempt in $(seq 1 12); do
-    if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
-      return 1
-    fi
     if backend_is_ready; then
       return 0
+    fi
+    if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
+      return 1
     fi
     sleep 1
   done
@@ -835,6 +862,7 @@ if [ "$REUSE_BACKEND" != "true" ] && ! wait_for_backend; then
       kill "$BACKEND_PID" 2>/dev/null || true
       wait "$BACKEND_PID" 2>/dev/null || true
     fi
+    rm -f "$BACKEND_PID_FILE"
     echo "" >>"$BACKEND_LOG"
     echo "[SlideFlow] Gunicorn failed; falling back to Uvicorn" >>"$BACKEND_LOG"
     start_uvicorn_backend append
@@ -941,8 +969,14 @@ echo ""
 # ===========================================================
 while :; do
   if [ -n "$BACKEND_PID" ] && ! kill -0 "$BACKEND_PID" 2>/dev/null; then
-    log_error "后端进程已退出，请检查日志: $BACKEND_LOG"
-    break
+    actual_pid="$(resolve_backend_pid || true)"
+    if [ -n "$actual_pid" ] && kill -0 "$actual_pid" 2>/dev/null && backend_is_ready; then
+      log_warn "后端 PID 已变化 ($BACKEND_PID → $actual_pid)，继续监控实际进程"
+      BACKEND_PID="$actual_pid"
+    else
+      log_error "后端进程已退出，请检查日志: $BACKEND_LOG"
+      break
+    fi
   fi
   if [ -n "$FRONTEND_PID" ] && ! kill -0 "$FRONTEND_PID" 2>/dev/null; then
     log_error "前端进程已退出，请检查日志: $FRONTEND_LOG"
