@@ -199,8 +199,10 @@ function useAdaptivePageSize(
     const calc = () => {
       timerRef.current = null;
       const available = el.clientHeight - headerHeight;
-      // 减 1 行：为分页控件 / 容器 padding 等留出余量，确保最后一行不需要滚动
-      const size = Math.max(5, Math.floor(available / rowHeight) - 1);
+      // 减 1 行：为分页控件 / 容器 padding 等留出余量，确保最后一行不需要滚动。
+      // Backend caps page_size at 100; a taller viewport must not turn the task
+      // list into a 422 response.
+      const size = Math.min(100, Math.max(5, Math.floor(available / rowHeight) - 1));
       if (size !== lastSize) {
         lastSize = size;
         setPageSize(size);
@@ -209,10 +211,13 @@ function useAdaptivePageSize(
 
     const schedule = () => {
       if (timerRef.current != null) window.clearTimeout(timerRef.current);
-      timerRef.current = window.setTimeout(calc, 100);
+      timerRef.current = window.setTimeout(calc, 120);
     };
 
-    calc();
+    // Wait for the first layout/font pass before the initial measurement.
+    // Calling calc() immediately produced two queries (e.g. 13 then 11) on
+    // first render; the observer will still notify us if the size changes.
+    schedule();
     const ro = new ResizeObserver(schedule);
     ro.observe(el);
     return () => {
@@ -1206,6 +1211,7 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
         total={!isLoading && !isError ? total : 0}
         onPageChange={setPage}
         loading={isLoading}
+        reserve
       />
 
       <Dialog
@@ -1493,6 +1499,7 @@ function DownloadTasksTab({ canManage }: { canManage: boolean }) {
         total={!isLoading && !isError ? total : 0}
         onPageChange={setPage}
         loading={isLoading}
+        reserve
       />
       <ConfirmDialog
         open={bulkDeleteOpen}
