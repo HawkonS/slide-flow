@@ -32,6 +32,8 @@ class ResourceDuplicateMergeTests(unittest.TestCase):
             CREATE TABLE resource_fingerprints (
                 resource_id INTEGER PRIMARY KEY, version_no INTEGER, dhash TEXT, hash_version INTEGER NOT NULL DEFAULT 0, updated_at TEXT
             );
+            CREATE TABLE show_management (show_id INTEGER, user_id INTEGER);
+            CREATE TABLE show_management_tags (show_id INTEGER, tag_id INTEGER, tag_name TEXT);
             CREATE TABLE resource_management (resource_id INTEGER, user_id INTEGER);
             CREATE TABLE resource_management_tags (resource_id INTEGER, tag_id INTEGER, tag_name TEXT);
             CREATE TABLE user_tags (user_id INTEGER, tag_id INTEGER, tag_name TEXT);
@@ -161,6 +163,22 @@ class ResourceDuplicateMergeTests(unittest.TestCase):
         self.assertEqual(audit["actor_id"], 1)
         self.assertEqual(audit["canonical_id"], 1)
         self.assertEqual(json.loads(audit["foreign_resource_ids"]), [2])
+
+    def test_scan_handles_partial_shows_owned_by_another_user(self):
+        ts = now_iso()
+        self.db.execute(
+            "INSERT INTO shows (id, name, owner_id, management_scope, updated_at, updated_by, version_no) VALUES (12, '他人部分管理放映', 2, 'partial', ?, 2, 1)",
+            (ts,),
+        )
+        self.db.execute(
+            "INSERT INTO show_resources (show_id, resource_id, version_no, sort_order, is_hidden) VALUES (12, 2, 1, 0, 0)"
+        )
+        self.db.commit()
+        result = resource_duplicates.scan_duplicates(self.db, self.user, limit=10)
+        self.assertEqual(result["status"], "ready")
+        group = next(group for group in result["groups"] if any(entry["id"] == 2 for entry in group["resources"]))
+        self.assertFalse(group["mergeable"])
+        self.assertIn("无管理权限", group["reason"] or "")
 
     def test_merge_rejects_different_text_even_when_images_match(self):
         self.db.execute("UPDATE resource_text_fingerprints SET text = '另一页' WHERE resource_id = 2")

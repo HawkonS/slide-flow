@@ -92,7 +92,7 @@ def _shows_for_resources(db: sqlite3.Connection, resource_ids: list[int], user: 
     for chunk in _chunks(sorted(set(resource_ids))):
         placeholders = ",".join("?" for _ in chunk)
         rows.extend(db.execute(
-            f"""SELECT sr.show_id, sr.sort_order, s.name, s.owner_id, s.management_scope
+            f"""SELECT s.id AS id, sr.show_id, sr.sort_order, s.name, s.owner_id, s.management_scope
                 FROM show_resources sr JOIN shows s ON s.id = sr.show_id
                 WHERE sr.resource_id IN ({placeholders})
                 ORDER BY s.id, sr.sort_order""",
