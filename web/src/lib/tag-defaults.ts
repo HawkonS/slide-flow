@@ -16,6 +16,7 @@ export interface SceneDefaults {
 }
 export interface PublicConfig {
   site_name?: string;
+  site_description?: string;
   logo_svg_path?: string;
   resource_custom_tags?: boolean;
   user_custom_tags?: boolean;

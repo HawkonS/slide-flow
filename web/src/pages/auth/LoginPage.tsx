@@ -38,6 +38,7 @@ export function LoginPage() {
   const [feishuConfigLoading, setFeishuConfigLoading] = useState(true);
 
   const siteName = useSiteConfig((s) => s.siteName);
+  const siteDescription = useSiteConfig((s) => s.siteDescription);
   const logoSvgPath = useSiteConfig((s) => s.logoSvgPath);
   const versionCommit = useSiteConfig((s) => s.versionCommit);
   const versionUpdatedAt = useSiteConfig((s) => s.versionUpdatedAt);
@@ -60,6 +61,9 @@ export function LoginPage() {
         if (config?.site_name) {
           useSiteConfig.getState().setSiteName(config.site_name);
           document.title = config.site_name;
+        }
+        if (config?.site_description) {
+          useSiteConfig.getState().setSiteDescription(config.site_description);
         }
         if (config?.logo_svg_path) {
           useSiteConfig.getState().setLogoSvgPath(config.logo_svg_path);
@@ -227,7 +231,7 @@ export function LoginPage() {
             {siteName}
           </h1>
           <p className="max-w-xs text-sm leading-relaxed text-slate-400">
-            企业级演示文稿资源管理平台，助力团队高效协作与内容分发
+            {siteDescription}
           </p>
         </div>
 

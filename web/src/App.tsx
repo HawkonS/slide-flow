@@ -16,6 +16,7 @@ function SiteConfigSync() {
       useSiteConfig.getState().setSiteName(config.site_name);
       document.title = config.site_name;
     }
+    if (config?.site_description) useSiteConfig.getState().setSiteDescription(config.site_description);
     if (config?.logo_svg_path) useSiteConfig.getState().setLogoSvgPath(config.logo_svg_path);
   }, [config]);
   return null;
