@@ -99,6 +99,7 @@ def list_tasks(
     task_type: str | None = Query(None),
     owner_id: int | None = Query(None),
     search: str | None = Query(None),
+    unfinished: bool = Query(False),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     user: sqlite3.Row = Depends(require_user),
@@ -113,6 +114,7 @@ def list_tasks(
     分页：page 从 1 开始，page_size 默认 20、上限 100。
     搜索：下载任务搜索追踪码、放映名称和文件名；上传任务搜索系列、名称前缀、
     文件名、主体和标签。
+    unfinished=true 时只返回上传中、等待中、处理中或失败的任务。
     """
     where_clauses: list[str] = []
     params_list: list[Any] = []
@@ -128,6 +130,8 @@ def list_tasks(
     if status and status in {"uploading", "pending", "processing", "completed", "failed", "cancelled"}:
         where_clauses.append("status = ?")
         params_list.append(status)
+    if unfinished:
+        where_clauses.append("status NOT IN ('completed', 'cancelled')")
     if task_type is not None:
         where_clauses.append("task_type = ?")
         params_list.append(task_type)

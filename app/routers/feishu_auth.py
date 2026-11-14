@@ -35,6 +35,7 @@ from app.core.user_profiles import (
     validate_avatar_url,
 )
 from app.db import now_iso
+from app.services.activity import record_login_event
 from app.routers.dependencies import ApiPayload, SESSION_COOKIE, _serialize_user, db_dep
 
 logger = logging.getLogger(__name__)
@@ -432,6 +433,7 @@ def feishu_sso_callback(
         "UPDATE users SET last_login_at = ? WHERE id = ?",
         (login_at, int(user["id"])),
     )
+    record_login_event(db, int(user["id"]), "feishu")
     db.commit()
     user = db.execute("SELECT * FROM users WHERE id = ?", (int(user["id"]),)).fetchone()
 

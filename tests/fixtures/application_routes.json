@@ -292,6 +292,14 @@
     ]
   },
   {
+    "path": "/api/me/activity",
+    "name": "my_activity",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
     "path": "/api/admin/users",
     "name": "list_users",
     "kind": "http",

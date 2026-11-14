@@ -4,6 +4,7 @@
 """
 import re
 import sqlite3
+from datetime import date, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -293,14 +294,15 @@ def my_home_stats(
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
-    """首页数据概览：仅统计当前用户可见范围；超管看到全部。"""
+    """首页工作台统计：平台总数、我的可见/管理/创建和任务汇总。"""
     user_id = int(user["id"])
     system_admin = is_system_admin(user)
 
-    def _visible_count(
+    def _scope_count(
         table: str,
-        vis_table: str,
-        vis_fk: str,
+        scope_column: str,
+        link_table: str,
+        link_fk: str,
         *,
         tag_table: str | None = None,
         where_extra: str = "",
@@ -315,10 +317,10 @@ def my_home_stats(
         if tag_table:
             tag_join = tag_relation_join(db, tag_table, "vt")
             tag_clause = f"""
-                OR (t.visibility_scope = 'partial' AND EXISTS (
+                OR (t.{scope_column} = 'partial' AND EXISTS (
                     SELECT 1 FROM {tag_table} vt
                     JOIN user_tags ut ON {tag_join}
-                    WHERE vt.{vis_fk} = t.id AND ut.user_id = ?
+                    WHERE vt.{link_fk} = t.id AND ut.user_id = ?
                 ))
             """
             params.append(user_id)
@@ -326,9 +328,9 @@ def my_home_stats(
             SELECT COUNT(*) FROM {table} t
             WHERE (
                 t.owner_id = ?
-                OR t.visibility_scope = 'public'
-                OR (t.visibility_scope = 'partial' AND EXISTS (
-                    SELECT 1 FROM {vis_table} v WHERE v.{vis_fk} = t.id AND v.user_id = ?
+                OR t.{scope_column} = 'public'
+                OR (t.{scope_column} = 'partial' AND EXISTS (
+                    SELECT 1 FROM {link_table} v WHERE v.{link_fk} = t.id AND v.user_id = ?
                 ))
                 {tag_clause}
             )
@@ -343,29 +345,116 @@ def my_home_stats(
             sql += f" AND ({where_extra})"
         return int(db.execute(sql, (user_id,)).fetchone()[0])
 
-    resources_total = _visible_count(
-        "resources",
-        "resource_visibility",
-        "resource_id",
-        tag_table="resource_visibility_tags",
-        where_extra="t.deleted_at IS NULL",
-    )
+    resources_total = int(db.execute("SELECT COUNT(*) FROM resources WHERE deleted_at IS NULL").fetchone()[0])
     resources_mine = _mine_count("resources", where_extra="deleted_at IS NULL")
+    resources_visible = _scope_count(
+        "resources", "visibility_scope", "resource_visibility", "resource_id",
+        tag_table="resource_visibility_tags", where_extra="t.deleted_at IS NULL",
+    )
+    resources_managed = _scope_count(
+        "resources", "management_scope", "resource_management", "resource_id",
+        tag_table="resource_management_tags", where_extra="t.deleted_at IS NULL",
+    )
 
-    shows_total = _visible_count(
-        "shows",
-        "show_visibility",
-        "show_id",
+    shows_total = int(db.execute("SELECT COUNT(*) FROM shows").fetchone()[0])
+    shows_mine = _mine_count("shows")
+    shows_visible = _scope_count(
+        "shows", "visibility_scope", "show_visibility", "show_id",
         tag_table="show_visibility_tags",
     )
-    shows_mine = _mine_count("shows")
+    shows_managed = _scope_count(
+        "shows", "management_scope", "show_management", "show_id",
+        tag_table="show_management_tags",
+    )
+    standard_shows = int(db.execute("SELECT COUNT(*) FROM shows WHERE is_standard = 1").fetchone()[0])
 
     templates_total = int(db.execute("SELECT COUNT(*) FROM templates").fetchone()[0])
     fonts_total = int(db.execute("SELECT COUNT(*) FROM fonts").fetchone()[0])
 
+    def _own_task_count(extra: str = "") -> int:
+        sql = "SELECT COUNT(*) FROM tasks WHERE owner_id = ?" + extra
+        return int(db.execute(sql, (user_id,)).fetchone()[0])
+
+    jobs_total_sql = "SELECT COUNT(*) FROM tasks"
+    tasks_total = int(
+        db.execute(jobs_total_sql).fetchone()[0]
+        if system_admin
+        else db.execute(jobs_total_sql + " WHERE owner_id = ?", (user_id,)).fetchone()[0]
+    )
+    tasks_upload = _own_task_count(" AND task_type = 'batch_split_import'")
+    tasks_download = _own_task_count(" AND task_type = 'download'")
+    tasks_unfinished = _own_task_count(" AND status NOT IN ('completed', 'cancelled')")
+    tasks_failed = _own_task_count(" AND status = 'failed'")
+
     return {
-        "resources": {"total": resources_total, "mine": resources_mine},
-        "shows": {"total": shows_total, "mine": shows_mine},
+        "resources": {
+            "total": resources_total,
+            "mine": resources_mine,
+            "managed": resources_managed,
+            "visible": resources_visible,
+        },
+        "shows": {
+            "total": shows_total,
+            "mine": shows_mine,
+            "managed": shows_managed,
+            "visible": shows_visible,
+        },
+        "standard_shows": standard_shows,
         "templates": {"total": templates_total},
         "fonts": {"total": fonts_total},
+        "tasks": {
+            "total": tasks_total,
+            "upload": tasks_upload,
+            "download": tasks_download,
+            "unfinished": tasks_unfinished,
+            "failed": tasks_failed,
+        },
+    }
+
+
+@router.get("/me/activity")
+def my_activity(
+    days: int = 365,
+    user: sqlite3.Row = Depends(require_user),
+    db: sqlite3.Connection = Depends(db_read_dep),
+) -> dict[str, Any]:
+    """最近 N 天的登录/上传/下载活跃度（按完成日聚合）。"""
+    safe_days = max(30, min(int(days), 730))
+    end_day = date.today()
+    start_day = end_day - timedelta(days=safe_days - 1)
+    start = f"{start_day.isoformat()}T00:00:00"
+
+    def _group(sql: str, args: tuple[Any, ...]) -> list[dict[str, Any]]:
+        return [
+            {"date": str(row["day"]), "count": int(row["count"])}
+            for row in db.execute(sql, args).fetchall()
+            if row["day"]
+        ]
+
+    login = _group(
+        """SELECT substr(occurred_at, 1, 10) AS day, COUNT(*) AS count
+           FROM user_login_events WHERE user_id = ? AND occurred_at >= ?
+           GROUP BY day ORDER BY day""",
+        (int(user["id"]), start),
+    )
+    upload = _group(
+        """SELECT substr(completed_at, 1, 10) AS day, COUNT(*) AS count
+           FROM tasks WHERE owner_id = ? AND task_type = 'batch_split_import'
+             AND status = 'completed' AND completed_at IS NOT NULL AND completed_at >= ?
+           GROUP BY day ORDER BY day""",
+        (int(user["id"]), start),
+    )
+    download = _group(
+        """SELECT substr(completed_at, 1, 10) AS day, COUNT(*) AS count
+           FROM tasks WHERE owner_id = ? AND task_type = 'download'
+             AND status = 'completed' AND completed_at IS NOT NULL AND completed_at >= ?
+           GROUP BY day ORDER BY day""",
+        (int(user["id"]), start),
+    )
+    return {
+        "start": start_day.isoformat(),
+        "end": end_day.isoformat(),
+        "login": login,
+        "upload": upload,
+        "download": download,
     }

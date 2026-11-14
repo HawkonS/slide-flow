@@ -1101,7 +1101,7 @@
           "user_center"
         ],
         "summary": "My Home Stats",
-        "description": "首页数据概览：仅统计当前用户可见范围；超管看到全部。",
+        "description": "首页工作台统计：平台总数、我的可见/管理/创建和任务汇总。",
         "operationId": "my_home_stats_api_me_home_stats_get",
         "responses": {
           "200": {
@@ -8158,7 +8158,7 @@
     "/api/tasks": {
       "get": {
         "summary": "List Tasks",
-        "description": "获取任务列表，支持 status / task_type / owner_id 过滤、关键词搜索及分页。\n\n权限规则：\n- 管理员：可传任意 owner_id（不传则返回所有用户的任务）\n- 非管理员：忽略 owner_id 参数，强制只看自己的任务\n\n分页：page 从 1 开始，page_size 默认 20、上限 100。\n搜索：下载任务搜索追踪码、放映名称和文件名；上传任务搜索系列、名称前缀、\n文件名、主体和标签。",
+        "description": "获取任务列表，支持 status / task_type / owner_id 过滤、关键词搜索及分页。\n\n权限规则：\n- 管理员：可传任意 owner_id（不传则返回所有用户的任务）\n- 非管理员：忽略 owner_id 参数，强制只看自己的任务\n\n分页：page 从 1 开始，page_size 默认 20、上限 100。\n搜索：下载任务搜索追踪码、放映名称和文件名；上传任务搜索系列、名称前缀、\n文件名、主体和标签。\nunfinished=true 时只返回上传中、等待中、处理中或失败的任务。",
         "operationId": "list_tasks_api_tasks_get",
         "parameters": [
           {
@@ -8223,6 +8223,16 @@
                 }
               ],
               "title": "Search"
+            }
+          },
+          {
+            "name": "unfinished",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Unfinished"
             }
           },
           {
@@ -10080,6 +10090,52 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Restore Duplicate Ignore Api Resources Duplicates Ignores  Ignore Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/me/activity": {
+      "get": {
+        "tags": [
+          "user_center"
+        ],
+        "summary": "My Activity",
+        "description": "最近 N 天的登录/上传/下载活跃度（按完成日聚合）。",
+        "operationId": "my_activity_api_me_activity_get",
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 365,
+              "title": "Days"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response My Activity Api Me Activity Get"
                 }
               }
             }

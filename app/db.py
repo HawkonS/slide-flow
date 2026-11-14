@@ -18,7 +18,7 @@ from app.config import (
 from app.core.bootstrap import prepare_initial_admin
 from app.core.fonts import normalize_font_name
 
-DB_SCHEMA_VERSION = 31
+DB_SCHEMA_VERSION = 32
 
 
 def is_sqlite_busy_error(exc: BaseException) -> bool:
@@ -798,6 +798,17 @@ def init_db() -> None:
                 value TEXT NOT NULL,
                 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime'))
             );
+
+            -- 成功登录事件用于首页活跃度热力图；失败尝试仍只进限流表。
+            CREATE TABLE IF NOT EXISTS user_login_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                occurred_at TEXT NOT NULL,
+                method TEXT NOT NULL DEFAULT 'password'
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_user_login_events_user_time
+                ON user_login_events(user_id, occurred_at);
 
             -- 持久化登录失败计数，确保多 Gunicorn worker 共享限流状态。
             CREATE TABLE IF NOT EXISTS auth_login_attempts (

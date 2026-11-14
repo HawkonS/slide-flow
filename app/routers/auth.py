@@ -15,6 +15,7 @@ from app.core.permissions import can_view_show, require_user
 from app.core.security import create_session_token, hash_password, password_policy_error, verify_password
 from app.core.user_profiles import username_lookup_key
 from app.db import now_iso
+from app.services.activity import record_login_event
 from app.routers.dependencies import (
     ChangePasswordPayload,
     InitialSetupPayload,
@@ -300,6 +301,7 @@ def login(
         "UPDATE users SET last_login_at = ? WHERE id = ?",
         (login_at, int(user["id"])),
     )
+    record_login_event(db, int(user["id"]), "password")
     db.commit()
     user = db.execute("SELECT * FROM users WHERE id = ?", (int(user["id"]),)).fetchone()
     token = create_session_token(
