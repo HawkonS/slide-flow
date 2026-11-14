@@ -26,8 +26,9 @@ async function handle(req, res) {
     if (p === '/api/config') return json({ site_name: 'Slide Flow', resource_status_options: ['active'] });
     if (p === '/api/version') return json({ commit: 'review', updated_at: stamp });
     if (p === '/api/user/preferences') return json({ preferences: {} });
-    if (p === '/api/me/home/stats') return json({ resources: { total: 12, mine: 6 }, shows: { total: 4, mine: 2 }, templates: { total: 6 }, fonts: { total: 8 } });
+    if (p === '/api/me/home/stats') return json({ resources: { total: 12, mine: 6, managed: 4, visible: 10 }, shows: { total: 4, mine: 2, managed: 3, visible: 4 }, standard_shows: 2, templates: { total: 6 }, fonts: { total: 8 }, tasks: { total: 2, upload: 1, download: 1, unfinished: 2, failed: 0 } });
     if (p === '/api/me/pins') return json({ resources: [resource], shows: [show] });
+    if (p === '/api/me/activity') return json({ start: '2025-11-16', end: '2026-11-15', login: [{ date: '2026-11-15', count: 2 }], upload: [], download: [] });
     if (p === '/api/shows') return json(list([show]));
     if (p === '/api/shows/1' && req.method === 'DELETE') { await new Promise(r => setTimeout(r, deletionDelay)); return json({ ok: true }); }
     if (p === '/api/shows/1') return json({ show });
@@ -519,6 +520,33 @@ for (const entry of ['detail', 'list']) {
     await page.getByText(/^3 \/ \d+$/).waitFor();
   });
 }
+
+test('home exposes upload and download task entries', async t => {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, serviceWorkers: 'block' });
+  t.after(() => context.close());
+  const page = await context.newPage();
+  page.setDefaultTimeout(5000);
+  await page.route('**/api/tasks*', route => {
+    const params = new URL(route.request().url()).searchParams;
+    return route.fulfill({ json: { items: [
+      { id: 11, task_type: 'download', status: 'processing', created_at: stamp, progress: 2, total: 5, params: { show_name: '下载示例' } },
+      { id: 12, task_type: 'batch_split_import', status: 'processing', created_at: stamp, progress: 2, total: 5, params: { series: '上传示例' } },
+    ], total: 2, page: 1, page_size: 4 } });
+  });
+  await page.goto(origin + '/home');
+  await page.getByRole('heading', { name: '任务', exact: true }).waitFor();
+  await page.getByText(/2\s*个未完成/).waitFor();
+  await page.getByText(/下载示例/).waitFor();
+  const homeFits = await page.evaluate(() => {
+    const list = document.querySelector('[data-list-scroll="results"]');
+    return list ? list.scrollHeight <= list.clientHeight + 1 : false;
+  });
+  assert.equal(homeFits, true, 'home should fit one viewport');
+  const uploadTab = page.getByRole('button', { name: '上传', exact: true }).last();
+  assert.ok(uploadTab, 'task card should expose upload tab');
+  await uploadTab.click();
+  await page.getByText(/上传示例/).waitFor();
+});
 
 for (const kind of ['resource', 'show']) {
   test(`pinned ${kind} details return to the scrolled home page`, { timeout: 20_000 }, async t => {
