@@ -144,6 +144,7 @@ def api_config(
     resource_defaults = tag_defaults["resource_list"]
     return {
         "site_name": settings.site_name,
+        "site_description": settings.site_description,
         "logo_svg_path": logo_url,
         "tag_defaults": tag_defaults,
         "default_filters": {

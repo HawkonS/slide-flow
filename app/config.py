@@ -42,6 +42,7 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
         "label": "服务器配置",
         "items": [
             {"key": "site.name", "label": "站点名称", "default": "页流幻灯片管理平台", "type": "str", "hot_reload": True, "desc": "前端页面标题与后端服务名"},
+            {"key": "site.description", "label": "站点描述（分享预览）", "default": "企业级演示文稿资源管理平台，助力团队高效协作与内容分发", "type": "str", "hot_reload": False, "desc": "登录页和分享链接预览显示的站点简介；修改后需重启服务"},
             {"key": "server.port", "label": "后端服务端口", "default": "8088", "type": "int", "hot_reload": False, "desc": "主 API 服务端口，修改后需重启"},
             {"key": "server.web_port", "label": "前端服务端口", "default": "5173", "type": "int", "hot_reload": False, "desc": "前端开发端口，仅 --dev 开发模式启动 Vite 时生效；生产模式前端由后端静态托管，访问入口为 server.port"},
             {"key": "server.workers", "label": "工作进程数", "default": "4", "type": "int", "hot_reload": False, "desc": "Gunicorn/Uvicorn ASGI worker 数量；任务事件通过 SQLite 跨进程分发"},
@@ -313,6 +314,7 @@ def ensure_properties_file(path: Path = PROPERTIES_FILE) -> bool:
 # 配置项 key -> Settings 属性名
 _PROP_TO_ATTR: dict[str, str] = {
     "site.name": "site_name",
+    "site.description": "site_description",
     "server.port": "port",
     "server.web_port": "web_port",
     "server.workers": "workers",
@@ -396,6 +398,7 @@ class Settings:
 
     # 基础配置
     site_name: str = DEFAULT_PROPERTIES["site.name"]
+    site_description: str = DEFAULT_PROPERTIES["site.description"]
     port: int = int(DEFAULT_PROPERTIES["server.port"])
     web_port: int = int(DEFAULT_PROPERTIES["server.web_port"])
     workers: int = int(DEFAULT_PROPERTIES["server.workers"])
@@ -625,6 +628,7 @@ def load_settings() -> Settings:
 
     # 基础配置
     site_name = get_value("site.name")
+    site_description = get_value("site.description")
     port = int(get_value("server.port"))
     web_port = int(get_value("server.web_port"))
     workers = int(get_value("server.workers"))
@@ -719,6 +723,7 @@ def load_settings() -> Settings:
         render_dpi=int(get_value("render.dpi")),
         render_wps_batch_size=int(get_value("render.wps_batch_size")),
         site_name=site_name,
+        site_description=site_description,
         port=port,
         web_port=web_port,
         workers=workers,

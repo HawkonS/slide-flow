@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from html import escape
 import os
 import re
 from pathlib import Path
@@ -38,14 +39,52 @@ class _StaticFilesWithHashedCache(StaticFiles):
 SPA_INDEX = settings.static_dir / "dist" / "index.html"
 
 
-def _serve_spa() -> FileResponse:
+def _spa_meta(markup: str, site_name: str, site_description: str) -> str:
+    """Replace the public shell metadata without trusting configured text."""
+    name = escape(site_name, quote=True)
+    description = escape(site_description, quote=True)
+    markup = re.sub(
+        r"<title>.*?</title>",
+        f"<title>{name}</title>",
+        markup,
+        count=1,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    tags = {
+        "name:description": description,
+        "property:og:title": name,
+        "property:og:description": description,
+        "property:og:site_name": name,
+    }
+    additions: list[str] = []
+    for selector, value in tags.items():
+        attr, key = selector.split(":", 1)
+        pattern = re.compile(
+            r"(<meta\s+[^>]*" + re.escape(attr) + r"=[\"']" + re.escape(key) + r"[\"'][^>]*content=[\"'])[^\"']*",
+            re.IGNORECASE,
+        )
+        if pattern.search(markup):
+            markup = pattern.sub(lambda match: match.group(1) + value, markup, count=1)
+        else:
+            additions.append(f'<meta {attr}="{key}" content="{value}" />')
+    if additions:
+        markup = markup.replace("</head>", "\n".join(additions) + "\n</head>", 1)
+    return markup
+
+
+def _serve_spa() -> HTMLResponse:
     if not SPA_INDEX.exists():
         raise HTTPException(
             503,
             "前端尚未构建，请在 web/ 下执行 `npm install && npm run build`",
         )
-    # index.html 文件名不带 hash，必须每次协商校验，避免浏览器缓存旧入口
-    return FileResponse(SPA_INDEX, headers={
+    # Serve the shell with the configured public metadata so link previews do
+    # not fall back to the login page's visible copy.  index.html must still
+    # revalidate because its asset references change between builds.
+    site_name = getattr(settings, "site_name", "SlideFlow")
+    site_description = getattr(settings, "site_description", "")
+    markup = _spa_meta(SPA_INDEX.read_text(encoding="utf-8"), site_name, site_description)
+    return HTMLResponse(markup, headers={
         "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff",
     })
 

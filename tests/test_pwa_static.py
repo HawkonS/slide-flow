@@ -20,12 +20,17 @@ class PwaStaticTests(unittest.TestCase):
         self.dist = self.root / "dist"
         (self.dist / "assets").mkdir(parents=True)
         (self.dist / "pwa").mkdir()
-        (self.dist / "index.html").write_text("<!doctype html><title>Shell</title>")
+        (self.dist / "index.html").write_text(
+            "<!doctype html><html><head><title>Shell</title>"
+            '<meta name="description" content="默认描述" />'
+            '<meta property="og:title" content="默认标题" />'
+            "</head><body></body></html>"
+        )
         (self.dist / "sw.js").write_text("self.addEventListener('install', () => {});")
         (self.dist / "manifest.webmanifest").write_text('{"start_url":"/manage/offline-cache"}')
         (self.dist / "assets/main-12345678.js").write_text("export const value = 1;")
         (self.dist / "pwa/icon.svg").write_text('<svg xmlns="http://www.w3.org/2000/svg"/>')
-        self.settings_patch = patch.object(static, "settings", SimpleNamespace(static_dir=self.root))
+        self.settings_patch = patch.object(static, "settings", SimpleNamespace(static_dir=self.root, site_name="Shell", site_description="默认描述"))
         self.index_patch = patch.object(static, "SPA_INDEX", self.dist / "index.html")
         self.settings_patch.start()
         self.index_patch.start()
@@ -86,6 +91,18 @@ class PwaStaticTests(unittest.TestCase):
                 self.assertIn("<title>Shell", response.text)
                 self.assertEqual(response.headers["cache-control"], "no-cache")
                 self.assertNotIn("set-cookie", response.headers)
+
+    def test_spa_shell_uses_configured_site_metadata(self):
+        with patch.object(static, "settings", SimpleNamespace(
+            static_dir=self.root, site_name="演示站点", site_description="适合分享的自定义描述",
+        )):
+            response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("<title>演示站点</title>", response.text)
+        self.assertIn('<meta name="description" content="适合分享的自定义描述"', response.text)
+        self.assertIn('<meta property="og:title" content="演示站点"', response.text)
+        self.assertIn('<meta property="og:description" content="适合分享的自定义描述"', response.text)
+        self.assertIn('<meta property="og:site_name" content="演示站点"', response.text)
 
     def test_dist_boundary_rejects_traversal_and_symlinks(self):
         secret = self.root / "private.txt"
