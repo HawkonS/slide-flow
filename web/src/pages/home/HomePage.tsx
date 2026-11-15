@@ -180,7 +180,7 @@ export function HomePage() {
         </div>
       </div>
 
-      <div className="grid min-h-0 shrink-0 gap-4 lg:grid-cols-[minmax(0,1.65fr)_minmax(290px,0.82fr)]">
+      <div className="grid min-h-0 shrink-0 gap-4 lg:h-[312px] lg:grid-cols-[minmax(0,1.65fr)_minmax(290px,0.82fr)]">
         <HomeActivity />
         {user?.id ? <HomeTaskCard userId={user.id} unfinished={tasks.unfinished} failed={tasks.failed} /> : <div className="rounded-xl border bg-card" />}
       </div>

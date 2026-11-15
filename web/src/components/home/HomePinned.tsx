@@ -32,13 +32,15 @@ function PinnedThumb({
   src,
   name,
   onClick,
+  className = "h-14 w-24",
 }: {
   src: string | null;
   name: string;
   onClick: () => void;
+  className?: string;
 }) {
   return (
-    <button type="button" onClick={onClick} className="group relative block h-14 w-24 shrink-0 overflow-hidden rounded-md bg-muted text-left">
+    <button type="button" aria-label={name} onClick={onClick} className={`group relative block shrink-0 overflow-hidden rounded-md bg-muted text-left ${className}`}>
       {src ? (
         <img src={src} alt={name} className="h-full w-full object-cover" loading="lazy" />
       ) : (
@@ -71,39 +73,39 @@ export function HomePinned({ shows, resources, loading, error, onOpenShow, onOpe
 
   return (
     <>
-      <article className="flex min-h-0 flex-col rounded-xl border bg-card shadow-sm">
+      <article className="flex min-h-0 flex-col rounded-xl border bg-card shadow-sm lg:flex-1">
         <div className="flex h-[50px] shrink-0 items-center justify-between gap-3 border-b px-5">
           <h2 className="text-sm font-semibold tracking-tight">我的置顶</h2>
           <span className="text-[10px] text-muted-foreground">共 {total} 项</span>
         </div>
 
         {loading ? (
-          <div className="flex min-h-[120px] items-center justify-center text-sm text-muted-foreground">加载中…</div>
+          <div className="flex min-h-[120px] flex-1 items-center justify-center text-sm text-muted-foreground">加载中…</div>
         ) : error ? (
-          <div className="flex min-h-[120px] flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
+          <div className="flex min-h-[120px] flex-1 flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
             <Pin className="h-4 w-4" />
             暂时无法加载置顶内容
           </div>
         ) : total === 0 ? (
-          <div className="flex min-h-[120px] flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
+          <div className="flex min-h-[120px] flex-1 flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
             <Pin className="h-4 w-4" />
             还没有置顶内容
           </div>
         ) : (
-          <div className="divide-y">
-            <div className="flex items-center gap-3 px-5 py-2">
-              <div className="flex min-w-0 flex-1 gap-2 overflow-hidden">
+          <div className="grid min-h-0 flex-none grid-rows-2 divide-y lg:flex-1">
+            <div className="flex min-h-0 flex-1 items-center gap-3 px-5 py-2">
+              <div className="flex h-full min-h-0 min-w-0 flex-1 items-center gap-2 overflow-hidden">
                 {allShows.slice(0, 5).map((show) => (
-                  <PinnedThumb key={show.id} src={pinPreview(show)} name={show.name} onClick={() => onOpenShow(show)} />
+                  <PinnedThumb key={show.id} src={pinPreview(show)} name={show.name} onClick={() => onOpenShow(show)} className="aspect-video h-16 w-28 lg:h-full lg:max-h-[160px] lg:w-auto" />
                 ))}
                 {allShows.length === 0 && <span className="text-[10px] text-muted-foreground">暂无置顶放映</span>}
               </div>
               <PinAction label="放映素材" onClick={() => setPinType("shows")} />
             </div>
-            <div className="flex items-center gap-3 px-5 py-2">
-              <div className="flex min-w-0 flex-1 gap-2 overflow-hidden">
+            <div className="flex min-h-0 flex-1 items-center gap-3 px-5 py-2">
+              <div className="flex h-full min-h-0 min-w-0 flex-1 items-center gap-2 overflow-hidden">
                 {allResources.slice(0, 5).map((resource) => (
-                  <PinnedThumb key={resource.id} src={resource.current.preview_url} name={resource.name} onClick={() => onOpenResource(resource)} />
+                  <PinnedThumb key={resource.id} src={resource.current.preview_url} name={resource.name} onClick={() => onOpenResource(resource)} className="aspect-video h-16 w-28 lg:h-full lg:max-h-[160px] lg:w-auto" />
                 ))}
                 {allResources.length === 0 && <span className="text-[10px] text-muted-foreground">暂无置顶单页素材</span>}
               </div>

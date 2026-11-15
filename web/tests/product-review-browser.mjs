@@ -558,7 +558,7 @@ for (const kind of ['resource', 'show']) {
       shows: [show], resources: [{ ...resource, detail_token: token ?? resource.detail_token }],
     } }));
     await page.goto(origin + '/home');
-    await page.locator('article').getByText(kind === 'resource' ? resource.name : show.name, { exact: true }).click();
+    await page.locator('article').getByRole('button', { name: kind === 'resource' ? resource.name : show.name, exact: true }).click();
     await assertVersion(2);
     const scroll = await page.evaluate(() => history.state.usr.detailOrigin.scroll);
     assert.ok(scroll.results.top > 0 || scroll.app.top > 0, 'fixture must exercise home scrolling');
