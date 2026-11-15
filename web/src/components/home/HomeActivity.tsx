@@ -165,8 +165,8 @@ export function HomeActivity() {
 
       <div className="grid shrink-0 grid-cols-3">
         <div className="px-5 py-2.5"><span className="block text-[10px] text-muted-foreground">活跃天数</span><b className="mt-0.5 block text-xl font-semibold tabular-nums">{activeDays}</b></div>
-        <div className="border-l px-5 py-2.5"><span className="block text-[10px] text-muted-foreground">总次数</span><b className="mt-0.5 block text-xl font-semibold tabular-nums">{total}</b></div>
-        <div className="border-l px-5 py-2.5"><span className="block text-[10px] text-muted-foreground">最近活跃</span><b className="mt-0.5 block truncate text-xs font-medium">{latest ? formatDate(latest) : "暂无"}</b></div>
+        <div className="px-5 py-2.5"><span className="block text-[10px] text-muted-foreground">总次数</span><b className="mt-0.5 block text-xl font-semibold tabular-nums">{total}</b></div>
+        <div className="px-5 py-2.5"><span className="block text-[10px] text-muted-foreground">最近活跃</span><b className="mt-0.5 block truncate text-xs font-medium">{latest ? formatDate(latest) : "暂无"}</b></div>
       </div>
 
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t px-5 py-2 text-[10px] text-muted-foreground">

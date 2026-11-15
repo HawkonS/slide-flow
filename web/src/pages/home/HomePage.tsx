@@ -66,7 +66,7 @@ function MaterialCard({
         <span className={accent === "teal" ? "text-[36px] font-semibold leading-none tracking-[-0.04em] text-slate-900" : "text-[36px] font-semibold leading-none tracking-[-0.04em] text-slate-900"}>{value}</span>
         <span className="text-[10px] text-muted-foreground">{unit}</span>
       </div>
-      <div className="mt-auto grid grid-cols-3 gap-2 border-t pt-2">
+      <div className="mt-auto grid grid-cols-3 gap-2 pt-3">
         {counts.map((item) => (
           <div key={item.label} className="min-w-0">
             <span className="block truncate text-[10px] text-muted-foreground">{item.label}</span>
