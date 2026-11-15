@@ -20,7 +20,7 @@ from app.services.files import (
     asset_preview_url,
     _resource_file_abs,
 )
-from app.services.tagging import entity_tag_names, table_has_column
+from app.services.tagging import entity_tag_names, table_has_column, tag_relation_join
 from fastapi import HTTPException
 from pathlib import Path
 from typing import Any

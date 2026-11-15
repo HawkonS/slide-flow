@@ -17,6 +17,7 @@ from app.routers import tasks as tasks_router
 from app.routers import user_center
 from app.routers.dependencies import db_dep, db_read_dep
 from app.services.activity import record_login_event
+from app.services.resources import _serialize_resources_lite
 from app.services.tasks.retention import archive_old_tasks
 
 
@@ -214,6 +215,36 @@ class HomeWorkbenchTests(unittest.TestCase):
         self.assertEqual(listed, [])
         activity = self.client.get("/api/me/activity", params={"days": 730}).json()
         self.assertEqual(activity["download"], [{"date": "2025-01-01", "count": 1}])
+
+    def test_bulk_resource_serialization_supports_non_admins(self):
+        timestamp = now_iso()
+        admin_id = int(
+            self.db.execute(
+                "SELECT id FROM users WHERE role = 'system_admin' ORDER BY id LIMIT 1"
+            ).fetchone()["id"]
+        )
+        resource_id = int(
+            self.db.execute(
+                """INSERT INTO resources
+                   (name, owner_id, visibility_scope, management_scope, secrecy_level,
+                    current_version, created_at, updated_at)
+                   VALUES ('公开素材', ?, 'public', 'private', '', 1, ?, ?)""",
+                (admin_id, timestamp, timestamp),
+            ).lastrowid
+        )
+        self.db.execute(
+            """INSERT INTO resource_versions
+               (resource_id, version_no, ppt_path, png_path, font_names, missing_fonts,
+                common_remark_html, change_note, created_by, created_at)
+               VALUES (?, 1, '', NULL, '[]', '[]', '', '', ?, ?)""",
+            (resource_id, self.user_id, timestamp),
+        )
+        self.db.commit()
+        row = self.db.execute("SELECT * FROM resources WHERE id = ?", (resource_id,)).fetchone()
+        payload = _serialize_resources_lite(self.db, [row], self.user)
+        self.assertEqual(payload[0]["name"], "公开素材")
+        self.assertFalse(payload[0]["can_manage"])
+        self.assertFalse(payload[0]["is_pinned"])
 
     def test_task_type_filter_rejects_unknown_values(self):
         response = self.client.get("/api/tasks", params={"task_types": "unknown"})
