@@ -202,7 +202,7 @@ def create_show_share_link(
     with db:
         db.execute("BEGIN IMMEDIATE")
         row = _show_row(db, show_id)
-        if not can_view_show(db, row, user):
+        if not can_manage_show(db, row, user):
             raise _share_not_found()
         pages = db.execute(
             """

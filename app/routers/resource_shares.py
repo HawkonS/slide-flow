@@ -119,8 +119,8 @@ def create_share_link(
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
     row = _resource_row(db, resource_id)
-    if not can_view_resource(db, row, user):
-        raise HTTPException(403, "无权查看该素材")
+    if not can_manage_resource(db, row, user):
+        raise HTTPException(403, "无权分享该素材")
     token = secrets.token_urlsafe(32)
     created_at = now_iso()
     expires_at = (datetime.utcnow() + timedelta(days=payload.expires_in_days)).isoformat(timespec="seconds") + "Z"
