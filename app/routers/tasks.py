@@ -97,6 +97,7 @@ router = APIRouter()
 def list_tasks(
     status: str | None = Query(None),
     task_type: str | None = Query(None),
+    task_types: str | None = Query(None),
     owner_id: int | None = Query(None),
     search: str | None = Query(None),
     unfinished: bool = Query(False),
@@ -115,6 +116,7 @@ def list_tasks(
     搜索：下载任务搜索追踪码、放映名称和文件名；上传任务搜索系列、名称前缀、
     文件名、主体和标签。
     unfinished=true 时只返回上传中、等待中、处理中或失败的任务。
+    task_types 支持逗号分隔的多个任务类型，用于首页等只关心部分任务的场景。
     """
     where_clauses: list[str] = []
     params_list: list[Any] = []
@@ -135,6 +137,14 @@ def list_tasks(
     if task_type is not None:
         where_clauses.append("task_type = ?")
         params_list.append(task_type)
+    if task_types:
+        values = [value.strip() for value in task_types.split(",") if value.strip()]
+        allowed_types = {"batch_split_import", "download", "ai_tagging"}
+        values = [value for value in values if value in allowed_types]
+        if values:
+            placeholders = ",".join("?" for _ in values)
+            where_clauses.append(f"task_type IN ({placeholders})")
+            params_list.extend(values)
 
     # 任务参数保存在 JSON 中，按任务类型搜索用户实际可见的业务字段。
     search_kw = (search or "").strip()
@@ -532,6 +542,33 @@ async def create_resource_import_task(
             raise
         logger.exception("Resource import upload failed")
         raise HTTPException(400, "PPT 上传失败，请检查文件后重试") from exc
+
+
+@router.post("/api/tasks/{task_id}/dismiss")
+def dismiss_task(
+    task_id: int,
+    user: sqlite3.Row = Depends(require_user),
+    db: sqlite3.Connection = Depends(db_dep),
+) -> dict[str, Any]:
+    """Dismiss any failed task from the owner's workbench."""
+    row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "任务不存在")
+    if int(row["owner_id"]) != int(user["id"]) and not is_admin(user):
+        raise HTTPException(403, "无权处理该任务")
+    if row["status"] != "failed":
+        raise HTTPException(400, "只有失败的任务可以忽略")
+
+    message = "已忽略模型识别错误" if row["task_type"] == "ai_tagging" else "已忽略任务错误"
+    db.execute(
+        "UPDATE tasks SET status = 'cancelled',"
+        " message = ?,"
+        " updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
+        " WHERE id = ?",
+        (message, task_id),
+    )
+    db.commit()
+    return {"task_id": task_id, "status": "cancelled"}
 
 
 @router.post("/api/tasks/{task_id}/cancel")

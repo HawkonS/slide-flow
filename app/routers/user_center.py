@@ -383,8 +383,11 @@ def my_home_stats(
     )
     tasks_upload = _own_task_count(" AND task_type = 'batch_split_import'")
     tasks_download = _own_task_count(" AND task_type = 'download'")
-    tasks_unfinished = _own_task_count(" AND status NOT IN ('completed', 'cancelled')")
-    tasks_failed = _own_task_count(" AND status = 'failed'")
+    home_task_types = "task_type IN ('batch_split_import', 'download')"
+    tasks_unfinished = _own_task_count(
+        f" AND status NOT IN ('completed', 'cancelled') AND {home_task_types}"
+    )
+    tasks_failed = _own_task_count(f" AND status = 'failed' AND {home_task_types}")
 
     return {
         "resources": {

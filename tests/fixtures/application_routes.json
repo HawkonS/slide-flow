@@ -1410,6 +1410,14 @@
     ]
   },
   {
+    "path": "/api/tasks/{task_id}/dismiss",
+    "name": "dismiss_task",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
     "path": "/api/tasks/{task_id}/cancel",
     "name": "cancel_task",
     "kind": "http",

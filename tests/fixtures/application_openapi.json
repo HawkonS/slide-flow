@@ -8158,7 +8158,7 @@
     "/api/tasks": {
       "get": {
         "summary": "List Tasks",
-        "description": "获取任务列表，支持 status / task_type / owner_id 过滤、关键词搜索及分页。\n\n权限规则：\n- 管理员：可传任意 owner_id（不传则返回所有用户的任务）\n- 非管理员：忽略 owner_id 参数，强制只看自己的任务\n\n分页：page 从 1 开始，page_size 默认 20、上限 100。\n搜索：下载任务搜索追踪码、放映名称和文件名；上传任务搜索系列、名称前缀、\n文件名、主体和标签。\nunfinished=true 时只返回上传中、等待中、处理中或失败的任务。",
+        "description": "获取任务列表，支持 status / task_type / owner_id 过滤、关键词搜索及分页。\n\n权限规则：\n- 管理员：可传任意 owner_id（不传则返回所有用户的任务）\n- 非管理员：忽略 owner_id 参数，强制只看自己的任务\n\n分页：page 从 1 开始，page_size 默认 20、上限 100。\n搜索：下载任务搜索追踪码、放映名称和文件名；上传任务搜索系列、名称前缀、\n文件名、主体和标签。\nunfinished=true 时只返回上传中、等待中、处理中或失败的任务。\ntask_types 支持逗号分隔的多个任务类型，用于首页等只关心部分任务的场景。",
         "operationId": "list_tasks_api_tasks_get",
         "parameters": [
           {
@@ -8191,6 +8191,22 @@
                 }
               ],
               "title": "Task Type"
+            }
+          },
+          {
+            "name": "task_types",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Task Types"
             }
           },
           {
@@ -10136,6 +10152,48 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response My Activity Api Me Activity Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{task_id}/dismiss": {
+      "post": {
+        "summary": "Dismiss Task",
+        "description": "Dismiss any failed task from the owner's workbench.",
+        "operationId": "dismiss_task_api_tasks__task_id__dismiss_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Dismiss Task Api Tasks  Task Id  Dismiss Post"
                 }
               }
             }
