@@ -64,7 +64,11 @@ function computeGrid(W: number, H: number, titleH: number, columnStep: number, m
   const gapY = computeGapY(W);
   const cardW = (W - gapX * (cols - 1)) / cols;
   const cardH = (cardW * 9) / 16 + titleH;
-  const rows = clamp(Math.floor((H + gapY) / (cardH + gapY)), MIN_ROWS, MAX_ROWS);
+  // Keep the smallest phones at a six-card page: their header/filter stack can
+  // resize after fonts settle, and an 8-card first page would immediately be
+  // replaced by a second request.
+  const maxRows = W < 360 ? 2 : MAX_ROWS;
+  const rows = clamp(Math.floor((H + gapY) / (cardH + gapY)), MIN_ROWS, maxRows);
   return { cols, rows, gapX, gapY };
 }
 

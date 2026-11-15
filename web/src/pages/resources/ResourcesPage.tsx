@@ -388,32 +388,35 @@ export function ResourcesPage() {
         title="单页素材"
         description="按主体、标签和状态快速查找并管理单页素材。"
         count={!queryReady || isLoading ? "加载中…" : `共 ${total} 条`}
-        actions={<ViewModeSwitch value={viewMode} onChange={setViewMode} />}
+        actions={<div className="hidden sm:flex"><ViewModeSwitch value={viewMode} onChange={setViewMode} /></div>}
       />
 
       <ResourceFilters
         filters={filters}
         subjects={subjects}
         tags={tags}
+        viewSwitch={<ViewModeSwitch value={viewMode} onChange={setViewMode} />}
         actions={
           user ? (
             <>
               <Button
                 size="sm"
+                aria-label="导入素材"
                 onClick={() => navigate("/resources/import")}
-                className="h-8 gap-1.5 px-3 text-sm"
+                className="h-8 gap-1.5 px-2.5 text-sm sm:px-3"
               >
                 <Upload className="h-3.5 w-3.5" />
-                导入素材
+                <span className="hidden min-[360px]:inline">导入素材</span>
               </Button>
               <Button
                 size="sm"
                 variant="outline"
+                aria-label="查重"
                 onClick={() => navigate("/resources/duplicates")}
-                className="h-8 gap-1.5 px-3 text-sm"
+                className="h-8 gap-1.5 px-2.5 text-sm sm:px-3"
               >
                 <Copy className="h-3.5 w-3.5" />
-                查重
+                <span className="hidden min-[360px]:inline">查重</span>
               </Button>
             </>
           ) : null

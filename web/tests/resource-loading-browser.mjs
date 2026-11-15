@@ -109,7 +109,11 @@ for (const width of [320, 390, 768, 1024, 1440]) {
     const configGate = gate();
     const { page, requests, chunks } = await fixture(t, { width, configGate });
     await page.goto(origin + '/resources');
-    await page.getByPlaceholder('搜索标题、关键词').waitFor();
+    if (width < 640) {
+      await page.getByRole('button', { name: /^筛选/ }).waitFor();
+    } else {
+      await page.getByPlaceholder('搜索标题、关键词').waitFor();
+    }
     await page.getByRole('status', { name: '正在加载列表' }).waitFor();
     assert.equal(requests.filter(r => r.p === '/api/resources').length, 0);
     assert.equal(await page.getByText('没有匹配的资源', { exact: true }).count(), 0);
@@ -141,7 +145,7 @@ test('invalid URL state still waits for defaults; explicit list state does not',
   const configGate = gate();
   const { page, requests } = await fixture(t, { configGate });
   await page.goto(origin + '/resources?s=malformed');
-  await page.getByPlaceholder('搜索标题、关键词').waitFor();
+  await page.getByRole('button', { name: /^筛选/ }).waitFor();
   assert.equal(requests.filter(r => r.p === '/api/resources').length, 0);
   await page.goto(origin + '/resources?s=' + encode({ ...explicitState, view: 'list' }));
   await page.getByRole('button', { name: /更多操作$/ }).waitFor();
@@ -491,12 +495,15 @@ test('changing filters cancels the previous request and ignores its late result'
   } });
   await page.goto(origin + '/resources');
   await page.getByRole('button', { name: /更多操作$/ }).waitFor();
+  await page.getByRole('button', { name: /^筛选/ }).click();
+  const dialog = page.getByRole('dialog');
   const pending = page.waitForRequest(request => new URL(request.url()).searchParams.get('search') === '旧筛选');
-  await page.getByPlaceholder('搜索标题、关键词').fill('旧筛选');
+  await dialog.getByPlaceholder('搜索标题、关键词').fill('旧筛选');
   await pending;
   const cancelled = page.waitForEvent('requestfailed', { predicate: request => new URL(request.url()).searchParams.get('search') === '旧筛选' });
-  await page.getByPlaceholder('搜索标题、关键词').fill('新筛选');
+  await dialog.getByPlaceholder('搜索标题、关键词').fill('新筛选');
   await cancelled;
+  await dialog.getByRole('button', { name: '查看结果', exact: true }).click();
   await page.getByText('新筛选', { exact: true }).waitFor();
   stalled.release();
   await page.waitForTimeout(200);
