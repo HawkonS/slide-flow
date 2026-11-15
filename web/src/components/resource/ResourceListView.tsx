@@ -1,4 +1,10 @@
-import { Download, ImageOff, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
+import * as React from "react";
+import { Download, ImageOff, MoreHorizontal, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+
+import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 
 import { TableTags, TableText } from "@/components/common/TableContent";
 import { Badge } from "@/components/ui/badge";
@@ -28,6 +34,28 @@ export function ResourceListView({
   resources, selectedIds, allPageSelected, somePageSelected, onToggle, onTogglePage,
   onOpen, onPreview, onDownload, onEdit, onDelete,
 }: ResourceListViewProps) {
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
+
+  const togglePin = React.useCallback(async (resource: Resource) => {
+    try {
+      if (resource.is_pinned) {
+        await api(`/api/me/pins/resources/${resource.id}`, { method: "DELETE" });
+        toast.success("已取消置顶");
+      } else {
+        await api(`/api/me/pins/resources/${resource.id}`, { method: "POST" });
+        toast.success("已置顶到首页");
+      }
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["resources"] }),
+        queryClient.invalidateQueries({ queryKey: ["home", "pins"] }),
+        queryClient.invalidateQueries({ queryKey: ["home", "stats"] }),
+      ]);
+    } catch (error) {
+      toast.error((error as Error)?.message || "操作失败");
+    }
+  }, [queryClient]);
+
   return (
     <div className="surface overflow-hidden">
       <Table className="min-w-[900px]">
@@ -86,12 +114,13 @@ export function ResourceListView({
                 <TableCell><Badge variant="outline" className="max-w-full text-[11px]"><TableText text={resource.status} /></Badge></TableCell>
                 <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{new Date(resource.updated_at).toLocaleDateString("zh-CN")}</TableCell>
                 <TableCell>
-                  {resource.can_manage && <DropdownMenu>
+                  {(resource.can_manage || user) && <DropdownMenu>
                     <DropdownMenuTrigger asChild><button type="button" aria-label={`${resource.name} 更多操作`} className="rounded p-1 hover:bg-accent"><MoreHorizontal className="h-4 w-4" /></button></DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      <DropdownMenuItem onSelect={() => window.setTimeout(() => onEdit(resource), 0)}><Pencil className="mr-2 h-4 w-4" />编辑</DropdownMenuItem>
-                      <DropdownMenuItem onSelect={() => window.setTimeout(() => onDownload(resource), 0)}><Download className="mr-2 h-4 w-4" />下载</DropdownMenuItem>
-                      <DropdownMenuItem onSelect={() => window.setTimeout(() => onDelete(resource), 0)} className="text-destructive focus:text-destructive"><Trash2 className="mr-2 h-4 w-4" />删除</DropdownMenuItem>
+                      {user && <DropdownMenuItem onSelect={() => void togglePin(resource)}>{resource.is_pinned ? <><PinOff className="mr-2 h-4 w-4" />取消置顶</> : <><Pin className="mr-2 h-4 w-4" />置顶首页</>}</DropdownMenuItem>}
+                      {resource.can_manage && <DropdownMenuItem onSelect={() => window.setTimeout(() => onEdit(resource), 0)}><Pencil className="mr-2 h-4 w-4" />编辑</DropdownMenuItem>}
+                      {resource.can_manage && <DropdownMenuItem onSelect={() => window.setTimeout(() => onDownload(resource), 0)}><Download className="mr-2 h-4 w-4" />下载</DropdownMenuItem>}
+                      {resource.can_manage && <DropdownMenuItem onSelect={() => window.setTimeout(() => onDelete(resource), 0)} className="text-destructive focus:text-destructive"><Trash2 className="mr-2 h-4 w-4" />删除</DropdownMenuItem>}
                     </DropdownMenuContent>
                   </DropdownMenu>}
                 </TableCell>

@@ -49,7 +49,7 @@ export function ResourceCard({
   const version = resource.current;
   const preview = version?.preview_url || null;
   const canManage = resource.can_manage;
-  const hasResourceActions = Boolean(onEdit || onDownload || onDelete);
+  const showMenu = Boolean(canManage || user);
 
   const [addOpen, setAddOpen] = React.useState(false);
 
@@ -158,7 +158,7 @@ export function ResourceCard({
           </div>
         )}
 
-        {(!hasResourceActions || canManage) && <div className="absolute right-2 top-2 opacity-100 transition">
+        {showMenu && <div className="absolute right-2 top-2 opacity-100 transition">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
@@ -186,10 +186,10 @@ export function ResourceCard({
                   <Trash2 className="mr-2 h-4 w-4" /> 删除
                 </DropdownMenuItem>
               )}
-              {!hasResourceActions && <DropdownMenuItem onSelect={() => onOpen?.(resource)}>
+              {!canManage && <DropdownMenuItem onSelect={() => onOpen?.(resource)}>
                 <Eye className="mr-2 h-4 w-4" /> 查看详情
               </DropdownMenuItem>}
-              {!hasResourceActions && user && (
+              {user && (
                 <DropdownMenuItem onSelect={() => handleTogglePin()}>
                   {resource.is_pinned ? (
                     <>
