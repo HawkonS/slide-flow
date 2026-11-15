@@ -22,10 +22,14 @@ async function verifiedResponse(file) {
         (file.url === '/index.html' && type !== 'text/html')) {
       throw new Error('Application file has an invalid content type');
     }
-    const bytes = await response.clone().arrayBuffer();
-    const digest = await crypto.subtle.digest('SHA-256', bytes);
-    const hash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
-    if (hash !== file.sha256) throw new Error('Application build changed during installation');
+    // index.html is rewritten by the server with runtime site metadata, so
+    // only immutable JS/CSS assets are pinned to the build hash.
+    if (file.sha256) {
+      const bytes = await response.clone().arrayBuffer();
+      const digest = await crypto.subtle.digest('SHA-256', bytes);
+      const hash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+      if (hash !== file.sha256) throw new Error('Application build changed during installation');
+    }
     // Preserve native response metadata (including HTTP decompression state).
     return response;
   } finally {

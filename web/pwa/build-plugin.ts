@@ -18,7 +18,16 @@ export function offlineShellPlugin(): Plugin {
         const files = new Map<string, string>();
         for (const output of Object.values(bundle)) {
           if (output.fileName === "index.html" || output.fileName.startsWith("assets/")) {
-            files.set(`/${output.fileName}`, sha256(output.type === "chunk" ? output.code : output.source));
+            // The server rewrites the title/description in index.html from
+            // runtime site settings, so the bytes served to the browser do
+            // not match the Vite bundle.  Cache the shell, but do not pin its
+            // hash; JS/CSS assets remain integrity-checked.
+            files.set(
+              `/${output.fileName}`,
+              output.fileName === "index.html"
+                ? ""
+                : sha256(output.type === "chunk" ? output.code : output.source),
+            );
           }
         }
         const visitPublic = (relative = "") => {
