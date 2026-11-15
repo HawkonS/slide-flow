@@ -306,9 +306,12 @@ def my_home_stats(
         *,
         tag_table: str | None = None,
         where_extra: str = "",
+        distinct_series: bool = False,
     ) -> int:
+        series_expr = "CASE WHEN t.series_id <> '' THEN t.series_id ELSE CAST(t.id AS TEXT) END"
+        count_expr = f"COUNT(DISTINCT {series_expr})" if distinct_series else "COUNT(*)"
         if system_admin:
-            sql = f"SELECT COUNT(*) FROM {table} t"
+            sql = f"SELECT {count_expr} FROM {table} t"
             if where_extra:
                 sql += f" WHERE {where_extra}"
             return int(db.execute(sql).fetchone()[0])
@@ -325,7 +328,7 @@ def my_home_stats(
             """
             params.append(user_id)
         sql = f"""
-            SELECT COUNT(*) FROM {table} t
+            SELECT {count_expr} FROM {table} t
             WHERE (
                 t.owner_id = ?
                 OR t.{scope_column} = 'public'
@@ -339,8 +342,10 @@ def my_home_stats(
             sql += f" AND ({where_extra})"
         return int(db.execute(sql, params).fetchone()[0])
 
-    def _mine_count(table: str, *, where_extra: str = "") -> int:
-        sql = f"SELECT COUNT(*) FROM {table} WHERE owner_id = ?"
+    def _mine_count(table: str, *, where_extra: str = "", distinct_series: bool = False) -> int:
+        series_expr = "CASE WHEN series_id <> '' THEN series_id ELSE CAST(id AS TEXT) END"
+        count_expr = f"COUNT(DISTINCT {series_expr})" if distinct_series else "COUNT(*)"
+        sql = f"SELECT {count_expr} FROM {table} WHERE owner_id = ?"
         if where_extra:
             sql += f" AND ({where_extra})"
         return int(db.execute(sql, (user_id,)).fetchone()[0])
@@ -356,17 +361,22 @@ def my_home_stats(
         tag_table="resource_management_tags", where_extra="t.deleted_at IS NULL",
     )
 
-    shows_total = int(db.execute("SELECT COUNT(*) FROM shows").fetchone()[0])
-    shows_mine = _mine_count("shows")
+    show_series = "CASE WHEN series_id <> '' THEN series_id ELSE CAST(id AS TEXT) END"
+    shows_total = int(db.execute(f"SELECT COUNT(DISTINCT {show_series}) FROM shows").fetchone()[0])
+    shows_mine = _mine_count("shows", distinct_series=True)
     shows_visible = _scope_count(
         "shows", "visibility_scope", "show_visibility", "show_id",
-        tag_table="show_visibility_tags",
+        tag_table="show_visibility_tags", distinct_series=True,
     )
     shows_managed = _scope_count(
         "shows", "management_scope", "show_management", "show_id",
-        tag_table="show_management_tags",
+        tag_table="show_management_tags", distinct_series=True,
     )
-    standard_shows = int(db.execute("SELECT COUNT(*) FROM shows WHERE is_standard = 1").fetchone()[0])
+    standard_shows = _scope_count(
+        "shows", "visibility_scope", "show_visibility", "show_id",
+        tag_table="show_visibility_tags", where_extra="t.is_standard = 1",
+        distinct_series=True,
+    )
 
     templates_total = int(db.execute("SELECT COUNT(*) FROM templates").fetchone()[0])
     fonts_total = int(db.execute("SELECT COUNT(*) FROM fonts").fetchone()[0])

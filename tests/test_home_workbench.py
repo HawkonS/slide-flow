@@ -136,6 +136,25 @@ class HomeWorkbenchTests(unittest.TestCase):
         self.assertEqual(row["status"], "cancelled")
         self.assertEqual(row["message"], "已忽略模型识别错误")
 
+    def test_stats_count_show_series_not_versions(self):
+        timestamp = now_iso()
+        for version in (1, 2):
+            self.db.execute(
+                """INSERT INTO shows
+                   (name, owner_id, visibility_scope, management_scope,
+                    is_standard, created_at, series_id, version_no, updated_at)
+                   VALUES ('重复版本', ?, 'public', 'public', 1, ?, 'series-one', ?, ?)""",
+                (self.user_id, timestamp, version, timestamp),
+            )
+        self.db.commit()
+
+        stats = self.client.get("/api/me/home/stats").json()
+        self.assertEqual(stats["shows"]["total"], 1)
+        self.assertEqual(stats["shows"]["mine"], 1)
+        self.assertEqual(stats["shows"]["visible"], 1)
+        self.assertEqual(stats["shows"]["managed"], 1)
+        self.assertEqual(stats["standard_shows"], 1)
+
     def test_failed_upload_or_download_task_can_be_dismissed(self):
         task_id = int(
             self.db.execute(
