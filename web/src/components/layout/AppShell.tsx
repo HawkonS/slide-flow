@@ -43,6 +43,14 @@ type NavItem = {
 /** 固定导航结构：标签和顺序由产品定义，不从配置文件读取。 */
 const NAV_SECTIONS: { title: string; items: NavItem[] }[] = [
   {
+    title: "标准",
+    items: [
+      { key: "standard-show", to: "/shows", label: "标准放映", icon: MonitorPlay },
+      { key: "standard-templates", to: "/templates", label: "标准模板", icon: LayoutTemplate },
+      { key: "standard-fonts", to: "/fonts", label: "标准字体", icon: Type },
+    ],
+  },
+  {
     title: "素材",
     items: [
       { key: "single-resources", to: "/resources", label: "单页素材", icon: FolderOpen },
@@ -50,17 +58,10 @@ const NAV_SECTIONS: { title: string; items: NavItem[] }[] = [
     ],
   },
   {
-    title: "模板",
-    items: [
-      { key: "standard-templates", to: "/templates", label: "标准模板", icon: LayoutTemplate },
-      { key: "standard-fonts", to: "/fonts", label: "标准字体", icon: Type },
-    ],
-  },
-  {
     title: "管理",
     items: [
-      { key: "shares", to: "/manage/shares", label: "分享管理", icon: Share2 },
       { key: "tasks", to: "/manage/tasks", label: "任务管理", icon: ListTodo },
+      { key: "shares", to: "/manage/shares", label: "分享管理", icon: Share2 },
       { key: "tags", to: "/manage/tags", label: "标签管理", icon: Tag },
     ],
   },
@@ -76,7 +77,6 @@ const NAV_SECTIONS: { title: string; items: NavItem[] }[] = [
 ];
 
 const HOME_ITEM: NavItem = { key: "home", to: "/home", label: "用户首页", icon: Home };
-const STANDARD_SHOW_ITEM: NavItem = { key: "standard-show", to: "/shows", label: "标准放映", icon: MonitorPlay };
 const OFFLINE_ITEM: NavItem = { key: "offline-cache", to: "/manage/offline-cache", label: "离线缓存", icon: MonitorPlay };
 
 // 运营管理员和系统管理员都可进行运营管理与用户管理；运行管理、配置管理、
@@ -149,9 +149,6 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       <div className="shrink-0 px-3 pt-3 pb-1">
         <div onClick={onNavigate}>
           <NavItemLink item={HOME_ITEM} active={navItemActive(HOME_ITEM, location.pathname, sectionKey)} />
-        </div>
-        <div className="mt-0.5" onClick={onNavigate}>
-          <NavItemLink item={STANDARD_SHOW_ITEM} active={navItemActive(STANDARD_SHOW_ITEM, location.pathname, sectionKey)} />
         </div>
       </div>
 
