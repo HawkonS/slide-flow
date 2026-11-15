@@ -129,31 +129,33 @@ export function HomeActivity() {
             <span>{formatDate(data?.start ?? isoDay(-364))}</span>
             <span>{formatDate(data?.end ?? isoDay(0))}</span>
           </div>
-          <div ref={heatmapRef} className="relative min-w-0 overflow-x-auto pb-0.5 pt-3">
-            <div className="relative flex min-w-[500px] gap-[2px]">
-              {Array.from({ length: columns }).map((_, column) => (
-                <div key={column} className="grid grid-rows-7 gap-[2px]">
-                  {Array.from({ length: 7 }).map((__, row) => {
-                    const index = column * 7 + row - leading;
-                    if (index < 0 || index >= dayCount) return <span key={row} className="h-[9px] w-[9px]" />;
-                    const day = addDays(start, index);
-                    const key = day.toISOString().slice(0, 10);
-                    const count = counts.get(key) ?? 0;
-                    const level = count === 0 ? 0 : Math.min(4, Math.ceil((count / max) * 4));
-                    return (
-                      <span
-                        key={row}
-                        title={`${key} · ${count} 次`}
-                        className="h-[9px] w-[9px] rounded-[2px]"
-                        style={{ backgroundColor: config.cells[level] }}
-                      />
-                    );
-                  })}
-                </div>
-              ))}
-              <div className="pointer-events-none absolute inset-x-0 top-0 h-3">
+          <div ref={heatmapRef} className="min-w-0 overflow-x-auto pb-0.5">
+            <div className="min-w-[500px]">
+              <div className="relative mb-1 h-3">
                 {monthLabels.map((item) => (
-                  <span key={`${item.label}-${item.column}`} className="absolute text-[8px] text-muted-foreground" style={{ left: `${item.column * 11}px` }}>{item.label}</span>
+                  <span key={`${item.label}-${item.column}`} className="absolute top-0 text-[8px] text-muted-foreground" style={{ left: `${item.column * 11}px` }}>{item.label}</span>
+                ))}
+              </div>
+              <div className="flex gap-[2px]">
+                {Array.from({ length: columns }).map((_, column) => (
+                  <div key={column} className="grid grid-rows-7 gap-[2px]">
+                    {Array.from({ length: 7 }).map((__, row) => {
+                      const index = column * 7 + row - leading;
+                      if (index < 0 || index >= dayCount) return <span key={row} className="h-[9px] w-[9px]" />;
+                      const day = addDays(start, index);
+                      const key = day.toISOString().slice(0, 10);
+                      const count = counts.get(key) ?? 0;
+                      const level = count === 0 ? 0 : Math.min(4, Math.ceil((count / max) * 4));
+                      return (
+                        <span
+                          key={row}
+                          title={`${key} · ${count} 次`}
+                          className="h-[9px] w-[9px] rounded-[2px]"
+                          style={{ backgroundColor: config.cells[level] }}
+                        />
+                      );
+                    })}
+                  </div>
                 ))}
               </div>
             </div>
