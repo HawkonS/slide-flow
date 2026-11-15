@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from app.config import settings
 from app.core.fonts import missing_fonts
-from app.core.permissions import can_manage_resource
+from app.core.permissions import can_manage_resource, is_system_admin
 from app.core.ppt import detect_ppt_fonts
 from app.core.sanitize import sanitize_html
 from app.db import known_font_aliases
@@ -325,6 +325,138 @@ def _serialize_resource_lite(db: sqlite3.Connection, row: sqlite3.Row, user: sql
     )
     return payload
 
+
+def _remark_has_text(content_html: str | None) -> bool:
+    html = content_html or ""
+    plain = _HTML_TAG_RE.sub("", html).replace("\xa0", " ").strip()
+    return bool(plain)
+
+
+def _serialize_resources_lite(
+    db: sqlite3.Connection,
+    rows: list[sqlite3.Row],
+    user: sqlite3.Row,
+) -> list[dict[str, Any]]:
+    """Serialize a resource page with bulk lookups instead of per-row N+1 queries."""
+    if not rows:
+        return []
+    resource_ids = [int(row["id"]) for row in rows]
+    placeholders = ",".join("?" for _ in resource_ids)
+    owner_ids = sorted({int(row["owner_id"]) for row in rows if row["owner_id"]})
+    owners: dict[int, sqlite3.Row] = {}
+    if owner_ids:
+        owner_placeholders = ",".join("?" for _ in owner_ids)
+        owners = {
+            int(row["id"]): row
+            for row in db.execute(
+                f"SELECT id, name, username FROM users WHERE id IN ({owner_placeholders})",
+                owner_ids,
+            ).fetchall()
+        }
+
+    versions_by_resource: dict[int, dict[int, sqlite3.Row]] = {}
+    version_counts: dict[int, int] = {resource_id: 0 for resource_id in resource_ids}
+    version_rows = db.execute(
+        f"""SELECT id, resource_id, version_no, png_path, deleted_at
+            FROM resource_versions WHERE resource_id IN ({placeholders})""",
+        resource_ids,
+    ).fetchall()
+    for version in version_rows:
+        resource_id = int(version["resource_id"])
+        if version["deleted_at"]:
+            continue
+        version_counts[resource_id] = version_counts.get(resource_id, 0) + 1
+        versions_by_resource.setdefault(resource_id, {})[int(version["version_no"])] = version
+
+    tags_by_resource: dict[int, list[str]] = {}
+    tag_rows = db.execute(
+        f"""SELECT rt.resource_id, t.name
+            FROM resource_tags rt JOIN tags t ON t.id = rt.tag_id
+            WHERE rt.resource_id IN ({placeholders})
+            ORDER BY rt.resource_id, rt.position, t.name""",
+        resource_ids,
+    ).fetchall()
+    for tag in tag_rows:
+        tags_by_resource.setdefault(int(tag["resource_id"]), []).append(str(tag["name"]))
+
+    remark_rows = db.execute(
+        f"""SELECT resource_id, content_html FROM personal_remarks
+            WHERE user_id = ? AND resource_id IN ({placeholders})""",
+        (int(user["id"]), *resource_ids),
+    ).fetchall()
+    remarked = {int(row["resource_id"]) for row in remark_rows if _remark_has_text(row["content_html"])}
+
+    pinned = {
+        int(row["resource_id"])
+        for row in db.execute(
+            f"""SELECT resource_id FROM user_pinned_resources
+                WHERE user_id = ? AND resource_id IN ({placeholders})""",
+            (int(user["id"]), *resource_ids),
+        ).fetchall()
+    }
+
+    can_manage_by_id: dict[int, bool] = {}
+    if is_system_admin(user):
+        can_manage_by_id = {resource_id: True for resource_id in resource_ids}
+    else:
+        user_id = int(user["id"])
+        managed = {
+            int(row["resource_id"])
+            for row in db.execute(
+                f"""SELECT resource_id FROM resource_management
+                    WHERE user_id = ? AND resource_id IN ({placeholders})""",
+                (user_id, *resource_ids),
+            ).fetchall()
+        }
+        manage_tag_join = tag_relation_join(db, "resource_management_tags", "rmt")
+        managed.update(
+            int(row["resource_id"])
+            for row in db.execute(
+                f"""SELECT rmt.resource_id FROM resource_management_tags rmt
+                    JOIN user_tags ut ON {manage_tag_join}
+                    WHERE ut.user_id = ? AND rmt.resource_id IN ({placeholders})""",
+                (user_id, *resource_ids),
+            ).fetchall()
+        )
+        for row in rows:
+            resource_id = int(row["id"])
+            can_manage_by_id[resource_id] = (
+                int(row["owner_id"]) == user_id
+                or row["management_scope"] == "public"
+                or (row["management_scope"] == "partial" and resource_id in managed)
+            )
+
+    payloads: list[dict[str, Any]] = []
+    for row in rows:
+        resource_id = int(row["id"])
+        version = versions_by_resource.get(resource_id, {}).get(int(row["current_version"]))
+        current = None
+        if version is not None:
+            version_id = int(version["id"])
+            png_path = version["png_path"]
+            current = {
+                "id": version_id,
+                "version_no": int(row["current_version"]),
+                "preview_url": asset_preview_url(png_path, thumb=True)
+                or (f"/api/resources/{resource_id}/preview-thumb?version_id={version_id}" if png_path else None),
+                "original_preview_url": asset_preview_url(png_path)
+                or (f"/api/resources/{resource_id}/preview?version_id={version_id}" if png_path else None),
+            }
+        payload = _row_to_dict(row)
+        payload.pop("secrecy_level", None)
+        payload.update(
+            {
+                "tags": ",".join(tags_by_resource.get(resource_id, [])) or (row["tags"] or ""),
+                "owner": _row_to_dict(owners.get(int(row["owner_id"]))) if owners.get(int(row["owner_id"])) else None,
+                "can_manage": can_manage_by_id.get(resource_id, False),
+                "current": current,
+                "version_count": version_counts.get(resource_id, 0),
+                "has_personal_remark": resource_id in remarked,
+                "is_pinned": resource_id in pinned,
+            }
+        )
+        payloads.append(payload)
+    return payloads
 
 def _insert_version(
     db: sqlite3.Connection,

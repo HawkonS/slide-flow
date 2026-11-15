@@ -14,7 +14,7 @@ from app.services.resource_queries import (
     resource_neighbors,
 )
 from app.services.resources import (
-    _serialize_resource_lite,
+    _serialize_resources_lite,
 )
 from app.services.files import asset_preview_url
 from app.services.tagging import entity_tag_names
@@ -113,7 +113,7 @@ def list_resources(
         f"SELECT r.* FROM resources r WHERE {where_clause} ORDER BY {order_sql} LIMIT :lim OFFSET :off",
         {**params, "lim": page_size, "off": offset},
     ).fetchall()
-    items = [_serialize_resource_lite(db, row, user) for row in page_rows]
+    items = _serialize_resources_lite(db, page_rows, user)
     return {
         "items": items,
         "total": total,
@@ -196,33 +196,20 @@ def pick_resources(
         f"SELECT r.* FROM resources r WHERE {where_clause} ORDER BY {order_sql} LIMIT :lim OFFSET :off",
         {**params, "lim": page_size, "off": offset},
     ).fetchall()
-    # 构造轻量结果
-    items = []
-    for row in page_rows:
-        ver = db.execute(
-            "SELECT id, png_path FROM resource_versions WHERE resource_id = ? AND version_no = ?",
-            (row["id"], row["current_version"]),
-        ).fetchone()
-        preview_url = None
-        if ver and ver["png_path"]:
-            preview_url = asset_preview_url(ver["png_path"], thumb=True) or f"/api/resources/{row['id']}/preview-thumb?version_id={ver['id']}"
-        items.append({
-            "id": int(row["id"]),
-            "name": row["name"],
-            "tags": ",".join(
-                entity_tag_names(
-                    db,
-                    relation_table="resource_tags",
-                    entity_column="resource_id",
-                    entity_id=int(row["id"]),
-                    fallback=row["tags"] or "",
-                )
-            ),
-            "subject": row["subject"] or "",
-            "updated_at": row["updated_at"],
-            "created_at": row["created_at"],
-            "preview_url": preview_url,
-        })
+    # 构造轻量结果：批量序列化后再投影，避免逐行查询版本和标签。
+    serialized = _serialize_resources_lite(db, page_rows, user)
+    items = [
+        {
+            "id": item["id"],
+            "name": item["name"],
+            "tags": item["tags"],
+            "subject": item["subject"] or "",
+            "updated_at": item["updated_at"],
+            "created_at": item["created_at"],
+            "preview_url": (item.get("current") or {}).get("preview_url"),
+        }
+        for item in serialized
+    ]
     return {
         "items": items,
         "total": total,
