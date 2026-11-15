@@ -18,7 +18,7 @@ from app.config import (
 from app.core.bootstrap import prepare_initial_admin
 from app.core.fonts import normalize_font_name
 
-DB_SCHEMA_VERSION = 32
+DB_SCHEMA_VERSION = 33
 
 
 def is_sqlite_busy_error(exc: BaseException) -> bool:
@@ -734,7 +734,8 @@ def init_db() -> None:
                 error_message TEXT,
                 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),
                 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),
-                completed_at TEXT
+                completed_at TEXT,
+                archived_at TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_tasks_owner ON tasks(owner_id);
@@ -859,6 +860,9 @@ def init_db() -> None:
 def _migrate_schema(db: sqlite3.Connection, schema_version: int) -> None:
     """Apply additive, idempotent migrations without requiring data deletion."""
     _migrate_task_type_constraint(db)
+    task_columns = {row["name"] for row in db.execute("PRAGMA table_info(tasks)")}
+    if "archived_at" not in task_columns:
+        db.execute("ALTER TABLE tasks ADD COLUMN archived_at TEXT")
     for table in ("resources", "resource_versions"):
         columns = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
         if "deleted_at" not in columns:

@@ -20,11 +20,20 @@ import sqlite3
 
 
 def _is_show_pinned(db: sqlite3.Connection, show_id: int, user_id: int) -> bool:
+    """Pin state follows the logical series, not one historical version row."""
     return db.execute(
-        "SELECT 1 FROM user_pinned_shows WHERE user_id = ? AND show_id = ?",
-        (user_id, show_id),
+        """SELECT 1
+           FROM user_pinned_shows p
+           JOIN shows pinned ON pinned.id = p.show_id
+           JOIN shows target ON target.id = ?
+           WHERE p.user_id = ?
+             AND (
+                 p.show_id = ?
+                 OR (target.series_id <> '' AND pinned.series_id = target.series_id)
+             )
+           LIMIT 1""",
+        (show_id, user_id, show_id),
     ).fetchone() is not None
-
 
 def _show_scope_user_ids(db: sqlite3.Connection, table: str, show_id: int) -> list[int]:
     rows = db.execute(f"SELECT user_id FROM {table} WHERE show_id = ? ORDER BY user_id", (show_id,)).fetchall()

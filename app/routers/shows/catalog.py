@@ -110,19 +110,23 @@ def list_shows(
     # ── CTE：可见 + 每个 series 只保留最大 version_no（同版本取最新 id） ──
     cte = f"""
         WITH visible AS (
-            SELECT s.* FROM shows s WHERE {vis_cond}
+            SELECT s.*,
+                   CASE WHEN s.series_id <> '' THEN s.series_id
+                        ELSE 'legacy:' || CAST(s.id AS TEXT)
+                   END AS series_key
+            FROM shows s WHERE {vis_cond}
               {"AND s.is_standard = 1" if standard_only else ""}
         ),
         deduped AS (
             SELECT v.* FROM visible v
             INNER JOIN (
-                SELECT series_id, MAX(COALESCE(version_no, 0)) AS max_ver
-                FROM visible GROUP BY series_id
-            ) g ON v.series_id = g.series_id
+                SELECT series_key, MAX(COALESCE(version_no, 0)) AS max_ver
+                FROM visible GROUP BY series_key
+            ) g ON v.series_key = g.series_key
                AND COALESCE(v.version_no, 0) = g.max_ver
             WHERE v.id = (
                 SELECT MAX(v2.id) FROM visible v2
-                WHERE v2.series_id = v.series_id
+                WHERE v2.series_key = v.series_key
                   AND COALESCE(v2.version_no, 0) = g.max_ver
             )
         )

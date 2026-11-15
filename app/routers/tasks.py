@@ -118,7 +118,7 @@ def list_tasks(
     unfinished=true 时只返回上传中、等待中、处理中或失败的任务。
     task_types 支持逗号分隔的多个任务类型，用于首页等只关心部分任务的场景。
     """
-    where_clauses: list[str] = []
+    where_clauses: list[str] = ["archived_at IS NULL"]
     params_list: list[Any] = []
 
     if is_admin(user):
@@ -140,11 +140,11 @@ def list_tasks(
     if task_types:
         values = [value.strip() for value in task_types.split(",") if value.strip()]
         allowed_types = {"batch_split_import", "download", "ai_tagging"}
-        values = [value for value in values if value in allowed_types]
-        if values:
-            placeholders = ",".join("?" for _ in values)
-            where_clauses.append(f"task_type IN ({placeholders})")
-            params_list.extend(values)
+        if not values or any(value not in allowed_types for value in values):
+            raise HTTPException(400, "任务类型筛选不正确")
+        placeholders = ",".join("?" for _ in values)
+        where_clauses.append(f"task_type IN ({placeholders})")
+        params_list.extend(values)
 
     # 任务参数保存在 JSON 中，按任务类型搜索用户实际可见的业务字段。
     search_kw = (search or "").strip()

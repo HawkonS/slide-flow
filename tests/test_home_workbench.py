@@ -17,6 +17,7 @@ from app.routers import tasks as tasks_router
 from app.routers import user_center
 from app.routers.dependencies import db_dep, db_read_dep
 from app.services.activity import record_login_event
+from app.services.tasks.retention import archive_old_tasks
 
 
 class HomeWorkbenchTests(unittest.TestCase):
@@ -155,6 +156,34 @@ class HomeWorkbenchTests(unittest.TestCase):
         self.assertEqual(stats["shows"]["managed"], 1)
         self.assertEqual(stats["standard_shows"], 1)
 
+    def test_show_pin_follows_series_latest_version(self):
+        timestamp = now_iso()
+        rows = []
+        for version in (1, 2):
+            rows.append(
+                int(
+                    self.db.execute(
+                        """INSERT INTO shows
+                           (name, owner_id, visibility_scope, management_scope,
+                            is_standard, created_at, series_id, version_no, updated_at)
+                           VALUES ('系列放映', ?, 'public', 'public', 1, ?, 'pinned-series', ?, ?)""",
+                        (self.user_id, timestamp, version, timestamp),
+                    ).lastrowid
+                )
+            )
+        self.db.commit()
+
+        response = self.client.post(f"/api/me/pins/shows/{rows[0]}")
+        self.assertEqual(response.status_code, 200)
+        pins = self.client.get("/api/me/pins").json()["shows"]
+        self.assertEqual(len(pins), 1)
+        self.assertEqual(pins[0]["id"], rows[1])
+        self.assertEqual(pins[0]["version_no"], 2)
+
+        response = self.client.delete(f"/api/me/pins/shows/{rows[0]}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.client.get("/api/me/pins").json()["shows"], [])
+
     def test_failed_upload_or_download_task_can_be_dismissed(self):
         task_id = int(
             self.db.execute(
@@ -170,6 +199,25 @@ class HomeWorkbenchTests(unittest.TestCase):
         row = self.db.execute("SELECT status, message FROM tasks WHERE id = ?", (task_id,)).fetchone()
         self.assertEqual(row["status"], "cancelled")
         self.assertEqual(row["message"], "已忽略任务错误")
+
+    def test_old_terminal_tasks_are_hidden_but_keep_activity(self):
+        completed_at = "2025-01-01T12:00:00"
+        self.db.execute(
+            """INSERT INTO tasks (task_type, status, owner_id, completed_at)
+               VALUES ('download', 'completed', ?, ?)""",
+            (self.user_id, completed_at),
+        )
+        self.db.commit()
+        self.assertEqual(archive_old_tasks(self.db), 1)
+
+        listed = self.client.get("/api/tasks").json()["items"]
+        self.assertEqual(listed, [])
+        activity = self.client.get("/api/me/activity", params={"days": 730}).json()
+        self.assertEqual(activity["download"], [{"date": "2025-01-01", "count": 1}])
+
+    def test_task_type_filter_rejects_unknown_values(self):
+        response = self.client.get("/api/tasks", params={"task_types": "unknown"})
+        self.assertEqual(response.status_code, 400)
 
     def test_activity_clamps_out_of_range_days(self):
         response = self.client.get("/api/me/activity", params={"days": 10})

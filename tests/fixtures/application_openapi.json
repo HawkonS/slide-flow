@@ -989,7 +989,7 @@
           "user_center"
         ],
         "summary": "Pin Show",
-        "description": "置顶演示",
+        "description": "置顶放映系列；历史版本不会在首页重复出现。",
         "operationId": "pin_show_api_me_pins_shows__show_id__post",
         "parameters": [
           {
@@ -1032,7 +1032,7 @@
           "user_center"
         ],
         "summary": "Unpin Show",
-        "description": "取消置顶演示",
+        "description": "取消置顶整个放映系列。",
         "operationId": "unpin_show_api_me_pins_shows__show_id__delete",
         "parameters": [
           {

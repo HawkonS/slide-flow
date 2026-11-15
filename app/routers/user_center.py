@@ -221,10 +221,21 @@ def pin_show(
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
-    """置顶演示"""
+    """置顶放映系列；历史版本不会在首页重复出现。"""
     row = _show_row(db, show_id)
     if not can_view_show(db, row, user):
         raise HTTPException(403, "无权访问该演示")
+    if row["series_id"]:
+        db.execute(
+            """DELETE FROM user_pinned_shows WHERE user_id = ? AND show_id IN
+               (SELECT id FROM shows WHERE series_id = ?)""",
+            (int(user["id"]), row["series_id"]),
+        )
+    else:
+        db.execute(
+            "DELETE FROM user_pinned_shows WHERE user_id = ? AND show_id = ?",
+            (int(user["id"]), show_id),
+        )
     db.execute(
         "INSERT OR IGNORE INTO user_pinned_shows (user_id, show_id, pinned_at) VALUES (?, ?, ?)",
         (int(user["id"]), show_id, now_iso()),
@@ -239,11 +250,19 @@ def unpin_show(
     user: sqlite3.Row = Depends(require_user),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
-    """取消置顶演示"""
-    db.execute(
-        "DELETE FROM user_pinned_shows WHERE user_id = ? AND show_id = ?",
-        (int(user["id"]), show_id),
-    )
+    """取消置顶整个放映系列。"""
+    row = _show_row(db, show_id)
+    if row["series_id"]:
+        db.execute(
+            """DELETE FROM user_pinned_shows WHERE user_id = ? AND show_id IN
+               (SELECT id FROM shows WHERE series_id = ?)""",
+            (int(user["id"]), row["series_id"]),
+        )
+    else:
+        db.execute(
+            "DELETE FROM user_pinned_shows WHERE user_id = ? AND show_id = ?",
+            (int(user["id"]), show_id),
+        )
     db.commit()
     return {"ok": True, "is_pinned": False}
 
@@ -271,18 +290,31 @@ def list_my_pins(
 
     show_rows = db.execute(
         """
-        SELECT s.* FROM user_pinned_shows p
+        SELECT s.*, p.pinned_at FROM user_pinned_shows p
         JOIN shows s ON s.id = p.show_id
         WHERE p.user_id = ?
-        ORDER BY p.pinned_at DESC
+        ORDER BY p.pinned_at DESC, s.id DESC
         """,
         (int(user["id"]),),
     ).fetchall()
     shows: list[dict[str, Any]] = []
-    for row in show_rows:
-        if not can_view_show(db, row, user):
+    seen_series: set[str] = set()
+    for pinned_row in show_rows:
+        series_key = pinned_row["series_id"] or f"id:{pinned_row['id']}"
+        if series_key in seen_series:
             continue
-        shows.append(_serialize_show(db, row, user))
+        if pinned_row["series_id"]:
+            latest = db.execute(
+                """SELECT * FROM shows WHERE series_id = ?
+                   ORDER BY COALESCE(version_no, 0) DESC, id DESC LIMIT 1""",
+                (pinned_row["series_id"],),
+            ).fetchone()
+        else:
+            latest = pinned_row
+        if latest is None or not can_view_show(db, latest, user):
+            continue
+        seen_series.add(series_key)
+        shows.append(_serialize_show(db, latest, user))
 
     return {"resources": resources, "shows": shows}
 
@@ -382,14 +414,14 @@ def my_home_stats(
     fonts_total = int(db.execute("SELECT COUNT(*) FROM fonts").fetchone()[0])
 
     def _own_task_count(extra: str = "") -> int:
-        sql = "SELECT COUNT(*) FROM tasks WHERE owner_id = ?" + extra
+        sql = "SELECT COUNT(*) FROM tasks WHERE owner_id = ? AND archived_at IS NULL" + extra
         return int(db.execute(sql, (user_id,)).fetchone()[0])
 
-    jobs_total_sql = "SELECT COUNT(*) FROM tasks"
+    jobs_total_sql = "SELECT COUNT(*) FROM tasks WHERE archived_at IS NULL"
     tasks_total = int(
         db.execute(jobs_total_sql).fetchone()[0]
         if system_admin
-        else db.execute(jobs_total_sql + " WHERE owner_id = ?", (user_id,)).fetchone()[0]
+        else db.execute(jobs_total_sql + " AND owner_id = ?", (user_id,)).fetchone()[0]
     )
     tasks_upload = _own_task_count(" AND task_type = 'batch_split_import'")
     tasks_download = _own_task_count(" AND task_type = 'download'")
