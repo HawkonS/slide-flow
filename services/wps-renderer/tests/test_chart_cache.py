@@ -70,6 +70,16 @@ class CachedChartTests(unittest.TestCase):
             for name in ('ppt/slides/slide1.xml', 'ppt/presentation.xml'):
                 self.assertEqual(result.read(name), source.read(name))
 
+    def test_removed_chart_workbook_directory_entry_is_not_an_embedded_object(self):
+        self.path.write_bytes(chart_pptx())
+        with zipfile.ZipFile(self.path, "a") as archive:
+            archive.writestr("ppt/embeddings/", b"")
+        prepare_render_pptx(self.path, 1024 * 1024)
+        validate_pptx(self.path, 1024 * 1024)
+        with zipfile.ZipFile(self.path) as result:
+            self.assertNotIn("ppt/embeddings/chart.xlsx", result.namelist())
+            self.assertIn("ppt/embeddings/", result.namelist())
+
     def test_no_chart_package_is_byte_identical(self):
         original = pptx()
         self.path.write_bytes(original)

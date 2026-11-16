@@ -76,7 +76,12 @@ def _validate_pptx(path, expanded_limit, expected_slides):
             xml_bytes = 0
             for item in infos:
                 lower = item.filename.lower()
-                if any(part in lower for part in ("vbaproject", "activex/", "embeddings/", "oleobject")):
+                # Directory entries are not Office objects. In particular,
+                # chart workbooks are removed from the render copy but the
+                # ``ppt/embeddings/`` directory entry can remain behind.
+                if not item.filename.endswith("/") and any(
+                    part in lower for part in ("vbaproject", "activex/", "embeddings/", "oleobject")
+                ):
                     raise RenderError("unsafe_pptx", "Macros, ActiveX, and embedded executable/Office objects are not accepted")
                 if lower.endswith((".xml", ".rels")):
                     xml_bytes += item.file_size
