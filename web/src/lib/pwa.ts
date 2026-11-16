@@ -10,6 +10,8 @@ let installEvent: BeforeInstallPromptEvent | null = null;
 let updateNoticeShown = false;
 let installNoticeShown = false;
 const observedRegistrations = new WeakSet<ServiceWorkerRegistration>();
+const pendingWorkerVersions = new WeakSet<ServiceWorker>();
+let updateVersionWorker: ServiceWorker | null = null;
 
 export type PwaDeploymentStatus = "unsupported" | "development" | "checking" | "not-deployed" | "deployed" | "update-available" | "error";
 export interface PwaStatusSnapshot {
@@ -22,6 +24,8 @@ export interface PwaStatusSnapshot {
   waiting: boolean;
   installable: boolean;
   standalone: boolean;
+  /** Build id of the waiting worker, used to dedupe local update notices. */
+  updateVersion: string;
   message: string;
 }
 const statusListeners = new Set<() => void>();
@@ -37,6 +41,7 @@ let pwaStatus: PwaStatusSnapshot = {
   waiting: false,
   installable: false,
   standalone: typeof window !== "undefined" && !!(window.matchMedia?.("(display-mode: standalone)").matches || (navigator as Navigator & { standalone?: boolean }).standalone === true),
+  updateVersion: "",
   message: !initialSupport ? "当前浏览器或连接不支持本地应用" : environment === "development" ? "开发环境不会部署本地应用，请访问构建后的应用服务" : "正在检查本地应用部署状态…",
 };
 function publishPwaStatus(next: Partial<PwaStatusSnapshot>): void {
@@ -75,16 +80,64 @@ function hasWaitingUpdate(registration?: ServiceWorkerRegistration): boolean {
     && isOurWorker(registration.waiting) && registration.waiting !== registration.active;
 }
 
+/** Ask the waiting worker for its build id; "" means the response never came. */
+function readWorkerVersion(worker: ServiceWorker): Promise<string> {
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    let settled = false;
+    const finish = (value: string) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      channel.port1.close();
+      resolve(value);
+    };
+    const timer = window.setTimeout(() => finish(""), 10_000);
+    channel.port1.onmessage = (event) => {
+      const data = event.data as { type?: unknown; version?: unknown } | null;
+      if (data?.type === "SLIDEFLOW_SHELL_STATUS" && typeof data.version === "string" && data.version) {
+        finish(data.version);
+      }
+    };
+    try {
+      worker.postMessage({ type: "SLIDEFLOW_SHELL_STATUS" }, [channel.port2]);
+    } catch {
+      finish("");
+    }
+  });
+}
+
+function ensureUpdateVersion(registration?: ServiceWorkerRegistration): void {
+  const waiting = registration?.waiting ?? null;
+  if (!waiting) {
+    updateVersionWorker = null;
+    return;
+  }
+  if (waiting === updateVersionWorker || pendingWorkerVersions.has(waiting)) return;
+  pendingWorkerVersions.add(waiting);
+  void readWorkerVersion(waiting)
+    .then((version) => {
+      if (!version || !hasWaitingUpdate(registration) || registration?.waiting !== waiting) return;
+      if (updateVersionWorker !== waiting) {
+        updateVersionWorker = waiting;
+        publishPwaStatus({ updateVersion: version });
+      }
+    })
+    .finally(() => { pendingWorkerVersions.delete(waiting); });
+}
+
 function publishRegistrationStatus(registration?: ServiceWorkerRegistration): void {
   const active = !!registration?.active && isOurWorker(registration.active) && registration.active.state === "activated";
   const waiting = !!registration?.waiting && isOurWorker(registration.waiting);
   const updating = hasWaitingUpdate(registration);
+  const waitingWorker = updating ? registration?.waiting ?? null : null;
   const deploying = waiting || (isOurWorker(registration?.installing ?? null) && registration?.installing?.state !== "redundant")
     || (isOurWorker(registration?.active ?? null) && registration?.active?.state === "activating");
   const controlled = !!navigator.serviceWorker.controller && isOurWorker(navigator.serviceWorker.controller);
   publishPwaStatus({
     status: updating ? "update-available" : active ? "deployed" : deploying ? "checking" : "not-deployed",
     active, waiting, controlled, standalone: standaloneMode(),
+    updateVersion: waitingWorker && waitingWorker === updateVersionWorker ? pwaStatus.updateVersion : "",
     message: updating
       ? "本地应用有新版本，完成当前工作后重新打开即可更新"
       : active && controlled
@@ -95,6 +148,7 @@ function publishRegistrationStatus(registration?: ServiceWorkerRegistration): vo
             ? "正在部署本地应用…"
             : "本地应用尚未完成部署，请联网后重试",
   });
+  ensureUpdateVersion(registration);
 }
 
 function showNotices(registration?: ServiceWorkerRegistration): void {

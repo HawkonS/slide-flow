@@ -190,3 +190,13 @@ label {
   user-select: none;
   -webkit-user-select: none;
 }
+
+/* Sonner places its close affordance on the leading edge by default. Our
+   toaster is anchored to the top-right, so mirror it onto the trailing edge. */
+[data-sonner-toaster][data-x-position="right"] [data-sonner-toast] [data-close-button] {
+  left: auto !important;
+  right: 0 !important;
+  width: 24px !important;
+  height: 24px !important;
+  transform: translate(35%, -35%) !important;
+}

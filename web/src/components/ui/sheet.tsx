@@ -30,12 +30,16 @@ SheetOverlay.displayName = DialogPrimitive.Overlay.displayName;
 interface SheetContentProps
   extends React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> {
   side?: "left" | "right" | "top" | "bottom";
+  /** Let Radix focus the first control; mobile navigation keeps focus on its trigger. */
+  autoFocusContent?: boolean;
+  /** Callers that render a labelled close action can suppress the icon-only one. */
+  hideClose?: boolean;
 }
 
 const SheetContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   SheetContentProps
->(({ className, children, side = "right", onOpenAutoFocus, ...props }, ref) => {
+>(({ className, children, side = "right", onOpenAutoFocus, autoFocusContent = false, hideClose = false, ...props }, ref) => {
   const sideClasses = {
     left: "inset-y-0 left-0 h-full w-3/4 border-r sm:max-w-sm data-[state=closed]:slide-out-to-left data-[state=open]:slide-in-from-left",
     right:
@@ -51,7 +55,7 @@ const SheetContent = React.forwardRef<
       <DialogPrimitive.Content
         ref={ref}
         onOpenAutoFocus={(e) => {
-          e.preventDefault();
+          if (!autoFocusContent) e.preventDefault();
           onOpenAutoFocus?.(e);
         }}
         className={cn(
@@ -62,10 +66,16 @@ const SheetContent = React.forwardRef<
         {...props}
       >
         {children}
-        <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground">
-          <X className="h-4 w-4" />
-          <span className="sr-only">关闭</span>
-        </DialogPrimitive.Close>
+        {!hideClose && (
+          <DialogPrimitive.Close
+            aria-label="关闭"
+            title="关闭"
+            className="absolute right-3 top-3 inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground opacity-70 ring-offset-background transition-colors hover:bg-accent hover:text-foreground hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none"
+          >
+            <X className="h-4 w-4" />
+            <span className="sr-only">关闭</span>
+          </DialogPrimitive.Close>
+        )}
       </DialogPrimitive.Content>
     </SheetPortal>
   );

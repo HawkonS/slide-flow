@@ -6,7 +6,6 @@ import {
   AlertCircle,
   LayoutTemplate,
   ListTodo,
-  LogOut,
   Menu,
   MonitorPlay,
   RefreshCw,
@@ -26,6 +25,8 @@ import { useDownloadManager } from "@/stores/download-manager";
 import { useAuth } from "@/lib/auth";
 import { ForceChangePassword } from "@/components/common/ForceChangePassword";
 import { PageLoadingSkeleton } from "@/components/common/PageLoadingSkeleton";
+import { NotificationCenter } from "@/components/layout/NotificationCenter";
+import { UserMenu } from "@/components/layout/UserMenu";
 import { usePwaStatus } from "@/lib/pwa";
 import {
   SheetRoot,
@@ -189,7 +190,7 @@ export function AppShell() {
   const location = useLocation();
   // Adjacent resources share one detail frame instead of remounting the page.
   const pageKey = /^\/resources\/[A-Za-z0-9_-]{32,128}$/.test(location.pathname) ? "/resources/:resourceKey" : location.pathname;
-  const { user, logout, offline, epoch } = useAuth();
+  const { user, offline, epoch } = useAuth();
   const pwaStatus = usePwaStatus();
   const [sheetOpen, setSheetOpen] = useState(false);
 
@@ -212,14 +213,6 @@ export function AppShell() {
       useDownloadManager.getState().disconnect(false);
     };
   }, [user?.id, user?.session_version, user?.must_change_pwd, offline, epoch]);
-
-  const userDisplayName = user?.name || user?.username || "";
-  const userRoleText =
-    user?.role === "system_admin"
-      ? "系统管理员"
-      : user?.role === "admin"
-        ? "运营管理员"
-        : "普通用户";
 
   const siteName = useSiteConfig((s) => s.siteName);
   const logoSvgPath = useSiteConfig((s) => s.logoSvgPath);
@@ -265,8 +258,8 @@ export function AppShell() {
           <span className="min-w-0 max-w-[45vw] truncate text-[15px] font-semibold md:ml-0">{siteName}</span>
         </div>
 
-        {/* 右侧用户信息 */}
-        <div className="ml-auto flex items-center gap-3 text-sm md:gap-5">
+        {/* 右侧操作区：本地应用、用户菜单、通知 */}
+        <div className="ml-auto flex items-center gap-2 text-sm md:gap-3">
           {!offline && <NavLink
             to="/manage/offline-cache"
             aria-label={pwaStatus.message}
@@ -280,24 +273,8 @@ export function AppShell() {
             <span className="hidden lg:inline">{pwaStatus.status === "development" ? "开发环境" : pwaStatus.status === "update-available" ? "应用有更新" : pwaNeedsAttention ? "应用需维护" : "本地应用"}</span>
             {pwaNeedsAttention && <span className="h-1.5 w-1.5 rounded-full bg-current" />}
           </NavLink>}
-          {user && (
-            <span className="inline-flex min-w-0 items-center gap-2 text-foreground/80">
-              {user.avatar_url ? <img src={user.avatar_url} alt="" className="h-7 w-7 shrink-0 rounded-full object-cover" referrerPolicy="no-referrer" /> : <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-muted text-xs text-muted-foreground">{userDisplayName.slice(0, 1).toUpperCase()}</span>}
-              <span className="hidden max-w-28 truncate sm:inline">{userDisplayName}</span>
-              <span className="mx-1 hidden text-muted-foreground sm:inline">·</span>
-              <span className="hidden max-w-20 truncate md:inline">{userRoleText}</span>
-            </span>
-          )}
-          {user && (
-            <button
-              type="button"
-              onClick={() => logout()}
-              className="inline-flex items-center gap-1 text-foreground/70 hover:text-foreground"
-            >
-              <LogOut className="h-4 w-4 md:hidden" />
-              <span className="hidden md:inline">退出</span>
-            </button>
-          )}
+          {user && <UserMenu />}
+          <NotificationCenter />
         </div>
       </header>
 
