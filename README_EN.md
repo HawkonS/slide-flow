@@ -37,7 +37,8 @@ It ships as one web service (asset, template, font and show libraries in the fro
 - PWA offline playback: download an authorized cache within the same browser and account, then present fullscreen or on dual screens with no network.
 - Feishu SSO: can run alongside the local account system.
 - Windows WPS rendering: image rendering is handled by a standalone component whose Windows workers pull tasks themselves.
-- Tasks and operations: the full task lifecycle is visible, the dashboard covers configuration, logs and system operations, and one-command start/stop plus systemd hosting are provided.
+- Tasks and operations: upload, download and AI-tagging tasks are fully visible with filters, search, suggestion application and error dismissal; the dashboard covers configuration, logs and system operations, and one-command start/stop plus systemd hosting are provided.
+- Notifications: task results and local-app updates in one feed, grouped into unread and read, with per-item read/unread toggles and historical items retained.
 
 ## Quick start
 
