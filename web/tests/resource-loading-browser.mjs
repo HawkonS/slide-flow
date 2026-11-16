@@ -36,7 +36,7 @@ before(async () => {
 });
 after(async () => { await browser?.close(); server?.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
 
-async function fixture(t, { width = 390, configGate, onList, shows = [] } = {}) {
+async function fixture(t, { width = 390, configGate, onList, shows = [], tasks = [] } = {}) {
   const context = await browser.newContext({ viewport: { width, height: width < 768 ? 844 : 1000 }, serviceWorkers: 'block' });
   t.after(() => context.close());
   if (configGate) t.after(() => configGate.release());
@@ -77,6 +77,18 @@ async function fixture(t, { width = 390, configGate, onList, shows = [] } = {}) 
     if (p === '/api/resources/delete-preview') return json({ targets: [{ id: 1, name: resource.name, version_count: 1, selected_version_count: 1, version_nos: [1], delete_resource: true }], has_references: false, show_count: 0, share_count: 0, shows: [], confirmation_token: 'test', available_actions: ['remove'] });
     if (p === '/api/me/home/stats') return json({ resources: {}, shows: {}, templates: {}, fonts: {} });
     if (p === '/api/shows') return json({ items: shows, total: shows.length, page: 1, page_size: 20, all_tags: [], all_subjects: [] });
+    if (p === '/api/tasks') {
+      const type = query.task_type;
+      const status = query.status;
+      const items = tasks.filter((task) => (!type || task.task_type === type) && (!status || task.status === status));
+      return json({ items, total: items.length, page: 1, page_size: 20 });
+    }
+    if (p.startsWith('/api/tasks/') && request.method() === 'GET') {
+      const id = Number(p.split('/').pop());
+      const task = tasks.find((item) => item.id === id);
+      return task ? json(task) : route.fulfill({ status: 404, json: { detail: '任务不存在' } });
+    }
+    if (p.startsWith('/api/ai-tagging/tasks/') && p.endsWith('/apply')) return json({ ok: true });
     if (p === '/api/shows/36') return json({ show: shows[0] ?? null });
     if (p === '/api/shows/36/check-updates') return json({ updates: [] });
     return json({ items: [], tags: [], users: [], resources: [], shows: [], pins: [], preferences: {} });
@@ -508,4 +520,80 @@ test('changing filters cancels the previous request and ignores its late result'
   stalled.release();
   await page.waitForTimeout(200);
   assert.equal(await page.getByText('旧筛选', { exact: true }).count(), 0);
+});
+
+for (const scenario of [
+  { path: '/shows', title: '筛选放映', placeholder: '搜索标题、关键词', serverSearch: true },
+  { path: '/manage/shows', title: '筛选放映', placeholder: '搜索标题、关键词', serverSearch: true },
+  { path: '/templates', title: '筛选模板', placeholder: '搜索模板、主体、系列', serverSearch: false },
+]) {
+  test(`mobile search and filters share one modal on ${scenario.path}`, async t => {
+    const { page } = await fixture(t, { width: 390 });
+    await page.goto(origin + scenario.path);
+    const trigger = page.getByRole('button', { name: /^筛选/ });
+    await trigger.waitFor();
+    await trigger.click();
+    const dialog = page.getByRole('dialog');
+    await dialog.waitFor();
+    assert.equal(await dialog.getByRole('heading', { name: scenario.title, exact: true }).isVisible(), true);
+    const search = dialog.getByPlaceholder(scenario.placeholder);
+    await search.waitFor();
+    if (scenario.serverSearch) {
+      const pending = page.waitForRequest(request => new URL(request.url()).searchParams.get('search') === '移动筛选');
+      await search.fill('移动筛选');
+      await pending;
+    } else {
+      await search.fill('移动筛选');
+      assert.equal(await search.inputValue(), '移动筛选');
+    }
+    await dialog.getByRole('button', { name: '查看结果', exact: true }).click();
+    await dialog.waitFor({ state: 'hidden' });
+  });
+}
+
+test('tagging tasks expose the target, apply dialog and task detail', async (t) => {
+  const task = {
+    id: 201,
+    task_type: 'ai_tagging',
+    status: 'completed',
+    owner_id: 1,
+    owner: user,
+    progress: 1,
+    total: 1,
+    message: '',
+    result_data: {
+      target_type: 'resource', target_id: 1,
+      connection_name: '视觉模型', model: 'vision-a',
+      suggested_tags: ['精选', '对外'], existing_tags: [],
+      tags_applied: false,
+    },
+    params: {
+      target_type: 'resource', target_id: 1, target_name: '产品封面',
+      target_detail_token: 'a'.repeat(32), target_deleted: false,
+      connection_name: '视觉模型', model: 'vision-a',
+    },
+    created_at: stamp, updated_at: stamp, completed_at: stamp,
+  };
+  const { page } = await fixture(t, { width: 1440, tasks: [task] });
+  await page.goto(origin + '/manage/tasks?tab=tagging');
+  await page.getByRole('tab', { name: /标注任务/ }).waitFor();
+  await page.getByText('产品封面', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: /应用建议/ }).isVisible(), true);
+
+  await page.getByRole('button', { name: /应用建议/ }).click();
+  const applyDialog = page.getByRole('dialog', { name: /应用标注建议/ });
+  await applyDialog.waitFor();
+  await applyDialog.getByText('对外', { exact: true }).waitFor();
+  assert.ok(await applyDialog.getByText('对外', { exact: true }).isVisible());
+  const applyRequest = page.waitForRequest((request) => request.method() === 'POST'
+    && new URL(request.url()).pathname === '/api/ai-tagging/tasks/201/apply');
+  await applyDialog.getByRole('button', { name: /写入 2 个标签/ }).click();
+  await applyRequest;
+  await applyDialog.waitFor({ state: 'hidden' });
+
+  await page.getByRole('button', { name: /查看任务 #201 详情/ }).click();
+  const detail = page.getByRole('dialog');
+  await detail.waitFor();
+  assert.ok(await detail.getByRole('heading', { name: '产品封面' }).isVisible());
+  assert.ok(await detail.getByText('建议标签', { exact: true }).isVisible());
 });

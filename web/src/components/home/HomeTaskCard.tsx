@@ -142,7 +142,7 @@ export function HomeTaskCard({
       };
       if (tab === "todo") {
         params.unfinished = true;
-        params.task_types = "batch_split_import,download";
+        params.task_types = "batch_split_import,download,ai_tagging";
       } else if (tab === "upload") {
         params.task_type = "batch_split_import";
       } else if (tab === "download") {
@@ -174,12 +174,17 @@ export function HomeTaskCard({
 
   const tasks = data?.items ?? [];
   const total = data?.total ?? tasks.length;
-  const href = tab === "upload" ? "/manage/tasks?tab=uploads" : "/manage/tasks";
   const summary = tab === "todo"
     ? `${unfinished} 个未完成 · ${failed} 个失败`
     : tab === "other"
       ? `共 ${total} 条模型识别错误`
       : `共 ${total} 条最近${tab === "upload" ? "上传" : "下载"}`;
+
+  const taskHref = (task: HomeTask): string => {
+    if (isAiTask(task)) return "/manage/tasks?tab=tagging";
+    if (task.task_type === "batch_split_import") return "/manage/tasks?tab=uploads";
+    return "/manage/tasks";
+  };
 
   return (
     <>
@@ -229,7 +234,7 @@ export function HomeTaskCard({
                 ) : (
                   <Link
                     key={task.id}
-                    to={href}
+                    to={taskHref(task)}
                     className="flex min-h-[57px] items-center gap-2.5 border-b px-5 py-2.5 last:border-b-0 hover:bg-muted/30"
                   >
                     {row}
@@ -245,7 +250,7 @@ export function HomeTaskCard({
           {tab === "other" ? (
             <span className="inline-flex items-center gap-1 font-semibold text-muted-foreground">点击任务查看并处理</span>
           ) : (
-            <Link to="/manage/tasks" className="inline-flex items-center gap-1 font-semibold text-muted-foreground hover:text-foreground">
+            <Link to={tab === "upload" ? "/manage/tasks?tab=uploads" : "/manage/tasks"} className="inline-flex items-center gap-1 font-semibold text-muted-foreground hover:text-foreground">
               全部任务<ArrowRight className="h-3 w-3" />
             </Link>
           )}

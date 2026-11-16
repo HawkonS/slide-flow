@@ -17,6 +17,7 @@ import {
   Loader2,
   OctagonX,
   Search,
+  Sparkles,
   Trash2,
   Upload,
   User,
@@ -32,6 +33,7 @@ import { FilterChip as ResourceFilterChip, type ChipOption } from "@/components/
 import { ListFooter } from "@/components/common/ListFooter";
 import { PageHeader } from "@/components/common/PageHeader";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
+import { ApplyTaggingDialog } from "@/components/manage/ApplyTaggingDialog";
 import {
   Dialog,
   DialogContent,
@@ -119,6 +121,9 @@ interface TaskParams {
   render_total?: number;
   target_type?: "resource" | "show";
   target_id?: number;
+  target_name?: string;
+  target_detail_token?: string;
+  target_deleted?: boolean;
   version_id?: number;
   connection_id?: number;
   connection_name?: string;
@@ -288,6 +293,8 @@ const STATUS_FILTERS: { value: "all" | TaskStatus; label: string }[] = [
   { value: "failed", label: "失败" },
   { value: "cancelled", label: "已取消" },
 ];
+
+const AI_STATUS_FILTERS = STATUS_FILTERS.filter((item) => item.value !== "uploading");
 
 /* ---------- helpers ---------- */
 
@@ -538,7 +545,7 @@ function TaskRow({ task, onOpenDetails, onCancel, canManage, showOwner, isAdmin,
 
 /* ---------- Task Detail Dialog ---------- */
 
-function TaskDetail({ task, onClose }: { task: Task; onClose: () => void }) {
+function TaskDetail({ task, onClose, onApplyTagging }: { task: Task; onClose: () => void; onApplyTagging?: (task: Task) => void }) {
   const navigate = useNavigate();
   const params = task.params || {};
   const result = task.result_data || {};
@@ -546,7 +553,9 @@ function TaskDetail({ task, onClose }: { task: Task; onClose: () => void }) {
   const resourceDetailTokens = result.resource_detail_tokens || {};
   const status = task.status as TaskStatus;
   const isActive = ACTIVE_STATUSES.includes(status);
-  const taskTitle = params.series || params.name_prefix || TASK_TYPE_LABEL[task.task_type] || task.task_type;
+  const taskTitle = task.task_type === "ai_tagging"
+    ? params.target_name || TASK_TYPE_LABEL[task.task_type] || "智能标注"
+    : params.series || params.name_prefix || TASK_TYPE_LABEL[task.task_type] || task.task_type;
   const percent = task.total > 0
     ? Math.min(100, Math.round((task.progress / task.total) * 100))
     : Math.min(100, Math.max(0, Number(task.upload_progress) || 0));
@@ -600,7 +609,7 @@ function TaskDetail({ task, onClose }: { task: Task; onClose: () => void }) {
                 <div className={cn("h-full rounded-full transition-[width] duration-500", progressTone)} style={{ width: `${percent}%` }} />
               </div>
               <div className="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
-                <span>{task.total > 0 ? `${task.progress} / ${task.total} 页` : "上传处理中"}</span>
+                <span>{task.total > 0 ? `${task.progress} / ${task.total} ${task.task_type === "ai_tagging" ? "步" : "页"}` : "上传处理中"}</span>
                 {task.message && <span className="max-w-full truncate">{task.message}</span>}
               </div>
             </section>
@@ -617,7 +626,7 @@ function TaskDetail({ task, onClose }: { task: Task; onClose: () => void }) {
             </DetailCard>
 
             <DetailCard icon={<FileText className="h-3.5 w-3.5" />} title="提交参数">
-              {task.task_type === "ai_tagging" && <InfoRow label="标注对象" value={params.target_type === "show" ? `放映 #${params.target_id ?? "-"}` : `素材 #${params.target_id ?? "-"}`} />}
+              {task.task_type === "ai_tagging" && <InfoRow label="标注对象" value={`${params.target_name || (params.target_type === "show" ? `放映 #${params.target_id ?? "-"}` : `素材 #${params.target_id ?? "-"}`)}${params.target_deleted ? "（已删除）" : ""}`} />}
               {task.task_type === "ai_tagging" && params.connection_name && <InfoRow label="模型连接" value={params.connection_name} />}
               {task.task_type === "ai_tagging" && params.model && <InfoRow label="模型" value={params.model} />}
               {params.import_target === "templates" && <InfoRow label="导入目标" value="标准模板" />}
@@ -661,10 +670,27 @@ function TaskDetail({ task, onClose }: { task: Task; onClose: () => void }) {
             ) : status === "completed" ? (
               task.task_type === "ai_tagging" ? (
                 <>
-                  <InfoRow label="页面数" value={`${result.page_count ?? 0} 页`} />
-                  {(result.skipped_pages ?? 0) > 0 && <InfoRow label="跳过页面" value={`${result.skipped_pages} 页`} />}
                   <InfoRow label="建议标签" value={result.suggested_tags?.join("、") || "无"} />
-                  {result.tags_applied && <InfoRow label="已写入" value={result.applied_tags?.join("、") || "未新增"} highlight />}
+                  {result.existing_tags && result.existing_tags.length > 0 && <InfoRow label="已有标签" value={result.existing_tags.join("、")} />}
+                  <InfoRow
+                    label="写入状态"
+                    value={result.tags_applied ? "已写入" : "待确认"}
+                    highlight={!result.tags_applied}
+                  />
+                  {result.tags_applied && <InfoRow label="已写入" value={result.applied_tags?.join("、") || "未新增标签"} />}
+                  {!result.tags_applied && (
+                    params.target_deleted ? (
+                      <p className="mt-3 text-xs text-muted-foreground">目标素材已删除，无法写入标签。</p>
+                    ) : onApplyTagging ? (
+                      <Button
+                        type="button"
+                        className="mt-3 w-full gap-1.5"
+                        onClick={() => { onClose(); onApplyTagging(task); }}
+                      >
+                        <Sparkles className="h-3.5 w-3.5" />应用建议
+                      </Button>
+                    ) : null
+                  )}
                 </>
               ) : (
                 <>
@@ -878,6 +904,7 @@ function TaskFilterBar({
   searchInput,
   onSearchInputChange,
   searchPlaceholder,
+  statuses,
   selectedCount,
   onBulkDelete,
   bulkDeletePending,
@@ -890,11 +917,12 @@ function TaskFilterBar({
   searchInput: string;
   onSearchInputChange: (value: string) => void;
   searchPlaceholder: string;
+  statuses?: { value: "all" | TaskStatus; label: string }[];
   selectedCount: number;
   onBulkDelete?: () => void;
   bulkDeletePending?: boolean;
 }) {
-  const statusOptions: ChipOption[] = STATUS_FILTERS;
+  const statusOptions: ChipOption[] = statuses ?? STATUS_FILTERS;
 
   return (
     <div className="page-toolbar">
@@ -946,7 +974,8 @@ function TaskFilterBar({
 export default function TasksPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const rawTab = searchParams.get("tab");
-  const tab: "uploads" | "downloads" = rawTab === "uploads" ? "uploads" : "downloads";
+  const tab: "uploads" | "downloads" | "tagging" =
+    rawTab === "uploads" ? "uploads" : rawTab === "tagging" ? "tagging" : "downloads";
   const { user } = useAuth();
   const canManage = isAdminRole(user?.role);
   const title = "任务管理";
@@ -955,6 +984,8 @@ export default function TasksPage() {
     const next = new URLSearchParams(searchParams);
     if (value === "uploads") {
       next.set("tab", "uploads");
+    } else if (value === "tagging") {
+      next.set("tab", "tagging");
     } else {
       next.delete("tab");
     }
@@ -970,7 +1001,7 @@ export default function TasksPage() {
             {canManage ? "可维护" : "只读"}
           </Badge>
         }
-        description="查看上传和下载任务，按状态、提交人或关键词快速筛选。"
+        description="查看上传、下载和智能标注任务，按状态、提交人或关键词快速筛选。"
       />
 
       <Tabs value={tab} onValueChange={handleTabChange} className="flex min-h-0 flex-1 flex-col">
@@ -982,6 +1013,10 @@ export default function TasksPage() {
           <TabsTrigger value="uploads" className="gap-1.5">
             <Upload className="h-3.5 w-3.5" />
             上传任务
+          </TabsTrigger>
+          <TabsTrigger value="tagging" className="gap-1.5">
+            <Sparkles className="h-3.5 w-3.5" />
+            标注任务
           </TabsTrigger>
         </TabsList>
         <TabsContent
@@ -995,6 +1030,12 @@ export default function TasksPage() {
           className="mt-3 flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
         >
           <UploadTasksTab canManage={canManage} />
+        </TabsContent>
+        <TabsContent
+          value="tagging"
+          className="mt-3 flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
+        >
+          <TaggingTasksTab canManage={canManage} />
         </TabsContent>
       </Tabs>
     </div>
@@ -1274,6 +1315,432 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
         onConfirm={() => {
           bulkDelMut.mutate(Array.from(selected), { onSuccess: () => setBulkDeleteOpen(false) });
         }}
+      />
+    </div>
+  );
+}
+
+/* ---------- Tagging Tasks Tab ---------- */
+
+function AiTaggingRow({
+  task,
+  onOpenDetails,
+  onCancel,
+  onDismiss,
+  onApply,
+  canManage,
+  showOwner,
+  isAdmin,
+  isSelected,
+  onSelectToggle,
+}: {
+  task: Task;
+  onOpenDetails: () => void;
+  onCancel: (task: Task) => void;
+  onDismiss: (task: Task) => void;
+  onApply: (task: Task) => void;
+  canManage: boolean;
+  showOwner: boolean;
+  isAdmin: boolean;
+  isSelected: boolean;
+  onSelectToggle: () => void;
+}) {
+  const status = task.status as TaskStatus;
+  const isActive = ACTIVE_STATUSES.includes(status);
+  const isCompleted = status === "completed";
+  const isFailed = status === "failed";
+  const isCancelled = status === "cancelled";
+  const result = task.result_data ?? {};
+  const suggestions = result.suggested_tags ?? [];
+  const applied = !!result.tags_applied;
+  const targetName = task.params.target_name || `素材 #${task.params.target_id ?? "—"}`;
+  const targetLinkable = !!task.params.target_detail_token && !task.params.target_deleted;
+
+  return (
+    <TableRow
+      className={cn("cursor-pointer transition-colors", (isCompleted || isCancelled) && "opacity-80")}
+      onClick={onOpenDetails}
+    >
+      {isAdmin && (
+        <TableCell onClick={(event) => event.stopPropagation()}>
+          <Checkbox checked={isSelected} onCheckedChange={onSelectToggle} />
+        </TableCell>
+      )}
+      <TableCell className="font-mono text-xs text-muted-foreground">#{task.id}</TableCell>
+      <TableCell>
+        <div className="flex min-w-0 flex-col gap-0.5">
+          {targetLinkable ? (
+            <Link
+              to={`/resources/${encodeURIComponent(task.params.target_detail_token!)}`}
+              onClick={(event) => event.stopPropagation()}
+              className="block truncate text-sm font-medium text-primary hover:underline"
+              title={targetName}
+            >
+              {targetName}
+            </Link>
+          ) : (
+            <span className={cn("block truncate text-sm font-medium", task.params.target_deleted && "text-muted-foreground line-through")} title={targetName}>
+              {targetName}
+            </span>
+          )}
+          <span className="block truncate text-[11px] text-muted-foreground">
+            {TASK_TYPE_LABEL[task.task_type] || "智能标注"}
+            {task.params.target_deleted ? " · 素材已删除" : task.params.version_id ? ` · 版本 #${task.params.version_id}` : ""}
+          </span>
+        </div>
+      </TableCell>
+      <TableCell>
+        <div className="flex min-w-0 flex-col gap-0.5 text-xs">
+          <TableText text={task.params.connection_name || "默认模型"} />
+          {task.params.model && <span className="truncate text-[11px] text-muted-foreground">{task.params.model}</span>}
+        </div>
+      </TableCell>
+      <TableCell>
+        <Badge variant={STATUS_BADGE_VARIANT[status] || "outline"} className="gap-1 text-[11px]">
+          {statusIcon(status)}
+          {STATUS_LABEL[status] || status}
+        </Badge>
+      </TableCell>
+      <TableCell>
+        {isCompleted ? (
+          <div className="flex min-w-0 flex-col gap-1">
+            <div className="flex min-w-0 flex-wrap items-center gap-1">
+              {suggestions.length > 0 ? suggestions.slice(0, 3).map((tag) => (
+                <Badge key={tag} variant="outline" className="px-1.5 py-0 text-[10px]">{tag}</Badge>
+              )) : <span className="text-xs text-muted-foreground">无建议标签</span>}
+              {suggestions.length > 3 && <span className="text-[10px] text-muted-foreground">+{suggestions.length - 3}</span>}
+            </div>
+            <span className={cn("text-[11px]", applied ? "text-emerald-600" : "text-muted-foreground")}>
+              {applied ? `已写入${result.applied_tags?.length ? ` ${result.applied_tags.length} 个` : ""}` : "待确认"}
+            </span>
+          </div>
+        ) : isFailed ? (
+          <TableText className="max-w-[260px] text-xs text-destructive" text={task.error_message || task.message || "智能标注失败"} />
+        ) : isActive ? (
+          <TableText className="max-w-[260px] text-xs text-muted-foreground" text={task.message || (status === "processing" ? "正在请求视觉模型…" : "等待智能标注…")} />
+        ) : (
+          <span className="text-xs text-muted-foreground">任务已取消</span>
+        )}
+      </TableCell>
+      {showOwner && (
+        <TableCell className="whitespace-nowrap">
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <User className="h-3 w-3 shrink-0" />
+            <TableText text={ownerDisplay(task.owner, task.owner_id)} />
+          </div>
+        </TableCell>
+      )}
+      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatRelativeTime(task.created_at)}</TableCell>
+      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+        <span className="inline-flex items-center gap-1"><Clock className="h-3 w-3" />{formatDuration(task.created_at, task.completed_at)}</span>
+      </TableCell>
+      <TableCell>
+        <div className="flex flex-wrap items-center gap-1">
+          {isCompleted && !applied && !task.params.target_deleted && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1 px-2 text-xs"
+              onClick={(event) => { event.stopPropagation(); onApply(task); }}
+            >
+              <Sparkles className="h-3.5 w-3.5" />应用建议
+            </Button>
+          )}
+          {isFailed && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 gap-1 px-2 text-xs text-muted-foreground"
+              onClick={(event) => { event.stopPropagation(); onDismiss(task); }}
+            >
+              <XCircle className="h-3.5 w-3.5" />忽略
+            </Button>
+          )}
+          {canManage && isActive && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+              onClick={(event) => { event.stopPropagation(); onCancel(task); }}
+            >
+              <OctagonX className="h-3.5 w-3.5" />停止
+            </Button>
+          )}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 gap-1 px-2 text-xs"
+            aria-label={`查看任务 #${task.id} 详情`}
+            title="查看详情"
+            onClick={(event) => { event.stopPropagation(); onOpenDetails(); }}
+          >
+            <Eye className="h-3.5 w-3.5" />详情
+          </Button>
+        </div>
+      </TableCell>
+    </TableRow>
+  );
+}
+
+function TaggingTasksTab({ canManage }: { canManage: boolean }) {
+  const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const [filter, setFilter] = React.useState<"all" | TaskStatus>("all");
+  const [selected, setSelected] = React.useState<Set<number>>(new Set());
+  const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
+  const [detailTask, setDetailTask] = React.useState<Task | null>(null);
+  const [cancelTarget, setCancelTarget] = React.useState<Task | null>(null);
+  const [dismissTarget, setDismissTarget] = React.useState<Task | null>(null);
+  const [applyTaskId, setApplyTaskId] = React.useState<number | null>(null);
+  const [ownerFilter, setOwnerFilter] = React.useState<string>("all");
+  const [searchInput, setSearchInput] = React.useState("");
+  const [search, setSearch] = React.useState("");
+  const [page, setPage] = React.useState(1);
+  const listContainerRef = React.useRef<HTMLDivElement | null>(null);
+  const pageSize = useAdaptivePageSize(listContainerRef, 64);
+
+  const isAdmin = canManage;
+  const currentUserId = user?.id ?? null;
+  const ownerIdParam = React.useMemo<number | undefined>(() => {
+    if (!isAdmin || ownerFilter === "all") return undefined;
+    if (ownerFilter === "self") return currentUserId ?? undefined;
+    const parsed = Number(ownerFilter);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+  }, [currentUserId, isAdmin, ownerFilter]);
+
+  React.useEffect(() => {
+    const timer = window.setTimeout(() => setSearch(searchInput.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [searchInput]);
+  React.useEffect(() => { setPage(1); }, [filter, ownerIdParam, search, pageSize]);
+  React.useEffect(() => { setSelected(new Set()); }, [filter, ownerIdParam, search]);
+
+  const { data, isLoading, isError, error } = useQuery({
+    queryKey: ["tasks", "tagging", ownerIdParam ?? "all", filter, search, page, pageSize],
+    queryFn: () => {
+      const params: Record<string, string | number> = { task_type: "ai_tagging", page, page_size: pageSize };
+      if (ownerIdParam != null) params.owner_id = ownerIdParam;
+      if (filter !== "all") params.status = filter;
+      if (search) params.search = search;
+      return api<TaskListResponse>("/api/tasks", { params });
+    },
+    enabled: pageSize > 0,
+    refetchInterval: (query) => {
+      const list = query.state.data?.items ?? [];
+      return list.some((task) => ACTIVE_STATUSES.includes(task.status as TaskStatus)) ? 3000 : 15000;
+    },
+    refetchOnWindowFocus: true,
+    placeholderData: (prev) => prev,
+  });
+
+  const isMeasuring = pageSize === 0;
+  const tasks = data?.items ?? [];
+  const total = data?.total ?? tasks.length;
+  const filteredIds = React.useMemo(() => tasks.map((task) => task.id), [tasks]);
+  const allSelected = filteredIds.length > 0 && filteredIds.every((id) => selected.has(id));
+  const someSelected = filteredIds.some((id) => selected.has(id)) && !allSelected;
+
+  const toggleOne = (id: number) => setSelected((previous) => {
+    const next = new Set(previous);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
+  const toggleAll = () => setSelected((previous) => {
+    const next = new Set(previous);
+    if (allSelected) filteredIds.forEach((id) => next.delete(id));
+    else filteredIds.forEach((id) => next.add(id));
+    return next;
+  });
+
+  const cancelMutation = useMutation({
+    mutationFn: (taskId: number) => api(`/api/tasks/${taskId}/cancel`, { method: "POST" }),
+    onSuccess: (_data, taskId) => {
+      toast.success("任务已取消");
+      setSelected((previous) => {
+        const next = new Set(previous);
+        next.delete(taskId);
+        return next;
+      });
+      void queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      setCancelTarget(null);
+    },
+    onError: (err: Error) => toast.error(err.message || "取消失败"),
+  });
+
+  const dismissMutation = useMutation({
+    mutationFn: (taskId: number) => api(`/api/tasks/${taskId}/dismiss`, { method: "POST" }),
+    onSuccess: (_data, taskId) => {
+      toast.success("已忽略模型识别错误");
+      setSelected((previous) => {
+        const next = new Set(previous);
+        next.delete(taskId);
+        return next;
+      });
+      setDismissTarget(null);
+      void queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      void queryClient.invalidateQueries({ queryKey: ["home"] });
+    },
+    onError: (err: Error) => toast.error(err.message || "忽略失败"),
+  });
+
+  const bulkDeleteMutation = useMutation({
+    mutationFn: (ids: number[]) => api<{ deleted: number }>("/api/admin/tasks/bulk-delete", {
+      method: "POST",
+      json: { task_ids: ids },
+    }),
+    onSuccess: () => {
+      toast.success("任务记录已删除");
+      setSelected(new Set());
+      void queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    },
+    onError: (err: Error) => toast.error(err.message || "批量删除失败"),
+  });
+
+  const showOwner = canManage;
+  const emptyText = search
+    ? `没有匹配“${search}”的标注任务`
+    : filter === "all"
+      ? "暂无标注任务"
+      : `无${STATUS_LABEL[filter as TaskStatus] || ""}的标注任务`;
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-4">
+      <TaskFilterBar
+        isAdmin={isAdmin}
+        ownerFilter={ownerFilter}
+        onOwnerFilterChange={setOwnerFilter}
+        filter={filter}
+        onFilterChange={setFilter}
+        searchInput={searchInput}
+        onSearchInputChange={setSearchInput}
+        searchPlaceholder="搜索素材名称或模型"
+        statuses={AI_STATUS_FILTERS}
+        selectedCount={selected.size}
+        bulkDeletePending={bulkDeleteMutation.isPending}
+        onBulkDelete={() => setBulkDeleteOpen(true)}
+      />
+
+      <div ref={listContainerRef} className="surface min-h-0 flex-1 overflow-auto">
+        {isMeasuring || isLoading ? (
+          <div className="flex items-center justify-center py-16 text-muted-foreground">
+            <Loader2 className="mr-2 h-5 w-5 animate-spin" /> 加载中…
+          </div>
+        ) : isError ? (
+          <div className="rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
+            加载失败：{(error as Error)?.message || "未知错误"}
+          </div>
+        ) : tasks.length === 0 ? (
+          <div className="rounded-md border border-dashed py-16 text-center text-sm text-muted-foreground">{emptyText}</div>
+        ) : (
+          <div className="overflow-hidden">
+            <Table className="min-w-[1180px]">
+              <TableHeader>
+                <TableRow className="bg-muted/30 hover:bg-muted/30">
+                  {isAdmin && (
+                    <TableHead className="w-10">
+                      <Checkbox checked={allSelected || (someSelected ? "indeterminate" : false)} onCheckedChange={toggleAll} disabled={filteredIds.length === 0} />
+                    </TableHead>
+                  )}
+                  <TableHead className="w-16">ID</TableHead>
+                  <TableHead className="w-[180px]">标注对象</TableHead>
+                  <TableHead className="w-[130px]">模型</TableHead>
+                  <TableHead className="w-[100px]">状态</TableHead>
+                  <TableHead className="w-[190px]">结果</TableHead>
+                  {showOwner && <TableHead className="w-[110px]">提交人</TableHead>}
+                  <TableHead className="w-[100px]">提交时间</TableHead>
+                  <TableHead className="w-[80px]">耗时</TableHead>
+                  <TableHead className="w-[180px]">操作</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {tasks.map((task) => (
+                  <AiTaggingRow
+                    key={task.id}
+                    task={task}
+                    onOpenDetails={() => setDetailTask(task)}
+                    onCancel={setCancelTarget}
+                    onDismiss={setDismissTarget}
+                    onApply={(target) => setApplyTaskId(target.id)}
+                    canManage={canManage}
+                    showOwner={showOwner}
+                    isAdmin={isAdmin}
+                    isSelected={selected.has(task.id)}
+                    onSelectToggle={() => toggleOne(task.id)}
+                  />
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </div>
+
+      <ListFooter
+        page={page}
+        pageSize={pageSize}
+        total={!isLoading && !isError ? total : 0}
+        onPageChange={setPage}
+        loading={isLoading}
+        reserve
+      />
+
+      <Dialog open={!!detailTask} onOpenChange={(open) => { if (!open) setDetailTask(null); }}>
+        {detailTask && (
+          <TaskDetail
+            task={detailTask}
+            onClose={() => setDetailTask(null)}
+            onApplyTagging={(task) => { setDetailTask(null); setApplyTaskId(task.id); }}
+          />
+        )}
+      </Dialog>
+
+      <ApplyTaggingDialog
+        open={applyTaskId != null}
+        taskId={applyTaskId}
+        onOpenChange={(open) => { if (!open) setApplyTaskId(null); }}
+        onApplied={() => { void queryClient.invalidateQueries({ queryKey: ["tasks"] }); }}
+      />
+
+      <Dialog open={!!cancelTarget} onOpenChange={(open) => { if (!open) setCancelTarget(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>确认停止任务</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            确定要停止标注任务
+            <span className="mx-1 font-semibold text-foreground">#{cancelTarget?.id}</span>
+            吗？此操作不可撤销。
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCancelTarget(null)} disabled={cancelMutation.isPending}>取消</Button>
+            <Button variant="destructive" onClick={() => cancelTarget && cancelMutation.mutate(cancelTarget.id)} disabled={cancelMutation.isPending}>
+              {cancelMutation.isPending && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}确认停止
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={!!dismissTarget}
+        onOpenChange={(open) => { if (!open) setDismissTarget(null); }}
+        title="忽略任务错误"
+        description={`确定忽略标注任务 #${dismissTarget?.id ?? ""} 的错误吗？忽略后任务会标记为已取消。`}
+        confirmLabel="忽略任务"
+        destructive
+        loading={dismissMutation.isPending}
+        onConfirm={() => dismissTarget && dismissMutation.mutate(dismissTarget.id)}
+      />
+
+      <ConfirmDialog
+        open={bulkDeleteOpen}
+        onOpenChange={setBulkDeleteOpen}
+        title="批量删除任务记录"
+        description={`确定删除选中的 ${selected.size} 条任务记录吗？未完成的任务将停止；已写入的标签不受影响。`}
+        confirmLabel="删除记录"
+        destructive
+        loading={bulkDeleteMutation.isPending}
+        onConfirm={() => bulkDeleteMutation.mutate(Array.from(selected), { onSuccess: () => setBulkDeleteOpen(false) })}
       />
     </div>
   );
