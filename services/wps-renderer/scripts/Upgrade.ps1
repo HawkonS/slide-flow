@@ -165,7 +165,7 @@ function Start-RendererTask($State) {
     Start-ScheduledTask -TaskName $State.Name -TaskPath $State.Path
 }
 
-function Wait-RendererHealthy([string]$Uri, [string]$Token, [int]$Attempts = 30) {
+function Wait-RendererHealthy([string]$Uri, [string]$Token, [int]$Attempts = 120) {
     for ($i = 0; $i -lt $Attempts; $i++) {
         Start-Sleep -Milliseconds 500
         try {
@@ -251,8 +251,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Staged dependencies are inconsistent." }
     & $venvPython -m compileall -q (Join-Path $newRelease 'wps_renderer')
     if ($LASTEXITCODE -ne 0) { throw "Staged renderer source could not be compiled." }
-    & $venvPython -c "import sys; sys.path.insert(0, sys.argv[1]); import fastapi, uvicorn, PIL, fontTools, defusedxml, wps_renderer.render_pull" $newRelease
-    if ($LASTEXITCODE -ne 0) { throw "Staged renderer import check failed." }
+    & $venvPython -c "import sys; sys.path.insert(0, sys.argv[1]); import fastapi, uvicorn, PIL, fontTools, defusedxml, wps_renderer.api, wps_renderer.render_pull" $newRelease
+    if ($LASTEXITCODE -ne 0) { throw "Staged renderer import check failed; the source tree may be incomplete." }
 
     $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
     $port = [int]$config.port
@@ -314,7 +314,7 @@ try {
     # token files, principals, triggers and settings that belong to operators.
     Set-TasksCurrentRelease @($rendererState) $current 'pythonw.exe'
     Start-RendererTask $rendererState
-    if (-not (Wait-RendererHealthy $healthUri $token 30)) { throw "New renderer failed its health check." }
+    if (-not (Wait-RendererHealthy $healthUri $token 120)) { throw "New renderer failed its health check." }
     Set-TasksCurrentRelease $pullWorkerStates $current
     Restore-TaskStates @($rendererState)
     Restore-TaskStates $pullWorkerStates
@@ -352,7 +352,7 @@ try {
             if ($movedPrevious -and (Test-Path -LiteralPath $retiring)) { Move-Item -LiteralPath $retiring -Destination $previous }
             Restore-TaskActions (@($rendererState) + $pullWorkerStates)
             Start-RendererTask $rendererState
-            if (-not (Wait-RendererHealthy $healthUri $token 30)) { throw "Restored renderer failed its health check." }
+            if (-not (Wait-RendererHealthy $healthUri $token 120)) { throw "Restored renderer failed its health check." }
             Restore-TaskStates @($rendererState)
             Restore-TaskStates $pullWorkerStates
             Write-Warning "The previous renderer release and original task actions/states were restored."
@@ -375,7 +375,7 @@ try {
                     $health = Invoke-Renderer "Get" $healthUri $token
                     if ($health.status -eq 'draining') { Invoke-Renderer "Post" "$baseUri/v1/admin/resume" $token | Out-Null }
                 }
-                if (-not (Wait-RendererHealthy $healthUri $token 30)) { throw "Original renderer could not be resumed." }
+                if (-not (Wait-RendererHealthy $healthUri $token 120)) { throw "Original renderer could not be resumed." }
             }
             Restore-TaskStates @($rendererState)
             Restore-TaskStates $pullWorkerStates
