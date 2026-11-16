@@ -4,6 +4,7 @@ import { useSearchInput } from "@/lib/use-search-input";
 import { RotateCcw, Search } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { MobileFilterSheet } from "@/components/common/MobileFilterSheet";
 import {
   DEFAULT_RESOURCE_SUBJECT,
   DEFAULT_SORT_KEY,
@@ -77,24 +78,15 @@ export function ShowFilters({ filters: s, subjects, tags, actions, hidePermissio
     s.subject !== "all" ||
     s.tags.length > 0 ||
     s.sort !== DEFAULT_SORT_KEY;
+  const activeCount =
+    (s.query.trim() ? 1 : 0) +
+    filterDirtyCount +
+    (s.subject !== "all" ? 1 : 0) +
+    (s.tags.length > 0 ? 1 : 0) +
+    (s.sort !== DEFAULT_SORT_KEY ? 1 : 0);
 
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      {/* 搜索 */}
-      <div className="relative min-w-0 flex-1 sm:flex-none">
-        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-        <input
-          {...searchInput}
-          placeholder="搜索标题、关键词"
-          className={cn(
-            "h-8 w-full rounded-md border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition sm:w-56",
-            "placeholder:text-muted-foreground",
-            "focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
-            s.query.trim() !== "" && "border-primary/40 bg-primary/5",
-          )}
-        />
-      </div>
-
+  const filterControls = (
+    <>
       {/* 筛选（分组下拉） */}
       <FilterGroupChip
         groups={groups}
@@ -128,6 +120,29 @@ export function ShowFilters({ filters: s, subjects, tags, actions, hidePermissio
         baseValue={DEFAULT_SORT_KEY}
       />
 
+    </>
+  );
+
+  return (
+    <>
+    <div className="hidden flex-wrap items-center gap-2 sm:flex">
+      {/* 搜索 */}
+      <div className="relative min-w-0 flex-1 sm:flex-none">
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+        <input
+          {...searchInput}
+          placeholder="搜索标题、关键词"
+          className={cn(
+            "h-8 w-full rounded-md border bg-background pl-7 pr-3 text-sm shadow-sm outline-none transition sm:w-56",
+            "placeholder:text-muted-foreground",
+            "focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
+            s.query.trim() !== "" && "border-primary/40 bg-primary/5",
+          )}
+        />
+      </div>
+
+      {filterControls}
+
       {/* 重置 */}
       {isDirty && (
         <Button
@@ -145,5 +160,20 @@ export function ShowFilters({ filters: s, subjects, tags, actions, hidePermissio
 
       {actions && <div className="ml-auto flex items-center gap-2">{actions}</div>}
     </div>
+
+    <MobileFilterSheet
+      title="筛选放映"
+      description="搜索标题、关键词，或按状态、主体、标签和排序筛选。"
+      searchValue={s.query}
+      onSearchChange={s.setQuery}
+      searchPlaceholder="搜索标题、关键词"
+      filters={filterControls}
+      activeCount={activeCount}
+      dirty={isDirty}
+      onClear={() => s.clear()}
+      onReset={() => s.reset()}
+      actions={actions}
+    />
+    </>
   );
 }

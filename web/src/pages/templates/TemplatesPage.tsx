@@ -24,6 +24,7 @@ import { toast } from "sonner";
 import { TemplateFormDialog, TemplateSortDialog } from "@/pages/admin/AdminTemplatesPage";
 import { PageMetrics } from "@/components/common/PageMetrics";
 import { PageHeader } from "@/components/common/PageHeader";
+import { MobileFilterSheet } from "@/components/common/MobileFilterSheet";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -253,48 +254,11 @@ export function TemplatesPage() {
   const subjectCount = subjects.length;
   const seriesCount = series.length;
 
-  return (
-    <div className="page-shell">
-      <PageHeader
-        title="标准模板"
-        titleExtra={isAdmin ? <Badge variant="secondary" className="rounded-md px-2 text-[11px]">可维护</Badge> : null}
-        description="按主体和系列管理标准单页，可单页下载或选择多页组合下载。"
-        actions={isAdmin ? (
-          <>
-            <Button variant="outline" size="sm" className="h-9 gap-1.5" onClick={() => setSortOpen(true)} disabled={templates.length === 0}>
-              <ArrowDownUp className="h-3.5 w-3.5" />排序
-            </Button>
-            <Button size="sm" className="h-9 gap-1.5" onClick={() => navigate("/templates/import")}>
-              <Plus className="h-3.5 w-3.5" />导入模板系列
-            </Button>
-          </>
-        ) : null}
-      />
-
-      <PageMetrics
-        ariaLabel="模板统计"
-        items={[
-          { label: "模板", value: total, icon: Layers3 },
-          { label: "主体", value: subjectCount, icon: FolderTree },
-          { label: "系列", value: seriesCount, icon: Files },
-        ]}
-      />
-
-      <div className="page-toolbar">
-        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-          <div className="relative min-w-[14rem] flex-1 sm:max-w-72">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索模板、主体、系列"
-              className={cn(
-                "h-8 w-full rounded-md border bg-background pl-8 pr-3 text-sm shadow-sm outline-none transition",
-                "placeholder:text-muted-foreground focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
-                query.trim() !== "" && "border-primary/40 bg-primary/5",
-              )}
-            />
-          </div>
+  const activeCount =
+    (query.trim() ? 1 : 0) +
+    [subjectFilter, seriesFilter, platformFilter, typeFilter].filter((value) => value !== "all").length;
+  const filterControls = (
+    <>
           <Select
             value={subjectFilter}
             onValueChange={(value) => {
@@ -345,6 +309,52 @@ export function TemplatesPage() {
               ))}
             </SelectContent>
           </Select>
+    </>
+  );
+
+  return (
+    <div className="page-shell">
+      <PageHeader
+        title="标准模板"
+        titleExtra={isAdmin ? <Badge variant="secondary" className="rounded-md px-2 text-[11px]">可维护</Badge> : null}
+        description="按主体和系列管理标准单页，可单页下载或选择多页组合下载。"
+        actions={isAdmin ? (
+          <>
+            <Button variant="outline" size="sm" className="h-9 gap-1.5" onClick={() => setSortOpen(true)} disabled={templates.length === 0}>
+              <ArrowDownUp className="h-3.5 w-3.5" />排序
+            </Button>
+            <Button size="sm" className="h-9 gap-1.5" onClick={() => navigate("/templates/import")}>
+              <Plus className="h-3.5 w-3.5" />导入模板系列
+            </Button>
+          </>
+        ) : null}
+      />
+
+      <PageMetrics
+        ariaLabel="模板统计"
+        items={[
+          { label: "模板", value: total, icon: Layers3 },
+          { label: "主体", value: subjectCount, icon: FolderTree },
+          { label: "系列", value: seriesCount, icon: Files },
+        ]}
+      />
+
+      <div className="page-toolbar">
+        <div className="hidden min-w-0 flex-1 flex-wrap items-center gap-2 sm:flex">
+          <div className="relative min-w-[14rem] flex-1 sm:max-w-72">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索模板、主体、系列"
+              className={cn(
+                "h-8 w-full rounded-md border bg-background pl-8 pr-3 text-sm shadow-sm outline-none transition",
+                "placeholder:text-muted-foreground focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
+                query.trim() !== "" && "border-primary/40 bg-primary/5",
+              )}
+            />
+          </div>
+          {filterControls}
           {hasFilters && (
             <Button
               variant="ghost"
@@ -357,6 +367,17 @@ export function TemplatesPage() {
             </Button>
           )}
         </div>
+        <MobileFilterSheet
+          title="筛选模板"
+          description="搜索模板、主体、系列，或按主体、系列、平台和类型筛选。"
+          searchValue={query}
+          onSearchChange={setQuery}
+          searchPlaceholder="搜索模板、主体、系列"
+          filters={filterControls}
+          activeCount={activeCount}
+          dirty={hasFilters}
+          onClear={clearFilters}
+        />
         <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
           {selected.size > 0 && <span className="text-xs text-muted-foreground">已选 <span className="font-medium text-primary">{selected.size}</span> 页</span>}
           <Button

@@ -1,17 +1,10 @@
 import * as React from "react";
 import type { SceneFilters } from "@/lib/tag-defaults";
 import { useSearchInput } from "@/lib/use-search-input";
-import { RotateCcw, Search, SlidersHorizontal } from "lucide-react";
+import { RotateCcw, Search } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { MobileFilterSheet } from "@/components/common/MobileFilterSheet";
 import {
   DEFAULT_SORT_KEY,
   RESOURCE_PERMISSION_OPTIONS,
@@ -36,7 +29,6 @@ export interface ResourceFiltersProps {
 }
 
 export function ResourceFilters({ filters: s, subjects, tags, actions, viewSwitch }: ResourceFiltersProps) {
-  const [mobileOpen, setMobileOpen] = React.useState(false);
   const searchInput = useSearchInput(s.query, s.setQuery);
   const { options: statusTags } = useMetadataTagOptions("status");
   const statusOptions = React.useMemo<ChipOption[]>(
@@ -157,62 +149,20 @@ export function ResourceFilters({ filters: s, subjects, tags, actions, viewSwitc
       {actions && <div className="ml-auto flex items-center gap-2">{actions}</div>}
     </div>
 
-    <div className="flex items-center gap-2 sm:hidden">
-      {viewSwitch}
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className="h-8 shrink-0 gap-1.5 px-2.5"
-        onClick={() => setMobileOpen(true)}
-      >
-        <SlidersHorizontal className="h-3.5 w-3.5" />
-        筛选
-        {activeCount > 0 && (
-          <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-foreground px-1 text-[9px] font-semibold text-background">
-            {activeCount}
-          </span>
-        )}
-      </Button>
-      {actions && <div className="ml-auto flex min-w-0 items-center gap-1.5">{actions}</div>}
-    </div>
-
-    <Dialog open={mobileOpen} onOpenChange={setMobileOpen}>
-      <DialogContent className="flex max-h-[min(760px,calc(100vh-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg">
-        <DialogHeader className="border-b px-5 py-4 pr-12 text-left">
-          <DialogTitle>筛选素材</DialogTitle>
-          <DialogDescription>搜索标题、关键词，或按状态、主体、标签和排序筛选。</DialogDescription>
-        </DialogHeader>
-        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
-          <MobileSearch value={s.query} onChange={s.setQuery} />
-          <div className="flex flex-wrap gap-2">{filterControls}</div>
-          {isDirty && (
-            <Button variant="ghost" size="sm" onClick={() => s.clear()} className="h-8 gap-1 px-0 text-xs text-muted-foreground">
-              <RotateCcw className="h-3.5 w-3.5" />
-              清空筛选
-            </Button>
-          )}
-        </div>
-        <DialogFooter className="flex-row justify-end border-t px-5 py-3">
-          <Button variant="outline" onClick={() => setMobileOpen(false)}>取消</Button>
-          <Button onClick={() => setMobileOpen(false)}>查看结果</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <MobileFilterSheet
+      title="筛选素材"
+      description="搜索标题、关键词，或按状态、主体、标签和排序筛选。"
+      searchValue={s.query}
+      onSearchChange={s.setQuery}
+      searchPlaceholder="搜索标题、关键词"
+      filters={filterControls}
+      activeCount={activeCount}
+      dirty={isDirty}
+      onClear={() => s.clear()}
+      onReset={() => s.reset()}
+      actions={actions}
+      viewSwitch={viewSwitch}
+    />
     </>
-  );
-}
-
-function MobileSearch({ value, onChange }: { value: string; onChange: (value: string) => void }) {
-  const input = useSearchInput(value, onChange);
-  return (
-    <div className="relative">
-      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-      <input
-        {...input}
-        placeholder="搜索标题、关键词"
-        className="h-9 w-full rounded-md border bg-background pl-8 pr-3 text-sm shadow-sm outline-none placeholder:text-muted-foreground focus:border-foreground/40 focus:ring-2 focus:ring-ring/20"
-      />
-    </div>
   );
 }
