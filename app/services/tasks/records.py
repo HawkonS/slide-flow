@@ -85,6 +85,64 @@ def _owner_brief(db: sqlite3.Connection, owner_id: int) -> dict[str, Any] | None
     }
 
 
+def attach_ai_target_briefs(
+    db: sqlite3.Connection | None, items: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Attach a safe target-resource brief to AI tagging task rows.
+
+    The list endpoint can return a whole page of tasks, so resolve every target
+    resource in one query instead of issuing one lookup per row.
+    """
+    if db is None:
+        return items
+    target_ids: set[int] = set()
+    for item in items:
+        if item.get("task_type") != "ai_tagging":
+            continue
+        params = item.get("params")
+        if not isinstance(params, dict):
+            continue
+        target_id = params.get("target_id")
+        if isinstance(target_id, bool):
+            continue
+        try:
+            parsed = int(target_id)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            target_ids.add(parsed)
+    briefs: dict[int, dict[str, Any]] = {}
+    if target_ids:
+        placeholders = ",".join("?" for _ in target_ids)
+        rows = db.execute(
+            f"SELECT id, name, detail_token, deleted_at FROM resources "
+            f"WHERE id IN ({placeholders})",
+            sorted(target_ids),
+        ).fetchall()
+        for row in rows:
+            briefs[int(row["id"])] = {
+                "name": str(row["name"] or ""),
+                "detail_token": str(row["detail_token"] or ""),
+                "deleted": row["deleted_at"] is not None,
+            }
+    for item in items:
+        if item.get("task_type") != "ai_tagging":
+            continue
+        params = item.setdefault("params", {})
+        if not isinstance(params, dict):
+            continue
+        target_id = params.get("target_id")
+        try:
+            parsed = int(target_id)
+        except (TypeError, ValueError):
+            parsed = 0
+        brief = briefs.get(parsed)
+        params["target_name"] = brief["name"] if brief else ""
+        params["target_detail_token"] = brief["detail_token"] if brief and not brief["deleted"] else ""
+        params["target_deleted"] = True if brief is None else brief["deleted"]
+    return items
+
+
 def _serialize_task(row: sqlite3.Row, db: sqlite3.Connection | None = None) -> dict[str, Any]:
     """将任务行序列化为前端可用的字典"""
     raw_params = json.loads(row["params"] or "{}")

@@ -105,8 +105,8 @@ class HomeWorkbenchTests(unittest.TestCase):
         self.assertEqual(stats["standard_shows"], 0)
         self.assertEqual(stats["tasks"]["upload"], 1)
         self.assertEqual(stats["tasks"]["download"], 1)
-        self.assertEqual(stats["tasks"]["unfinished"], 1)
-        self.assertEqual(stats["tasks"]["failed"], 0)
+        self.assertEqual(stats["tasks"]["unfinished"], 2)
+        self.assertEqual(stats["tasks"]["failed"], 1)
 
         scoped = self.client.get(
             "/api/tasks",

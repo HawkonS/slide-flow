@@ -52,6 +52,7 @@ from app.services.tasks.resource_import import schedule_resource_import_task
 from app.services.tasks.records import (
     _cleanup_task_temp,
     _serialize_task,
+    attach_ai_target_briefs,
 )
 from app.services.tasks.runtime import (
     _heavy_executor,
@@ -164,6 +165,24 @@ def list_tasks(
                 "$.subject",
                 "$.tags",
             )
+        elif task_type == "ai_tagging":
+            # AI tasks point at a resource by id and keep the model fields in
+            # params/result_data. Search the joined resource name as well as
+            # model metadata and generated suggestions.
+            where_clauses.append(
+                "("
+                "EXISTS (SELECT 1 FROM resources sr WHERE sr.id = "
+                "json_extract(tasks.params, '$.target_id') AND sr.name LIKE ?)"
+                " OR json_extract(tasks.params, '$.connection_name') LIKE ?"
+                " OR json_extract(tasks.params, '$.model') LIKE ?"
+                " OR CAST(json_extract(tasks.params, '$.target_id') AS TEXT) LIKE ?"
+                " OR json_extract(tasks.result_data, '$.suggested_tags') LIKE ?"
+                ")"
+            )
+            params_list.extend(
+                (search_value, search_value, search_value, search_value, search_value)
+            )
+            search_fields = ()
         else:
             search_fields = ()
         if search_fields:
@@ -189,6 +208,7 @@ def list_tasks(
     sql = f"SELECT * FROM tasks{where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?"
     rows = db.execute(sql, [*params_list, page_size, offset]).fetchall()
     items = [_serialize_task(row, db) for row in rows]
+    attach_ai_target_briefs(db, items)
 
     return {
         "items": items,
@@ -210,7 +230,9 @@ def get_task(
         raise HTTPException(404, "任务不存在")
     if not is_admin(user) and int(row["owner_id"]) != int(user["id"]):
         raise HTTPException(403, "无权查看此任务")
-    return _serialize_task(row, db)
+    item = _serialize_task(row, db)
+    attach_ai_target_briefs(db, [item])
+    return item
 
 
 @router.post("/api/tasks/split-import")

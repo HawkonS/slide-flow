@@ -425,7 +425,7 @@ def my_home_stats(
     )
     tasks_upload = _own_task_count(" AND task_type = 'batch_split_import'")
     tasks_download = _own_task_count(" AND task_type = 'download'")
-    home_task_types = "task_type IN ('batch_split_import', 'download')"
+    home_task_types = "task_type IN ('batch_split_import', 'download', 'ai_tagging')"
     tasks_unfinished = _own_task_count(
         f" AND status NOT IN ('completed', 'cancelled') AND {home_task_types}"
     )
