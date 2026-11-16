@@ -545,7 +545,7 @@ function TaskRow({ task, onOpenDetails, onCancel, canManage, showOwner, isAdmin,
 
 /* ---------- Task Detail Dialog ---------- */
 
-function TaskDetail({ task, onClose, onApplyTagging }: { task: Task; onClose: () => void; onApplyTagging?: (task: Task) => void }) {
+function TaskDetail({ task, onClose, onApplyTagging, onDelete }: { task: Task; onClose: () => void; onApplyTagging?: (task: Task) => void; onDelete?: (task: Task) => void }) {
   const navigate = useNavigate();
   const params = task.params || {};
   const result = task.result_data || {};
@@ -726,6 +726,17 @@ function TaskDetail({ task, onClose, onApplyTagging }: { task: Task; onClose: ()
       </div>
 
       <DialogFooter className="border-t bg-muted/20 px-6 py-4">
+        {onDelete && (
+          <Button
+            type="button"
+            variant="ghost"
+            className="mr-auto gap-1.5 text-destructive hover:text-destructive"
+            onClick={() => onDelete(task)}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            删除任务
+          </Button>
+        )}
         <Button type="button" variant="outline" onClick={onClose}>关闭</Button>
         {isActive && params.session_id && (
           <Button type="button" className="gap-1.5" onClick={continueImport}>
@@ -734,6 +745,36 @@ function TaskDetail({ task, onClose, onApplyTagging }: { task: Task; onClose: ()
         )}
       </DialogFooter>
     </DialogContent>
+  );
+}
+
+function DeleteTaskConfirm({ task, onClose, onDeleted }: { task: Task | null; onClose: () => void; onDeleted?: () => void }) {
+  const queryClient = useQueryClient();
+  const mutation = useMutation({
+    mutationFn: (taskId: number) => api(`/api/admin/tasks/${taskId}`, { method: "DELETE" }),
+    onSuccess: () => {
+      toast.success("任务记录已删除");
+      void queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      onClose();
+      onDeleted?.();
+    },
+    onError: (err: Error) => toast.error(err.message || "删除任务失败"),
+  });
+  return (
+    <ConfirmDialog
+      open={!!task}
+      onOpenChange={(open) => { if (!open && !mutation.isPending) onClose(); }}
+      title="删除任务记录"
+      description={
+        <>
+          确定删除任务 #{task?.id ?? ""} 吗？未完成的任务会停止并清理临时文件；已导入的素材不受影响。
+        </>
+      }
+      confirmLabel="删除任务"
+      destructive
+      loading={mutation.isPending}
+      onConfirm={() => task && mutation.mutate(task.id)}
+    />
   );
 }
 
@@ -1051,6 +1092,7 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
   const [cancelTarget, setCancelTarget] = React.useState<Task | null>(null);
   const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
   const [detailTask, setDetailTask] = React.useState<Task | null>(null);
+  const [deleteTarget, setDeleteTarget] = React.useState<Task | null>(null);
   const [filter, setFilter] = React.useState<"all" | TaskStatus>("all");
   const [selected, setSelected] = React.useState<Set<number>>(new Set());
   // 用户维度筛选："all" = 所有用户；"self" = 仅自己；其他为某个用户 id 的字符串形式
@@ -1261,8 +1303,10 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
           if (!open) setDetailTask(null);
         }}
       >
-        {detailTask && <TaskDetail task={detailTask} onClose={() => setDetailTask(null)} />}
+        {detailTask && <TaskDetail task={detailTask} onClose={() => setDetailTask(null)} onDelete={canManage ? (task) => { setDetailTask(null); setDeleteTarget(task); } : undefined} />}
       </Dialog>
+
+      <DeleteTaskConfirm task={deleteTarget} onClose={() => setDeleteTarget(null)} onDeleted={() => setDetailTask(null)} />
 
       {/* 停止确认对话框 */}
       <Dialog
@@ -1490,6 +1534,7 @@ function TaggingTasksTab({ canManage }: { canManage: boolean }) {
   const [selected, setSelected] = React.useState<Set<number>>(new Set());
   const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
   const [detailTask, setDetailTask] = React.useState<Task | null>(null);
+  const [deleteTarget, setDeleteTarget] = React.useState<Task | null>(null);
   const [cancelTarget, setCancelTarget] = React.useState<Task | null>(null);
   const [dismissTarget, setDismissTarget] = React.useState<Task | null>(null);
   const [applyTaskId, setApplyTaskId] = React.useState<number | null>(null);
@@ -1691,6 +1736,7 @@ function TaggingTasksTab({ canManage }: { canManage: boolean }) {
             task={detailTask}
             onClose={() => setDetailTask(null)}
             onApplyTagging={(task) => { setDetailTask(null); setApplyTaskId(task.id); }}
+            onDelete={canManage ? (task) => { setDetailTask(null); setDeleteTarget(task); } : undefined}
           />
         )}
       </Dialog>
@@ -1720,6 +1766,8 @@ function TaggingTasksTab({ canManage }: { canManage: boolean }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <DeleteTaskConfirm task={deleteTarget} onClose={() => setDeleteTarget(null)} onDeleted={() => setDetailTask(null)} />
 
       <ConfirmDialog
         open={!!dismissTarget}
