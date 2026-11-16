@@ -1,6 +1,6 @@
 import * as React from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { Check, Loader2, Search, Tags, X } from "lucide-react";
+import { Building2, Check, Loader2, Search, Tags, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -41,8 +41,19 @@ interface PresetUserTagGroup {
   tags: PresetUserTag[];
 }
 
+interface PresetDepartmentOption {
+  department_id: number;
+  tag_name: string;
+  label: string;
+  path: string;
+  path_names?: string;
+  depth: number;
+  is_active: boolean;
+}
+
 interface PresetUserTagsResponse {
   groups: PresetUserTagGroup[];
+  departments?: PresetDepartmentOption[];
 }
 
 /** Partial 范围用户多选组件：按搜索词读取有上限的用户选项并以可点选行呈现。
@@ -61,6 +72,7 @@ export function UserPicker({
   const [searchInput, setSearchInput] = React.useState("");
   const [search, setSearch] = React.useState("");
   const [selectedTag, setSelectedTag] = React.useState("");
+  const [selectedDepartmentTag, setSelectedDepartmentTag] = React.useState("");
   React.useEffect(() => {
     const timer = window.setTimeout(() => setSearch(searchInput.trim()), 250);
     return () => window.clearTimeout(timer);
@@ -112,8 +124,10 @@ export function UserPicker({
     isLoading: userTagsLoading,
     isError: userTagsError,
   } = useQuery({
-    queryKey: ["preset-tags", "user"],
-    queryFn: () => api<PresetUserTagsResponse>("/api/user-tags"),
+    queryKey: ["preset-tags", "user", "directory"],
+    queryFn: () => api<PresetUserTagsResponse>("/api/user-tags", {
+      params: { include_departments: true },
+    }),
     enabled: allowTagSelection,
     staleTime: 30_000,
   });
@@ -132,10 +146,19 @@ export function UserPicker({
   }, [data?.searchUsers, excludedSet]);
 
   const userTagGroups = userTagsData?.groups ?? [];
+  const userDepartments = (userTagsData?.departments ?? []).filter((department) => department.is_active);
   const allUserTags = userTagGroups.flatMap((group) =>
     group.tags.map((tag) => ({ ...tag, category: group.category })),
   );
   const tagDetailsByName = new Map(allUserTags.map((tag) => [tag.name, tag]));
+  for (const department of userDepartments) {
+    tagDetailsByName.set(department.tag_name, {
+      id: department.department_id,
+      name: department.tag_name,
+      label: department.label,
+      category: "组织架构",
+    });
+  }
 
   const toggle = (id: number) => {
     if (lockedIdSet.has(id)) return;
@@ -161,6 +184,12 @@ export function UserPicker({
     if (!selectedTag || !onTagChange || tagValue.includes(selectedTag)) return;
     onTagChange([...tagValue, selectedTag]);
     setSelectedTag("");
+  };
+
+  const addSelectedDepartment = () => {
+    if (!selectedDepartmentTag || !onTagChange || tagValue.includes(selectedDepartmentTag)) return;
+    onTagChange([...tagValue, selectedDepartmentTag]);
+    setSelectedDepartmentTag("");
   };
 
   return (
@@ -194,6 +223,45 @@ export function UserPicker({
               授权该标签
             </Button>
           </div>
+          {userDepartments.length > 0 ? (
+            <>
+              <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+                <Building2 className="h-3.5 w-3.5 text-muted-foreground" />
+                按部门授权
+              </div>
+              <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+                <Select
+                  value={selectedDepartmentTag}
+                  onValueChange={setSelectedDepartmentTag}
+                  disabled={userTagsLoading || userTagsError || userDepartments.length === 0}
+                >
+                  <SelectTrigger aria-label="选择部门">
+                    <SelectValue placeholder="请选择部门" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {userDepartments
+                      .slice()
+                      .sort((a, b) => a.path.localeCompare(b.path, "zh-CN"))
+                      .map((department) => (
+                        <SelectItem key={department.department_id} value={department.tag_name}>
+                          {"　".repeat(Math.max(0, department.depth - 1))}
+                          {department.path_names || department.path}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={addSelectedDepartment}
+                  disabled={!selectedDepartmentTag || !onTagChange || tagValue.includes(selectedDepartmentTag)}
+                >
+                  授权该部门
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">授权父部门会自动覆盖所有下级部门。</p>
+            </>
+          ) : null}
           {tagValue.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
               {tagValue.map((tagName) => {

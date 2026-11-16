@@ -19,6 +19,11 @@ export interface CurrentUser {
   feishu_id?: string | null;
   avatar_url?: string | null;
   tags?: string;
+  email?: string;
+  job_title?: string;
+  employee_no?: string;
+  employment_status?: EmploymentStatus;
+  departments?: UserDepartment[];
   must_change_pwd?: boolean;
   temporary_password_expires_at?: string | null;
 }
@@ -122,6 +127,54 @@ export interface FontItem {
   created_at?: string;
 }
 
+export interface UserDepartment {
+  id: number;
+  name: string;
+  path: string;
+  path_names?: string;
+  source: string;
+}
+
+export interface DepartmentLeader {
+  user_id: number;
+  name: string | null;
+  username: string;
+  avatar_url?: string | null;
+  is_primary: boolean;
+  source: string;
+}
+
+export interface Department {
+  id: number;
+  parent_id: number | null;
+  name: string;
+  path: string;
+  path_names: string;
+  depth: number;
+  sort_order: number;
+  is_active: boolean;
+  direct_member_count: number;
+  member_count: number;
+  leaders: DepartmentLeader[];
+  external_source?: string;
+}
+
+export interface DirectoryStats {
+  root_id: number;
+  people_count: number;
+  department_count: number;
+  unassigned_count: number;
+  last_synced_at: string | null;
+  last_sync_status: string | null;
+}
+
+export interface DirectoryResponse {
+  stats: DirectoryStats;
+  departments: Department[];
+}
+
+export type EmploymentStatus = "active" | "resigned" | "frozen" | "unknown";
+
 export interface AdminUser {
   id: number;
   username: string;
@@ -130,6 +183,12 @@ export interface AdminUser {
   avatar_url?: string | null;
   tags?: string;
   role: UserRole;
+  email?: string;
+  job_title?: string;
+  employee_no?: string;
+  employment_status?: EmploymentStatus;
+  departments?: UserDepartment[];
+  leader_of?: Array<{ department_id: number; name: string; is_primary: boolean }>;
   must_change_pwd?: boolean;
   temporary_password_expires_at?: string | null;
   last_login_at?: string | null;

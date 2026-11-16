@@ -15,7 +15,7 @@ import {
   Share2,
   Tag,
   Type,
-  Users,
+  Network,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -69,7 +69,7 @@ const NAV_SECTIONS: { title: string; items: NavItem[] }[] = [
   {
     title: "系统",
     items: [
-      { key: "users", to: "/admin/users", label: "用户管理", icon: Users },
+      { key: "users", to: "/admin/users", label: "组织架构", icon: Network },
       { key: "runtime", to: "/admin/runtime", label: "运行管理", icon: Server },
       { key: "config", to: "/admin/config", label: "配置管理", icon: Settings },
       { key: "logs", to: "/admin/logs", label: "日志管理", icon: ScrollText },

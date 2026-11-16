@@ -11,6 +11,7 @@ interface ListFooterProps {
   loading?: boolean;
   reserve?: boolean;
   className?: string;
+  pageSizeControl?: React.ReactNode;
 }
 
 /** Shared list footer: range summary plus previous/next pagination. */
@@ -24,6 +25,7 @@ export function ListFooter({
   loading = false,
   reserve = false,
   className,
+  pageSizeControl,
 }: ListFooterProps) {
   if (total <= 0) {
     return reserve ? <div className="h-12 shrink-0" /> : null;
@@ -40,8 +42,9 @@ export function ListFooter({
         className,
       )}
     >
-      <span>
+      <span className="flex flex-wrap items-center gap-3">
         显示 {start}-{end}，共 {total} {unit}
+        {pageSizeControl}
       </span>
       <div className="flex items-center gap-2">
         <Button

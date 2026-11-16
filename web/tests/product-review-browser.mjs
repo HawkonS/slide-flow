@@ -890,7 +890,7 @@ test('fixed tables: user pagination preserves column widths and exposes all trun
   assert.deepEqual(await tableWidths(page), widths);
   assert.equal(await page.locator('tbody tr').evaluate(row => row.getBoundingClientRect().height), rowHeight);
   await assertTableContentFits(page, '/admin/users');
-  const name = page.locator('tbody td').nth(1).locator('.truncate');
+  const name = page.locator('tbody td').nth(2).locator('.truncate');
   assert.equal(await name.evaluate(element => element.scrollWidth > element.clientWidth), true);
   await name.hover();
   await page.getByRole('tooltip').waitFor();
@@ -898,10 +898,11 @@ test('fixed tables: user pagination preserves column widths and exposes all trun
   assert.equal(await page.getByRole('tooltip').evaluate(element => element.closest('table')), null);
   await page.keyboard.press('Escape');
   await page.getByRole('tooltip').waitFor({ state: 'hidden' });
-  const tags = page.locator('tbody td').nth(4).locator('[tabindex="0"]');
-  await tags.focus();
+  const username = page.locator('tbody td').nth(3).locator('.truncate');
+  assert.equal(await username.evaluate(element => element.scrollWidth > element.clientWidth), true);
+  await username.hover();
   await page.getByRole('tooltip').waitFor();
-  for (const tag of longTableTags) assert.ok((await page.getByRole('tooltip').textContent()).includes(tag));
+  assert.equal(await page.getByRole('tooltip').textContent(), 'long_account_'.repeat(12));
   await page.keyboard.press('Escape');
   await page.getByRole('tooltip').waitFor({ state: 'hidden' });
   if (process.env.REVIEW_SCREENSHOTS) {

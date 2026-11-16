@@ -31,7 +31,8 @@ export function usePublicConfig() {
 }
 
 type FilterUrl = { q: string; sub: string; sta: string; tags: string[]; tm: string; p: number;
-  perm?: string; own?: string; rc?: string; rp?: string; sort?: string; view?: string };
+  perm?: string; own?: string; rc?: string; rp?: string; sort?: string; view?: string;
+  dept?: string; children?: boolean; emp?: string; role?: string; login?: string };
 
 function decodeState<T extends object>(raw: string | null, base: T): T | null {
   if (!raw) return null;

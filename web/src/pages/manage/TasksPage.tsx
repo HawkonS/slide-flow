@@ -16,6 +16,7 @@ import {
   Info,
   Loader2,
   OctagonX,
+  RefreshCw,
   Search,
   Sparkles,
   Trash2,
@@ -128,6 +129,7 @@ interface TaskParams {
   connection_id?: number;
   connection_name?: string;
   model?: string;
+  trigger?: string;
 }
 
 interface TaskResult {
@@ -150,6 +152,16 @@ interface TaskResult {
   tags_applied?: boolean;
   skipped_pages?: number;
   page_count?: number;
+  departments_created?: number;
+  departments_updated?: number;
+  departments_deactivated?: number;
+  users_created?: number;
+  users_updated?: number;
+  memberships_added?: number;
+  memberships_removed?: number;
+  leaders_set?: number;
+  skipped_users?: number;
+  warnings?: string[];
 }
 
 interface Task {
@@ -250,6 +262,7 @@ type TaskStatus =
 const TASK_TYPE_LABEL: Record<string, string> = {
   batch_split_import: "PPT 上传",
   ai_tagging: "智能标注",
+  feishu_sync: "组织架构同步",
 };
 
 const importTaskPath = (task: Task) =>
@@ -295,6 +308,7 @@ const STATUS_FILTERS: { value: "all" | TaskStatus; label: string }[] = [
 ];
 
 const AI_STATUS_FILTERS = STATUS_FILTERS.filter((item) => item.value !== "uploading");
+const SYNC_STATUS_FILTERS = STATUS_FILTERS.filter((item) => item.value !== "uploading");
 
 /* ---------- helpers ---------- */
 
@@ -429,8 +443,22 @@ function TaskRow({ task, onOpenDetails, onCancel, canManage, showOwner, isAdmin,
 
         <TableCell>
           <div className="flex flex-col gap-0.5">
-            <TableText className="text-sm font-medium" text={task.params.series || task.params.name_prefix || TASK_TYPE_LABEL[task.task_type] || task.task_type} />
-            <TableText className="text-[11px] text-muted-foreground" text={`${TASK_TYPE_LABEL[task.task_type] || task.task_type}${task.params.subject ? ` · ${task.params.subject}` : ""}`} />
+            <TableText
+              className="text-sm font-medium"
+              text={
+                task.task_type === "feishu_sync"
+                  ? "组织架构同步"
+                  : task.params.series || task.params.name_prefix || TASK_TYPE_LABEL[task.task_type] || task.task_type
+              }
+            />
+            <TableText
+              className="text-[11px] text-muted-foreground"
+              text={
+                task.task_type === "feishu_sync"
+                  ? task.params.trigger === "scheduled" ? "定时同步" : "手动同步"
+                  : `${TASK_TYPE_LABEL[task.task_type] || task.task_type}${task.params.subject ? ` · ${task.params.subject}` : ""}`
+              }
+            />
           </div>
         </TableCell>
 
@@ -555,7 +583,9 @@ function TaskDetail({ task, onClose, onApplyTagging, onDelete }: { task: Task; o
   const isActive = ACTIVE_STATUSES.includes(status);
   const taskTitle = task.task_type === "ai_tagging"
     ? params.target_name || TASK_TYPE_LABEL[task.task_type] || "智能标注"
-    : params.series || params.name_prefix || TASK_TYPE_LABEL[task.task_type] || task.task_type;
+    : task.task_type === "feishu_sync"
+      ? "组织架构同步"
+      : params.series || params.name_prefix || TASK_TYPE_LABEL[task.task_type] || task.task_type;
   const percent = task.total > 0
     ? Math.min(100, Math.round((task.progress / task.total) * 100))
     : Math.min(100, Math.max(0, Number(task.upload_progress) || 0));
@@ -609,7 +639,7 @@ function TaskDetail({ task, onClose, onApplyTagging, onDelete }: { task: Task; o
                 <div className={cn("h-full rounded-full transition-[width] duration-500", progressTone)} style={{ width: `${percent}%` }} />
               </div>
               <div className="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
-                <span>{task.total > 0 ? `${task.progress} / ${task.total} ${task.task_type === "ai_tagging" ? "步" : "页"}` : "上传处理中"}</span>
+                <span>{task.total > 0 ? `${task.progress} / ${task.total} ${task.task_type === "ai_tagging" || task.task_type === "feishu_sync" ? "步" : "页"}` : "上传处理中"}</span>
                 {task.message && <span className="max-w-full truncate">{task.message}</span>}
               </div>
             </section>
@@ -629,6 +659,7 @@ function TaskDetail({ task, onClose, onApplyTagging, onDelete }: { task: Task; o
               {task.task_type === "ai_tagging" && <InfoRow label="标注对象" value={`${params.target_name || (params.target_type === "show" ? `放映 #${params.target_id ?? "-"}` : `素材 #${params.target_id ?? "-"}`)}${params.target_deleted ? "（已删除）" : ""}`} />}
               {task.task_type === "ai_tagging" && params.connection_name && <InfoRow label="模型连接" value={params.connection_name} />}
               {task.task_type === "ai_tagging" && params.model && <InfoRow label="模型" value={params.model} />}
+              {task.task_type === "feishu_sync" && <InfoRow label="触发方式" value={params.trigger === "scheduled" ? "定时同步" : "手动同步"} />}
               {params.import_target === "templates" && <InfoRow label="导入目标" value="标准模板" />}
               {params.series && <InfoRow label="系列" value={params.series} />}
               {params.name_prefix && params.import_target !== "templates" && <InfoRow label="名称前缀" value={params.name_prefix} />}
@@ -668,7 +699,21 @@ function TaskDetail({ task, onClose, onApplyTagging, onDelete }: { task: Task; o
             {status === "failed" && task.error_message ? (
               <div className="whitespace-pre-wrap break-all rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs leading-relaxed text-destructive">{task.error_message}</div>
             ) : status === "completed" ? (
-              task.task_type === "ai_tagging" ? (
+              task.task_type === "feishu_sync" ? (
+                <>
+                  <InfoRow label="部门新增" value={String(result.departments_created ?? 0)} highlight />
+                  <InfoRow label="部门更新" value={String(result.departments_updated ?? 0)} />
+                  <InfoRow label="部门停用" value={String(result.departments_deactivated ?? 0)} />
+                  <InfoRow label="用户新增" value={String(result.users_created ?? 0)} />
+                  <InfoRow label="用户更新" value={String(result.users_updated ?? 0)} />
+                  {typeof result.memberships_added === "number" && (
+                    <InfoRow label="成员关系新增" value={String(result.memberships_added)} />
+                  )}
+                  {typeof result.memberships_removed === "number" && (
+                    <InfoRow label="成员关系移除" value={String(result.memberships_removed)} />
+                  )}
+                </>
+              ) : task.task_type === "ai_tagging" ? (
                 <>
                   <InfoRow label="建议标签" value={result.suggested_tags?.join("、") || "无"} />
                   {result.existing_tags && result.existing_tags.length > 0 && <InfoRow label="已有标签" value={result.existing_tags.join("、")} />}
@@ -1015,10 +1060,16 @@ function TaskFilterBar({
 export default function TasksPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const rawTab = searchParams.get("tab");
-  const tab: "uploads" | "downloads" | "tagging" =
-    rawTab === "uploads" ? "uploads" : rawTab === "tagging" ? "tagging" : "downloads";
   const { user } = useAuth();
   const canManage = isAdminRole(user?.role);
+  const tab: "uploads" | "downloads" | "tagging" | "sync" =
+    rawTab === "uploads"
+      ? "uploads"
+      : rawTab === "tagging"
+        ? "tagging"
+        : rawTab === "sync" && canManage
+          ? "sync"
+          : "downloads";
   const title = "任务管理";
 
   const handleTabChange = (value: string) => {
@@ -1027,6 +1078,8 @@ export default function TasksPage() {
       next.set("tab", "uploads");
     } else if (value === "tagging") {
       next.set("tab", "tagging");
+    } else if (value === "sync") {
+      next.set("tab", "sync");
     } else {
       next.delete("tab");
     }
@@ -1042,7 +1095,7 @@ export default function TasksPage() {
             {canManage ? "可维护" : "只读"}
           </Badge>
         }
-        description="查看上传、下载和智能标注任务，按状态、提交人或关键词快速筛选。"
+        description="查看上传、下载、智能标注和组织架构同步任务，按状态、提交人或关键词快速筛选。"
       />
 
       <Tabs value={tab} onValueChange={handleTabChange} className="flex min-h-0 flex-1 flex-col">
@@ -1059,6 +1112,12 @@ export default function TasksPage() {
             <Sparkles className="h-3.5 w-3.5" />
             标注任务
           </TabsTrigger>
+          {canManage && (
+            <TabsTrigger value="sync" className="gap-1.5">
+              <RefreshCw className="h-3.5 w-3.5" />
+              同步任务
+            </TabsTrigger>
+          )}
         </TabsList>
         <TabsContent
           value="downloads"
@@ -1078,6 +1137,14 @@ export default function TasksPage() {
         >
           <TaggingTasksTab canManage={canManage} />
         </TabsContent>
+        {canManage && (
+          <TabsContent
+            value="sync"
+            className="mt-3 flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
+          >
+            <SyncTasksTab canManage={canManage} />
+          </TabsContent>
+        )}
       </Tabs>
     </div>
   );
@@ -1353,6 +1420,285 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
         onOpenChange={setBulkDeleteOpen}
         title="批量删除任务记录"
         description={`确定删除选中的 ${selected.size} 条任务记录吗？未完成的任务将停止，临时文件会清理；已导入的素材不受影响。`}
+        confirmLabel="删除记录"
+        destructive
+        loading={bulkDelMut.isPending}
+        onConfirm={() => {
+          bulkDelMut.mutate(Array.from(selected), { onSuccess: () => setBulkDeleteOpen(false) });
+        }}
+      />
+    </div>
+  );
+}
+
+/* ---------- Feishu Sync Tasks Tab ---------- */
+
+function SyncTasksTab({ canManage }: { canManage: boolean }) {
+  const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const [cancelTarget, setCancelTarget] = React.useState<Task | null>(null);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
+  const [detailTask, setDetailTask] = React.useState<Task | null>(null);
+  const [deleteTarget, setDeleteTarget] = React.useState<Task | null>(null);
+  const [filter, setFilter] = React.useState<"all" | TaskStatus>("all");
+  const [selected, setSelected] = React.useState<Set<number>>(new Set());
+  const [ownerFilter, setOwnerFilter] = React.useState<string>("all");
+  const [searchInput, setSearchInput] = React.useState("");
+  const [search, setSearch] = React.useState("");
+  const [page, setPage] = React.useState(1);
+  const listContainerRef = React.useRef<HTMLDivElement | null>(null);
+  const pageSize = useAdaptivePageSize(listContainerRef);
+
+  const isAdmin = canManage;
+  const currentUserId = user?.id ?? null;
+  const ownerIdParam = React.useMemo<number | undefined>(() => {
+    if (!isAdmin) return undefined;
+    if (ownerFilter === "all") return undefined;
+    if (ownerFilter === "self") return currentUserId ?? undefined;
+    const value = Number(ownerFilter);
+    return Number.isFinite(value) && value > 0 ? value : undefined;
+  }, [isAdmin, ownerFilter, currentUserId]);
+
+  React.useEffect(() => {
+    const timer = window.setTimeout(() => setSearch(searchInput.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [searchInput]);
+
+  React.useEffect(() => {
+    setPage(1);
+  }, [filter, ownerIdParam, search, pageSize]);
+
+  const { data, isLoading, isError, error } = useQuery({
+    queryKey: ["tasks", "feishu-sync", ownerIdParam ?? "all", filter, search, page, pageSize],
+    queryFn: async () => {
+      const params: Record<string, string | number> = {
+        task_type: "feishu_sync",
+        page,
+        page_size: pageSize,
+      };
+      if (ownerIdParam != null) params.owner_id = ownerIdParam;
+      if (filter !== "all") params.status = filter;
+      if (search) params.search = search;
+      return api<TaskListResponse>("/api/tasks", { params });
+    },
+    enabled: pageSize > 0,
+    refetchInterval: (query) => {
+      const list = query.state.data?.items ?? [];
+      const hasActive = list.some((task) => ACTIVE_STATUSES.includes(task.status as TaskStatus));
+      return hasActive ? 3000 : 15000;
+    },
+    refetchOnWindowFocus: true,
+    placeholderData: (prev) => prev,
+  });
+
+  const isMeasuring = pageSize === 0;
+  const tasks = data?.items ?? [];
+  const total = data?.total ?? tasks.length;
+  const totalPages = Math.max(1, Math.ceil(total / Math.max(1, pageSize)));
+  const filteredIds = React.useMemo(() => tasks.map((task) => task.id), [tasks]);
+  const allSelected = filteredIds.length > 0 && filteredIds.every((id) => selected.has(id));
+  const someSelected = filteredIds.some((id) => selected.has(id)) && !allSelected;
+
+  const toggleOne = (id: number) => {
+    setSelected((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const toggleAll = () => {
+    setSelected((previous) => {
+      const next = new Set(previous);
+      if (allSelected) filteredIds.forEach((id) => next.delete(id));
+      else filteredIds.forEach((id) => next.add(id));
+      return next;
+    });
+  };
+
+  const syncMutation = useMutation({
+    mutationFn: async () => api<{ task_id: number }>("/api/tasks/feishu-sync", { method: "POST" }),
+    onSuccess: (result) => {
+      toast.success(`同步任务已提交（#${result.task_id}）`);
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    },
+    onError: (err: Error) => toast.error(err.message || "提交同步任务失败"),
+  });
+
+  const cancelMutation = useMutation({
+    mutationFn: async (taskId: number) => api(`/api/tasks/${taskId}/cancel`, { method: "POST" }),
+    onSuccess: () => {
+      toast.success("任务已取消");
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      setCancelTarget(null);
+    },
+    onError: (err: Error) => toast.error(err.message || "取消失败"),
+  });
+
+  const bulkDelMut = useMutation({
+    mutationFn: async (ids: number[]) =>
+      api<{ deleted: number }>("/api/admin/tasks/bulk-delete", { method: "POST", json: { task_ids: ids } }),
+    onSuccess: (result) => {
+      toast.success(`已删除 ${result.deleted} 个任务`);
+      setSelected(new Set());
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    },
+    onError: (err: Error) => toast.error(err.message || "批量删除失败"),
+  });
+
+  const showOwner = canManage;
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm font-medium">飞书组织架构同步</p>
+        <Button
+          size="sm"
+          className="h-8 gap-1.5"
+          disabled={syncMutation.isPending}
+          onClick={() => syncMutation.mutate()}
+        >
+          <RefreshCw className={cn("h-3.5 w-3.5", syncMutation.isPending && "animate-spin")} />
+          {syncMutation.isPending ? "提交中…" : "立即同步"}
+        </Button>
+      </div>
+
+      <TaskFilterBar
+        isAdmin={isAdmin}
+        ownerFilter={ownerFilter}
+        onOwnerFilterChange={setOwnerFilter}
+        filter={filter}
+        onFilterChange={setFilter}
+        searchInput={searchInput}
+        onSearchInputChange={setSearchInput}
+        searchPlaceholder="搜索同步结果"
+        statuses={SYNC_STATUS_FILTERS}
+        selectedCount={selected.size}
+        bulkDeletePending={bulkDelMut.isPending}
+        onBulkDelete={() => setBulkDeleteOpen(true)}
+      />
+
+      <div ref={listContainerRef} className="surface min-h-0 flex-1 overflow-auto">
+        {isMeasuring || isLoading ? (
+          <div className="flex items-center justify-center py-16 text-muted-foreground">
+            <Loader2 className="mr-2 h-5 w-5 animate-spin" /> 加载中…
+          </div>
+        ) : isError ? (
+          <div className="rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
+            加载失败：{(error as Error)?.message || "未知错误"}
+          </div>
+        ) : tasks.length === 0 ? (
+          <div className="rounded-md border border-dashed py-16 text-center text-sm text-muted-foreground">
+            {search
+              ? `没有匹配“${search}”的同步任务`
+              : filter === "all"
+                ? "暂无组织架构同步任务"
+                : `无${STATUS_LABEL[filter as TaskStatus] || ""}的同步任务`}
+          </div>
+        ) : (
+          <div className="overflow-hidden">
+            <Table className="min-w-[1160px]">
+              <TableHeader>
+                <TableRow className="bg-muted/30 hover:bg-muted/30">
+                  {isAdmin && (
+                    <TableHead className="w-10">
+                      <Checkbox
+                        checked={allSelected || (someSelected ? "indeterminate" : false)}
+                        onCheckedChange={toggleAll}
+                        disabled={filteredIds.length === 0}
+                      />
+                    </TableHead>
+                  )}
+                  <TableHead className="w-20">ID</TableHead>
+                  <TableHead>任务</TableHead>
+                  <TableHead className="w-28">状态</TableHead>
+                  <TableHead className="w-48">进度</TableHead>
+                  {showOwner && <TableHead className="w-32">提交人</TableHead>}
+                  <TableHead className="w-28">提交时间</TableHead>
+                  <TableHead className="w-24">耗时</TableHead>
+                  <TableHead className="w-40">操作</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {tasks.map((task) => (
+                  <TaskRow
+                    key={task.id}
+                    task={task}
+                    onOpenDetails={() => setDetailTask(task)}
+                    onCancel={setCancelTarget}
+                    canManage={canManage}
+                    showOwner={showOwner}
+                    isAdmin={isAdmin}
+                    isSelected={selected.has(task.id)}
+                    onSelectToggle={() => toggleOne(task.id)}
+                  />
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </div>
+
+      <ListFooter
+        page={page}
+        pageSize={pageSize}
+        total={!isLoading && !isError ? total : 0}
+        onPageChange={setPage}
+        loading={isLoading}
+        reserve
+      />
+
+      <Dialog
+        open={!!detailTask}
+        onOpenChange={(open) => {
+          if (!open) setDetailTask(null);
+        }}
+      >
+        {detailTask && (
+          <TaskDetail
+            task={detailTask}
+            onClose={() => setDetailTask(null)}
+            onDelete={canManage ? (task) => { setDetailTask(null); setDeleteTarget(task); } : undefined}
+          />
+        )}
+      </Dialog>
+
+      <DeleteTaskConfirm task={deleteTarget} onClose={() => setDeleteTarget(null)} onDeleted={() => setDetailTask(null)} />
+
+      <Dialog
+        open={!!cancelTarget}
+        onOpenChange={(open) => {
+          if (!open) setCancelTarget(null);
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>确认停止任务</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            确定要停止同步任务 <span className="font-semibold text-foreground">#{cancelTarget?.id}</span> 吗？
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCancelTarget(null)} disabled={cancelMutation.isPending}>
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => cancelTarget && cancelMutation.mutate(cancelTarget.id)}
+              disabled={cancelMutation.isPending}
+            >
+              {cancelMutation.isPending && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+              确认停止
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={bulkDeleteOpen}
+        onOpenChange={setBulkDeleteOpen}
+        title="批量删除任务记录"
+        description={`确定删除选中的 ${selected.size} 条同步任务记录吗？`}
         confirmLabel="删除记录"
         destructive
         loading={bulkDelMut.isPending}

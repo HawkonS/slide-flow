@@ -2,10 +2,11 @@ import { useSceneFilters } from "@/lib/tag-defaults";
 import { copyText } from "@/lib/clipboard";
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRightLeft, CalendarDays, Camera, Check, ChevronDown, CloudDownload, Copy, KeyRound, Loader2, MoreHorizontal, Pencil, Search, Shield, Tag, Trash2, Upload, User, UserCheck, UserPlus, X } from "lucide-react";
+import { ArrowRightLeft, Building2, Camera, Check, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Clock, CloudDownload, Copy, Crown, KeyRound, Loader2, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Shield, Tag, Trash2, Upload, User, UserPlus, Users, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
+import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import {
@@ -31,7 +32,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Table,
   TableBody,
@@ -42,18 +42,29 @@ import {
 } from "@/components/ui/table";
 import { api } from "@/lib/api";
 import { USER_ROLE_LABEL, USER_ROLE_OPTIONS } from "@/lib/constants";
-import { AdminUser, AdminUsersResponse, UserRole } from "@/lib/types";
+import type {
+  AdminUser,
+  AdminUsersResponse,
+  Department,
+  DirectoryResponse,
+  EmploymentStatus,
+  UserRole,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { ListFooter } from "@/components/common/ListFooter";
-import { TableTags, TableText } from "@/components/common/TableContent";
+import { TableText } from "@/components/common/TableContent";
 import { PageHeader } from "@/components/common/PageHeader";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { TagInput } from "@/components/resource/TagInput";
-import { PageMetrics } from "@/components/common/PageMetrics";
 import { FilterChip, TagFilterChip } from "@/components/resource/filter-chips";
 import { parseTags, serializeTags } from "@/lib/types";
 import { useAuth } from "@/lib/auth";
 import { UserSearchSelect } from "@/components/resource/UserSearchSelect";
+import { DepartmentPicker } from "@/components/directory/DepartmentPicker";
+import { DepartmentDialog } from "@/components/directory/DepartmentDialog";
+import { AddMembersDialog } from "@/components/directory/AddMembersDialog";
+import { UserProfileModal } from "@/components/directory/UserProfileModal";
+import { DirectorySyncScheduleDialog } from "@/components/directory/DirectorySyncScheduleDialog";
 
 const userDateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric",
@@ -70,61 +81,9 @@ function formatUserDateTime(value: string | null | undefined, emptyText = "-") {
   return Number.isNaN(date.getTime()) ? value : userDateTimeFormatter.format(date).split("/").join("-");
 }
 
-type LoginSort = "asc" | "desc";
+type LoginSort = "" | "asc" | "desc";
 
-function LoginSortChip({ value, onChange }: { value: LoginSort; onChange: (value: LoginSort) => void }) {
-  const directionLabel = value === "asc" ? "升序" : "降序";
-  return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className={cn(
-            "group inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-3 text-sm transition hover:border-foreground/30 hover:bg-accent",
-            "border-foreground/25 bg-primary-weak text-foreground",
-          )}
-          aria-label={`排序：最后登录时间${directionLabel}`}
-        >
-          <span className="text-muted-foreground">排序</span>
-          <span className="font-medium">最后登录时间 · {directionLabel}</span>
-          <ChevronDown className="h-3.5 w-3.5 opacity-80" />
-        </button>
-      </PopoverTrigger>
-      <PopoverContent className="w-56 p-1" align="start">
-        <div className="mb-1 border-b px-1 pb-2 pt-1">
-          <div className="mb-1 text-xs text-muted-foreground">排序方向</div>
-          <div className="grid grid-cols-2 gap-1">
-            {([
-              { value: "asc", label: "升序" },
-              { value: "desc", label: "降序" },
-            ] as const).map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                aria-pressed={value === option.value}
-                onClick={() => onChange(option.value)}
-                className={cn(
-                  "h-7 rounded-md border text-xs transition",
-                  value === option.value
-                    ? "border-foreground/25 bg-primary-weak text-foreground"
-                    : "bg-background hover:border-foreground/30 hover:bg-accent",
-                )}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="flex items-center justify-between rounded-sm px-2 py-1.5 text-sm">
-          <span>最后登录时间</span>
-          <Check className="h-3.5 w-3.5" />
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
-}
-
-const USER_FILTER_BASE = { q: "", sub: "all", sta: "all", tags: [] as string[], tm: "any", p: 1, role: "all", login: "desc" };
+const USER_FILTER_BASE = { q: "", sub: "all", sta: "all", tags: [] as string[], tm: "any", p: 1, role: "all", login: "" as LoginSort, dept: "" as string, children: true, emp: "all" as string };
 
 export function AdminUsersPage() {
   const qc = useQueryClient();
@@ -135,6 +94,63 @@ export function AdminUsersPage() {
   const loginSort = userFilterState.login as LoginSort;
   const setRoleFilter = (role: UserRole | "all") => setUserFilterState((prev) => ({ ...prev, role, p: 1 }));
   const setLoginSort = (login: LoginSort) => setUserFilterState((prev) => ({ ...prev, login, p: 1 }));
+  const selectedDepartment = (userFilterState.dept as string) || "";
+  const includeChildren = userFilterState.children !== false;
+  const employmentFilter = (userFilterState.emp as string) || "all";
+  const setIncludeChildren = (value: boolean) =>
+    setUserFilterState((prev) => ({ ...prev, children: value, p: 1 }));
+  const setEmploymentFilter = (emp: string) =>
+    setUserFilterState((prev) => ({ ...prev, emp, p: 1 }));
+
+  const directoryQuery = useQuery({
+    queryKey: ["admin", "directory"],
+    queryFn: () => api<DirectoryResponse>("/api/admin/directory"),
+    staleTime: 15_000,
+  });
+  const departments = directoryQuery.data?.departments ?? [];
+  const directoryStats = directoryQuery.data?.stats;
+  const rootDepartmentId = directoryStats?.root_id ?? 0;
+  const departmentById = React.useMemo(
+    () => new Map<number, Department>(departments.map((department) => [department.id, department])),
+    [departments],
+  );
+  const childrenByParent = React.useMemo(() => {
+    const map = new Map<number, Department[]>();
+    for (const department of departments) {
+      if (department.parent_id == null) continue;
+      const list = map.get(department.parent_id) ?? [];
+      list.push(department);
+      map.set(department.parent_id, list);
+    }
+    for (const list of map.values()) {
+      list.sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name, "zh-CN"));
+    }
+    return map;
+  }, [departments]);
+  const [expanded, setExpanded] = React.useState<Set<number>>(new Set());
+  const [departmentSearch, setDepartmentSearch] = React.useState("");
+  const [profileUser, setProfileUser] = React.useState<AdminUser | null>(null);
+  const [scheduleOpen, setScheduleOpen] = React.useState(false);
+  const [departmentDialog, setDepartmentDialog] = React.useState<{
+    open: boolean;
+    department: Department | null;
+    parentId: number | null;
+  }>({ open: false, department: null, parentId: null });
+  const [addMembersOpen, setAddMembersOpen] = React.useState(false);
+  const [deleteDepartment, setDeleteDepartment] = React.useState<Department | null>(null);
+  const [deleteDepartmentUsage, setDeleteDepartmentUsage] = React.useState<{
+    grants: number;
+    members: number;
+    children: number;
+  } | null>(null);
+  const expandedInitialized = React.useRef(false);
+
+  React.useEffect(() => {
+    if (!directoryQuery.data || expandedInitialized.current) return;
+    const topLevel = (childrenByParent.get(rootDepartmentId) ?? []).map((department) => department.id);
+    setExpanded(new Set(topLevel));
+    expandedInitialized.current = true;
+  }, [directoryQuery.data, childrenByParent, rootDepartmentId]);
 
   const [editing, setEditing] = React.useState<AdminUser | null>(null);
   const [createOpen, setCreateOpen] = React.useState(false);
@@ -163,26 +179,57 @@ export function AdminUsersPage() {
       toast.success("用户已删除");
       qc.invalidateQueries({ queryKey: ["admin", "users"] });
       qc.invalidateQueries({ queryKey: ["users", "options"] });
+      qc.invalidateQueries({ queryKey: ["admin", "directory"] });
     },
     onError: (err: Error) => toast.error(err.message || "删除失败"),
   });
 
-  const importFeishuMut = useMutation({
-    mutationFn: async () => api<{ total: number; created: number; updated: number; unchanged: number }>(
-      "/api/admin/users/import-feishu",
-      { method: "POST" },
-    ),
-    onSuccess: (result) => {
-      toast.success(
-        "飞书通讯录同步完成：新增 " + result.created
-          + " 人，更新 " + result.updated
-          + " 人，未变化 " + result.unchanged + " 人",
+  const deleteDepartmentMut = useMutation({
+    mutationFn: async (department: Department) => {
+      const force = Boolean(
+        deleteDepartmentUsage && (deleteDepartmentUsage.grants > 0 || deleteDepartmentUsage.members > 0),
       );
-      setPage(1);
+      return api(`/api/departments/${department.id}?force=${force ? "true" : "false"}`, {
+        method: "DELETE",
+      });
+    },
+    onSuccess: () => {
+      toast.success("部门已删除");
+      setDeleteDepartment(null);
+      setDeleteDepartmentUsage(null);
+      qc.invalidateQueries({ queryKey: ["admin", "directory"] });
       qc.invalidateQueries({ queryKey: ["admin", "users"] });
       qc.invalidateQueries({ queryKey: ["users", "options"] });
     },
-    onError: (err: Error) => toast.error(err.message || "飞书通讯录同步失败"),
+    onError: (err: Error) => toast.error(err.message || "删除部门失败"),
+  });
+
+  const importFeishuMut = useMutation({
+    mutationFn: async () => api<{ task_id: number; status: string }>(
+      "/api/tasks/feishu-sync",
+      { method: "POST" },
+    ),
+    onSuccess: (result) => {
+      toast.success(`同步任务已提交（#${result.task_id}），可在任务管理查看进度`);
+      qc.invalidateQueries({ queryKey: ["tasks"] });
+      // Let the background task finish before refreshing the live directory.
+      window.setTimeout(() => {
+        qc.invalidateQueries({ queryKey: ["admin", "users"] });
+        qc.invalidateQueries({ queryKey: ["admin", "directory"] });
+        qc.invalidateQueries({ queryKey: ["users", "options"] });
+      }, 5000);
+      window.setTimeout(() => {
+        qc.invalidateQueries({ queryKey: ["admin", "users"] });
+        qc.invalidateQueries({ queryKey: ["admin", "directory"] });
+        qc.invalidateQueries({ queryKey: ["users", "options"] });
+      }, 20000);
+      window.setTimeout(() => {
+        qc.invalidateQueries({ queryKey: ["admin", "users"] });
+        qc.invalidateQueries({ queryKey: ["admin", "directory"] });
+        qc.invalidateQueries({ queryKey: ["users", "options"] });
+      }, 45000);
+    },
+    onError: (err: Error) => toast.error(err.message || "提交同步任务失败"),
   });
 
   const canManageUser = React.useCallback(
@@ -237,6 +284,7 @@ export function AdminUsersPage() {
       toast.success(`已删除 ${data.deleted} 个用户`);
       setSelected(new Set());
       qc.invalidateQueries({ queryKey: ["admin", "users"] });
+      qc.invalidateQueries({ queryKey: ["admin", "directory"] });
       qc.invalidateQueries({ queryKey: ["users", "options"] });
     },
     onError: (err: Error) => toast.error(err.message || "批量删除失败"),
@@ -251,6 +299,9 @@ export function AdminUsersPage() {
           tags: tagFilters.length > 0 ? serializeTags(tagFilters) : undefined,
           tags_mode: tagFilterMode,
           role: roleFilter === "all" ? undefined : roleFilter,
+          department_id: selectedDepartment || undefined,
+          include_descendants: includeChildren,
+          employment_status: employmentFilter === "all" ? undefined : employmentFilter,
         },
       },
     ),
@@ -264,7 +315,10 @@ export function AdminUsersPage() {
     setUserFilterState((prev) => ({ ...prev, p: typeof action === "function" ? action(prev.p) : action }));
   }, [setUserFilterState]);
   const { data, isLoading, isError, error, dataUpdatedAt, isFetching } = useQuery({
-    queryKey: ["admin", "users", page, pageSize, query, tagFilters, tagFilterMode, roleFilter, loginSort],
+    queryKey: [
+      "admin", "users", page, pageSize, query, tagFilters, tagFilterMode, roleFilter, loginSort,
+      selectedDepartment, includeChildren, employmentFilter,
+    ],
     queryFn: () => api<AdminUsersResponse>("/api/admin/users", {
       params: {
         page,
@@ -273,7 +327,11 @@ export function AdminUsersPage() {
         tags: tagFilters.length > 0 ? serializeTags(tagFilters) : undefined,
         tags_mode: tagFilterMode,
         role: roleFilter === "all" ? undefined : roleFilter,
-        login_sort: loginSort,
+        login_sort: loginSort || undefined,
+        sort: loginSort ? undefined : "name",
+        department_id: selectedDepartment || undefined,
+        include_descendants: includeChildren,
+        employment_status: employmentFilter === "all" ? undefined : employmentFilter,
       },
     }),
     placeholderData: (previous) => previous,
@@ -283,14 +341,20 @@ export function AdminUsersPage() {
   const total = data?.total ?? 0;
   const stats = data?.stats ?? { total_users: total, active_week: 0, active_today: 0 };
   const totalPages = Math.max(1, Math.ceil(total / Math.max(1, pageSize)));
-  const hasActiveFilters = queryInput.trim() !== "" || query.trim() !== "" || tagFilters.length > 0 || roleFilter !== "all";
+  const hasActiveFilters =
+    queryInput.trim() !== "" || query.trim() !== "" || tagFilters.length > 0
+    || roleFilter !== "all" || employmentFilter !== "all" || selectedDepartment !== "";
   const filtersKey = React.useMemo(
-    () => JSON.stringify([query, tagFilters, tagFilterMode, roleFilter]),
-    [query, tagFilters, tagFilterMode, roleFilter],
+    () => JSON.stringify([
+      query, tagFilters, tagFilterMode, roleFilter, employmentFilter,
+      selectedDepartment, includeChildren,
+    ]),
+    [query, tagFilters, tagFilterMode, roleFilter, employmentFilter, selectedDepartment, includeChildren],
   );
   const previousFiltersKey = React.useRef(filtersKey);
   const handleUserSaved = React.useCallback((savedUser: AdminUser) => {
     qc.invalidateQueries({ queryKey: ["admin", "users"] });
+    qc.invalidateQueries({ queryKey: ["admin", "directory"] });
     qc.invalidateQueries({ queryKey: ["users", "options"] });
     if (currentUser?.id === savedUser.id) {
       setUser({ ...currentUser, ...savedUser });
@@ -333,13 +397,231 @@ export function AdminUsersPage() {
     });
   };
 
+  const selectedDepartmentRow =
+    selectedDepartment && selectedDepartment !== "none"
+      ? departmentById.get(Number(selectedDepartment))
+      : undefined;
+  const selectedPath =
+    selectedDepartment === "none" ? "公司直属" : selectedDepartmentRow?.path_names || "全部人员";
+  const departmentFilter = departmentSearch.trim().toLowerCase();
+  const allDepartmentIds = React.useMemo(
+    () => departments.filter((department) => department.parent_id != null).map((department) => department.id),
+    [departments],
+  );
+  const allExpanded = allDepartmentIds.length > 0 && allDepartmentIds.every((id) => expanded.has(id));
+  const visibleDepartmentIds = React.useMemo(() => {
+    if (!departmentFilter) return null;
+    const visible = new Set<number>();
+    const addSubtree = (id: number) => {
+      if (visible.has(id)) return;
+      visible.add(id);
+      for (const child of childrenByParent.get(id) ?? []) addSubtree(child.id);
+    };
+    for (const department of departments) {
+      if (department.parent_id == null) continue;
+      if (
+        !department.name.toLowerCase().includes(departmentFilter)
+        && !(department.path_names || department.path).toLowerCase().includes(departmentFilter)
+      ) {
+        continue;
+      }
+      let current: Department | undefined = department;
+      while (current && current.parent_id != null) {
+        visible.add(current.id);
+        current = departmentById.get(current.parent_id);
+      }
+      addSubtree(department.id);
+    }
+    return visible;
+  }, [childrenByParent, departmentById, departmentFilter, departments]);
+  const departmentSearchResults = React.useMemo(() => {
+    if (!departmentFilter) return [];
+    return departments
+      .filter(
+        (department) =>
+          department.parent_id != null
+          && (department.name.toLowerCase().includes(departmentFilter)
+            || (department.path_names || department.path).toLowerCase().includes(departmentFilter)),
+      )
+      .sort((a, b) => (a.path_names || a.path).localeCompare(b.path_names || b.path, "zh-CN"));
+  }, [departmentFilter, departments]);
+
+  const selectDepartment = (department: Department | null) => {
+    // Update the department and page in one navigation. Two separate
+    // setSearchParams calls can race and leave the previous department active.
+    setUserFilterState((prev) => ({
+      ...prev,
+      dept: department ? String(department.id) : "",
+      p: 1,
+    }));
+    setDepartmentSearch("");
+    if (department) {
+      setExpanded((previous) => {
+        const next = new Set(previous);
+        let current: Department | undefined = department;
+        while (current) {
+          next.add(current.id);
+          current = current.parent_id != null ? departmentById.get(current.parent_id) : undefined;
+        }
+        return next;
+      });
+    }
+  };
+  const toggleDepartment = (id: number) => {
+    setExpanded((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const handleDepartmentSaved = () => {
+    qc.invalidateQueries({ queryKey: ["admin", "directory"] });
+    qc.invalidateQueries({ queryKey: ["admin", "users"] });
+    qc.invalidateQueries({ queryKey: ["users", "options"] });
+  };
+  const requestDeleteDepartment = async (department: Department) => {
+    try {
+      const usage = await api<{ grants: number; members: number; children: number }>(
+        `/api/departments/${department.id}/usage`,
+      );
+      if (usage.children > 0) {
+        toast.error("该部门仍有下级部门，请先移动或删除下级部门");
+        return;
+      }
+      setDeleteDepartmentUsage({ grants: usage.grants, members: usage.members, children: usage.children });
+      setDeleteDepartment(department);
+    } catch (err) {
+      toast.error((err as Error).message || "读取部门使用情况失败");
+    }
+  };
+
+  const renderDepartmentNode = (department: Department, depth: number): React.ReactNode => {
+    if (visibleDepartmentIds && !visibleDepartmentIds.has(department.id)) return null;
+    const kids = childrenByParent.get(department.id) ?? [];
+    const isOpen = visibleDepartmentIds ? true : expanded.has(department.id);
+    const active = selectedDepartment === String(department.id);
+    const top = depth === 0;
+    const primaryLeader = department.leaders.find((leader) => leader.is_primary) || department.leaders[0];
+    const actionMenu = (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+            aria-label={`部门操作 ${department.name}`}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <MoreHorizontal className="h-3.5 w-3.5" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-40">
+          <DropdownMenuItem
+            onClick={() => setDepartmentDialog({ open: true, department: null, parentId: department.id })}
+          >
+            <Plus className="mr-2 h-3.5 w-3.5" />新建子部门
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onClick={() => setDepartmentDialog({ open: true, department, parentId: null })}
+          >
+            <Pencil className="mr-2 h-3.5 w-3.5" />编辑/负责人
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            className="text-destructive focus:text-destructive"
+            onClick={() => void requestDeleteDepartment(department)}
+          >
+            <Trash2 className="mr-2 h-3.5 w-3.5" />删除部门
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    );
+    return (
+      <div key={department.id}>
+        <div
+          className={cn(
+            "group relative flex h-8 cursor-pointer items-center rounded-md pr-1 transition-colors",
+            top && "mt-1",
+            active
+              ? "bg-primary/10 text-foreground"
+              : top
+                ? "text-foreground/90 hover:bg-muted/60"
+                : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+            !department.is_active && "opacity-50",
+          )}
+          style={{ paddingLeft: `${8 + depth * 15}px` }}
+          onClick={() => selectDepartment(department)}
+          title={department.path_names || department.path}
+        >
+          {kids.length ? (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                toggleDepartment(department.id);
+              }}
+              aria-label={isOpen ? "收起下级部门" : "展开下级部门"}
+              className="mr-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded hover:bg-muted"
+            >
+              <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isOpen && "rotate-90")} />
+            </button>
+          ) : (
+            <span className="mr-0.5 w-5 shrink-0" />
+          )}
+          {top ? <Building2 className="mr-1.5 h-3.5 w-3.5 shrink-0 opacity-70" /> : null}
+          <span className={cn("min-w-0 flex-1 truncate text-[13px]", top && "font-medium")}>
+            {department.name}
+          </span>
+          {top && primaryLeader ? (
+            <span
+              className="mr-1 shrink-0 text-amber-600"
+              title={`主负责人 ${primaryLeader.name || primaryLeader.username}`}
+            >
+              <Crown className="h-3 w-3" />
+            </span>
+          ) : null}
+          <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+            {department.member_count}
+          </span>
+          <div
+            className={cn(
+              "ml-1 shrink-0 transition-opacity",
+              active ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
+            )}
+          >
+            {actionMenu}
+          </div>
+        </div>
+        {kids.length && isOpen ? (
+          <div>{kids.map((child) => renderDepartmentNode(child, depth + 1))}</div>
+        ) : null}
+      </div>
+    );
+  };
+
   return (
     <div className="page-shell">
       <PageHeader
-        title="用户管理"
-        description="管理系统用户、角色与用户标签，支持搜索、筛选和批量管理。"
+        title="组织架构"
+        description={
+          directoryStats
+            ? `${directoryStats.last_synced_at ? `最近同步 ${formatUserDateTime(directoryStats.last_synced_at)} · ` : "本地组织架构 · "}`
+              + `${directoryStats.people_count} 人 · ${directoryStats.department_count} 个部门`
+            : "正在加载组织架构…"
+        }
         actions={
           <>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-9 gap-1.5"
+              onClick={() => {
+                void directoryQuery.refetch();
+                qc.invalidateQueries({ queryKey: ["admin", "users"] });
+              }}
+            >
+              <RefreshCw className={cn("h-3.5 w-3.5", (directoryQuery.isFetching || isFetching) && "animate-spin")} />
+              刷新
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -350,7 +632,15 @@ export function AdminUsersPage() {
               {importFeishuMut.isPending
                 ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 : <CloudDownload className="h-3.5 w-3.5" />}
-              {importFeishuMut.isPending ? "正在同步…" : "从飞书同步通讯录"}
+              {importFeishuMut.isPending ? "提交中…" : "同步飞书"}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-9 gap-1.5"
+              onClick={() => setScheduleOpen(true)}
+            >
+              <Clock className="h-3.5 w-3.5" />定时同步
             </Button>
             <Button size="sm" className="h-9 gap-1.5" onClick={() => setCreateOpen(true)}>
               <UserPlus className="h-3.5 w-3.5" />新增用户
@@ -359,292 +649,553 @@ export function AdminUsersPage() {
         }
       />
 
-      <PageMetrics
-        ariaLabel="用户统计"
-        items={[
-          { label: "用户", value: stats.total_users, icon: User },
-          { label: "本周活跃", value: stats.active_week, icon: CalendarDays, tone: "success" },
-          { label: "今日活跃", value: stats.active_today, icon: UserCheck, tone: "success" },
-        ]}
-      />
-
-      {/* 筛选行 */}
-      <div className="page-toolbar">
-        <div className="relative min-w-0 flex-1 sm:flex-none">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <input
-            value={queryInput}
-            onChange={(e) => setQueryInput(e.target.value)}
-            placeholder="搜索姓名、用户名或标签"
-            className={cn(
-              "h-8 w-full rounded-md border bg-background pl-8 pr-3 text-sm shadow-sm outline-none transition sm:w-72",
-              "placeholder:text-muted-foreground",
-              "focus:border-primary/60 focus:ring-2 focus:ring-primary/20",
-              queryInput.trim() !== "" && "border-primary/40 bg-primary/5",
+      <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
+        <Card className="flex max-h-[420px] min-h-0 min-w-0 flex-col overflow-hidden lg:max-h-none">
+          <div className="flex shrink-0 items-start justify-between gap-2 border-b px-4 py-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-sm font-semibold">
+                <Building2 className="h-4 w-4 text-muted-foreground" />
+                部门
+              </div>
+            </div>
+            <div className="flex items-center gap-0.5">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                title={allExpanded ? "收起全部部门" : "展开全部部门"}
+                aria-label={allExpanded ? "收起全部部门" : "展开全部部门"}
+                onClick={() => setExpanded(allExpanded ? new Set() : new Set(allDepartmentIds))}
+              >
+                {allExpanded ? <ChevronsDownUp className="h-4 w-4" /> : <ChevronsUpDown className="h-4 w-4" />}
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                title="新建顶级部门"
+                aria-label="新建顶级部门"
+                onClick={() => setDepartmentDialog({ open: true, department: null, parentId: rootDepartmentId })}
+              >
+                <Plus className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+          <div className="shrink-0 px-3 pb-2.5 pt-2.5">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <input
+                value={departmentSearch}
+                onChange={(event) => setDepartmentSearch(event.target.value)}
+                placeholder="搜索部门"
+                className="h-8 w-full rounded-md border bg-background pl-8 pr-3 text-xs outline-none focus:border-primary/60 focus:ring-2 focus:ring-primary/20"
+              />
+            </div>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-2">
+            <div className="space-y-0.5">
+              <button
+                type="button"
+                onClick={() => selectDepartment(null)}
+                className={cn(
+                  "flex h-9 w-full items-center gap-2 rounded-md px-2 text-left transition-colors",
+                  selectedDepartment === ""
+                    ? "bg-primary/10 text-foreground"
+                    : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                )}
+              >
+                <Users className="h-4 w-4 shrink-0" />
+                <span className="min-w-0 flex-1 truncate text-[13px] font-medium">全部人员</span>
+                <span className="text-[11px] tabular-nums text-muted-foreground">
+                  {directoryStats?.people_count ?? stats.total_users}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setUserFilterState((prev) => ({ ...prev, dept: "none", p: 1 }))
+                }
+                className={cn(
+                  "flex h-9 w-full items-center gap-2 rounded-md px-2 text-left transition-colors",
+                  selectedDepartment === "none"
+                    ? "bg-primary/10 text-foreground"
+                    : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                )}
+                title="未分配部门的用户"
+              >
+                <Building2 className="h-4 w-4 shrink-0" />
+                <span className="min-w-0 flex-1 truncate text-[13px] font-medium">公司直属</span>
+                <span className="text-[11px] tabular-nums text-muted-foreground">
+                  {directoryStats?.unassigned_count ?? 0}
+                </span>
+              </button>
+            </div>
+            <div className="my-2 h-px bg-border" />
+            {departmentFilter ? (
+              <>
+                <p className="px-2 pb-2 pt-1 text-[11px] text-muted-foreground">
+                  {departmentSearchResults.length ? `找到 ${departmentSearchResults.length} 个部门` : "没有匹配的部门"}
+                </p>
+                {departmentSearchResults.map((department) => (
+                  <button
+                    key={department.id}
+                    type="button"
+                    onClick={() => selectDepartment(department)}
+                    className={cn(
+                      "flex h-8 w-full items-center gap-2 rounded-md px-2 text-left transition-colors",
+                      selectedDepartment === String(department.id)
+                        ? "bg-primary/10 text-foreground"
+                        : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                    )}
+                    title={department.path_names || department.path}
+                  >
+                    <Building2 className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                    <span className="min-w-0 flex-1 truncate text-[13px]">{department.name}</span>
+                    <span className="text-[11px] tabular-nums text-muted-foreground">
+                      {department.member_count}
+                    </span>
+                  </button>
+                ))}
+              </>
+            ) : (
+              <>
+                {(childrenByParent.get(rootDepartmentId) ?? []).map((department) => renderDepartmentNode(department, 0))}
+                {departments.length <= 1 ? (
+                  <div className="px-3 py-6 text-center text-xs text-muted-foreground">
+                    还没有部门。点击右上角 + 新建，或使用“同步飞书”导入组织架构。
+                  </div>
+                ) : null}
+              </>
             )}
-          />
-        </div>
-        <FilterChip
-          label="角色"
-          options={[
-            { value: "all", label: "全部" },
-            ...USER_ROLE_OPTIONS,
-          ]}
-          value={roleFilter}
-          baseValue="all"
-          onChange={(value) => setRoleFilter(value as UserRole | "all")}
-        />
-        <TagFilterChip
-          label="标签"
-          emptyText="暂无用户标签"
-          tags={availableTags}
-          selected={tagFilters}
-          mode={tagFilterMode}
-          onToggle={(tag) => {
-            defaultFilters.toggleTag(tag);
-          }}
-          onClear={() => {
-            setTagFilters([]);
-          }}
-          onChangeMode={setTagFilterMode}
-        />
-        <LoginSortChip
-          value={loginSort}
-          onChange={(value) => {
-            setLoginSort(value);
-          }}
-        />
-        <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => { defaultFilters.reset(); }}>恢复默认</Button>
-        {hasActiveFilters && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-8 px-2 text-xs text-muted-foreground"
-            onClick={() => {
-              defaultFilters.clear();
-            }}
-          >
-            <X className="mr-1 h-3.5 w-3.5" />
-            清空筛选
-          </Button>
-        )}
-        <div className="ml-auto flex items-center gap-2">
-          {selected.size > 0 && (
-            <span className="text-xs text-muted-foreground">
-              已选 <span className="font-medium text-primary">{selected.size}</span> 项
-            </span>
-          )}
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8 gap-1.5"
-            disabled={selected.size === 0}
-            onClick={() => setBulkTagsOpen(true)}
-          >
-            <Tag className="h-3.5 w-3.5" />
-            批量设置标签
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8 gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
-            disabled={selected.size === 0 || bulkDelMut.isPending}
-            onClick={() => {
-              setBulkDeleteOpen(true);
-            }}
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-            批量删除
-          </Button>
-        </div>
-      </div>
+          </div>
+        </Card>
 
-      {/* 内容区 */}
-      <div className={cn("min-h-0 flex-1 overflow-auto transition-opacity", isFetching && "opacity-70")} aria-busy={isFetching}>
-        {isLoading ? (
-          <div className="flex items-center justify-center py-16 text-muted-foreground">
-            <Loader2 className="mr-2 h-5 w-5 animate-spin" /> 加载中…
+        <Card className="flex min-h-[480px] min-w-0 flex-col overflow-hidden">
+          <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <p className="truncate text-sm font-semibold">{selectedPath}</p>
+                <Badge variant="secondary">{total} 人</Badge>
+                {selectedDepartment && selectedDepartment !== "none" ? (
+                  <button
+                    type="button"
+                    onClick={() => setIncludeChildren(!includeChildren)}
+                    title="切换是否包含所有子部门成员"
+                    className={cn(
+                      "rounded border px-1.5 py-0.5 text-[10px] transition-colors",
+                      includeChildren
+                        ? "border-primary/30 bg-primary/5 text-foreground"
+                        : "border-border bg-background text-muted-foreground hover:bg-muted",
+                    )}
+                  >
+                    {includeChildren ? "含子部门" : "仅直属"}
+                  </button>
+                ) : null}
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  className="h-8 w-60 rounded-md border bg-background pl-8 pr-3 text-sm outline-none focus:border-primary/60 focus:ring-2 focus:ring-primary/20"
+                  title="支持姓名、邮箱、工号、职位的模糊搜索"
+                  placeholder="模糊搜索姓名 / 用户名 / 工号"
+                  value={queryInput}
+                  onChange={(event) => setQueryInput(event.target.value)}
+                />
+              </div>
+              {selectedDepartment && selectedDepartment !== "none" ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 gap-1.5"
+                  onClick={() => setAddMembersOpen(true)}
+                >
+                  <UserPlus className="h-3.5 w-3.5" />
+                  添加成员
+                </Button>
+              ) : null}
+            </div>
           </div>
-        ) : isError ? (
-          <div className="rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
-            加载失败：{(error as Error)?.message || "未知错误"}
+
+          <div className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-2">
+            <FilterChip
+              label="角色"
+              options={[{ value: "all", label: "全部" }, ...USER_ROLE_OPTIONS]}
+              value={roleFilter}
+              baseValue="all"
+              onChange={(value) => setRoleFilter(value as UserRole | "all")}
+              compact
+            />
+            <FilterChip
+              label="状态"
+              options={[
+                { value: "all", label: "全部" },
+                { value: "active", label: "在职" },
+                { value: "resigned", label: "离职" },
+                { value: "frozen", label: "冻结" },
+                { value: "unknown", label: "未知" },
+              ]}
+              value={employmentFilter}
+              baseValue="all"
+              onChange={(value) => setEmploymentFilter(value)}
+              compact
+            />
+            <TagFilterChip
+              label="标签"
+              emptyText="暂无用户标签"
+              tags={availableTags}
+              selected={tagFilters}
+              mode={tagFilterMode}
+              onToggle={(tag) => defaultFilters.toggleTag(tag)}
+              onClear={() => setTagFilters([])}
+              onChangeMode={setTagFilterMode}
+              compact
+            />
+            <FilterChip
+              label="排序"
+              options={[
+                { value: "", label: "默认（姓名）" },
+                { value: "asc", label: "最后登录 · 升序" },
+                { value: "desc", label: "最后登录 · 降序" },
+              ]}
+              value={loginSort}
+              baseValue=""
+              onChange={(value) => setLoginSort(value as LoginSort)}
+              compact
+            />
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 px-2 text-xs text-muted-foreground"
+              onClick={() => defaultFilters.reset()}
+            >
+              恢复默认
+            </Button>
+            {hasActiveFilters ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 px-2 text-xs text-muted-foreground"
+                onClick={() => defaultFilters.clear()}
+              >
+                <X className="mr-1 h-3.5 w-3.5" />
+                清空筛选
+              </Button>
+            ) : null}
+            <div className="ml-auto flex items-center gap-2">
+              {selected.size > 0 ? (
+                <span className="text-xs text-muted-foreground">
+                  已选 <span className="font-medium text-primary">{selected.size}</span> 项
+                </span>
+              ) : null}
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5"
+                disabled={selected.size === 0}
+                onClick={() => setBulkTagsOpen(true)}
+              >
+                <Tag className="h-3.5 w-3.5" />
+                批量设置标签
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                disabled={selected.size === 0 || bulkDelMut.isPending}
+                onClick={() => setBulkDeleteOpen(true)}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                批量删除
+              </Button>
+            </div>
           </div>
-        ) : users.length === 0 ? (
-          <div className="rounded-md border border-dashed py-16 text-center text-sm text-muted-foreground">
-            {hasActiveFilters ? "没有匹配的用户" : "暂无用户"}
-          </div>
-        ) : (
-          <div className="overflow-hidden rounded-md border bg-card">
-            <Table className="min-w-[1120px]">
-              <TableHeader>
-                <TableRow className="bg-muted/40 hover:bg-muted/40">
-                  <TableHead className="w-12">
-                    <div className="flex items-center gap-0.5">
-                      <Checkbox
-                        checked={allSelected ? true : someSelected ? "indeterminate" : false}
-                        aria-label="选择当前页用户"
-                        onCheckedChange={(checked) => setPageSelection(Boolean(checked), pageItemIds)}
-                      />
-                      <DropdownMenu
-                        onOpenChange={(open) => {
-                          if (open && filterSelectionIds === null && !selectionIdsMut.isPending) {
-                            selectionIdsMut.mutate();
-                          }
-                        }}
-                      >
-                        <DropdownMenuTrigger asChild>
-                          <button type="button" className="rounded p-0.5 hover:bg-accent" aria-label="选择更多用户">
-                            <ChevronDown className="h-3 w-3 text-muted-foreground" />
-                          </button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="start" className="w-44">
-                          <DropdownMenuItem
-                            disabled={pageItemIds.length === 0}
-                            onClick={() => setSelected(new Set(pageItemIds))}
-                          >
-                            <Check className="mr-2 h-3.5 w-3.5" />全选本页
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            disabled={selectionIdsMut.isPending || filterSelectionIds === null || filterSelectionIds.length === 0}
-                            onClick={() => setSelected(new Set(filterSelectionIds ?? []))}
-                          >
-                            {selectionIdsMut.isPending
-                              ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                              : <Check className="mr-2 h-3.5 w-3.5" />}
-                            {selectionIdsMut.isPending
-                              ? "加载筛选结果…"
-                              : "选择筛选结果" + (filterSelectionIds === null ? "" : " (" + filterSelectionIds.length + ")")}
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => setSelected(new Set())}>
-                            <X className="mr-2 h-3.5 w-3.5" />取消选择
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-                  </TableHead>
-                  <TableHead>姓名</TableHead>
-                  <TableHead>用户名</TableHead>
-                  <TableHead className="w-28">角色</TableHead>
-                  <TableHead>用户标签</TableHead>
-                  <TableHead className="w-40">创建时间</TableHead>
-                  <TableHead className="w-40">最后登录时间</TableHead>
-                  <TableHead className="w-36 text-right">操作</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {users.map((u) => {
-                  const canManageTarget = canManageUser(u);
-                  const canDeleteTarget = canDeleteUser(u);
-                  return (
-                  <TableRow key={u.id}>
-                    <TableCell className="py-3">
-                      <Checkbox
-                        checked={selected.has(u.id)}
-                        aria-label={`选择用户 ${u.username}`}
-                        onCheckedChange={() => toggleOne(u.id)}
-                        disabled={!canDeleteTarget}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <span className="flex min-w-0 items-center gap-2">
-                        <UserAvatar name={u.name} username={u.username} url={u.avatar_url} size="sm" />
-                        <TableText text={u.name || "-"} />
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      <span className="flex min-w-0 items-center gap-1.5">
-                        <TableText text={u.username} />
-                        {u.must_change_pwd && (
-                          <Badge variant="outline" className="shrink-0 whitespace-nowrap border-amber-400 text-amber-600 text-[10px] px-1 py-0">
-                            需改密
-                          </Badge>
-                        )}
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      <Badge
-                        className="whitespace-nowrap"
-                        variant={
-                          u.role === "system_admin"
-                            ? "default"
-                            : u.role === "admin"
-                              ? "default"
-                              : "secondary"
-                        }
-                      >
-                        {USER_ROLE_LABEL[u.role] || u.role}
-                      </Badge>
-                    </TableCell>
-                    <TableCell><TableTags tags={parseTags(u.tags)} /></TableCell>
-                    <TableCell className="whitespace-nowrap text-sm text-muted-foreground" title={u.created_at}>
-                      <TableText text={formatUserDateTime(u.created_at)} />
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-sm text-muted-foreground" title={u.last_login_at || "从未登录"}>
-                      <TableText text={formatUserDateTime(u.last_login_at, "从未登录")} />
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex justify-end gap-1">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          aria-label={"编辑用户 " + u.username}
-                          disabled={!canManageTarget}
-                          title={!canManageTarget ? "系统管理员账号仅可由系统管理员管理" : "编辑用户"}
-                          onClick={() => setEditing(u)}
+
+          {selectedDepartmentRow && selectedDepartmentRow.leaders.length > 0 ? (
+            <div className="shrink-0 border-b bg-amber-50/30 px-4 py-2 dark:bg-amber-950/10">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[11px] font-medium text-muted-foreground">负责人</span>
+                {selectedDepartmentRow.leaders.map((leader) => (
+                  <span
+                    key={leader.user_id}
+                    className="inline-flex items-center gap-1.5 rounded-full border bg-background px-2 py-0.5 text-xs"
+                    title={leader.is_primary ? "主负责人" : "负责人"}
+                  >
+                    <Crown className={cn("h-3 w-3", leader.is_primary ? "text-amber-600" : "text-muted-foreground")} />
+                    {leader.name || leader.username}
+                    {leader.is_primary ? <span className="text-[10px] text-amber-700">主负责人</span> : null}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          <div
+            className={cn("min-h-0 min-w-0 flex-1 overflow-auto transition-opacity", isFetching && "opacity-70")}
+            aria-busy={isFetching}
+          >
+            {isLoading ? (
+              <div className="flex items-center justify-center py-16 text-muted-foreground">
+                <Loader2 className="mr-2 h-5 w-5 animate-spin" /> 加载中…
+              </div>
+            ) : isError ? (
+              <div className="m-4 rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
+                加载失败：{(error as Error)?.message || "未知错误"}
+              </div>
+            ) : users.length === 0 ? (
+              <div className="flex h-full min-h-52 flex-col items-center justify-center gap-2 text-center">
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+                  <Users className="h-5 w-5" />
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  {hasActiveFilters ? "没有匹配的人员" : String(selectedDepartment) === "none" ? "没有公司直属人员" : "该部门下没有人员"}
+                </p>
+              </div>
+            ) : (
+              <Table className="w-full min-w-[680px] table-fixed">
+                <colgroup>
+                  <col className="w-10" />
+                  <col className="w-14" />
+                  <col className="w-[14%]" />
+                  <col className="w-[16%]" />
+                  <col className="w-28" />
+                  <col className="w-36" />
+                  <col className="w-28" />
+                </colgroup>
+                <TableHeader className="sticky top-0 z-10 bg-card">
+                  <TableRow className="bg-muted/40 hover:bg-muted/40">
+                    <TableHead className="w-12">
+                      <div className="flex items-center gap-0.5">
+                        <Checkbox
+                          checked={allSelected ? true : someSelected ? "indeterminate" : false}
+                          aria-label="选择当前页用户"
+                          onCheckedChange={(checked) => setPageSelection(Boolean(checked), pageItemIds)}
+                        />
+                        <DropdownMenu
+                          onOpenChange={(open) => {
+                            if (open && filterSelectionIds === null && !selectionIdsMut.isPending) {
+                              selectionIdsMut.mutate();
+                            }
+                          }}
                         >
-                          <Pencil className="mr-1 h-3.5 w-3.5" />编辑
-                        </Button>
-                        <DropdownMenu>
                           <DropdownMenuTrigger asChild>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8"
-                              aria-label={"更多用户操作 " + u.username}
-                            >
-                              <MoreHorizontal className="h-4 w-4" />
-                            </Button>
+                            <button type="button" className="rounded p-0.5 hover:bg-accent" aria-label="选择更多用户">
+                              <ChevronDown className="h-3 w-3 text-muted-foreground" />
+                            </button>
                           </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end" className="w-44">
+                          <DropdownMenuContent align="start" className="w-44">
                             <DropdownMenuItem
-                              disabled={resettingPassword || currentUser?.id === u.id || !canManageTarget}
-                              onClick={() => requestPasswordReset(u)}
+                              disabled={pageItemIds.length === 0}
+                              onClick={() => setSelected(new Set(pageItemIds))}
                             >
-                              <KeyRound className="mr-2 h-3.5 w-3.5" />重置密码
+                              <Check className="mr-2 h-3.5 w-3.5" />全选本页
                             </DropdownMenuItem>
                             <DropdownMenuItem
-                              disabled={!canDeleteTarget || delMut.isPending}
-                              onClick={() => setTransferUser(u)}
+                              disabled={selectionIdsMut.isPending || filterSelectionIds === null || filterSelectionIds.length === 0}
+                              onClick={() => setSelected(new Set(filterSelectionIds ?? []))}
                             >
-                              <ArrowRightLeft className="mr-2 h-3.5 w-3.5" />转移并删除
+                              {selectionIdsMut.isPending
+                                ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                                : <Check className="mr-2 h-3.5 w-3.5" />}
+                              {selectionIdsMut.isPending
+                                ? "加载筛选结果…"
+                                : "选择筛选结果" + (filterSelectionIds === null ? "" : " (" + filterSelectionIds.length + ")")}
                             </DropdownMenuItem>
-                            <DropdownMenuItem
-                              className="text-destructive focus:text-destructive"
-                              disabled={!canDeleteTarget || delMut.isPending}
-                              onClick={() => setDeleteTarget(u)}
-                            >
-                              <Trash2 className="mr-2 h-3.5 w-3.5" />删除用户
+                            <DropdownMenuItem onClick={() => setSelected(new Set())}>
+                              <X className="mr-2 h-3.5 w-3.5" />取消选择
                             </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
                       </div>
-                    </TableCell>
+                    </TableHead>
+                    <TableHead>头像</TableHead>
+                    <TableHead>姓名</TableHead>
+                    <TableHead>用户名</TableHead>
+                    <TableHead>角色</TableHead>
+                    <TableHead>最后登录时间</TableHead>
+                    <TableHead className="text-right">操作</TableHead>
                   </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
+                </TableHeader>
+                <TableBody>
+                  {users.map((u) => {
+                    const canManageTarget = canManageUser(u);
+                    const canDeleteTarget = canDeleteUser(u);
+                    const selectedLeaders = selectedDepartment && selectedDepartment !== "none"
+                      ? (selectedDepartmentRow?.leaders || [])
+                      : [];
+                    const leaderHere = selectedLeaders.find((leader) => leader.user_id === u.id);
+                    const anyLeader = (u.leader_of || []).length > 0;
+                    const isLeader = leaderHere != null || (selectedDepartment === "" && anyLeader);
+                    const primary = leaderHere?.is_primary
+                      || (selectedDepartment === "" && (u.leader_of || []).some((leader) => leader.is_primary));
+                    return (
+                      <TableRow
+                        key={u.id}
+                        className="h-12 cursor-pointer [&>td]:h-12 [&>td]:py-0"
+                        onClick={() => setProfileUser(u)}
+                      >
+                        <TableCell onClick={(event) => event.stopPropagation()}>
+                          <Checkbox
+                            checked={selected.has(u.id)}
+                            aria-label={`选择用户 ${u.username}`}
+                            onCheckedChange={() => toggleOne(u.id)}
+                            disabled={!canDeleteTarget}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <UserAvatar name={u.name} username={u.username} url={u.avatar_url} size="sm" />
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            <TableText className="text-sm font-medium" text={u.name || "-"} />
+                            {isLeader ? (
+                              <Crown
+                                className="h-3 w-3 shrink-0 text-amber-600"
+                                aria-label={primary ? "主负责人" : "负责人"}
+                              />
+                            ) : null}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <TableText className="text-sm text-muted-foreground" text={u.username} />
+                        </TableCell>
+                        <TableCell>
+                          <Badge
+                            className="whitespace-nowrap"
+                            variant={u.role === "user" ? "secondary" : "default"}
+                          >
+                            {USER_ROLE_LABEL[u.role] || u.role}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          <TableText
+                            className="text-sm text-muted-foreground"
+                            text={formatUserDateTime(u.last_login_at, "从未登录")}
+                          />
+                        </TableCell>
+                        <TableCell onClick={(event) => event.stopPropagation()}>
+                          <div className="flex justify-end gap-1">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              aria-label={"编辑用户 " + u.username}
+                              disabled={!canManageTarget}
+                              title={!canManageTarget ? "系统管理员账号仅可由系统管理员管理" : "编辑用户"}
+                              onClick={() => setEditing(u)}
+                            >
+                              <Pencil className="mr-1 h-3.5 w-3.5" />编辑
+                            </Button>
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-8 w-8"
+                                  aria-label={"更多用户操作 " + u.username}
+                                >
+                                  <MoreHorizontal className="h-4 w-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end" className="w-44">
+                                <DropdownMenuItem
+                                  disabled={resettingPassword || currentUser?.id === u.id || !canManageTarget}
+                                  onClick={() => requestPasswordReset(u)}
+                                >
+                                  <KeyRound className="mr-2 h-3.5 w-3.5" />重置密码
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  disabled={!canDeleteTarget || delMut.isPending}
+                                  onClick={() => setTransferUser(u)}
+                                >
+                                  <ArrowRightLeft className="mr-2 h-3.5 w-3.5" />转移并删除
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  className="text-destructive focus:text-destructive"
+                                  disabled={!canDeleteTarget || delMut.isPending}
+                                  onClick={() => setDeleteTarget(u)}
+                                >
+                                  <Trash2 className="mr-2 h-3.5 w-3.5" />删除用户
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            )}
           </div>
-        )}
+
+          <ListFooter
+            page={page}
+            pageSize={pageSize}
+            total={!isLoading && !isError && total > 0 ? total : 0}
+            onPageChange={setPage}
+            loading={isFetching}
+            unit="人"
+            className="px-4 pb-3"
+          />
+        </Card>
       </div>
 
-      {/* 分页条 */}
-      <ListFooter
-        page={page}
-        pageSize={pageSize}
-        total={!isLoading && !isError && total > 0 ? total : 0}
-        onPageChange={setPage}
-        loading={isFetching}
+      <DirectorySyncScheduleDialog open={scheduleOpen} onOpenChange={setScheduleOpen} />
+      <DepartmentDialog
+        open={departmentDialog.open}
+        onOpenChange={(open) => setDepartmentDialog((prev) => ({ ...prev, open }))}
+        department={departmentDialog.department}
+        parentId={departmentDialog.parentId}
+        rootId={rootDepartmentId}
+        departments={departments}
+        onSaved={handleDepartmentSaved}
+      />
+      <AddMembersDialog
+        open={addMembersOpen}
+        onOpenChange={setAddMembersOpen}
+        department={selectedDepartmentRow ?? null}
+        onSaved={() => {
+          qc.invalidateQueries({ queryKey: ["admin", "users"] });
+          qc.invalidateQueries({ queryKey: ["admin", "directory"] });
+        }}
+      />
+      <UserProfileModal
+        user={profileUser}
+        onOpenChange={(open) => { if (!open) setProfileUser(null); }}
+        onEdit={(target) => { setProfileUser(null); setEditing(target); }}
+        onResetPassword={(target) => { setProfileUser(null); void requestPasswordReset(target); }}
+        onTransferDelete={(target) => { setProfileUser(null); setTransferUser(target); }}
+        onDelete={(target) => { setProfileUser(null); setDeleteTarget(target); }}
+        canManage={profileUser ? canManageUser(profileUser) : false}
+        canDelete={profileUser ? canDeleteUser(profileUser) : false}
+      />
+      <ConfirmDialog
+        open={deleteDepartment != null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeleteDepartment(null);
+            setDeleteDepartmentUsage(null);
+          }
+        }}
+        title="删除部门"
+        description={
+          deleteDepartment
+            ? `确定删除「${deleteDepartment.name}」吗？`
+              + (deleteDepartmentUsage
+                ? ` 当前成员 ${deleteDepartmentUsage.members} 人、授权 ${deleteDepartmentUsage.grants} 项。`
+                : "")
+              + " 删除后部门标签和相关授权会立即失效。"
+            : ""
+        }
+        confirmLabel={deleteDepartmentUsage && (deleteDepartmentUsage.members > 0 || deleteDepartmentUsage.grants > 0)
+          ? "强制删除"
+          : "删除"}
+        destructive
+        loading={deleteDepartmentMut.isPending}
+        onConfirm={() => {
+          if (deleteDepartment) deleteDepartmentMut.mutate(deleteDepartment);
+        }}
       />
 
       <UserFormDialog
@@ -652,6 +1203,7 @@ export function AdminUsersPage() {
         onOpenChange={setCreateOpen}
         user={null}
         canManageSystemAdmin={currentUser?.role === "system_admin"}
+        departments={departments}
         onSuccess={handleUserSaved}
       />
       <BulkUserTagsDialog
@@ -727,6 +1279,7 @@ export function AdminUsersPage() {
         }}
         user={editing}
         canManageSystemAdmin={currentUser?.role === "system_admin"}
+        departments={departments}
         onSuccess={handleUserSaved}
       />
       <TransferDeleteDialog
@@ -737,6 +1290,7 @@ export function AdminUsersPage() {
         sourceUser={transferUser}
         onSuccess={() => {
           qc.invalidateQueries({ queryKey: ["admin", "users"] });
+          qc.invalidateQueries({ queryKey: ["admin", "directory"] });
           qc.invalidateQueries({ queryKey: ["users", "options"] });
         }}
       />
@@ -957,12 +1511,14 @@ function UserFormDialog({
   onOpenChange,
   user,
   canManageSystemAdmin,
+  departments,
   onSuccess,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
   user: AdminUser | null;
   canManageSystemAdmin: boolean;
+  departments: Department[];
   onSuccess: (user: AdminUser) => void;
 }) {
   const editing = !!user;
@@ -977,8 +1533,14 @@ function UserFormDialog({
   const [removeAvatar, setRemoveAvatar] = React.useState(false);
   const [tags, setTags] = React.useState<string[]>([]);
   const [role, setRole] = React.useState<UserRole>("user");
+  const [email, setEmail] = React.useState("");
+  const [jobTitle, setJobTitle] = React.useState("");
+  const [employeeNo, setEmployeeNo] = React.useState("");
+  const [employmentStatus, setEmploymentStatus] = React.useState<EmploymentStatus>("active");
+  const [departmentIds, setDepartmentIds] = React.useState<number[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [generatedPwd, setGeneratedPwd] = React.useState("");
+  const feishuManaged = Boolean(user?.feishu_id);
 
   React.useEffect(() => {
     if (open) {
@@ -992,6 +1554,11 @@ function UserFormDialog({
       setRemoveAvatar(false);
       setTags(parseTags(user?.tags));
       setRole((user?.role as UserRole) || "user");
+      setEmail(user?.email || "");
+      setJobTitle(user?.job_title || "");
+      setEmployeeNo(user?.employee_no || "");
+      setEmploymentStatus((user?.employment_status as EmploymentStatus) || "active");
+      setDepartmentIds((user?.departments || []).map((department) => department.id));
       setLoading(false);
       setGeneratedPwd("");
     }
@@ -1045,6 +1612,11 @@ function UserFormDialog({
             tags: serializeTags(tags),
             role,
             need_change_pwd: true,
+            email: email.trim(),
+            job_title: jobTitle.trim(),
+            employee_no: employeeNo.trim(),
+            employment_status: employmentStatus,
+            department_ids: departmentIds,
           },
         },
       );
@@ -1211,6 +1783,77 @@ function UserFormDialog({
                       <Input id="user-feishu" value={feishu} onChange={(e) => setFeishu(e.target.value)} placeholder="关联飞书账号" />
                     </div>
                   </div>
+                </section>
+
+                <section className="space-y-3">
+                  <div className="flex items-center gap-2 border-b pb-2 text-sm font-semibold">
+                    <Building2 className="h-4 w-4 text-muted-foreground" />
+                    组织与资料
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="user-email">邮箱</Label>
+                      <Input
+                        id="user-email"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        placeholder="name@example.com"
+                        disabled={feishuManaged}
+                      />
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="user-job-title">职位</Label>
+                      <Input
+                        id="user-job-title"
+                        value={jobTitle}
+                        onChange={(e) => setJobTitle(e.target.value)}
+                        placeholder="例如：测试工程师"
+                        disabled={feishuManaged}
+                      />
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="user-employee-no">工号</Label>
+                      <Input
+                        id="user-employee-no"
+                        value={employeeNo}
+                        onChange={(e) => setEmployeeNo(e.target.value)}
+                        placeholder="可选"
+                        disabled={feishuManaged}
+                      />
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label>在职状态</Label>
+                      <Select
+                        value={employmentStatus}
+                        onValueChange={(value) => setEmploymentStatus(value as EmploymentStatus)}
+                        disabled={feishuManaged}
+                      >
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="active">在职</SelectItem>
+                          <SelectItem value="resigned">离职</SelectItem>
+                          <SelectItem value="frozen">冻结</SelectItem>
+                          <SelectItem value="unknown">未知</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label>所属部门</Label>
+                    <DepartmentPicker
+                      departments={departments}
+                      value={departmentIds}
+                      onChange={setDepartmentIds}
+                    />
+                    <p className="text-xs leading-5 text-muted-foreground">
+                      可同时属于多个部门；部门权限会自动包含所有上级部门。
+                    </p>
+                  </div>
+                  {feishuManaged ? (
+                    <p className="rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800 dark:border-amber-800/50 dark:bg-amber-950/30 dark:text-amber-300">
+                      该用户由飞书同步维护，邮箱、职位、工号和在职状态以飞书为准；部门归属可手工补充，飞书同步的成员关系会在下次同步时恢复。
+                    </p>
+                  ) : null}
                 </section>
 
                 <section className="space-y-3">
