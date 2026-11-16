@@ -1,11 +1,11 @@
 # Application contract baseline
 
 `application_routes.json` and `application_openapi.json` were last reviewed and
-updated on 2026-09-28 from `app.main.app`. The capture imported the application
+updated on 2026-11-15 from `app.main.app`. The capture imported the application
 but did not enter its startup/lifespan or initialize the live database.
 
-The baseline contains 183 registered routes (181 HTTP, one WebSocket and one
-static mount) and 149 OpenAPI paths. It includes the reviewed setup,
+The baseline contains 223 registered routes (221 HTTP, one WebSocket and one
+static mount) and 181 OpenAPI paths. It includes the reviewed setup,
 password-reset, paginated user management, bounded user search, managed user
 avatar, resource-share, renderer-font-task, renderer batch-source and bounded log-tail contracts,
 plus persistent system-upgrade status.
@@ -43,3 +43,10 @@ The resource-detail navigation review adds GET `/api/resources/{resource_id}/nei
 It accepts the resource list's filters and sort order and returns only adjacent
 visible, non-deleted resources, plus the current position in that filtered list.
 Only this route and its OpenAPI operation were added to the fixtures.
+
+The notification-center review adds GET `/api/me/notifications`, GET
+`/api/me/notifications/unread-count`, POST
+`/api/me/notifications/{notification_id}/read`, DELETE
+`/api/me/notifications/{notification_id}/read` and POST
+`/api/me/notifications/read-all`. Notifications are derived from the current
+user's terminal tasks and do not add a task write hook or copy task state.

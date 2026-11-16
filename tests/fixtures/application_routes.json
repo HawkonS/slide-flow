@@ -1744,5 +1744,45 @@
     "methods": [
       "DELETE"
     ]
+  },
+  {
+    "path": "/api/me/notifications",
+    "name": "list_my_notifications",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/me/notifications/unread-count",
+    "name": "my_notifications_unread_count",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/me/notifications/{notification_id}/read",
+    "name": "read_notification",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/me/notifications/read-all",
+    "name": "read_all_notifications",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/me/notifications/{notification_id}/read",
+    "name": "unread_notification",
+    "kind": "http",
+    "methods": [
+      "DELETE"
+    ]
   }
 ]

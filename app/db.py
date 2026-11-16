@@ -18,7 +18,7 @@ from app.config import (
 from app.core.bootstrap import prepare_initial_admin
 from app.core.fonts import normalize_font_name
 
-DB_SCHEMA_VERSION = 33
+DB_SCHEMA_VERSION = 34
 
 
 def is_sqlite_busy_error(exc: BaseException) -> bool:
@@ -740,6 +740,22 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_tasks_owner ON tasks(owner_id);
             CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+            -- Notification feeds derive from terminal task rows; the partial
+            -- index keeps the newest-first pagination and unread count cheap.
+            CREATE INDEX IF NOT EXISTS idx_tasks_owner_terminal
+                ON tasks(owner_id, updated_at DESC, id DESC)
+                WHERE status IN ('completed', 'failed', 'cancelled');
+
+            -- Read state for derived notifications. There is intentionally no
+            -- foreign key to tasks: the marker must survive an event source
+            -- being removed and must never block task cleanup.
+            CREATE TABLE IF NOT EXISTS notification_reads (
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                source TEXT NOT NULL DEFAULT 'task',
+                source_id INTEGER NOT NULL,
+                read_at TEXT NOT NULL,
+                PRIMARY KEY (user_id, source, source_id)
+            );
 
             CREATE TABLE IF NOT EXISTS model_connections (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1156,6 +1172,22 @@ def _migrate_schema(db: sqlite3.Connection, schema_version: int) -> None:
         "CREATE INDEX IF NOT EXISTS idx_users_last_login_at "
         "ON users(last_login_at)"
     )
+
+    # Version 34 introduces the derived notification feed. Existing terminal
+    # tasks predate the feature and were already handled in task management, so
+    # register them as read once to avoid turning the whole history into an
+    # unread badge. New terminal tasks are unread until the user opens them.
+    if schema_version < 34:
+        db.execute(
+            """
+            INSERT OR IGNORE INTO notification_reads
+                (user_id, source, source_id, read_at)
+            SELECT owner_id, 'task', id, ?
+            FROM tasks
+            WHERE status IN ('completed', 'failed', 'cancelled')
+            """,
+            (now_iso(),),
+        )
 
 
 def _migrate_task_type_constraint(db: sqlite3.Connection) -> None:
