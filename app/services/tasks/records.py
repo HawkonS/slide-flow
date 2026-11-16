@@ -53,6 +53,15 @@ _TASK_PARAMS_PUBLIC_KEYS = (
     "connection_id",
     "connection_name",
     "model",
+    "trigger",
+)
+
+_FEISHU_SYNC_PUBLIC_ERROR_PREFIXES = (
+    "飞书",
+    "组织架构",
+    "同步",
+    "请先",
+    "没有可用于",
 )
 
 _AI_TAGGING_PUBLIC_ERROR_PREFIXES = (
@@ -162,7 +171,16 @@ def _serialize_task(row: sqlite3.Row, db: sqlite3.Connection | None = None) -> d
     if isinstance(raw_result_data, dict):
         result_data = {
             key: raw_result_data[key]
-            for key in ("total", "created", "resource_ids", "template_ids", "message", "expired", "skipped_pages", "target_type", "target_id", "connection_id", "connection_name", "model", "suggested_tags", "existing_tags", "applied_tags", "final_tags", "tags_applied", "page_count")
+            for key in (
+                "total", "created", "resource_ids", "template_ids", "message",
+                "expired", "skipped_pages", "target_type", "target_id",
+                "connection_id", "connection_name", "model", "suggested_tags",
+                "existing_tags", "applied_tags", "final_tags", "tags_applied",
+                "page_count", "departments_created", "departments_updated",
+                "departments_deactivated", "users_created", "users_updated",
+                "memberships_added", "memberships_removed", "leaders_set",
+                "skipped_users", "warnings",
+            )
             if key in raw_result_data
         }
 
@@ -228,6 +246,12 @@ def _serialize_task(row: sqlite3.Row, db: sqlite3.Connection | None = None) -> d
             row["task_type"] == "ai_tagging"
             and len(str(raw_error)) <= 200
             and str(raw_error).startswith(_AI_TAGGING_PUBLIC_ERROR_PREFIXES)
+        ):
+            safe_error = str(raw_error)
+        elif (
+            row["task_type"] == "feishu_sync"
+            and len(str(raw_error)) <= 500
+            and str(raw_error).startswith(_FEISHU_SYNC_PUBLIC_ERROR_PREFIXES)
         ):
             safe_error = str(raw_error)
         else:

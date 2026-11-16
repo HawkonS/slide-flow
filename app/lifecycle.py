@@ -15,6 +15,7 @@ from app.services.resource_deletion import archive_cleanup_loop
 from app.services.resource_import.sessions import _cleanup_expired_resource_imports, _resource_import_cleanup_loop
 from app.services.resource_import.render_tasks import cleanup_terminal_render_task_objects, render_task_cleanup_loop
 from app.services.tasks.retention import task_archive_loop
+from app.services.tasks.feishu_sync import directory_sync_schedule_loop
 from app.services.tasks.runtime import _heavy_executor
 
 
@@ -38,6 +39,7 @@ async def lifespan(app):
         asyncio.create_task(render_task_cleanup_loop(), name="render-task-object-cleanup"),
         asyncio.create_task(backup_loop(), name="database-backup"),
         asyncio.create_task(task_archive_loop(), name="task-archive"),
+        asyncio.create_task(directory_sync_schedule_loop(), name="directory-sync-schedule"),
     ]
     try:
         yield

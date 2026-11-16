@@ -36,6 +36,11 @@ class UserPayload(ApiPayload):
     role: str = ROLE_USER
     # 兼容旧客户端；新建本地密码账号始终要求首次登录修改密码。
     need_change_pwd: bool = False
+    email: Optional[str] = Field(default=None, max_length=254)
+    job_title: Optional[str] = Field(default=None, max_length=100)
+    employee_no: Optional[str] = Field(default=None, max_length=64)
+    employment_status: Optional[str] = Field(default=None, max_length=16)
+    department_ids: Optional[list[int]] = Field(default=None, max_length=50)
 
 
 class FontDeletePayload(ApiPayload):
@@ -110,6 +115,12 @@ def _serialize_user(row: sqlite3.Row | None) -> dict[str, Any] | None:
             else None
         ),
         "last_login_at": row["last_login_at"] if "last_login_at" in row.keys() else None,
+        "email": row["email"] if "email" in row.keys() else "",
+        "job_title": row["job_title"] if "job_title" in row.keys() else "",
+        "employee_no": row["employee_no"] if "employee_no" in row.keys() else "",
+        "employment_status": (
+            row["employment_status"] if "employment_status" in row.keys() else "active"
+        ),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }

@@ -135,10 +135,12 @@ def _grouped_tags(
     table: str,
     *,
     flat_category: str | None = None,
+    exclude_departments: bool = False,
 ) -> list[dict[str, Any]]:
+    where_sql = "WHERE department_id IS NULL" if exclude_departments else ""
     rows = db.execute(
         f"SELECT id, name, category, label, sort_order, is_default_filter "
-        f"FROM {table} ORDER BY sort_order, id"
+        f"FROM {table} {where_sql} ORDER BY sort_order, id"
     ).fetchall()
     if flat_category is not None:
         return [{
@@ -246,10 +248,11 @@ def _admin_list_definitions(
     usage_counts: Counter[str],
     *,
     flat_category: str | None = None,
+    where_sql: str = "",
 ) -> list[dict[str, Any]]:
     rows = db.execute(
         f"SELECT id, name, category, label, sort_order, is_default_filter, created_at "
-        f"FROM {table} ORDER BY sort_order, id"
+        f"FROM {table} {where_sql} ORDER BY sort_order, id"
     ).fetchall()
     scopes = tag_scopes(db, table)
     result: list[dict[str, Any]] = []
@@ -271,6 +274,7 @@ def _create_definitions(
     created_by: int,
     *,
     flat_category: str | None = None,
+    reserved_prefix: str | None = None,
 ) -> dict[str, Any]:
     created: list[dict[str, Any]] = []
     skipped: list[str] = []
@@ -289,6 +293,8 @@ def _create_definitions(
             raise HTTPException(400, f"标签「{raw_name}」不合法：{exc.detail}") from None
         if name in seen_in_payload:
             continue
+        if reserved_prefix and name.startswith(reserved_prefix):
+            raise HTTPException(400, "该标签前缀由组织架构保留，不能手工创建")
         seen_in_payload.add(name)
         if db.execute(f"SELECT id FROM {table} WHERE name = ?", (name,)).fetchone() is not None:
             skipped.append(name)
@@ -335,11 +341,42 @@ def list_tags(
 
 @router.get("/user-tags")
 def list_user_tags(
+    include_departments: bool = False,
     _: Any = Depends(require_user),
     db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
     """Return user-tag definitions for user editors and permission pickers."""
-    return {"groups": _grouped_tags(db, "user_tag_definitions")}
+    result: dict[str, Any] = {
+        "groups": _grouped_tags(db, "user_tag_definitions", exclude_departments=True)
+    }
+    if include_departments:
+        from app.services.departments import display_path, get_root_department
+
+        root = get_root_department(db)
+        all_departments = db.execute("SELECT id, name FROM departments").fetchall()
+        names = {int(item["id"]): str(item["name"]) for item in all_departments}
+        rows = db.execute(
+            "SELECT d.id, d.name, d.path, d.depth, d.is_active, "
+            "t.name AS tag_name, t.label "
+            "FROM departments d LEFT JOIN user_tag_definitions t ON t.department_id = d.id "
+            "WHERE d.parent_id IS NOT NULL "
+            "ORDER BY d.path COLLATE NOCASE, d.id"
+        ).fetchall()
+        result["departments"] = [
+            {
+                "department_id": int(row["id"]),
+                "tag_name": row["tag_name"] or f"dept:{int(row['id'])}",
+                "label": row["label"] or row["name"],
+                "path": row["path"],
+                "path_names": display_path(str(row["path"]), names, int(root["id"])),
+                "depth": int(row["depth"]),
+                "is_active": bool(row["is_active"]),
+            }
+            for row in rows
+        ]
+    else:
+        result["departments"] = []
+    return result
 
 
 @router.get("/subject-tags")
@@ -381,6 +418,7 @@ def admin_list_user_tags(
             db,
             "user_tag_definitions",
             _user_tag_usage_counts(db),
+            where_sql="WHERE department_id IS NULL",
         ),
         "user_custom_tags": settings.user_custom_user_tags,
     }
@@ -463,7 +501,13 @@ def admin_create_user_tags(
     admin: sqlite3.Row = Depends(require_admin),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
-    return _create_definitions(db, "user_tag_definitions", payload, int(admin["id"]))
+    return _create_definitions(
+        db,
+        "user_tag_definitions",
+        payload,
+        int(admin["id"]),
+        reserved_prefix="dept:",
+    )
 
 
 @router.post("/admin/{domain}-tags")
@@ -514,6 +558,17 @@ def admin_update_tags_config(
         "user_custom_tags": settings.user_custom_user_tags,
         "status_custom_tags": settings.user_custom_status_tags,
     }
+
+
+def _ensure_manual_user_tag(db: sqlite3.Connection, tag_id: int) -> None:
+    row = db.execute(
+        "SELECT id, department_id FROM user_tag_definitions WHERE id = ?",
+        (int(tag_id),),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(404, "标签不存在")
+    if row["department_id"] is not None:
+        raise HTTPException(400, "部门标签由组织架构自动维护，不能直接修改或删除")
 
 
 def _load_definition(db: sqlite3.Connection, table: str, tag_id: int) -> sqlite3.Row:
@@ -867,6 +922,8 @@ def admin_batch_update_user_tags(
     _: Any = Depends(require_admin),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
+    for item in payload.updates:
+        _ensure_manual_user_tag(db, item.id)
     updated = _batch_rename_definitions(
         db,
         "user_tag_definitions",
@@ -920,6 +977,7 @@ def admin_update_user_tag(
     _: Any = Depends(require_admin),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
+    _ensure_manual_user_tag(db, tag_id)
     return _batch_rename_definitions(
         db,
         "user_tag_definitions",
@@ -1005,6 +1063,7 @@ def admin_delete_user_tag(
     _: Any = Depends(require_admin),
     db: sqlite3.Connection = Depends(db_dep),
 ) -> dict[str, Any]:
+    _ensure_manual_user_tag(db, tag_id)
     row = _load_definition(db, "user_tag_definitions", tag_id)
     tag_name = str(row["name"])
     if table_has_column(db, "user_tags", "tag_id"):

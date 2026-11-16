@@ -53,6 +53,7 @@ from app.routers.dependencies import (
     _serialize_user_option,
 )
 from app.services.tagging import table_has_column
+from app.services import departments as department_service
 
 
 router = APIRouter()
@@ -63,10 +64,17 @@ USER_BULK_DELETE_MAX = 1000
 SQLITE_ID_CHUNK_SIZE = 500
 USER_AVATAR_MAX_BYTES = 2 * 1024 * 1024
 USER_AVATAR_MAX_PIXELS = 16_000_000
-USER_SELECT_COLUMNS = (
-    "id, name, username, role, feishu_id, avatar_url, tags, must_change_pwd, "
-    "temporary_password_expires_at, last_login_at, created_at, updated_at"
-)
+def _user_select_columns(db: sqlite3.Connection) -> str:
+    """Keep list queries readable on databases that predate profile columns."""
+    columns = ["id", "name", "username", "role", "feishu_id", "avatar_url", "tags"]
+    for column in ("email", "job_title", "employee_no", "employment_status"):
+        if table_has_column(db, "users", column):
+            columns.append(column)
+    columns.extend([
+        "must_change_pwd", "temporary_password_expires_at", "last_login_at",
+        "created_at", "updated_at",
+    ])
+    return ", ".join(columns)
 
 
 def _temporary_password_expiry() -> str:
@@ -120,6 +128,29 @@ def _normalised_display_name(value: str) -> str:
         raise HTTPException(400, str(exc)) from None
 
 
+def _normalised_profile_text(value: str | None, label: str, limit: int) -> str:
+    text = (value or "").strip()
+    if len(text) > limit:
+        raise HTTPException(400, f"{label}不能超过 {limit} 个字符")
+    if any(unicodedata.category(char).startswith("C") for char in text):
+        raise HTTPException(400, f"{label}不能包含控制字符")
+    return text
+
+
+def _normalised_email(value: str | None) -> str:
+    email = _normalised_profile_text(value, "邮箱", 254)
+    if email and ("@" not in email or email.startswith("@") or email.endswith("@")):
+        raise HTTPException(400, "邮箱格式不正确")
+    return email
+
+
+def _normalised_employment_status(value: str | None) -> str:
+    status = (value or "").strip() or "active"
+    if status not in department_service.EMPLOYMENT_STATUSES:
+        raise HTTPException(400, "在职状态不正确")
+    return status
+
+
 def _normalised_feishu_id(value: str) -> str:
     try:
         return normalise_feishu_id(value)
@@ -157,6 +188,9 @@ def _validated_user_tags(
 ) -> str:
     normalised = _normalise_user_tags(value)
     tags = [tag for tag in normalised.split(",") if tag]
+    department_tags = [tag for tag in tags if tag.startswith(department_service.DEPARTMENT_TAG_PREFIX)]
+    if department_tags:
+        raise HTTPException(400, "部门标签由组织架构自动维护，不能手工设置")
     if settings.user_custom_user_tags and tags:
         next_sort = int(
             db.execute(
@@ -182,10 +216,13 @@ def _validated_user_tags(
         return normalised
     if tags:
         placeholders = ",".join("?" for _ in tags)
+        department_column = table_has_column(db, "user_tag_definitions", "department_id")
         existing = {
             row["name"]
             for row in db.execute(
-                f"SELECT name FROM user_tag_definitions WHERE name IN ({placeholders})",
+                f"SELECT name FROM user_tag_definitions "
+                f"WHERE name IN ({placeholders})"
+                + (" AND department_id IS NULL" if department_column else ""),
                 tags,
             ).fetchall()
         }
@@ -197,14 +234,26 @@ def _validated_user_tags(
 
 
 def _sync_user_tags(db: sqlite3.Connection, user_id: int, tags_value: str) -> None:
-    db.execute("DELETE FROM user_tags WHERE user_id = ?", (user_id,))
+    # Department tags are a projection of department membership. Delete only
+    # manually managed rows so a manual tag edit cannot erase department grants.
+    department_column = table_has_column(db, "user_tag_definitions", "department_id")
+    if department_column:
+        db.execute(
+            "DELETE FROM user_tags WHERE user_id = ? AND ("
+            "tag_id IS NULL OR tag_id IN ("
+            "SELECT id FROM user_tag_definitions WHERE department_id IS NULL))",
+            (user_id,),
+        )
+    else:
+        db.execute("DELETE FROM user_tags WHERE user_id = ?", (user_id,))
     tags = [tag for tag in tags_value.split(",") if tag]
     if table_has_column(db, "user_tags", "tag_id"):
+        definition_filter = " AND department_id IS NULL" if department_column else ""
         definitions = {
             str(row["name"]): int(row["id"])
             for row in db.execute(
                 f"SELECT id, name FROM user_tag_definitions "
-                f"WHERE name IN ({','.join('?' for _ in tags)})",
+                f"WHERE name IN ({','.join('?' for _ in tags)}){definition_filter}",
                 tags,
             ).fetchall()
         } if tags else {}
@@ -284,8 +333,11 @@ def _user_filter_clause(
     tags: str,
     tags_mode: str,
     role: str,
+    department_id: str = "",
+    include_descendants: bool = True,
+    employment_status: str = "",
 ) -> tuple[list[str], list[Any]]:
-    """Build the shared search, tag, and role filters for user-list APIs."""
+    """Build the shared search, tag, role and department filters for user lists."""
     tag_values = (
         [item for item in _normalise_user_tags(tags).split(",") if item]
         if tags.strip()
@@ -293,6 +345,7 @@ def _user_filter_clause(
     )
     search_filter = search.strip()
     role_filter = role.strip()
+    status_filter = employment_status.strip()
     where: list[str] = []
     params: list[Any] = []
     if role_filter:
@@ -300,6 +353,38 @@ def _user_filter_clause(
             raise HTTPException(400, "角色筛选不正确")
         where.append("users.role = ?")
         params.append(role_filter)
+    if status_filter:
+        if status_filter not in department_service.EMPLOYMENT_STATUSES:
+            raise HTTPException(400, "在职状态筛选不正确")
+        where.append("users.employment_status = ?")
+        params.append(status_filter)
+    department_filter = department_id.strip()
+    if department_filter:
+        if department_filter.lower() == "none":
+            where.append(
+                "NOT EXISTS (SELECT 1 FROM department_members dm "
+                "WHERE dm.user_id = users.id)"
+            )
+        else:
+            try:
+                target_department_id = int(department_filter)
+            except ValueError:
+                raise HTTPException(400, "部门筛选参数不正确") from None
+            if target_department_id <= 0:
+                raise HTTPException(400, "部门筛选参数不正确")
+            if include_descendants:
+                where.append(
+                    "EXISTS (SELECT 1 FROM department_members dm "
+                    "JOIN departments d ON d.id = dm.department_id "
+                    "JOIN departments target ON target.id = ? "
+                    "WHERE dm.user_id = users.id AND d.path LIKE target.path || '%')"
+                )
+            else:
+                where.append(
+                    "EXISTS (SELECT 1 FROM department_members dm "
+                    "WHERE dm.user_id = users.id AND dm.department_id = ?)"
+                )
+            params.append(target_department_id)
     if tag_values:
         if tags_mode.strip().lower() == "all":
             for tag_value in tag_values:
@@ -326,15 +411,24 @@ def _user_filter_clause(
                 params.extend(tag_values)
     if search_filter:
         pattern = f"%{_escape_like(search_filter)}%"
-        where.append(
-            "(name LIKE ? ESCAPE '\\' COLLATE NOCASE "
-            "OR username LIKE ? ESCAPE '\\' COLLATE NOCASE "
-            "OR EXISTS (SELECT 1 FROM user_tags sut "
+        search_parts = [
+            "name LIKE ? ESCAPE '\\' COLLATE NOCASE",
+            "username LIKE ? ESCAPE '\\' COLLATE NOCASE",
+        ]
+        search_params: list[Any] = [pattern, pattern]
+        for column in ("email", "job_title", "employee_no"):
+            if table_has_column(db, "users", column):
+                search_parts.append(f"{column} LIKE ? ESCAPE '\\' COLLATE NOCASE")
+                search_params.append(pattern)
+        search_parts.append(
+            "EXISTS (SELECT 1 FROM user_tags sut "
             "LEFT JOIN user_tag_definitions sud ON sud.id = sut.tag_id "
             "WHERE sut.user_id = users.id AND "
-            "COALESCE(sud.name, sut.tag_name) LIKE ? ESCAPE '\\' COLLATE NOCASE))"
+            "COALESCE(sud.name, sut.tag_name) LIKE ? ESCAPE '\\' COLLATE NOCASE)"
         )
-        params.extend([pattern, pattern, pattern])
+        search_params.append(pattern)
+        where.append("(" + " OR ".join(search_parts) + ")")
+        params.extend(search_params)
     return where, params
 
 
@@ -348,6 +442,10 @@ def list_users(
     tags_mode: str = Query("any", max_length=8),
     role: str = Query("", max_length=32),
     login_sort: str = Query("", max_length=8),
+    department_id: str = Query("", max_length=32),
+    include_descendants: bool = Query(True),
+    employment_status: str = Query("", max_length=16),
+    sort: str = Query("name", max_length=24),
     _: Any = Depends(require_admin),
     db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
@@ -361,25 +459,57 @@ def list_users(
         tags=tags,
         tags_mode=tags_mode,
         role=role,
+        department_id=department_id,
+        include_descendants=include_descendants,
+        employment_status=employment_status,
     )
 
     where_sql = f" WHERE {' AND '.join(where)}" if where else ""
     if login_sort not in {"", "asc", "desc"}:
         raise HTTPException(400, "最后登录时间排序参数不正确")
-    order_sql = (
-        f"CASE WHEN last_login_at IS NULL THEN 1 ELSE 0 END, "
-        f"last_login_at {login_sort.upper()}, id DESC"
-        if login_sort
-        else "id DESC"
-    )
+    sort_modes = {"name", "last_login_desc", "last_login_asc", "created_desc"}
+    if login_sort:
+        sort = f"last_login_{login_sort}"
+    if sort not in sort_modes:
+        raise HTTPException(400, "用户排序参数不正确")
+    order_parts: list[str] = []
+    order_params: list[Any] = []
+    department_filter = department_id.strip()
+    if department_filter and department_filter.lower() != "none":
+        try:
+            leader_department_id = int(department_filter)
+        except ValueError:
+            leader_department_id = 0
+        if leader_department_id > 0:
+            order_parts.append(
+                "CASE WHEN users.id IN ("
+                "SELECT user_id FROM department_leaders WHERE department_id = ?"
+                ") THEN 0 ELSE 1 END"
+            )
+            order_params.append(leader_department_id)
+    if sort == "name":
+        order_parts.extend([
+            "COALESCE(NULLIF(TRIM(users.name), ''), users.username) COLLATE NOCASE ASC",
+            "users.id ASC",
+        ])
+    elif sort == "created_desc":
+        order_parts.extend(["users.created_at DESC", "users.id DESC"])
+    else:
+        direction = "DESC" if sort.endswith("desc") else "ASC"
+        order_parts.extend([
+            f"CASE WHEN users.last_login_at IS NULL THEN 1 ELSE 0 END",
+            f"users.last_login_at {direction}",
+            "users.id DESC",
+        ])
+    order_sql = ", ".join(order_parts)
     total = int(
         db.execute(f"SELECT COUNT(*) FROM users{where_sql}", params).fetchone()[0]
     )
     offset = (page - 1) * page_size
     rows = db.execute(
-        f"SELECT {USER_SELECT_COLUMNS} FROM users{where_sql} "
+        f"SELECT {_user_select_columns(db)} FROM users{where_sql} "
         f"ORDER BY {order_sql} LIMIT ? OFFSET ?",
-        [*params, page_size, offset],
+        [*params, *order_params, page_size, offset],
     ).fetchall()
     week_start, today_start = _activity_cutoffs()
     stats_row = db.execute(
@@ -393,16 +523,24 @@ def list_users(
         (week_start, today_start),
     ).fetchone()
 
+    has_department_column = table_has_column(db, "user_tag_definitions", "department_id")
+    manual_definition_where = " WHERE department_id IS NULL" if has_department_column else ""
+    manual_join_where = (
+        " WHERE def.department_id IS NULL AND COALESCE(def.name, ut.tag_name) NOT LIKE 'dept:%'"
+        if has_department_column
+        else " WHERE COALESCE(def.name, ut.tag_name) NOT LIKE 'dept:%'"
+    )
     if table_has_column(db, "user_tags", "tag_id"):
         available_tag_rows = db.execute(
             """
             SELECT name FROM (
-                SELECT name, sort_order, id, 0 AS source_order FROM user_tag_definitions
+                SELECT name, sort_order, id, 0 AS source_order
+                FROM user_tag_definitions""" + manual_definition_where + """
                 UNION ALL
                 SELECT DISTINCT COALESCE(def.name, ut.tag_name) AS name,
                        2147483647, 2147483647, 1
                 FROM user_tags ut
-                LEFT JOIN user_tag_definitions def ON def.id = ut.tag_id
+                LEFT JOIN user_tag_definitions def ON def.id = ut.tag_id""" + manual_join_where + """
             )
             GROUP BY name
             ORDER BY MIN(source_order), MIN(sort_order), MIN(id), name
@@ -412,11 +550,12 @@ def list_users(
         available_tag_rows = db.execute(
             """
             SELECT name FROM (
-                SELECT name, sort_order, id, 0 AS source_order FROM user_tag_definitions
+                SELECT name, sort_order, id, 0 AS source_order
+                FROM user_tag_definitions""" + manual_definition_where + """
                 UNION ALL
                 SELECT DISTINCT tag_name AS name,
                        2147483647, 2147483647, 1
-                FROM user_tags
+                FROM user_tags WHERE tag_name NOT LIKE 'dept:%'
             )
             GROUP BY name
             ORDER BY MIN(source_order), MIN(sort_order), MIN(id), name
@@ -424,8 +563,37 @@ def list_users(
         ).fetchall()
     available_tags = [row["name"] for row in available_tag_rows if row["name"]]
 
+    page_user_ids = [int(row["id"]) for row in rows]
+    departments_by_user = department_service.list_user_departments(db, page_user_ids)
+    leader_of: dict[int, list[dict[str, Any]]] = {}
+    if page_user_ids:
+        placeholders = ",".join("?" for _ in page_user_ids)
+        try:
+            leader_rows = db.execute(
+                "SELECT l.user_id, l.is_primary, d.id AS department_id, d.name "
+                "FROM department_leaders l JOIN departments d ON d.id = l.department_id "
+                f"WHERE l.user_id IN ({placeholders}) "
+                "ORDER BY d.path COLLATE NOCASE, d.id",
+                page_user_ids,
+            ).fetchall()
+        except sqlite3.OperationalError:
+            leader_rows = []
+        for leader_row in leader_rows:
+            leader_of.setdefault(int(leader_row["user_id"]), []).append(
+                {
+                    "department_id": int(leader_row["department_id"]),
+                    "name": leader_row["name"],
+                    "is_primary": bool(leader_row["is_primary"]),
+                }
+            )
+    serialized_users: list[dict[str, Any]] = []
+    for row in rows:
+        item = _serialize_user(row) or {}
+        item["departments"] = departments_by_user.get(int(row["id"]), [])
+        item["leader_of"] = leader_of.get(int(row["id"]), [])
+        serialized_users.append(item)
     return {
-        "users": [_serialize_user(row) for row in rows],
+        "users": serialized_users,
         "available_tags": available_tags,
         "page": page,
         "page_size": page_size,
@@ -445,6 +613,9 @@ def list_user_selection_ids(
     tags: str = Query("", max_length=1000),
     tags_mode: str = Query("any", max_length=8),
     role: str = Query("", max_length=32),
+    department_id: str = Query("", max_length=32),
+    include_descendants: bool = Query(True),
+    employment_status: str = Query("", max_length=16),
     admin: sqlite3.Row = Depends(require_admin),
     db: sqlite3.Connection = Depends(db_read_dep),
 ) -> dict[str, Any]:
@@ -456,6 +627,9 @@ def list_user_selection_ids(
         tags=tags,
         tags_mode=tags_mode,
         role=role,
+        department_id=department_id,
+        include_descendants=include_descendants,
+        employment_status=employment_status,
     )
     where.append("users.id != ?")
     params.append(int(admin["id"]))
@@ -692,6 +866,13 @@ def create_user(
             raise HTTPException(400, policy_error)
     avatar_url = _validated_avatar_url(payload.avatar_url)
     tags = _validated_user_tags(db, payload.tags)
+    email = _normalised_email(payload.email)
+    job_title = _normalised_profile_text(payload.job_title, "职位", 100)
+    employee_no = _normalised_profile_text(payload.employee_no, "工号", 64)
+    employment_status = _normalised_employment_status(payload.employment_status)
+    department_ids = department_service.validate_department_ids(
+        db, payload.department_ids or []
+    )
 
     # 不再使用全局共享默认密码。未指定时生成只展示一次的临时密码；
     # 管理员手工设置的密码同样视为临时密码，用户首次登录必须自行修改。
@@ -705,36 +886,59 @@ def create_user(
     
     ts = now_iso()
     try:
+        columns = [
+            "name", "username", "username_key", "password_hash", "feishu_id",
+            "avatar_url", "tags",
+        ]
+        values: list[Any] = [
+            name,
+            username,
+            username_lookup_key(username),
+            hash_password(password),
+            feishu_id,
+            avatar_url,
+            tags,
+        ]
+        for column, value in (
+            ("email", email),
+            ("job_title", job_title),
+            ("employee_no", employee_no),
+            ("employment_status", employment_status),
+        ):
+            if table_has_column(db, "users", column):
+                columns.append(column)
+                values.append(value)
+        columns.extend([
+            "role", "must_change_pwd", "temporary_password_expires_at",
+            "created_at", "updated_at",
+        ])
+        values.extend([
+            payload.role,
+            must_change_pwd,
+            _temporary_password_expiry(),
+            ts,
+            ts,
+        ])
         db.execute(
-            """
-            INSERT INTO users (
-                name, username, username_key, password_hash, feishu_id, avatar_url, tags, role,
-                must_change_pwd, temporary_password_expires_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                name,
-                username,
-                username_lookup_key(username),
-                hash_password(password),
-                feishu_id,
-                avatar_url,
-                tags,
-                payload.role,
-                must_change_pwd,
-                _temporary_password_expiry(),
-                ts,
-                ts,
-            ),
+            f"INSERT INTO users ({', '.join(columns)}) "
+            f"VALUES ({', '.join('?' for _ in columns)})",
+            values,
         )
         user_id = int(db.execute("SELECT last_insert_rowid()").fetchone()[0])
         _sync_user_tags(db, user_id, tags)
+        if department_ids:
+            department_service.set_user_departments(db, user_id, department_ids)
         _audit_admin_action(
             db,
             admin,
             "user.create",
             target_user_id=user_id,
-            details={"username": username, "role": payload.role, "tags": tags.split(",") if tags else []},
+            details={
+                "username": username,
+                "role": payload.role,
+                "tags": tags.split(",") if tags else [],
+                "department_ids": department_ids,
+            },
         )
         db.commit()
     except sqlite3.IntegrityError:
@@ -771,6 +975,37 @@ def update_user(
         raise HTTPException(404, "用户不存在")
     avatar_url = _validated_avatar_update(existing["avatar_url"] or "", payload.avatar_url, user_id)
     tags = _validated_user_tags(db, payload.tags, existing_value=existing["tags"] or "")
+    profile_columns_available = all(
+        table_has_column(db, "users", column)
+        for column in ("email", "job_title", "employee_no", "employment_status")
+    )
+    email = (
+        _normalised_email(payload.email)
+        if payload.email is not None
+        else ((existing["email"] if "email" in existing.keys() else "") or "")
+    )
+    job_title = (
+        _normalised_profile_text(payload.job_title, "职位", 100)
+        if payload.job_title is not None
+        else ((existing["job_title"] if "job_title" in existing.keys() else "") or "")
+    )
+    employee_no = (
+        _normalised_profile_text(payload.employee_no, "工号", 64)
+        if payload.employee_no is not None
+        else ((existing["employee_no"] if "employee_no" in existing.keys() else "") or "")
+    )
+    employment_status = (
+        _normalised_employment_status(payload.employment_status)
+        if payload.employment_status is not None
+        else ((existing["employment_status"] if "employment_status" in existing.keys() else "") or "active")
+    )
+    department_ids = (
+        department_service.validate_department_ids(
+            db, payload.department_ids, allow_inactive=True
+        )
+        if payload.department_ids is not None
+        else None
+    )
     
     # 系统管理员的身份只能由系统管理员授予/撤销
     if not is_system_admin(admin):
@@ -796,13 +1031,16 @@ def update_user(
         feishu_id,
         avatar_url,
         tags,
-        payload.role,
-        now_iso(),
     ]
     sql = (
         "UPDATE users SET name = ?, username = ?, username_key = ?, feishu_id = ?, "
-        "avatar_url = ?, tags = ?, role = ?, updated_at = ?"
+        "avatar_url = ?, tags = ?"
     )
+    if profile_columns_available:
+        sql += ", email = ?, job_title = ?, employee_no = ?, employment_status = ?"
+        fields.extend([email, job_title, employee_no, employment_status])
+    sql += ", role = ?, updated_at = ?"
+    fields.extend([payload.role, now_iso()])
     
     if payload.password:
         sql += ", password_hash = ?, must_change_pwd = 1, temporary_password_expires_at = ?, session_version = session_version + 1"
@@ -815,18 +1053,38 @@ def update_user(
     try:
         db.execute(sql, fields)
         _sync_user_tags(db, user_id, tags)
-        changed_fields = [
-            field
-            for field, old, new in (
-                ("name", existing["name"], name),
-                ("username", existing["username"], username),
-                ("feishu_id", existing["feishu_id"], feishu_id),
-                ("avatar_url", existing["avatar_url"], avatar_url),
-                ("tags", existing["tags"], tags),
-                ("role", existing["role"], payload.role),
+        if department_ids is not None:
+            department_service.set_user_departments(
+                db, user_id, department_ids, allow_inactive=True
             )
-            if old != new
+        compared_fields = [
+            ("name", existing["name"], name),
+            ("username", existing["username"], username),
+            ("feishu_id", existing["feishu_id"], feishu_id),
+            ("avatar_url", existing["avatar_url"], avatar_url),
+            ("tags", existing["tags"], tags),
+            ("role", existing["role"], payload.role),
         ]
+        if profile_columns_available:
+            compared_fields.extend([
+                ("email", existing["email"], email),
+                ("job_title", existing["job_title"], job_title),
+                ("employee_no", existing["employee_no"], employee_no),
+                ("employment_status", existing["employment_status"], employment_status),
+            ])
+        changed_fields = [
+            field for field, old, new in compared_fields if old != new
+        ]
+        if department_ids is not None:
+            existing_department_ids = {
+                int(row["department_id"])
+                for row in db.execute(
+                    "SELECT department_id FROM department_members WHERE user_id = ?",
+                    (user_id,),
+                ).fetchall()
+            }
+            if existing_department_ids != set(department_ids):
+                changed_fields.append("departments")
         if payload.password:
             changed_fields.append("password")
         _audit_admin_action(
@@ -838,6 +1096,7 @@ def update_user(
                 "changed_fields": changed_fields,
                 "role_before": existing["role"],
                 "role_after": payload.role,
+                "department_ids": department_ids,
             },
         )
         db.commit()

@@ -329,6 +329,20 @@ class DatabaseUpgradeTests(unittest.TestCase):
         self.assertEqual(self.db.execute('SELECT count(*) FROM tags').fetchone()[0], 4)
         self.assert_healthy()
 
+    def test_task_type_migration_includes_feishu_sync(self):
+        database.init_db()
+        self.assertEqual(self.db.execute('PRAGMA user_version').fetchone()[0], database.DB_SCHEMA_VERSION)
+        task_schema = self.db.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'"
+        ).fetchone()['sql']
+        self.assertIn('feishu_sync', task_schema)
+        self.assertIsNotNone(
+            self.db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='directory_sync_schedule'"
+            ).fetchone()
+        )
+        self.assert_healthy()
+
     def test_failure_after_real_backfill_rolls_back_legacy_data_and_can_retry(self):
         before = self.snapshot()
         original = database._migrate_normalized_user_tags

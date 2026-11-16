@@ -176,17 +176,21 @@ def _titles(
             return "模板导入完成" if params.get("import_target") == "templates" else "单页素材导入完成"
         if task_type == "ai_tagging":
             return "智能标注完成"
+        if task_type == "feishu_sync":
+            return "组织架构同步完成"
         return "任务已完成"
     if status == "failed":
         return {
             "download": "下载失败",
             "batch_split_import": "导入失败",
             "ai_tagging": "智能标注失败",
+            "feishu_sync": "组织架构同步失败",
         }.get(task_type, "任务失败")
     return {
         "download": "下载已取消",
         "batch_split_import": "导入已取消",
         "ai_tagging": "智能标注已取消",
+        "feishu_sync": "组织架构同步已取消",
     }.get(task_type, "任务已取消")
 
 
@@ -221,6 +225,15 @@ def _body(
         unit = "个模板" if params.get("import_target") == "templates" else "个素材"
         return _clip(f"{name} · 已生成 {count} {unit}")
 
+    if task_type == "feishu_sync":
+        return _clip(
+            f"部门新增 {int(result.get('departments_created') or 0)}、"
+            f"更新 {int(result.get('departments_updated') or 0)}、"
+            f"停用 {int(result.get('departments_deactivated') or 0)}；"
+            f"用户新增 {int(result.get('users_created') or 0)}、"
+            f"更新 {int(result.get('users_updated') or 0)}"
+        )
+
     # ai_tagging
     resource_id = _positive_id(params.get("target_id")) or _positive_id(result.get("target_id"))
     resource_name = resources.get(resource_id or 0, {}).get("name", "")
@@ -240,6 +253,8 @@ def _link(
         return "/manage/tasks"
     if task_type == "batch_split_import":
         return "/manage/tasks?tab=uploads"
+    if task_type == "feishu_sync":
+        return "/manage/tasks?tab=sync"
     resource_id = _positive_id(params.get("target_id")) or _positive_id(result.get("target_id"))
     resource = resources.get(resource_id or 0)
     if resource and not resource["deleted"] and resource["detail_token"]:

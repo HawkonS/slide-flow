@@ -25,6 +25,7 @@ from app.routers.dependencies import (
     SESSION_COOKIE,
     _serialize_user,
     db_dep,
+    db_read_dep,
 )
 from app.config import settings
 
@@ -329,11 +330,24 @@ def logout(response: Response) -> dict[str, bool]:
 
 
 @router.get("/me")
-def me(response: Response, user: sqlite3.Row = Depends(require_user)) -> dict[str, Any]:
+def me(
+    response: Response,
+    user: sqlite3.Row = Depends(require_user),
+    db: sqlite3.Connection = Depends(db_read_dep),
+) -> dict[str, Any]:
     """获取当前登录用户信息"""
+    from app.services.departments import list_user_departments
+
     response.headers["Cache-Control"] = "private, no-store"
     response.headers["Vary"] = "Cookie"
-    return {"user": {**_serialize_user(user), "session_version": int(user["session_version"])}}
+    departments = list_user_departments(db, [int(user["id"])]).get(int(user["id"]), [])
+    return {
+        "user": {
+            **_serialize_user(user),
+            "departments": departments,
+            "session_version": int(user["session_version"]),
+        }
+    }
 
 
 @router.get("/auth/verify-offline")

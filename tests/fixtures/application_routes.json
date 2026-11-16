@@ -84,6 +84,70 @@
     ]
   },
   {
+    "path": "/api/admin/model-connections",
+    "name": "list_connections",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/admin/model-connections",
+    "name": "create_connection",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/admin/model-connections/{connection_id}",
+    "name": "update_connection",
+    "kind": "http",
+    "methods": [
+      "PATCH"
+    ]
+  },
+  {
+    "path": "/api/admin/model-connections/{connection_id}",
+    "name": "delete_connection",
+    "kind": "http",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/admin/model-connections/{connection_id}/models",
+    "name": "fetch_models",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/admin/model-connections/preview-models",
+    "name": "preview_models",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/admin/model-connections/{connection_id}/test",
+    "name": "test_connection",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/health",
+    "name": "health",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
     "path": "/api/admin/system/status",
     "name": "api_admin_system_status",
     "kind": "http",
@@ -676,11 +740,163 @@
     ]
   },
   {
+    "path": "/api/departments",
+    "name": "list_departments",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/admin/directory",
+    "name": "admin_directory",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/departments",
+    "name": "create_department",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/departments/{department_id}",
+    "name": "update_department",
+    "kind": "http",
+    "methods": [
+      "PATCH"
+    ]
+  },
+  {
+    "path": "/api/departments/{department_id}",
+    "name": "delete_department",
+    "kind": "http",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/departments/{department_id}/usage",
+    "name": "department_usage",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/departments/{department_id}/members",
+    "name": "replace_department_members",
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ]
+  },
+  {
+    "path": "/api/departments/{department_id}/members",
+    "name": "add_department_members",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/departments/{department_id}/members/{user_id}",
+    "name": "remove_department_member",
+    "kind": "http",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/departments/{department_id}/leaders",
+    "name": "set_department_leaders",
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ]
+  },
+  {
+    "path": "/api/departments/rebuild-tags",
+    "name": "rebuild_department_tags",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/departments/sync-schedule",
+    "name": "get_sync_schedule",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/departments/sync-schedule",
+    "name": "update_sync_schedule",
+    "kind": "http",
+    "methods": [
+      "PUT"
+    ]
+  },
+  {
+    "path": "/api/departments/sync-feishu",
+    "name": "sync_feishu_departments",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
     "path": "/api/admin/download-records",
     "name": "list_download_records",
     "kind": "http",
     "methods": [
       "GET"
+    ]
+  },
+  {
+    "path": "/api/me/notifications",
+    "name": "list_my_notifications",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/me/notifications/unread-count",
+    "name": "my_notifications_unread_count",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/me/notifications/{notification_id}/read",
+    "name": "read_notification",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/me/notifications/{notification_id}/read",
+    "name": "unread_notification",
+    "kind": "http",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/me/notifications/read-all",
+    "name": "read_all_notifications",
+    "kind": "http",
+    "methods": [
+      "POST"
     ]
   },
   {
@@ -726,6 +942,14 @@
   {
     "path": "/api/resource-import/{session_id}/replace-fonts",
     "name": "replace_resource_import_fonts",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/resource-import/{session_id}/duplicates",
+    "name": "resource_import_duplicates",
     "kind": "http",
     "methods": [
       "POST"
@@ -878,6 +1102,14 @@
   {
     "path": "/api/show-shares/{token}/preview/{resource_id}",
     "name": "shared_show_preview",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/resources/{resource_id}/neighbors",
+    "name": "get_resource_neighbors",
     "kind": "http",
     "methods": [
       "GET"
@@ -1041,6 +1273,46 @@
     "kind": "http",
     "methods": [
       "GET"
+    ]
+  },
+  {
+    "path": "/api/resources/duplicates/scan",
+    "name": "scan_resource_duplicates",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/resources/duplicates/ignores",
+    "name": "list_duplicate_ignores",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/resources/duplicates/ignores",
+    "name": "ignore_duplicate_group_route",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/resources/duplicates/ignores/{ignore_id}",
+    "name": "restore_duplicate_ignore",
+    "kind": "http",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/resources/duplicates/merge",
+    "name": "merge_resource_duplicates",
+    "kind": "http",
+    "methods": [
+      "POST"
     ]
   },
   {
@@ -1316,6 +1588,30 @@
     ]
   },
   {
+    "path": "/api/ai-tagging/resources/batch",
+    "name": "tag_resources_batch",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/ai-tagging/resources/{resource_id}",
+    "name": "tag_resource",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/ai-tagging/tasks/{task_id}/apply",
+    "name": "apply_tags",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
     "path": "/api/downloads/create",
     "name": "create_download_task",
     "kind": "http",
@@ -1404,6 +1700,14 @@
   {
     "path": "/api/tasks/split-import",
     "name": "create_split_import_task",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/tasks/feishu-sync",
+    "name": "create_feishu_sync_task_endpoint",
     "kind": "http",
     "methods": [
       "POST"
@@ -1562,6 +1866,14 @@
     ]
   },
   {
+    "path": "/health",
+    "name": "health_check",
+    "kind": "http",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
     "path": "/static",
     "name": "static",
     "kind": "mount",
@@ -1591,198 +1903,6 @@
     "kind": "http",
     "methods": [
       "GET"
-    ]
-  },
-  {
-    "path": "/api/resources/{resource_id}/neighbors",
-    "name": "get_resource_neighbors",
-    "kind": "http",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "path": "/api/admin/model-connections",
-    "name": "list_connections",
-    "kind": "http",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "path": "/api/admin/model-connections",
-    "name": "create_connection",
-    "kind": "http",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "path": "/api/admin/model-connections/{connection_id}",
-    "name": "update_connection",
-    "kind": "http",
-    "methods": [
-      "PATCH"
-    ]
-  },
-  {
-    "path": "/api/admin/model-connections/{connection_id}",
-    "name": "delete_connection",
-    "kind": "http",
-    "methods": [
-      "DELETE"
-    ]
-  },
-  {
-    "path": "/api/admin/model-connections/{connection_id}/models",
-    "name": "fetch_models",
-    "kind": "http",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "path": "/api/admin/model-connections/preview-models",
-    "name": "preview_models",
-    "kind": "http",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "path": "/api/admin/model-connections/{connection_id}/test",
-    "name": "test_connection",
-    "kind": "http",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "path": "/api/ai-tagging/resources/batch",
-    "name": "tag_resources_batch",
-    "kind": "http",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "path": "/api/ai-tagging/resources/{resource_id}",
-    "name": "tag_resource",
-    "kind": "http",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "path": "/api/ai-tagging/tasks/{task_id}/apply",
-    "name": "apply_tags",
-    "kind": "http",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "path": "/api/resource-import/{session_id}/duplicates",
-    "name": "resource_import_duplicates",
-    "kind": "http",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "path": "/api/resources/duplicates/scan",
-    "name": "scan_resource_duplicates",
-    "kind": "http",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "path": "/api/resources/duplicates/merge",
-    "name": "merge_resource_duplicates",
-    "kind": "http",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "path": "/api/health",
-    "name": "health",
-    "kind": "http",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "path": "/health",
-    "name": "health_check",
-    "kind": "http",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "path": "/api/resources/duplicates/ignores",
-    "name": "list_duplicate_ignores",
-    "kind": "http",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "path": "/api/resources/duplicates/ignores",
-    "name": "ignore_duplicate_group_route",
-    "kind": "http",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "path": "/api/resources/duplicates/ignores/{ignore_id}",
-    "name": "restore_duplicate_ignore",
-    "kind": "http",
-    "methods": [
-      "DELETE"
-    ]
-  },
-  {
-    "path": "/api/me/notifications",
-    "name": "list_my_notifications",
-    "kind": "http",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "path": "/api/me/notifications/unread-count",
-    "name": "my_notifications_unread_count",
-    "kind": "http",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "path": "/api/me/notifications/{notification_id}/read",
-    "name": "read_notification",
-    "kind": "http",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "path": "/api/me/notifications/read-all",
-    "name": "read_all_notifications",
-    "kind": "http",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "path": "/api/me/notifications/{notification_id}/read",
-    "name": "unread_notification",
-    "kind": "http",
-    "methods": [
-      "DELETE"
     ]
   }
 ]

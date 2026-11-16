@@ -70,6 +70,24 @@ class FeishuUserInfo:
     # 企业邮箱（如 someone@example.com），邮箱前缀即真实账号，
     # 需应用开通 contact:user.employee:readonly 权限，未开通时为空
     enterprise_email: str = ""
+    union_id: str = ""
+    user_id: str = ""
+    email: str = ""
+    job_title: str = ""
+    employee_no: str = ""
+    employment_status: str = "active"
+    department_ids: tuple[str, ...] = ()
+
+
+@dataclass
+class FeishuDepartmentInfo:
+    """飞书部门信息（组织架构同步用）。"""
+    open_department_id: str
+    parent_department_id: str
+    name: str
+    leader_open_ids: tuple[str, ...] = ()
+    order: int = 0
+    is_active: bool = True
 
 
 def _check_response(data: dict, action: str) -> None:
@@ -216,29 +234,137 @@ def _list_contact_items(
     raise FeishuAPIError(-1, f"飞书 {action} 分页数量异常，请检查通讯录范围")
 
 
-def get_directory_users(tenant_access_token: str) -> list[FeishuUserInfo]:
-    """Return all users visible to the app across the Feishu directory tree."""
-    departments = ["0"]
-    department_items = _list_contact_items(
-        tenant_access_token,
-        "/contact/v3/departments/0/children",
-        params={
-            "department_id_type": "open_department_id",
-            "fetch_child": True,
-        },
-        action="获取通讯录部门",
+def _pick_avatar(item: dict) -> str:
+    avatar = item.get("avatar")
+    if isinstance(avatar, dict):
+        return str(
+            avatar.get("avatar_origin")
+            or avatar.get("avatar_640")
+            or avatar.get("avatar_240")
+            or avatar.get("avatar_72")
+            or ""
+        )
+    return str(item.get("avatar_url") or item.get("avatar_thumb") or "")
+
+
+def _user_employment_status(item: dict) -> str:
+    status = item.get("status")
+    if not isinstance(status, dict):
+        return "active"
+    if status.get("is_resigned") or status.get("is_exited"):
+        return "resigned"
+    if status.get("is_frozen"):
+        return "frozen"
+    return "active"
+
+
+def _merge_directory_user(
+    existing: FeishuUserInfo | None,
+    item: dict,
+    fallback_department_id: str,
+) -> FeishuUserInfo | None:
+    open_id = str(item.get("open_id") or item.get("user_id") or "").strip()
+    if not open_id:
+        return None
+    department_ids = {
+        str(value).strip()
+        for value in (item.get("department_ids") or [])
+        if str(value).strip()
+    }
+    if fallback_department_id and fallback_department_id != "0":
+        department_ids.add(fallback_department_id)
+    if existing is not None:
+        department_ids.update(existing.department_ids)
+    return FeishuUserInfo(
+        open_id=open_id,
+        name=str(item.get("name") or (existing.name if existing else open_id)),
+        avatar_url=_pick_avatar(item) or (existing.avatar_url if existing else ""),
+        tenant_key=existing.tenant_key if existing else "",
+        enterprise_email=str(
+            item.get("enterprise_email")
+            or (existing.enterprise_email if existing else "")
+            or ""
+        ),
+        union_id=str(item.get("union_id") or (existing.union_id if existing else "") or ""),
+        user_id=str(item.get("user_id") or (existing.user_id if existing else "") or ""),
+        email=str(item.get("email") or (existing.email if existing else "") or ""),
+        job_title=str(item.get("job_title") or (existing.job_title if existing else "") or ""),
+        employee_no=str(
+            item.get("employee_no") or (existing.employee_no if existing else "") or ""
+        ),
+        employment_status=_user_employment_status(item),
+        department_ids=tuple(sorted(department_ids)),
     )
-    seen_departments = {"0"}
-    for item in department_items:
-        department_id = str(
-            item.get("open_department_id") or item.get("department_id") or ""
-        ).strip()
-        if department_id and department_id not in seen_departments:
-            departments.append(department_id)
-            seen_departments.add(department_id)
+
+
+def _department_leader_ids(item: dict) -> tuple[str, ...]:
+    leader_ids: list[str] = []
+    primary = str(item.get("leader_user_id") or "").strip()
+    if primary:
+        leader_ids.append(primary)
+    leaders = item.get("leaders")
+    if isinstance(leaders, list):
+        for leader in leaders:
+            if not isinstance(leader, dict):
+                continue
+            value = str(leader.get("leaderID") or leader.get("leader_id") or "").strip()
+            if value and value not in leader_ids:
+                leader_ids.append(value)
+    return tuple(leader_ids)
+
+
+def get_directory_tree(
+    tenant_access_token: str,
+) -> tuple[list[FeishuDepartmentInfo], list[FeishuUserInfo]]:
+    """Return the full department tree and all visible users.
+
+    Departments are walked breadth-first so every child's parent is known even
+    when the tenant does not populate ``parent_department_id`` on the
+    ``fetch_child`` response.
+    """
+    max_departments = 1000
+    max_users = 50_000
+    departments: dict[str, FeishuDepartmentInfo] = {}
+    queue: list[str] = ["0"]
+    seen: set[str] = set()
+    while queue:
+        parent_id = queue.pop(0)
+        if parent_id in seen:
+            continue
+        seen.add(parent_id)
+        items = _list_contact_items(
+            tenant_access_token,
+            f"/contact/v3/departments/{parent_id}/children",
+            params={"department_id_type": "open_department_id"},
+            action="获取通讯录部门",
+        )
+        for item in items:
+            department_id = str(
+                item.get("open_department_id") or item.get("department_id") or ""
+            ).strip()
+            if not department_id or department_id in departments:
+                continue
+            parent_value = str(
+                item.get("parent_department_id") or parent_id or "0"
+            ).strip() or "0"
+            status = item.get("status")
+            is_active = not (
+                isinstance(status, dict) and bool(status.get("is_deleted"))
+            )
+            departments[department_id] = FeishuDepartmentInfo(
+                open_department_id=department_id,
+                parent_department_id=parent_value,
+                name=str(item.get("name") or department_id),
+                leader_open_ids=_department_leader_ids(item),
+                order=int(item.get("order") or 0),
+                is_active=is_active,
+            )
+            if len(departments) > max_departments:
+                raise FeishuAPIError(-1, f"通讯录部门数量超过上限 {max_departments}")
+            queue.append(department_id)
 
     users: dict[str, FeishuUserInfo] = {}
-    for department_id in departments:
+    for department_id in ["0", *departments.keys()]:
         user_items = _list_contact_items(
             tenant_access_token,
             "/contact/v3/users/find_by_department",
@@ -250,36 +376,18 @@ def get_directory_users(tenant_access_token: str) -> list[FeishuUserInfo]:
             action="获取通讯录用户",
         )
         for item in user_items:
-            open_id = str(item.get("open_id") or item.get("user_id") or "").strip()
+            open_id = str(item.get("open_id") or "").strip()
             if not open_id:
                 continue
-            avatar = item.get("avatar")
-            avatar_url = ""
-            if isinstance(avatar, dict):
-                avatar_url = str(
-                    avatar.get("avatar_origin")
-                    or avatar.get("avatar_240")
-                    or avatar.get("avatar_72")
-                    or ""
-                )
-            elif item.get("avatar_url"):
-                avatar_url = str(item["avatar_url"])
-            candidate = FeishuUserInfo(
-                open_id=open_id,
-                name=str(item.get("name") or open_id),
-                avatar_url=avatar_url,
-                tenant_key="",
-                enterprise_email=str(item.get("enterprise_email") or ""),
-            )
-            previous = users.get(open_id)
-            if previous is None:
-                users[open_id] = candidate
-            else:
-                users[open_id] = FeishuUserInfo(
-                    open_id=open_id,
-                    name=candidate.name or previous.name,
-                    avatar_url=candidate.avatar_url or previous.avatar_url,
-                    tenant_key=candidate.tenant_key or previous.tenant_key,
-                    enterprise_email=candidate.enterprise_email or previous.enterprise_email,
-                )
-    return list(users.values())
+            merged = _merge_directory_user(users.get(open_id), item, department_id)
+            if merged is not None:
+                users[open_id] = merged
+            if len(users) > max_users:
+                raise FeishuAPIError(-1, f"通讯录用户数量超过上限 {max_users}")
+    return list(departments.values()), list(users.values())
+
+
+def get_directory_users(tenant_access_token: str) -> list[FeishuUserInfo]:
+    """Return all users visible to the app across the Feishu directory tree."""
+    _, users = get_directory_tree(tenant_access_token)
+    return users

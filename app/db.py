@@ -18,7 +18,7 @@ from app.config import (
 from app.core.bootstrap import prepare_initial_admin
 from app.core.fonts import normalize_font_name
 
-DB_SCHEMA_VERSION = 34
+DB_SCHEMA_VERSION = 36
 
 
 def is_sqlite_busy_error(exc: BaseException) -> bool:
@@ -219,7 +219,80 @@ def init_db() -> None:
                 session_version INTEGER NOT NULL DEFAULT 1,
                 temporary_password_expires_at TEXT,
                 last_login_at TEXT,
+                email TEXT NOT NULL DEFAULT '',
+                job_title TEXT NOT NULL DEFAULT '',
+                employee_no TEXT NOT NULL DEFAULT '',
+                employment_status TEXT NOT NULL DEFAULT 'active',
                 created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS departments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                parent_id INTEGER REFERENCES departments(id) ON DELETE RESTRICT,
+                name TEXT NOT NULL,
+                path TEXT NOT NULL DEFAULT '',
+                depth INTEGER NOT NULL DEFAULT 0,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                external_source TEXT NOT NULL DEFAULT '',
+                external_id TEXT NOT NULL DEFAULT '',
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_departments_parent_name
+                ON departments(parent_id, name) WHERE parent_id IS NOT NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_departments_external
+                ON departments(external_source, external_id) WHERE external_id <> '';
+            CREATE INDEX IF NOT EXISTS ix_departments_path ON departments(path);
+            CREATE INDEX IF NOT EXISTS ix_departments_parent ON departments(parent_id);
+
+            CREATE TABLE IF NOT EXISTS department_members (
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                department_id INTEGER NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
+                source TEXT NOT NULL DEFAULT 'manual',
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (user_id, department_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_department_members_dept
+                ON department_members(department_id, user_id);
+
+            CREATE TABLE IF NOT EXISTS department_leaders (
+                department_id INTEGER NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                is_primary INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT 'manual',
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (department_id, user_id)
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_department_leaders_primary
+                ON department_leaders(department_id) WHERE is_primary = 1;
+
+            CREATE TABLE IF NOT EXISTS directory_sync_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                status TEXT NOT NULL DEFAULT 'running',
+                summary_json TEXT NOT NULL DEFAULT '{}',
+                error_message TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS directory_sync_schedule (
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                enabled INTEGER NOT NULL DEFAULT 0,
+                interval_hours INTEGER NOT NULL DEFAULT 24,
+                owner_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                next_due_at TEXT,
+                last_started_at TEXT,
+                last_completed_at TEXT,
+                last_status TEXT NOT NULL DEFAULT '',
+                last_message TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL
             );
 
@@ -240,9 +313,11 @@ def init_db() -> None:
                 label TEXT NOT NULL,
                 sort_order INTEGER NOT NULL DEFAULT 0,
                 is_default_filter INTEGER NOT NULL DEFAULT 0,
+                department_id INTEGER REFERENCES departments(id) ON DELETE CASCADE,
                 created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
                 created_at TEXT NOT NULL
             );
+
 
             CREATE TABLE IF NOT EXISTS subject_tag_definitions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -722,7 +797,7 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                task_type TEXT NOT NULL CHECK(task_type IN ('batch_split_import', 'download', 'ai_tagging')),
+                task_type TEXT NOT NULL CHECK(task_type IN ('batch_split_import', 'download', 'ai_tagging', 'feishu_sync')),
                 status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('uploading', 'pending', 'processing', 'completed', 'failed', 'cancelled')),
                 owner_id INTEGER NOT NULL REFERENCES users(id),
                 params TEXT NOT NULL DEFAULT '{}',
@@ -951,6 +1026,16 @@ def _migrate_schema(db: sqlite3.Connection, schema_version: int) -> None:
         db.execute("ALTER TABLE users ADD COLUMN temporary_password_expires_at TEXT")
     if "last_login_at" not in columns:
         db.execute("ALTER TABLE users ADD COLUMN last_login_at TEXT")
+    if "email" not in columns:
+        db.execute("ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''")
+    if "job_title" not in columns:
+        db.execute("ALTER TABLE users ADD COLUMN job_title TEXT NOT NULL DEFAULT ''")
+    if "employee_no" not in columns:
+        db.execute("ALTER TABLE users ADD COLUMN employee_no TEXT NOT NULL DEFAULT ''")
+    if "employment_status" not in columns:
+        db.execute("ALTER TABLE users ADD COLUMN employment_status TEXT NOT NULL DEFAULT 'active'")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_users_employment_status ON users(employment_status)")
     username_key_missing = "username_key" not in columns
     if username_key_missing:
         db.execute("ALTER TABLE users ADD COLUMN username_key TEXT NOT NULL DEFAULT ''")
@@ -1003,6 +1088,7 @@ def _migrate_schema(db: sqlite3.Connection, schema_version: int) -> None:
     if schema_version < 25:
         _migrate_normalized_content_tags(db)
     _migrate_normalized_user_tags(db)
+    _migrate_departments(db)
     font_task_columns = {
         row["name"]
         for row in db.execute("PRAGMA table_info(renderer_font_tasks)").fetchall()
@@ -1191,11 +1277,13 @@ def _migrate_schema(db: sqlite3.Connection, schema_version: int) -> None:
 
 
 def _migrate_task_type_constraint(db: sqlite3.Connection) -> None:
-    """Add the durable AI tagging task type to databases created before v29."""
+    """Add new durable task types to databases created before they existed."""
     row = db.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'"
     ).fetchone()
-    if row is None or "ai_tagging" in str(row["sql"] or ""):
+    schema_sql = str(row["sql"] or "") if row is not None else ""
+    required_types = ("ai_tagging", "feishu_sync")
+    if row is None or all(task_type in schema_sql for task_type in required_types):
         return
 
     db.execute("CREATE TEMP TABLE __tasks_backup AS SELECT * FROM tasks")
@@ -1247,7 +1335,7 @@ def _migrate_task_type_constraint(db: sqlite3.Connection) -> None:
         """
         CREATE TABLE tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            task_type TEXT NOT NULL CHECK(task_type IN ('batch_split_import', 'download', 'ai_tagging')),
+            task_type TEXT NOT NULL CHECK(task_type IN ('batch_split_import', 'download', 'ai_tagging', 'feishu_sync')),
             status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('uploading', 'pending', 'processing', 'completed', 'failed', 'cancelled')),
             owner_id INTEGER NOT NULL REFERENCES users(id),
             params TEXT NOT NULL DEFAULT '{}',
@@ -1488,6 +1576,50 @@ def _migrate_normalized_content_tags(db: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_departments(db: sqlite3.Connection) -> None:
+    """Add department columns/indexes and seed the hidden root department."""
+    tag_columns = {
+        row["name"] for row in db.execute("PRAGMA table_info(user_tag_definitions)").fetchall()
+    }
+    if "department_id" not in tag_columns:
+        db.execute(
+            "ALTER TABLE user_tag_definitions ADD COLUMN department_id INTEGER "
+            "REFERENCES departments(id) ON DELETE CASCADE"
+        )
+    db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_user_tag_definitions_department "
+        "ON user_tag_definitions(department_id) WHERE department_id IS NOT NULL"
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS ix_departments_path ON departments(path)"
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS ix_departments_parent ON departments(parent_id)"
+    )
+    root = db.execute(
+        "SELECT id, path FROM departments WHERE parent_id IS NULL ORDER BY id LIMIT 1"
+    ).fetchone()
+    ts = now_iso()
+    if root is None:
+        cursor = db.execute(
+            "INSERT INTO departments "
+            "(parent_id, name, path, depth, sort_order, is_active, "
+            " external_source, external_id, created_by, created_at, updated_at) "
+            "VALUES (NULL, '全部', '', 0, 0, 1, '', '', NULL, ?, ?)",
+            (ts, ts),
+        )
+        root_id = int(cursor.lastrowid)
+        db.execute(
+            "UPDATE departments SET path = ? WHERE id = ?",
+            (f"/{root_id}/", root_id),
+        )
+    elif not str(root["path"] or "").strip():
+        db.execute(
+            "UPDATE departments SET path = ? WHERE id = ?",
+            (f"/{int(root['id'])}/", int(root["id"])),
+        )
+
+
 def _migrate_normalized_user_tags(db: sqlite3.Connection) -> None:
     """Add and backfill IDs for user labels and scope grants."""
     relation_specs = (
@@ -1597,6 +1729,20 @@ def _recover_interrupted_tasks(db: sqlite3.Connection) -> None:
             db.execute(
                 "UPDATE tasks SET status='failed', error_message='服务重启，任务中断', message='智能标注任务已中断', updated_at=? "
                 "WHERE task_type='ai_tagging' AND status IN ('pending','processing')",
+                (now,),
+            )
+        if "completed_at" in task_columns:
+            db.execute(
+                "UPDATE tasks SET status='failed', error_message='服务重启，同步任务中断', "
+                "message='组织架构同步任务已中断', completed_at=?, updated_at=? "
+                "WHERE task_type='feishu_sync' AND status IN ('pending','processing')",
+                (now, now),
+            )
+        else:
+            db.execute(
+                "UPDATE tasks SET status='failed', error_message='服务重启，同步任务中断', "
+                "message='组织架构同步任务已中断', updated_at=? "
+                "WHERE task_type='feishu_sync' AND status IN ('pending','processing')",
                 (now,),
             )
         # A terminal parent owns the workflow lifecycle. Never let a stale

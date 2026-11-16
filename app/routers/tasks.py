@@ -140,7 +140,7 @@ def list_tasks(
         params_list.append(task_type)
     if task_types:
         values = [value.strip() for value in task_types.split(",") if value.strip()]
-        allowed_types = {"batch_split_import", "download", "ai_tagging"}
+        allowed_types = {"batch_split_import", "download", "ai_tagging", "feishu_sync"}
         if not values or any(value not in allowed_types for value in values):
             raise HTTPException(400, "任务类型筛选不正确")
         placeholders = ",".join("?" for _ in values)
@@ -182,6 +182,12 @@ def list_tasks(
             params_list.extend(
                 (search_value, search_value, search_value, search_value, search_value)
             )
+            search_fields = ()
+        elif task_type == "feishu_sync":
+            where_clauses.append(
+                "(tasks.message LIKE ? OR json_extract(tasks.params, '$.trigger') LIKE ?)"
+            )
+            params_list.extend((search_value, search_value))
             search_fields = ()
         else:
             search_fields = ()
@@ -564,6 +570,23 @@ async def create_resource_import_task(
             raise
         logger.exception("Resource import upload failed")
         raise HTTPException(400, "PPT 上传失败，请检查文件后重试") from exc
+
+
+@router.post("/api/tasks/feishu-sync")
+async def create_feishu_sync_task_endpoint(
+    admin: sqlite3.Row = Depends(require_admin),
+    db: sqlite3.Connection = Depends(db_dep),
+) -> dict[str, Any]:
+    """Create a background Feishu organization synchronization task."""
+    from app.services.tasks.feishu_sync import (
+        create_feishu_sync_task,
+        schedule_feishu_sync_task,
+    )
+
+    task_id = create_feishu_sync_task(db, owner_id=int(admin["id"]), trigger="manual")
+    db.commit()
+    await schedule_feishu_sync_task(task_id)
+    return {"task_id": task_id, "status": "pending"}
 
 
 @router.post("/api/tasks/{task_id}/dismiss")

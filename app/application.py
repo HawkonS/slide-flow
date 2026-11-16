@@ -67,7 +67,7 @@ def create_app() -> FastAPI:
     app.add_middleware(ResourceImportRequestGuard)
     app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-    from app.routers import auth, config, download_records, feishu_auth, fonts, model_connections, notifications, pages, system, tags, user_center, users
+    from app.routers import auth, config, departments, download_records, feishu_auth, fonts, model_connections, notifications, pages, system, tags, user_center, users
     from app.routers import ai_tagging, downloads, presentation, resource_import, resource_shares, show_shares, task_events, tasks, templates, renderer_font_tasks, renderer_render_tasks
     from app.routers.resources import duplicates as resource_duplicates
     from app.routers.resources import files as resource_files
@@ -79,7 +79,7 @@ def create_app() -> FastAPI:
     from app.routers.shows import remarks as show_remarks
     from app.routers.shows import versions as show_versions
 
-    for module in (pages, config, model_connections, system, auth, user_center, users, fonts, tags, download_records, notifications):
+    for module in (pages, config, model_connections, system, auth, user_center, users, fonts, tags, departments, download_records, notifications):
         app.include_router(module.router, prefix="/api", tags=[module.__name__.rsplit(".", 1)[-1]])
     for module in (
         resource_import, resource_shares, show_shares, resource_queries, resource_mutations, resource_remarks, resource_files, resource_duplicates,
