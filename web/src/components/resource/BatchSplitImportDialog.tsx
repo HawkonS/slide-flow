@@ -60,9 +60,23 @@ const parseStoredStringList = (value: unknown): string[] => {
   }
   return value.split(",").map((item) => item.trim()).filter(Boolean);
 };
+// Task params keep granted ids as JSON arrays of numbers (for example "[6]"), older
+// rows as comma strings. parseStoredStringList keeps string items only, so ids must
+// be read here instead of going through it, otherwise every user id is dropped.
 const parseStoredIdList = (value: unknown): number[] => {
-  if (Array.isArray(value)) return value.map(Number).filter((item) => Number.isInteger(item) && item > 0);
-  return parseStoredStringList(value).map(Number).filter((item) => Number.isInteger(item) && item > 0);
+  const raw: unknown[] = Array.isArray(value)
+    ? value
+    : typeof value === "string" && value.trim()
+      ? (() => {
+        try {
+          const parsed: unknown = JSON.parse(value);
+          return Array.isArray(parsed) ? parsed : value.split(",");
+        } catch {
+          return value.split(",");
+        }
+      })()
+      : [];
+  return raw.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0);
 };
 const formatSize = (bytes: number) => bytes >= 1024 * MIB ? `${(bytes / (1024 * MIB)).toFixed(2)} GB` : `${(bytes / MIB).toFixed(1)} MB`;
 
@@ -138,6 +152,9 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
   const sessionRef = React.useRef<string | null>(null);
   const taskOwnedRef = React.useRef(Boolean(initialTaskId));
   const operationRef = React.useRef<Operation>(null);
+  // Form fields are seeded from the task exactly once per import session; the poller
+  // keeps refreshing workflow fields (fonts, render progress) on every tick.
+  const formSeededRef = React.useRef<string | null>(null);
   const renderAbortRef = React.useRef<AbortController | null>(null);
   const renderErrorRef = React.useRef(false);
   const uploadingRef = React.useRef(false);
@@ -440,11 +457,18 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
         const p = task.params || {};
         if (typeof p.session_id === "string") { sessionRef.current = p.session_id; setSessionId(p.session_id); }
         if (typeof p.file_name === "string" && !pptFile) setPptFile(new File([""], p.file_name));
-        if (typeof p.name_prefix === "string" && !nameEditedRef.current) setNamePrefix(p.name_prefix); if (typeof p.series === "string") setTemplateSeries(p.series); if (typeof p.subject === "string") setSubject(p.subject); if (typeof p.tags === "string") setTagList(parseTags(p.tags));
-        if (typeof p.platform === "string") setTemplatePlatform(p.platform); if (typeof p.ratio === "string") setTemplateRatio(p.ratio); if (typeof p.template_type === "string") setTemplateType(p.template_type);
-        if (typeof p.status === "string" && p.status.trim()) setStatus(p.status);
-        if (p.visibility_scope === "public" || p.visibility_scope === "partial" || p.visibility_scope === "private") setVisibilityScope(p.visibility_scope); if (p.management_scope === "public" || p.management_scope === "partial" || p.management_scope === "private") setManagementScope(p.management_scope);
-        setVisibleUserIds(parseStoredIdList(p.visible_user_ids)); setManageUserIds(parseStoredIdList(p.manage_user_ids)); setVisibleUserTags(parseStoredStringList(p.visible_user_tags)); setManageUserTags(parseStoredStringList(p.manage_user_tags)); if (typeof p.remark_html === "string") setRemarkHtml(p.remark_html);
+        if (typeof p.name_prefix === "string" && !nameEditedRef.current) setNamePrefix(p.name_prefix);
+        // Re-applying the submitted form on every poll would revert edits made after
+        // the task was created (scope, granted users, subject), which reads as "my
+        // selection was not saved". Seed them once per session instead.
+        if (formSeededRef.current !== p.session_id) {
+          formSeededRef.current = typeof p.session_id === "string" ? p.session_id : null;
+          if (typeof p.series === "string") setTemplateSeries(p.series); if (typeof p.subject === "string") setSubject(p.subject); if (typeof p.tags === "string") setTagList(parseTags(p.tags));
+          if (typeof p.platform === "string") setTemplatePlatform(p.platform); if (typeof p.ratio === "string") setTemplateRatio(p.ratio); if (typeof p.template_type === "string") setTemplateType(p.template_type);
+          if (typeof p.status === "string" && p.status.trim()) setStatus(p.status);
+          if (p.visibility_scope === "public" || p.visibility_scope === "partial" || p.visibility_scope === "private") setVisibilityScope(p.visibility_scope); if (p.management_scope === "public" || p.management_scope === "partial" || p.management_scope === "private") setManagementScope(p.management_scope);
+          setVisibleUserIds(parseStoredIdList(p.visible_user_ids)); setManageUserIds(parseStoredIdList(p.manage_user_ids)); setVisibleUserTags(parseStoredStringList(p.visible_user_tags)); setManageUserTags(parseStoredStringList(p.manage_user_tags)); if (typeof p.remark_html === "string") setRemarkHtml(p.remark_html);
+        }
         if (typeof p.slide_count === "number") setSlideCount(p.slide_count); if (Array.isArray(p.fonts)) setFonts(p.fonts.filter((value): value is string => typeof value === "string")); if (Array.isArray(p.missing_fonts)) setMissingFonts(p.missing_fonts.filter((value): value is string => typeof value === "string"));
         if (typeof p.workflow_state === "string" && !(renderErrorRef.current && p.workflow_state === "rendering")) setWorkflowState(p.workflow_state);
         if (p.preview_status === "ready") {

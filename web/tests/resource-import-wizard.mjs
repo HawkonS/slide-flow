@@ -98,7 +98,11 @@ function metadataTags(domain) {
   };
 }
 
-function serializedTask({ fonts, missingFonts, renderReady, slideCount = 2, namePrefix = "四步回归" }) {
+function serializedTask({
+  fonts, missingFonts, renderReady, slideCount = 2, namePrefix = "四步回归",
+  visibilityScope = "public", visibleUserIds = "[]", visibleUserTags = "[]",
+  managementScope = "public", manageUserIds = "[]", manageUserTags = "[]",
+}) {
   return {
     id: 101,
     task_type: "batch_split_import",
@@ -116,12 +120,12 @@ function serializedTask({ fonts, missingFonts, renderReady, slideCount = 2, name
       subject: "产品",
       secrecy_level: "public",
       status: "active",
-      visibility_scope: "public",
-      visible_user_ids: "[]",
-      visible_user_tags: "[]",
-      management_scope: "public",
-      manage_user_ids: "[]",
-      manage_user_tags: "[]",
+      visibility_scope: visibilityScope,
+      visible_user_ids: visibleUserIds,
+      visible_user_tags: visibleUserTags,
+      management_scope: managementScope,
+      manage_user_ids: manageUserIds,
+      manage_user_tags: manageUserTags,
       remark_html: "",
       slide_count: slideCount,
       fonts,
@@ -212,7 +216,11 @@ async function createHarness(t, options = {}) {
     }
     if (path === "/api/tasks/101") {
       submitted.polls += 1;
-      return ok(serializedTask({ fonts, missingFonts, renderReady, slideCount, namePrefix: submitted.uploadName ?? "四步回归" }));
+      return ok(serializedTask({
+        fonts, missingFonts, renderReady, slideCount,
+        namePrefix: submitted.uploadName ?? "四步回归",
+        ...(options.scope ?? {}),
+      }));
     }
     if (path === `/api/resource-import/${sessionId}/replace-fonts`) {
       calls.replace += 1;
@@ -262,8 +270,9 @@ async function createHarness(t, options = {}) {
     return ok({});
   });
 
-  await page.goto(`${baseUrl}/resources/import`);
-  await page.getByRole("heading", { name: "1. 上传与信息", exact: true }).waitFor();
+  const entry = options.taskId ? `${baseUrl}/resources/import?task_id=${options.taskId}` : `${baseUrl}/resources/import`;
+  await page.goto(entry);
+  await page.getByRole("heading", { name: options.taskId ? "2. 字体检测" : "1. 上传与信息", exact: true }).waitFor();
   assert.equal(
     await page.getByRole("navigation", { name: "素材导入步骤" }).getByRole("listitem").count(),
     5,
@@ -646,4 +655,51 @@ test("a replacement picked for a font that is not missing is applied before rend
   await commitButton.click();
   await page.getByText("导入完成，已保存 1 个单页素材", { exact: true }).waitFor();
   assert.deepEqual(calls, { upload: 1, replace: 1, render: 1, commit: 1, show: 0 });
+});
+
+test("a task reopened from 任务管理 keeps 部分 scope users and can be confirmed", async (t) => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: "block" });
+  t.after(() => context.close());
+  const page = await context.newPage();
+  const committed = { body: null };
+  page.on("pageerror", (error) => assert.fail(error.message));
+
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const ok = (json) => route.fulfill({ json });
+    if (path === "/api/me") return ok({ user: { id: 1, name: "Wizard Test", username: "wizard_test", role: "admin" } });
+    if (path === "/api/fonts") return ok({ fonts: [{ id: 1, family: "Arial" }] });
+    if (path === "/api/users/options") return ok({ users: [{ id: 7, name: "张三", username: "zhangsan" }] });
+    if (path.endsWith("-tags") || path === "/api/user-tags") return ok({ groups: [], can_create: false });
+    if (path === "/api/tasks/101") {
+      // Granted ids travel as a JSON array of numbers, exactly as the upload stores them.
+      return ok(serializedTask({
+        fonts: ["Arial"], missingFonts: [], renderReady: true,
+        visibilityScope: "partial", visibleUserIds: "[7]",
+      }));
+    }
+    if (path.includes(`/api/resource-import/${sessionId}/preview/`)) return route.fulfill({ contentType: "image/png", body: png });
+    if (path === `/api/resource-import/${sessionId}/duplicates`) return ok({ status: "ready", total: 0, checked: 0, remaining: 0, items: [] });
+    if (path === `/api/resource-import/${sessionId}/commit`) {
+      committed.body = request.postDataJSON();
+      return ok({ created: 2, resource_ids: [100, 101] });
+    }
+    if (path === `/api/resource-import/${sessionId}/status`) return ok({ status: "processing", progress: 0, total: 2, message: "正在保存" });
+    if (path === "/api/shows" && request.method() === "POST") return ok({ show: { id: 9, name: "x" } });
+    return ok({});
+  });
+
+  await page.goto(`${baseUrl}/resources/import?task_id=101`);
+  await page.getByText("共 2 页，已生成 2 页、已加载 2 张。", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "图片已确认，下一步", exact: true }).click();
+  await page.getByRole("heading", { name: "4. 重复检查", exact: true }).waitFor();
+  await page.getByRole("button", { name: "下一步：确认导入", exact: true }).click();
+  await page.getByRole("heading", { name: "5. 确认导入", exact: true }).waitFor();
+
+  const commitButton = page.getByRole("button", { name: "确认导入", exact: true });
+  assert.equal(await commitButton.isDisabled(), false, "saved users must satisfy 部分 scope");
+  await commitButton.click();
+  await page.getByText("导入完成，已保存 2 个单页素材", { exact: true }).waitFor();
+  assert.deepEqual(committed.body.visible_user_ids, [7], "the saved 可见用户 must reach the commit");
 });
