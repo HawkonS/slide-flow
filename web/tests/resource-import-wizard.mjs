@@ -183,6 +183,7 @@ async function createHarness(t, options = {}) {
     render: deferred(),
     commit: deferred(),
   };
+  const standardFonts = options.standardFonts ?? [{ id: 1, family: "Arial" }];
   let fonts = options.missingFont === false ? ["Arial"] : ["旧字体"];
   let missingFonts = options.missingFont === false ? [] : ["旧字体"];
   let renderReady = false;
@@ -198,7 +199,7 @@ async function createHarness(t, options = {}) {
     if (path === "/api/me") {
       return ok({ user: { id: 1, name: "Wizard Test", username: "wizard_test", role: "admin" } });
     }
-    if (path === "/api/fonts") return ok({ fonts: [{ id: 1, family: "Arial" }] });
+    if (path === "/api/fonts") return ok({ fonts: standardFonts });
     const tagMatch = path.match(/^\/api\/(subject|secrecy|status)-tags$/);
     if (tagMatch) return ok(metadataTags(tagMatch[1]));
     if (path === "/api/user-tags") return ok({ groups: [], can_create: false });
@@ -608,4 +609,41 @@ test("an existing task URL restores a completed image render without another ren
   await page.getByText("共 2 页，已生成 2 页、已加载 2 张。", { exact: true }).waitFor();
   assert.equal(renderCalls, 0);
   assert.equal(await page.getByRole("button", { name: "图片已确认，下一步", exact: true }).isEnabled(), true);
+});
+
+test("a replacement picked for a font that is not missing is applied before rendering", async (t) => {
+  const { page, calls, gates } = await createHarness(t, {
+    missingFont: false,
+    slideCount: 1,
+    standardFonts: [{ id: 1, family: "Arial" }, { id: 2, family: "思源黑体" }],
+  });
+  await fillUploadStep(page);
+  gates.upload.resolve();
+  gates.render.resolve();
+  gates.commit.resolve();
+  await page.getByRole("button", { name: "创建上传任务", exact: true }).click();
+  await page.getByText("字体检测通过，请确认后继续。", { exact: true }).waitFor();
+
+  // A standard font may still be remapped (for example mapping an alias family to
+  // its canonical name). The choice must be applied, not silently ignored.
+  await selectOption(page, "替换字体 Arial", "思源黑体");
+  await page.getByRole("button", { name: "应用替换并下一步", exact: true }).click();
+  await waitForCount(() => calls.replace, 1, "the chosen replacement must be applied");
+  gates.replace.resolve();
+  await waitForCount(() => calls.render, 1, "rendering must restart after the replacement");
+  await page.getByRole("heading", { name: "3. 图片渲染", exact: true }).waitFor();
+  await page.getByText("共 1 页，已生成 1 页、已加载 1 张。", { exact: true }).waitFor();
+
+  await page.getByRole("button", { name: "图片已确认，下一步", exact: true }).click();
+  await page.getByRole("heading", { name: "4. 重复检查", exact: true }).waitFor();
+  await page.getByRole("button", { name: "下一步：确认导入", exact: true }).click();
+  await page.getByRole("heading", { name: "5. 确认导入", exact: true }).waitFor();
+
+  const commitButton = page.getByRole("button", { name: "确认导入", exact: true });
+  assert.equal(await commitButton.isDisabled(), false, "确认导入 must not be blocked by an applied replacement");
+  assert.equal(await page.getByText("暂时无法提交：", { exact: false }).count(), 0);
+
+  await commitButton.click();
+  await page.getByText("导入完成，已保存 1 个单页素材", { exact: true }).waitFor();
+  assert.deepEqual(calls, { upload: 1, replace: 1, render: 1, commit: 1, show: 0 });
 });
