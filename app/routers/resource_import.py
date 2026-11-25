@@ -69,6 +69,7 @@ from app.services.resource_import.sessions import (
     _resource_import_operation,
     _resource_import_receipt,
     _resource_import_root,
+    _renew_resource_import_expiry,
     reserve_resource_import_directory,
     _resource_import_session,
     _resource_import_sessions,
@@ -82,6 +83,7 @@ from app.services.resource_import.validation import (
     _validate_import_ppt_package,
     _validate_resource_import_replacements,
 )
+from contextlib import ExitStack
 from fastapi import APIRouter
 from fastapi import Body
 from fastapi import Depends
@@ -117,8 +119,50 @@ def resource_import_result(
     receipt = _resource_import_receipt(db, session_id, int(user["id"]))
     if receipt is not None:
         return {"status": "completed", **receipt}
-    _resource_import_session(session_id, user)
-    return {"status": "pending"}
+    try:
+        session = _resource_import_session(session_id, user)
+    except HTTPException as exc:
+        if exc.status_code not in (404, 410):
+            raise
+        # No receipt and no live session: the commit never reached the
+        # database and the temporary files are gone. Saying so lets the
+        # recovery screen clear the pending pointer instead of telling the
+        # operator to keep guessing.
+        return {"status": "expired"}
+    return {"status": "pending", "expires_at": float(session.get("expires_at", 0))}
+
+
+@router.post("/api/resource-import/{session_id}/touch")
+def touch_resource_import(
+    session_id: str,
+    user: sqlite3.Row = Depends(require_user),
+    _: None = Depends(_require_resource_import_origin),
+) -> dict[str, Any]:
+    """Extend an open wizard session so a slow review keeps its upload.
+
+    Long renders, duplicate checks and commits hold the per-session lease. A
+    heartbeat that arrives mid-job reports the current deadline instead of
+    failing or waiting, so the wizard never fights the work it is tracking.
+    """
+    session = _resource_import_session(session_id, user)
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(_resource_import_operation(session))
+        except HTTPException as exc:
+            if exc.status_code != 409:
+                raise
+            return {
+                "ok": True,
+                "busy": True,
+                "expires_at": float(session.get("expires_at", 0)),
+                "ttl_seconds": RESOURCE_IMPORT_TTL,
+            }
+        current = _resource_import_session(session_id, user)
+        return {
+            "ok": True,
+            "expires_at": _renew_resource_import_expiry(current),
+            "ttl_seconds": RESOURCE_IMPORT_TTL,
+        }
 
 
 @router.get("/api/resource-import/{session_id}/status")

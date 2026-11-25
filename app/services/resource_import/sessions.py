@@ -9,8 +9,10 @@ from app.routers.dependencies import (
     db_read_dep,
 )
 from app.services.resource_import.limits import (
+    RESOURCE_IMPORT_IDLE_RECLAIM_SECONDS,
     RESOURCE_IMPORT_MAX_ACTIVE_SESSIONS,
     RESOURCE_IMPORT_MIN_FREE_BYTES,
+    RESOURCE_IMPORT_ORPHAN_TTL,
     RESOURCE_IMPORT_TTL,
 )
 from app.services.resource_import.validation import (
@@ -71,6 +73,11 @@ def reserve_resource_import_directory(*, required_bytes: int = 0) -> tuple[str, 
         if active >= RESOURCE_IMPORT_MAX_ACTIVE_SESSIONS:
             raise HTTPException(429, "导入任务过多，请等待已有任务完成")
         required_free = RESOURCE_IMPORT_MIN_FREE_BYTES + max(0, int(required_bytes))
+        if shutil.disk_usage(root).free < required_free:
+            # Long-lived sessions must not turn every new upload into a 507.
+            # Reclaiming keeps a directory that is still in use and drops one
+            # that nobody has touched for hours.
+            _reclaim_abandoned_sessions(required_free)
         if shutil.disk_usage(root).free < required_free:
             raise HTTPException(507, "服务器临时空间不足，请稍后重试")
         session_id = uuid.uuid4().hex
@@ -201,6 +208,13 @@ def _write_resource_import_session(session: dict[str, Any]) -> None:
         temp_path.unlink(missing_ok=True)
 
 
+def _renew_resource_import_expiry(session: dict[str, Any]) -> float:
+    """Push the idle deadline out; the caller must hold the session lease."""
+    session["expires_at"] = time.time() + RESOURCE_IMPORT_TTL
+    _write_resource_import_session(session)
+    return float(session["expires_at"])
+
+
 def _cleanup_resource_import_session(session_id: str, session: dict[str, Any] | None = None) -> None:
     # Callers must hold the session operation lease. Never derive a deletion
     # target from metadata: only the exact validated ID is authoritative.
@@ -261,7 +275,7 @@ def _cleanup_expired_resource_imports() -> None:
             # unlocking would still race the start of a new operation.
             with _resource_import_operation({"session_id": child.name, "temp_dir": str(child)}):
                 session = _load_resource_import_session_file(child.name)
-                expires = float(session.get("expires_at", 0)) if session else child.stat().st_mtime + RESOURCE_IMPORT_TTL
+                expires = float(session.get("expires_at", 0)) if session else child.stat().st_mtime + RESOURCE_IMPORT_ORPHAN_TTL
                 if expires > now:
                     continue
                 if session and session.get("created_dirs"):
@@ -278,6 +292,54 @@ def _cleanup_expired_resource_imports() -> None:
             continue
         except Exception:
             logger.exception("Resource import cleanup failed session_id=%s", child.name)
+
+
+def _reclaim_abandoned_sessions(required_free: int) -> None:
+    """Free disk space by dropping import directories nobody is using.
+
+    The TTL is a promise to a session that is still in play. Leftover uploads
+    from closed tabs must not inherit that promise and reject every new import
+    with 507, so when admission is short on space the oldest idle directories
+    are removed first. A live lease, a pending commit or a commit receipt keeps
+    a session; heartbeats keep an active wizard's directory mtime fresh.
+    """
+    root = _resource_import_root().resolve()
+    now = time.time()
+    idle: list[Path] = []
+    for child in root.iterdir():
+        if not _RESOURCE_IMPORT_SESSION_ID_RE.fullmatch(child.name) or child.is_symlink() or not child.is_dir():
+            continue
+        try:
+            if child.stat().st_mtime + RESOURCE_IMPORT_IDLE_RECLAIM_SECONDS > now:
+                continue
+        except OSError:
+            continue
+        idle.append(child)
+    for child in sorted(idle, key=lambda path: path.stat().st_mtime):
+        if shutil.disk_usage(root).free >= required_free:
+            return
+        session = _load_resource_import_session_file(child.name)
+        if session and session.get("created_dirs"):
+            # A commit journal is live until its receipt exists; the expiry
+            # sweep owns that recovery path.
+            continue
+        try:
+            with _resource_import_operation({"session_id": child.name, "temp_dir": str(child)}):
+                current = _load_resource_import_session_file(child.name)
+                if current and current.get("created_dirs"):
+                    continue
+                if current:
+                    with get_db() as db:
+                        receipt = _resource_import_receipt(db, child.name, int(current.get("owner_id", -1)))
+                    if receipt is not None:
+                        continue
+                    _rollback_resource_import_files(current)
+                _cleanup_resource_import_session(child.name, current)
+        except HTTPException:
+            # Someone picked the session up while it was being reclaimed.
+            continue
+        except Exception:
+            logger.exception("Resource import reclaim failed session_id=%s", child.name)
 
 
 def _resource_import_session(session_id: str, user: sqlite3.Row) -> dict[str, Any]:
@@ -317,8 +379,7 @@ async def _resource_import_locked_session(
             _rollback_resource_import_files(session)
             _cleanup_resource_import_session(session_id, session)
             raise HTTPException(410, "上次导入被中断，临时文件已清理，请重新上传")
-        session["expires_at"] = time.time() + RESOURCE_IMPORT_TTL
-        _write_resource_import_session(session)
+        _renew_resource_import_expiry(session)
         yield session
 
 

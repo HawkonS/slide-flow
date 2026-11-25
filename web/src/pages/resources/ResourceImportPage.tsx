@@ -34,13 +34,26 @@ export function ResourceImportPage() {
     const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 15_000);
     setChecking(true);
     try {
-      const result = await api<{ status: string; created?: number }>(`/api/resource-import/${encodeURIComponent(pending.sessionId)}/result`, { signal: controller.signal, cache: "no-store" });
+      const result = await api<{ status: string; created?: number; expires_at?: number }>(`/api/resource-import/${encodeURIComponent(pending.sessionId)}/result`, { signal: controller.signal, cache: "no-store" });
       if (controller.signal.aborted) return;
+      if (result.status === "expired") {
+        // No receipt and no live session means the commit never reached the
+        // database, so the pointer is not protecting anything any more. Drop
+        // it and let the operator start over without the manual check.
+        forgetPendingImport(user?.id, pending.sessionId);
+        setRecovered(true);
+        setMessage("服务器没有这笔保存记录，已确认未保存。可以直接开始新的导入。");
+        void queryClient.invalidateQueries({ queryKey: ["resources"] });
+        return;
+      }
       if (result.status === "completed" && Number.isInteger(result.created) && result.created === pending.slideCount) {
         forgetPendingImport(user?.id, pending.sessionId);
         setRecovered(true);
         setMessage(`已确认上次上传成功，共保存 ${result.created} 个单页素材，无需重复上传。`);
         void queryClient.invalidateQueries({ queryKey: ["resources"] });
+      } else if (result.status === "pending" && typeof result.expires_at === "number") {
+        const remainingMinutes = Math.max(0, Math.round((result.expires_at - Date.now() / 1000) / 60));
+        setMessage(`服务器仍在处理上次保存，临时会话还剩约 ${remainingMinutes} 分钟，请稍后再次核对。不要直接重新上传同一批素材。`);
       } else {
         setMessage("服务器尚未返回完整保存回执，请稍后再次核对。不要直接重新上传同一批素材。");
       }
@@ -56,7 +69,7 @@ export function ResourceImportPage() {
   };
   if (pending && !taskId) return <section className="mx-auto grid w-full max-w-2xl gap-4 p-6">
     <h1 className="text-xl font-semibold">核对上次导入结果</h1>
-    <p className="text-sm text-muted-foreground">浏览器记录了一次已发起的 {pending.slideCount} 页保存请求。为避免断网或刷新后重复创建素材，请先查询服务器回执；此页面不会重新提交保存。</p>
+    <p className="text-sm text-muted-foreground">浏览器记录了一次已发起的 {pending.slideCount} 页保存请求。为避免断网或刷新后重复创建素材，请先查询服务器回执；此页面不会重新提交保存。这条提醒会在 24 小时后自动失效。</p>
     {message && <p role="status" className="rounded-md border p-3 text-sm">{message}</p>}
     <div className="flex flex-wrap gap-2">
       {!recovered && <Button onClick={checkReceipt} disabled={checking}>{checking ? "正在核对…" : "查询上次保存结果"}</Button>}
@@ -71,7 +84,8 @@ export function ResourceImportPage() {
       taskId={taskId}
       onTaskCreated={(createdTaskId) => {
         const next = new URLSearchParams(searchParams);
-        next.set("task_id", String(createdTaskId));
+        if (createdTaskId === null) next.delete("task_id");
+        else next.set("task_id", String(createdTaskId));
         setSearchParams(next, { replace: true });
       }}
       onSuccess={() => { void queryClient.invalidateQueries({ queryKey: ["resources"] }); }}

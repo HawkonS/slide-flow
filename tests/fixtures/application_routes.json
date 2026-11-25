@@ -908,6 +908,14 @@
     ]
   },
   {
+    "path": "/api/resource-import/{session_id}/touch",
+    "name": "touch_resource_import",
+    "kind": "http",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
     "path": "/api/resource-import/{session_id}/status",
     "name": "resource_import_status",
     "kind": "http",

@@ -37,15 +37,21 @@ export function releaseImportSession(sessionId: string): Promise<void> {
   return cleanup;
 }
 
-export interface PendingImportReceipt { sessionId: string; slideCount: number }
+export interface PendingImportReceipt { sessionId: string; slideCount: number; createdAt?: number }
 export const pendingImportReceiptKey = (ownerId: number) => `slide-flow:pending-import:${ownerId}`;
+
+/** The server drops an idle import session after this window. A recovery
+ * pointer older than that can only block the next import, so it expires too. */
+export const PENDING_IMPORT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 // Store no file name, PPT content, metadata or authentication secrets. Scope
 // the recovery pointer to this user and browser tab, and write before POST.
 export function rememberPendingImport(ownerId: number | undefined, receipt: PendingImportReceipt): boolean {
   if (ownerId === undefined) return false;
-  try { sessionStorage.setItem(pendingImportReceiptKey(ownerId), JSON.stringify(receipt)); return true; }
-  catch { return false; }
+  try {
+    sessionStorage.setItem(pendingImportReceiptKey(ownerId), JSON.stringify({ ...receipt, createdAt: Date.now() }));
+    return true;
+  } catch { return false; }
 }
 
 export function readPendingImport(ownerId: number | undefined): PendingImportReceipt | null {
@@ -55,6 +61,13 @@ export function readPendingImport(ownerId: number | undefined): PendingImportRec
     if (!raw) return null;
     const value = JSON.parse(raw) as PendingImportReceipt;
     if (typeof value.sessionId !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(value.sessionId) || !Number.isInteger(value.slideCount) || value.slideCount < 1 || value.slideCount > 500) return null;
+    // A record without a timestamp predates the expiry check and cannot be
+    // verified; drop it rather than keep asking about a batch that is gone.
+    if (typeof value.createdAt !== "number" || !Number.isFinite(value.createdAt)
+      || Date.now() - value.createdAt > PENDING_IMPORT_MAX_AGE_MS) {
+      sessionStorage.removeItem(pendingImportReceiptKey(ownerId));
+      return null;
+    }
     return value;
   } catch { return null; }
 }
@@ -64,4 +77,63 @@ export function forgetPendingImport(ownerId: number | undefined, sessionId: stri
   try {
     if (readPendingImport(ownerId)?.sessionId === sessionId) sessionStorage.removeItem(pendingImportReceiptKey(ownerId));
   } catch { /* Storage may be disabled; never turn a successful save into failure. */ }
+}
+
+/** Metadata worth re-typing after an abandoned import. Scope choices and
+ * grants are the expensive part; the name prefix follows the new file. */
+export interface ImportDraft {
+  subject?: string;
+  status?: string;
+  tagList?: string[];
+  visibilityScope?: string;
+  managementScope?: string;
+  visibleUserIds?: number[];
+  visibleUserTags?: string[];
+  manageUserIds?: number[];
+  manageUserTags?: string[];
+  remarkHtml?: string;
+}
+
+export const importDraftKey = (ownerId: number) => `slide-flow:import-draft:${ownerId}`;
+const IMPORT_DRAFT_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const IMPORT_DRAFT_MAX_REMARK_CHARS = 100_000;
+
+const stringList = (value: unknown): string[] | undefined => Array.isArray(value)
+  ? value.filter((item): item is string => typeof item === "string").slice(0, 500)
+  : undefined;
+const idList = (value: unknown): number[] | undefined => Array.isArray(value)
+  ? value.filter((item): item is number => Number.isInteger(item) && item > 0).slice(0, 500)
+  : undefined;
+
+// Shared across tabs on purpose: a repeated import usually starts in a new tab,
+// where a tab-scoped pointer would never be seen.
+export function rememberImportDraft(ownerId: number | undefined, draft: ImportDraft): boolean {
+  if (ownerId === undefined) return false;
+  const remark = typeof draft.remarkHtml === "string" ? draft.remarkHtml.slice(0, IMPORT_DRAFT_MAX_REMARK_CHARS) : "";
+  try {
+    localStorage.setItem(importDraftKey(ownerId), JSON.stringify({ ...draft, remarkHtml: remark, savedAt: Date.now() }));
+    return true;
+  } catch { return false; }
+}
+
+export function readImportDraft(ownerId: number | undefined): ImportDraft | null {
+  if (ownerId === undefined) return null;
+  try {
+    const raw = localStorage.getItem(importDraftKey(ownerId));
+    if (!raw) return null;
+    const value = JSON.parse(raw) as ImportDraft & { savedAt?: number };
+    if (!value || typeof value !== "object" || typeof value.savedAt !== "number" || Date.now() - value.savedAt > IMPORT_DRAFT_MAX_AGE_MS) return null;
+    const draft: ImportDraft = {};
+    if (typeof value.subject === "string") draft.subject = value.subject.slice(0, 120);
+    if (typeof value.status === "string") draft.status = value.status.slice(0, 40);
+    if (typeof value.visibilityScope === "string") draft.visibilityScope = value.visibilityScope;
+    if (typeof value.managementScope === "string") draft.managementScope = value.managementScope;
+    if (typeof value.remarkHtml === "string") draft.remarkHtml = value.remarkHtml;
+    const tags = stringList(value.tagList); if (tags) draft.tagList = tags;
+    const visibleIds = idList(value.visibleUserIds); if (visibleIds) draft.visibleUserIds = visibleIds;
+    const manageIds = idList(value.manageUserIds); if (manageIds) draft.manageUserIds = manageIds;
+    const visibleTags = stringList(value.visibleUserTags); if (visibleTags) draft.visibleUserTags = visibleTags;
+    const manageTags = stringList(value.manageUserTags); if (manageTags) draft.manageUserTags = manageTags;
+    return draft;
+  } catch { return null; }
 }

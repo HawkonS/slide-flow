@@ -4655,6 +4655,48 @@
         }
       }
     },
+    "/api/resource-import/{session_id}/touch": {
+      "post": {
+        "summary": "Touch Resource Import",
+        "description": "Extend an open wizard session so a slow review keeps its upload.\n\nLong renders, duplicate checks and commits hold the per-session lease. A\nheartbeat that arrives mid-job reports the current deadline instead of\nfailing or waiting, so the wizard never fights the work it is tracking.",
+        "operationId": "touch_resource_import_api_resource_import__session_id__touch_post",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Touch Resource Import Api Resource Import  Session Id  Touch Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/resource-import/{session_id}/status": {
       "get": {
         "summary": "Resource Import Status",

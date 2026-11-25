@@ -3,6 +3,7 @@
 import asyncio
 import contextvars
 import json
+import os
 import sqlite3
 import tempfile
 import threading
@@ -21,6 +22,7 @@ from app.routers.resource_import import commit_resource_import
 from app.routers.resource_import import resource_import_duplicates
 from app.routers.resource_import import resource_import_result
 from app.routers.resource_import import resource_import_status
+from app.routers.resource_import import touch_resource_import
 from app.services import files as import_files
 from app.services.resource_import import commit as import_commit
 from app.services.resource_import import jobs as import_jobs
@@ -28,6 +30,7 @@ from app.services.resource_import import render_tasks
 from app.services.resource_import import sessions as import_sessions
 from app.services.resource_import.remote_fonts import sha256_file
 from app.services.resource_import.rendering import RESOURCE_IMPORT_RENDERER_VERSION
+from app.services.resource_import.limits import RESOURCE_IMPORT_TTL
 from app.services.resources import _insert_version
 import logging
 
@@ -440,9 +443,12 @@ class ResourceImportTransactionTests(unittest.TestCase):
         result = resource_import_result(session["session_id"], response, user=self.user, db=self.db)
         self.assertEqual(result, {"status": "completed", **first})
         self.assertIn("no-store", response.headers["Cache-Control"])
-        with self.assertRaises(HTTPException) as caught:
-            resource_import_result(session["session_id"], Response(), user={"id": 2}, db=self.db)
-        self.assertEqual(caught.exception.status_code, 404)
+        # Another account must not learn whether the identifier exists: it sees
+        # the same answer as a swept session.
+        self.assertEqual(
+            resource_import_result(session["session_id"], Response(), user={"id": 2}, db=self.db),
+            {"status": "expired"},
+        )
 
     def test_single_page_uses_the_edited_name_without_a_sequence_suffix(self):
         session = self.session(slides=1)
@@ -480,6 +486,58 @@ class ResourceImportTransactionTests(unittest.TestCase):
         self.db.commit()
         completed = resource_import_status(session["session_id"], Response(), user=self.user, db=self.db)
         self.assertEqual(completed, {"status": "completed", "created": 2, "progress": 2, "total": 2, "message": "导入完成"})
+
+    def test_result_reports_a_live_session_deadline(self):
+        session = self.session()
+        result = resource_import_result(session["session_id"], Response(), user=self.user, db=self.db)
+        self.assertEqual(result, {"status": "pending", "expires_at": session["expires_at"]})
+
+    def test_result_reports_expired_once_only_the_receipt_could_survive(self):
+        session = self.session()
+        import_sessions._cleanup_resource_import_session(session["session_id"], session)
+        self.assertFalse(Path(session["temp_dir"]).exists())
+        self.assertEqual(
+            resource_import_result(session["session_id"], Response(), user=self.user, db=self.db),
+            {"status": "expired"},
+        )
+
+    def test_touch_extends_the_session_deadline(self):
+        session = self.session()
+        near_deadline = time.time() + 5
+        session["expires_at"] = near_deadline
+        import_sessions._write_resource_import_session(session)
+        result = touch_resource_import(session["session_id"], user=self.user)
+        self.assertTrue(result["ok"])
+        self.assertNotIn("busy", result)
+        self.assertEqual(result["ttl_seconds"], RESOURCE_IMPORT_TTL)
+        self.assertGreater(result["expires_at"], near_deadline + 3600)
+        reloaded = import_sessions._load_resource_import_session_file(session["session_id"])
+        self.assertEqual(reloaded["expires_at"], result["expires_at"])
+
+    def test_touch_reports_the_deadline_while_another_operation_holds_the_lease(self):
+        session = self.session()
+        with import_sessions._resource_import_operation(session):
+            result = touch_resource_import(session["session_id"], user=self.user)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["busy"])
+        self.assertEqual(result["expires_at"], session["expires_at"])
+
+    def test_touch_cannot_resurrect_a_swept_session(self):
+        session = self.session()
+        import_sessions._cleanup_resource_import_session(session["session_id"], session)
+        with self.assertRaises(HTTPException) as caught:
+            touch_resource_import(session["session_id"], user=self.user)
+        self.assertEqual(caught.exception.status_code, 404)
+
+    def test_disk_pressure_reclaims_idle_sessions_but_keeps_the_active_one(self):
+        idle = self.session(sid="1" * 32)
+        active = self.session(sid="2" * 32)
+        stale = time.time() - 7200 - 60
+        os.utime(idle["temp_dir"], (stale, stale))
+        with patch.object(import_sessions.shutil, "disk_usage", return_value=SimpleNamespace(free=0)):
+            import_sessions._reclaim_abandoned_sessions(1024)
+        self.assertFalse(Path(idle["temp_dir"]).exists())
+        self.assertTrue(Path(active["temp_dir"]).is_dir())
 
     def test_commit_publishes_each_page_progress_snapshot(self):
         session = self.session()

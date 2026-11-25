@@ -25,7 +25,7 @@ import {
 import { ApiError, api, apiNdjson, apiUploadWithProgress, uploadErrorMessage } from "@/lib/api";
 import { setAutomaticReloadBlocked } from "@/lib/deployment-recovery";
 import { parsePreviewRenderEvent } from "@/lib/resourceImportStream";
-import { releaseImportSession, rememberPendingImport, forgetPendingImport } from "@/lib/resourceImportLifecycle";
+import { releaseImportSession, rememberPendingImport, forgetPendingImport, readImportDraft, rememberImportDraft, type ImportDraft } from "@/lib/resourceImportLifecycle";
 import { FontItem, parseTags, serializeTags } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -35,7 +35,7 @@ export interface ResourceImportWizardProps {
   onShowCreated?: (show: { id: number; name: string }) => void;
   ownerId?: number;
   taskId?: number;
-  onTaskCreated?: (taskId: number) => void;
+  onTaskCreated?: (taskId: number | null) => void;
   target?: "resources" | "templates";
 }
 type Step = "upload" | "fonts" | "render" | "duplicates" | "confirm";
@@ -79,6 +79,15 @@ const parseStoredIdList = (value: unknown): number[] => {
   return raw.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0);
 };
 const formatSize = (bytes: number) => bytes >= 1024 * MIB ? `${(bytes / (1024 * MIB)).toFixed(2)} GB` : `${(bytes / MIB).toFixed(1)} MB`;
+const SESSION_HEARTBEAT_MS = 5 * 60 * 1000;
+const formatSessionRemaining = (ms: number) => {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  if (hours > 0) return `${hours} 小时 ${String(minutes).padStart(2, "0")} 分`;
+  if (minutes > 0) return `${minutes} 分 ${String(total % 60).padStart(2, "0")} 秒`;
+  return `${total} 秒`;
+};
 
 export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, ownerId, taskId: initialTaskId, onTaskCreated, target = "resources" }: ResourceImportWizardProps) {
   const templateMode = target === "templates";
@@ -131,11 +140,17 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
   const [subject, setSubject] = React.useState(DEFAULT_RESOURCE_SUBJECT);
   const [status, setStatus] = React.useState("");
   const [tagList, setTagList] = React.useState<string[]>([]);
+  // Metadata from the previous import, so an abandoned or expired batch does
+  // not force the operator to re-pick scopes and grants for the retry.
+  const [importDraft, setImportDraft] = React.useState<ImportDraft | null>(() => (templateMode || initialTaskId ? null : readImportDraft(ownerId)));
+  const [sessionExpiresAt, setSessionExpiresAt] = React.useState<number | null>(null);
+  const [sessionLost, setSessionLost] = React.useState(false);
+  const [clock, setClock] = React.useState(() => Date.now());
   const markDefaultsTouched = useNewFormDefaults("resource_create", (defaults) => {
     setSubject(defaults.subject || "");
     setStatus(defaults.status || "");
     setTagList(defaults.resource_tags ?? []);
-  }, templateMode || Boolean(initialTaskId) || Boolean(taskId));
+  }, templateMode || Boolean(initialTaskId) || Boolean(taskId) || Boolean(importDraft));
   const [visibilityScope, setVisibilityScope] = React.useState<ScopeValue | "">("");
   const [managementScope, setManagementScope] = React.useState<ScopeValue | "">("");
   const [scopePicker, setScopePicker] = React.useState<"visibility" | "management" | null>(null);
@@ -175,6 +190,7 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
   const autoNavigateRef = React.useRef(Boolean(initialTaskId));
   const contentRef = React.useRef<HTMLDivElement>(null);
   const busy = operation !== null;
+  const sessionRemainingMs = sessionExpiresAt === null ? null : sessionExpiresAt - clock;
   const selectedReplacementCount = Object.values(replacements).filter(Boolean).length;
   const loadedPreviewCount = Object.values(previewLoads).filter((value) => value === "loaded").length;
   const failedPreviewCount = Object.values(previewLoads).filter((value) => value === "error").length;
@@ -206,6 +222,31 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
     onSuccessRef.current?.();
     toast.success(`已导入 ${created} 个${templateMode ? "标准模板" : "单页素材"}`);
   }, [ownerId, templateMode]);
+
+  // A swept session cannot be resumed; start a clean upload with the same
+  // metadata so the operator only has to pick the file again.
+  const restartImport = () => {
+    if (sessionRef.current) void releaseImportSession(sessionRef.current);
+    if (!templateMode && sessionId) forgetPendingImport(ownerId, sessionId);
+    sessionRef.current = null;
+    taskOwnedRef.current = false;
+    uploadingRef.current = false;
+    autoNavigateRef.current = false;
+    renderAbortRef.current?.abort();
+    formSeededRef.current = null;
+    setSessionId(null);
+    setTaskId(null);
+    onTaskCreated?.(null);
+    setPptFile(null); setSlideCount(0); setFonts([]); setMissingFonts([]); setReplacements({});
+    setPreviewStatus("pending"); setPreviewError(null); setPreviewUrls({}); setPreviewLoads({}); setPreviewRetries({}); setPreviewPage(0);
+    setRenderMessage(""); setRenderStartedAt(null); setWorkflowState("");
+    setTaskError(null); setUploadError(null); setUploadUncertain(false); setCommitProgress(null);
+    setDuplicateStatus("idle"); setDuplicateData(null); setDuplicateError(null); setDuplicateChoices({});
+    duplicateTouchedRef.current.clear();
+    setSessionExpiresAt(null); setSessionLost(false);
+    setCreatedCount(null); setReusedCount(0); setCreatedShow(null); setShowError(null); setShowRetryIds(null);
+    setStep("upload");
+  };
 
   const seedShowDraft = (): ShowDraft => ({
     ...EMPTY_SHOW_DRAFT,
@@ -328,6 +369,60 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
       setAutomaticReloadBlocked("resource-import-workflow", false);
     };
   }, []);
+  React.useEffect(() => {
+    if (templateMode || initialTaskId || importDraft || ownerId === undefined) return;
+    setImportDraft(readImportDraft(ownerId));
+  }, [ownerId, templateMode, initialTaskId, importDraft]);
+  const draftAppliedRef = React.useRef(false);
+  React.useEffect(() => {
+    // A resumed task seeds its own metadata from the task row; the local draft
+    // only fills a brand-new import, and never overrides a restored task.
+    if (draftAppliedRef.current || !importDraft || templateMode || initialTaskId || taskId) return;
+    draftAppliedRef.current = true;
+    markDefaultsTouched();
+    if (importDraft.subject) setSubject(importDraft.subject);
+    if (importDraft.status) setStatus(importDraft.status);
+    if (importDraft.tagList) setTagList([...importDraft.tagList]);
+    if (importDraft.visibilityScope === "public" || importDraft.visibilityScope === "partial" || importDraft.visibilityScope === "private") setVisibilityScope(importDraft.visibilityScope);
+    if (importDraft.managementScope === "public" || importDraft.managementScope === "partial" || importDraft.managementScope === "private") setManagementScope(importDraft.managementScope);
+    if (importDraft.visibleUserIds) setVisibleUserIds([...importDraft.visibleUserIds]);
+    if (importDraft.visibleUserTags) setVisibleUserTags([...importDraft.visibleUserTags]);
+    if (importDraft.manageUserIds) setManageUserIds([...importDraft.manageUserIds]);
+    if (importDraft.manageUserTags) setManageUserTags([...importDraft.manageUserTags]);
+    if (typeof importDraft.remarkHtml === "string") setRemarkHtml(importDraft.remarkHtml);
+  }, [importDraft, templateMode, initialTaskId, taskId, markDefaultsTouched]);
+  React.useEffect(() => {
+    // The server drops an idle import session. Reviewing pages, choosing
+    // duplicates or answering a call used to expire the session and throw the
+    // rendered deck away, so the wizard renews the deadline while it is open.
+    if (!sessionId || createdCount !== null) return;
+    let cancelled = false;
+    const beat = async () => {
+      if (cancelled || document.visibilityState === "hidden") return;
+      try {
+        const result = await api<{ ok?: boolean; expires_at?: number }>(`/api/resource-import/${encodeURIComponent(sessionId)}/touch`, { method: "POST", keepalive: true });
+        if (cancelled) return;
+        if (typeof result?.expires_at === "number") setSessionExpiresAt(result.expires_at);
+      } catch (error) {
+        if (cancelled) return;
+        if (error instanceof ApiError && (error.status === 404 || error.status === 410)) setSessionLost(true);
+      }
+    };
+    void beat();
+    const timer = window.setInterval(() => { void beat(); }, SESSION_HEARTBEAT_MS);
+    const onVisible = () => { if (document.visibilityState === "visible") void beat(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [sessionId, createdCount]);
+  React.useEffect(() => {
+    if (sessionExpiresAt === null || createdCount !== null) return;
+    const timer = window.setInterval(() => setClock(Date.now()), 15_000);
+    return () => window.clearInterval(timer);
+  }, [sessionExpiresAt, createdCount]);
   React.useEffect(() => { contentRef.current?.scrollTo({ top: 0 }); }, [step]);
   React.useEffect(() => { setPreviewIndex(null); }, [step, sessionId]);
   React.useEffect(() => {
@@ -418,7 +513,8 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
   // 确认导入 is disabled by several preconditions; always name the one that blocks
   // it, otherwise the button just looks dead and the operator has to guess.
   const commitBlockedReason = createdCount !== null ? null
-    : !sessionId ? "导入会话尚未就绪，请稍候或重新进入"
+    : sessionLost ? "导入会话已过期，请重新上传"
+      : !sessionId ? "导入会话尚未就绪，请稍候或重新进入"
       : missingFonts.length ? `还有 ${missingFonts.length} 种非标准字体未替换，请回到「字体检测」处理`
         : selectedReplacementCount ? "已选择字体替换但尚未应用，请回到「字体检测」点「应用替换并下一步」"
           : !previewsReviewed ? "请回到「图片渲染」确认所有预览图都已加载成功"
@@ -649,7 +745,7 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
       if (showValidation) { setShowError(showValidation); toast.error(showValidation); return; }
     }
     if (!startOperation("commit")) return;
-    commitCompletedRef.current = false; setCommitProgress({ status: "processing", progress: 0, total: slideCount, message: `正在准备保存${templateMode ? "标准模板" : "单页素材"}…` }); setUploadError(null); setUploadUncertain(false); uploadingRef.current = true; if (!templateMode) rememberPendingImport(ownerId, { sessionId, slideCount });
+    commitCompletedRef.current = false; setCommitProgress({ status: "processing", progress: 0, total: slideCount, message: `正在准备保存${templateMode ? "标准模板" : "单页素材"}…` }); setUploadError(null); setUploadUncertain(false); uploadingRef.current = true; if (!templateMode) { rememberPendingImport(ownerId, { sessionId, slideCount }); rememberImportDraft(ownerId, { subject, status, tagList, visibilityScope, managementScope, visibleUserIds, visibleUserTags, manageUserIds, manageUserTags, remarkHtml }); }
     try {
       const actions = Object.fromEntries(
         Object.entries(duplicateChoices).map(([index, choice]) => [
@@ -668,7 +764,15 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
       completeCommit(sessionId, result.created);
     } catch (error) {
       const processing = error instanceof ApiError && error.status === 409;
+      const sessionGone = error instanceof ApiError && (error.status === 404 || error.status === 410);
       const uncertain = !(error instanceof ApiError) || error.status === 0 || error.status >= 500;
+      if (sessionGone) {
+        setSessionLost(true);
+        // The server rejected the commit before touching the database, so this
+        // batch was not saved. Keeping the recovery pointer would only block
+        // the next upload behind a question that is already answered.
+        if (!templateMode) forgetPendingImport(ownerId, sessionId);
+      }
       if (processing) {
         setCommitProgress((current) => current || { status: "processing", progress: 0, total: slideCount, message: "该导入会话正在处理中，请稍候…" });
         setUploadError(null);
@@ -737,10 +841,15 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
     <header className="shrink-0"><h1 className="text-xl font-semibold tracking-tight">{templateMode ? "导入标准模板系列" : "导入单页素材"}</h1><p className="mt-1 text-sm text-muted-foreground">上传 PPT 并填写信息后，平台会在后台完成字体检测和图片渲染；{templateMode ? "每页将按 PPT 顺序保存为同一系列。" : "可留在此处继续，也可稍后从任务管理恢复。"}</p></header>
     <nav aria-label="素材导入步骤" className="shrink-0"><ol className={cn("grid gap-1 sm:gap-3", templateMode ? "grid-cols-4" : "grid-cols-5")}>{steps.map((item, index) => { const current = item.id === step; const completed = index < stepIndex || createdCount !== null; return <li key={item.id} aria-current={current ? "step" : undefined} className={cn("flex flex-col items-center gap-1.5 rounded-md border px-1 py-2 text-center text-xs sm:flex-row sm:justify-center sm:gap-2 sm:px-3 sm:text-sm", current ? "border-foreground/25 bg-primary-weak font-medium text-foreground" : completed ? "border-foreground/15 text-foreground" : "border-transparent bg-muted/40 text-muted-foreground")}><span className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-full", current ? "bg-primary text-primary-foreground" : "bg-muted")}>{completed ? <CheckCircle2 className="h-4 w-4" /> : index + 1}</span>{item.label}</li>; })}</ol></nav>
     <div ref={contentRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-0.5 pb-1" aria-busy={busy}>
-      {step === "upload" && <section className="grid min-h-full gap-4 rounded-lg border bg-muted/30 p-4"><h2 className="sr-only">1. 上传与信息</h2><div className="grid min-h-0 gap-5 lg:grid-cols-[240px_minmax(0,1fr)]"><div className="flex min-h-0 flex-col gap-3"><label tabIndex={0} role="button" aria-controls="import-ppt-file" onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); document.getElementById("import-ppt-file")?.click(); } }} onDragOver={(event) => { event.preventDefault(); if (!busy) setDragActive(true); }} onDragLeave={(event) => { event.preventDefault(); setDragActive(false); }} onDrop={(event) => { event.preventDefault(); setDragActive(false); if (!busy) { const file = event.dataTransfer.files?.[0] ?? null; if (file) handlePptChange(file); } }} className={cn("flex min-h-[180px] flex-1 cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed bg-background px-6 py-8 text-center outline-none transition focus-visible:ring-2 focus-visible:ring-primary", dragActive ? "border-primary bg-primary/5" : "border-border hover:border-primary hover:bg-primary/[0.03]")}><span className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary"><UploadCloud className="h-6 w-6" /></span>{pptFile ? <><span className="max-w-full truncate text-base font-medium">{pptFile.name}</span><span className="text-xs text-muted-foreground">{formatSize(pptFile.size)} · 点击或拖拽可重新选择</span></> : <><span className="text-base font-medium">{dragActive ? "松开即可选择这个 PPT" : "点击选择，或把 PPT 拖到这里"}</span><span className="text-xs text-muted-foreground">支持 PPTX / POTX / PPSX · 最大 10 GB · 最多 500 页</span><span className="rounded-md bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground shadow-sm">选择 PPT 文件</span></>}<input id="import-ppt-file" aria-label="选择 PPT 文件" type="file" accept=".pptx,.potx,.ppsx" className="hidden" onChange={(event) => { handlePptChange(event.target.files?.[0] || null); event.currentTarget.value = ""; }} /></label>{fileError && <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{fileError}</p>}{taskError && <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{taskError}</p>}</div>
+      {sessionLost && createdCount === null && <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/5 p-4">
+        <p className="text-sm font-medium text-destructive">本次导入会话已过期，服务器上的临时文件已清理，需要重新上传同一个 PPT。</p>
+        <p className="mt-1 text-xs text-muted-foreground">上传、字体替换、查重和确认导入都会续期，打开的导入页面也会定时续期；已填写的主体、标签和权限范围会在重新上传时自动带回。</p>
+        <Button type="button" size="sm" className="mt-3" onClick={restartImport}>重新上传</Button>
+      </div>}
+      {step === "upload" && <section className="grid min-h-full gap-4 rounded-lg border bg-muted/30 p-4"><h2 className="sr-only">1. 上传与信息</h2><div className="grid min-h-0 gap-5 lg:grid-cols-[240px_minmax(0,1fr)]"><div className="flex min-h-0 flex-col gap-3"><label tabIndex={0} role="button" aria-controls="import-ppt-file" onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); document.getElementById("import-ppt-file")?.click(); } }} onDragOver={(event) => { event.preventDefault(); if (!busy) setDragActive(true); }} onDragLeave={(event) => { event.preventDefault(); setDragActive(false); }} onDrop={(event) => { event.preventDefault(); setDragActive(false); if (!busy) { const file = event.dataTransfer.files?.[0] ?? null; if (file) handlePptChange(file); } }} className={cn("flex min-h-[180px] flex-1 cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed bg-background px-6 py-8 text-center outline-none transition focus-visible:ring-2 focus-visible:ring-primary", dragActive ? "border-primary bg-primary/5" : "border-border hover:border-primary hover:bg-primary/[0.03]")}><span className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary"><UploadCloud className="h-6 w-6" /></span>{pptFile ? <><span className="max-w-full truncate text-base font-medium">{pptFile.name}</span><span className="text-xs text-muted-foreground">{formatSize(pptFile.size)} · 点击或拖拽可重新选择</span></> : <><span className="text-base font-medium">{dragActive ? "松开即可选择这个 PPT" : "点击选择，或把 PPT 拖到这里"}</span><span className="text-xs text-muted-foreground">支持 PPTX / POTX / PPSX · 最大 10 GB · 最多 500 页</span><span className="rounded-md bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground shadow-sm">选择 PPT 文件</span></>}<input id="import-ppt-file" aria-label="选择 PPT 文件" type="file" accept=".pptx,.potx,.ppsx" className="hidden" onChange={(event) => { handlePptChange(event.target.files?.[0] || null); event.currentTarget.value = ""; }} /></label>{fileError && <p role="alert" className="rounded-none border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{fileError}</p>}{taskError && <p role="alert" className="rounded-none border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{taskError}</p>}</div>
         <div className="flex min-h-0 flex-col border-t pt-4 lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0">
           <h3 className="mb-3 text-sm font-medium">{templateMode ? "模板系列信息" : "素材信息"}</h3>
-          {metadataError && <p role="alert" className="mb-3 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{metadataError}</p>}
+          {metadataError && <p role="alert" className="mb-3 rounded-none border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{metadataError}</p>}
           {templateMode ? <>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="grid gap-1.5"><Label htmlFor="import-template-series">系列 <span className="text-destructive">*</span></Label><Input id="import-template-series" maxLength={80} value={templateSeries} onChange={(event) => setTemplateSeries(event.target.value)} placeholder="如：产品发布会" /></div>
@@ -771,11 +880,11 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
           <div className="mt-4 grid gap-4 sm:grid-cols-2"><div className="grid gap-1.5"><Label htmlFor="import-visibility">可见范围 <span className="text-destructive">*</span></Label><Select value={visibilityScope} onValueChange={(value) => { setVisibilityScope(value as ScopeValue); if (value === "partial" && !visibleUserIds.length && !visibleUserTags.length) setScopePicker("visibility"); }}><SelectTrigger id="import-visibility"><SelectValue placeholder="请选择可见范围" /></SelectTrigger><SelectContent>{VISIBILITY_SCOPE_OPTIONS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></div><div className="grid gap-1.5"><Label htmlFor="import-management">管理范围 <span className="text-destructive">*</span></Label><Select value={managementScope} onValueChange={(value) => { setManagementScope(value as ScopeValue); if (value === "partial" && !manageUserIds.length && !manageUserTags.length) setScopePicker("management"); }}><SelectTrigger id="import-management"><SelectValue placeholder="请选择管理范围" /></SelectTrigger><SelectContent>{MANAGEMENT_SCOPE_OPTIONS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></div></div>{(visibilityScope === "partial" || managementScope === "partial") && <div className={cn("mt-4 grid gap-3", visibilityScope === "partial" && managementScope === "partial" && "sm:grid-cols-2")}>{visibilityScope === "partial" && <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-background px-3 py-2 text-sm"><div><p className="font-medium">可见用户或标签</p><p className="text-xs text-muted-foreground">{visibleUserIds.length || visibleUserTags.length ? `已选 ${visibleUserIds.length} 位用户、${visibleUserTags.length} 个标签` : "尚未选择，至少需要 1 项"}</p></div><Button type="button" size="sm" variant="outline" onClick={() => setScopePicker("visibility")}>选择用户/标签</Button></div>}{managementScope === "partial" && <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-background px-3 py-2 text-sm"><div><p className="font-medium">管理用户或标签</p><p className="text-xs text-muted-foreground">{manageUserIds.length || manageUserTags.length ? `已选 ${manageUserIds.length} 位用户、${manageUserTags.length} 个标签` : "尚未选择，至少需要 1 项"}</p></div><Button type="button" size="sm" variant="outline" onClick={() => setScopePicker("management")}>选择用户/标签</Button></div>}</div>}{!templateMode && <div className="mt-4 flex min-h-[140px] flex-1 flex-col gap-2"><Label id="import-remark-label">通用备注</Label><RichTextEditor ariaLabelledBy="import-remark-label" value={remarkHtml} onChange={setRemarkHtml} minHeight={0} className="flex-1" /></div>}
         </div></div></section>}
 
-      {step === "fonts" && <section className="grid gap-4 rounded-lg border p-4"><h2 className="sr-only">2. 字体检测</h2>{taskError && <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{taskError}</p>}{!sessionId || !fonts.length ? <div className="flex items-center gap-2 rounded-md bg-muted/40 p-4 text-sm"><Loader2 className="h-4 w-4 animate-spin" />{sessionId ? "正在检测 PPT 页数和字体…" : "正在等待上传任务完成…"}</div> : <><p className="text-sm text-muted-foreground">共 {slideCount} 页，检测到 {fonts.length} 种字体。</p><div className={cn("rounded-md border px-3 py-2 text-sm", missingFonts.length ? "border-amber-300 bg-amber-50 text-amber-900" : "border-green-300 bg-green-50 text-green-900")}>{missingFonts.length ? <><AlertCircle className="mr-1 inline h-4 w-4" />检测到 {missingFonts.length} 个非标准字体，请替换后继续。</> : <><CheckCircle2 className="mr-1 inline h-4 w-4" />字体检测通过，请确认后继续。</>}</div><div className="space-y-3 rounded-md border bg-muted/20 p-3">{fonts.map((font) => <div key={font} className="grid items-center gap-2 sm:grid-cols-[1fr_1.5fr]"><span className={cn("break-words text-sm", missingFonts.includes(font) && "font-medium text-amber-800")}>{font}{missingFonts.includes(font) && <span className="ml-1 text-xs">（非标准字体）</span>}</span><Select disabled={busy || standardFontsLoading || !!standardFontsError} value={replacements[font] || "__keep__"} onValueChange={(value) => setReplacements((old) => { const next = { ...old }; if (value === "__keep__") delete next[font]; else next[font] = value; return next; })}><SelectTrigger aria-label={`替换字体 ${font}`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__keep__">保留原字体</SelectItem>{standardFonts.filter((item) => item.family !== font).map((item) => <SelectItem key={item.id} value={item.family}>{item.family}</SelectItem>)}</SelectContent></Select></div>)}</div></>}</section>}
+      {step === "fonts" && <section className="grid gap-4 rounded-lg border p-4"><h2 className="sr-only">2. 字体检测</h2>{taskError && <p role="alert" className="rounded-none border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{taskError}</p>}{!sessionId || !fonts.length ? <div className="flex items-center gap-2 rounded-md bg-muted/40 p-4 text-sm"><Loader2 className="h-4 w-4 animate-spin" />{sessionId ? "正在检测 PPT 页数和字体…" : "正在等待上传任务完成…"}</div> : <><p className="text-sm text-muted-foreground">共 {slideCount} 页，检测到 {fonts.length} 种字体。</p><div className={cn("rounded-md border px-3 py-2 text-sm", missingFonts.length ? "border-amber-300 bg-amber-50 text-amber-900" : "border-green-300 bg-green-50 text-green-900")}>{missingFonts.length ? <><AlertCircle className="mr-1 inline h-4 w-4" />检测到 {missingFonts.length} 个非标准字体，请替换后继续。</> : <><CheckCircle2 className="mr-1 inline h-4 w-4" />字体检测通过，请确认后继续。</>}</div><div className="space-y-3 rounded-md border bg-muted/20 p-3">{fonts.map((font) => <div key={font} className="grid items-center gap-2 sm:grid-cols-[1fr_1.5fr]"><span className={cn("break-words text-sm", missingFonts.includes(font) && "font-medium text-amber-800")}>{font}{missingFonts.includes(font) && <span className="ml-1 text-xs">（非标准字体）</span>}</span><Select disabled={busy || standardFontsLoading || !!standardFontsError} value={replacements[font] || "__keep__"} onValueChange={(value) => setReplacements((old) => { const next = { ...old }; if (value === "__keep__") delete next[font]; else next[font] = value; return next; })}><SelectTrigger aria-label={`替换字体 ${font}`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__keep__">保留原字体</SelectItem>{standardFonts.filter((item) => item.family !== font).map((item) => <SelectItem key={item.id} value={item.family}>{item.family}</SelectItem>)}</SelectContent></Select></div>)}</div></>}</section>}
 
       {step === "render" && <section className="grid gap-4 rounded-lg border p-4">
         <h2 className="sr-only">3. 图片渲染</h2>
-        {previewError && <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{previewError}</p>}
+        {previewError && <p role="alert" className="rounded-none border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{previewError}</p>}
         {previewStatus !== "ready" && <div className="space-y-3 rounded-md border border-dashed p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <Button type="button" variant="outline" onClick={() => void generatePreviews()} disabled={busy || !sessionId || !!missingFonts.length}>
@@ -814,9 +923,9 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
       </section>}
 
           {step === "duplicates" && !templateMode && <section className="grid gap-4 rounded-lg border p-4"><h2 className="sr-only">4. 重复检查</h2><div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground"><p>点击图片可放大对比，支持闪烁查看差异。</p><p className="shrink-0 tabular-nums">{duplicateStatus === "checking" || duplicateStatus === "warming" ? (duplicateData?.text_remaining ? "正在补齐文字比对…" : "正在比对素材库…") : `共 ${slideCount} 页，${duplicateData?.items.length ?? 0} 页可处理`}</p></div><ImportDuplicatePanel status={duplicateStatus} data={duplicateData} error={duplicateError} skipped={duplicateSkipped} choices={duplicateChoices} pagePreviewUrl={getPreviewUrl} onChoiceChange={(index, choice) => { duplicateTouchedRef.current.add(index); setDuplicateChoices((previous) => ({ ...previous, [index]: choice })); }} onApplyAll={applyAllDuplicates} onSkip={() => setDuplicateSkipped(true)} disabled={busy || commitProgress?.status === "processing"} /></section>}
-      {step === "confirm" && <section className="grid gap-4 rounded-lg border p-4"><h2 className="sr-only">{templateMode ? "4" : "5"}. 确认导入</h2>{createdCount === null && commitBlockedReason && <p role="status" className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">暂时无法提交：{commitBlockedReason}</p>}{createdCount !== null ? <div className="rounded-md border border-green-300 bg-green-50 p-5 text-green-900"><p className="flex items-center gap-2 font-medium"><CheckCircle2 className="h-5 w-5" />导入完成，已保存 {createdCount} 个{templateMode ? "标准模板" : "单页素材"}{reusedCount > 0 ? `（复用 ${reusedCount} 个已有素材）` : ""}</p>{!templateMode && createdShow && <p className="mt-2 flex flex-wrap items-center gap-2 text-sm">已创建放映素材《{createdShow.name}》。<Button asChild size="sm" variant="outline"><Link to={`/shows/${createdShow.id}`} state={{ detailOrigin: { url: "/manage/shows", key: "", scroll: {} } }}>查看放映素材</Link></Button></p>}{!templateMode && showError && <div className="mt-2 space-y-2 text-sm text-amber-800"><p role="alert">素材已导入，但放映素材未创建：{showError}</p>{showRetryIds && !createdShow && <Button type="button" size="sm" variant="outline" disabled={showCreating} onClick={() => { if (!showCreating && showRetryIds) void createShowForImport(showRetryIds); }}>{showCreating ? "正在创建…" : "重试创建放映素材"}</Button>}</div>}</div> : <><dl className="grid gap-4 rounded-md bg-muted/30 p-4 text-sm sm:grid-cols-2"><div><dt className="text-muted-foreground">源文件</dt><dd className="mt-1 break-all font-medium">{pptFile?.name}</dd></div><div><dt className="text-muted-foreground">{templateMode ? "模板数量" : "素材数量"}</dt><dd className="mt-1 font-medium">{slideCount} 个{templateMode ? "标准模板" : "单页素材"}</dd></div><div><dt className="text-muted-foreground">{templateMode ? "系列" : "名称"}</dt><dd className="mt-1 break-all font-medium">{templateMode ? templateSeries.trim() : <div className="space-y-2"><Input aria-label="修改素材名称" maxLength={120} value={namePrefix} disabled={busy || commitProgress?.status === "processing"} onChange={(event) => { nameEditedRef.current = true; setNamePrefix(event.target.value); }} /><p className="text-xs font-normal text-muted-foreground">{importNamePreview}</p></div>}</dd></div><div><dt className="text-muted-foreground">主体</dt><dd className="mt-1 font-medium">{subject.trim() || "未设置"}</dd></div></dl>{!templateMode && <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/20 p-3 text-sm"><p>{duplicateSkipped ? "已跳过查重，本批页面将全部新建。" : `重复页面处理：复用 ${duplicateCounts.reuse} · 迭代 ${duplicateCounts.iterate} · 覆盖 ${duplicateCounts.overwrite} · 新建 ${duplicateCounts.new}`}</p><Button type="button" variant="ghost" size="sm" onClick={() => setStep("duplicates")}>返回修改</Button></div>}{!templateMode && <ImportShowOption enabled={showEnabled} onEnabledChange={toggleShowOption} draft={showDraft} onDraftChange={(next) => { if (next.name !== showDraft.name) showNameEditedRef.current = true; setShowDraft(next); setShowError(null); }} disabled={busy || commitProgress?.status === "processing"} ownerId={ownerId} error={showError} />}{(operation === "commit" || commitProgress?.status === "processing") && <div className="space-y-2 rounded-md border border-primary/20 bg-primary/5 p-4" role="status" aria-live="polite"><p className="flex items-center gap-2 text-sm font-medium"><Loader2 className="h-4 w-4 animate-spin" />{commitProgress?.message || "该导入会话正在处理中，请稍候…"}</p>{(commitProgress?.total || slideCount) > 0 && <><div className="h-2 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuemin={0} aria-valuemax={commitProgress?.total || slideCount} aria-valuenow={commitProgress?.progress || 0} aria-label="导入保存进度"><div className="h-full bg-primary transition-all" style={{ width: `${Math.min(100, Math.round(((commitProgress?.progress || 0) / (commitProgress?.total || slideCount)) * 100))}%` }} /></div><p className="text-xs text-muted-foreground">已保存 {commitProgress?.progress || 0} / {commitProgress?.total || slideCount} 个{templateMode ? "标准模板" : "单页素材"}</p></>}</div>}{uploadError && <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{uploadError}</p>}{uploadUncertain && <p className="text-sm text-amber-700">服务器响应中断，任务可能已经保存，请到任务管理核对，不要重复导入。</p>}</>}</section>}
+      {step === "confirm" && <section className="grid gap-4 rounded-lg border p-4"><h2 className="sr-only">{templateMode ? "4" : "5"}. 确认导入</h2>{createdCount === null && commitBlockedReason && <p role="status" className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">暂时无法提交：{commitBlockedReason}</p>}{createdCount !== null ? <div className="rounded-md border border-green-300 bg-green-50 p-5 text-green-900"><p className="flex items-center gap-2 font-medium"><CheckCircle2 className="h-5 w-5" />导入完成，已保存 {createdCount} 个{templateMode ? "标准模板" : "单页素材"}{reusedCount > 0 ? `（复用 ${reusedCount} 个已有素材）` : ""}</p>{!templateMode && createdShow && <p className="mt-2 flex flex-wrap items-center gap-2 text-sm">已创建放映素材《{createdShow.name}》。<Button asChild size="sm" variant="outline"><Link to={`/shows/${createdShow.id}`} state={{ detailOrigin: { url: "/manage/shows", key: "", scroll: {} } }}>查看放映素材</Link></Button></p>}{!templateMode && showError && <div className="mt-2 space-y-2 text-sm text-amber-800"><p role="alert">素材已导入，但放映素材未创建：{showError}</p>{showRetryIds && !createdShow && <Button type="button" size="sm" variant="outline" disabled={showCreating} onClick={() => { if (!showCreating && showRetryIds) void createShowForImport(showRetryIds); }}>{showCreating ? "正在创建…" : "重试创建放映素材"}</Button>}</div>}</div> : <><dl className="grid gap-4 rounded-md bg-muted/30 p-4 text-sm sm:grid-cols-2"><div><dt className="text-muted-foreground">源文件</dt><dd className="mt-1 break-all font-medium">{pptFile?.name}</dd></div><div><dt className="text-muted-foreground">{templateMode ? "模板数量" : "素材数量"}</dt><dd className="mt-1 font-medium">{slideCount} 个{templateMode ? "标准模板" : "单页素材"}</dd></div><div><dt className="text-muted-foreground">{templateMode ? "系列" : "名称"}</dt><dd className="mt-1 break-all font-medium">{templateMode ? templateSeries.trim() : <div className="space-y-2"><Input aria-label="修改素材名称" maxLength={120} value={namePrefix} disabled={busy || commitProgress?.status === "processing"} onChange={(event) => { nameEditedRef.current = true; setNamePrefix(event.target.value); }} /><p className="text-xs font-normal text-muted-foreground">{importNamePreview}</p></div>}</dd></div><div><dt className="text-muted-foreground">主体</dt><dd className="mt-1 font-medium">{subject.trim() || "未设置"}</dd></div></dl>{!templateMode && <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/20 p-3 text-sm"><p>{duplicateSkipped ? "已跳过查重，本批页面将全部新建。" : `重复页面处理：复用 ${duplicateCounts.reuse} · 迭代 ${duplicateCounts.iterate} · 覆盖 ${duplicateCounts.overwrite} · 新建 ${duplicateCounts.new}`}</p><Button type="button" variant="ghost" size="sm" onClick={() => setStep("duplicates")}>返回修改</Button></div>}{!templateMode && <ImportShowOption enabled={showEnabled} onEnabledChange={toggleShowOption} draft={showDraft} onDraftChange={(next) => { if (next.name !== showDraft.name) showNameEditedRef.current = true; setShowDraft(next); setShowError(null); }} disabled={busy || commitProgress?.status === "processing"} ownerId={ownerId} error={showError} />}{(operation === "commit" || commitProgress?.status === "processing") && <div className="space-y-2 rounded-md border border-primary/20 bg-primary/5 p-4" role="status" aria-live="polite"><p className="flex items-center gap-2 text-sm font-medium"><Loader2 className="h-4 w-4 animate-spin" />{commitProgress?.message || "该导入会话正在处理中，请稍候…"}</p>{(commitProgress?.total || slideCount) > 0 && <><div className="h-2 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuemin={0} aria-valuemax={commitProgress?.total || slideCount} aria-valuenow={commitProgress?.progress || 0} aria-label="导入保存进度"><div className="h-full bg-primary transition-all" style={{ width: `${Math.min(100, Math.round(((commitProgress?.progress || 0) / (commitProgress?.total || slideCount)) * 100))}%` }} /></div><p className="text-xs text-muted-foreground">已保存 {commitProgress?.progress || 0} / {commitProgress?.total || slideCount} 个{templateMode ? "标准模板" : "单页素材"}</p></>}</div>}{uploadError && <p role="alert" className="rounded-none border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{uploadError}</p>}{uploadUncertain && <p className="text-sm text-amber-700">服务器响应中断，任务可能已经保存，请到任务管理核对，不要重复导入。</p>}</>}</section>}
     </div>
-    <footer className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t pt-3"><span role="status" className="text-xs text-muted-foreground">第 {stepIndex + 1} / {steps.length} 步 · {steps[stepIndex].label}</span><div className="flex flex-wrap justify-end gap-2">{createdCount !== null ? <Button type="button" onClick={close}>{templateMode ? "返回标准模板" : "返回素材库"}</Button> : <><Button type="button" variant="ghost" onClick={close} disabled={busy && operation !== "render"}><X className="mr-1 h-4 w-4" />关闭</Button>{stepIndex > 0 && <Button type="button" variant="outline" onClick={previous} disabled={busy}><ArrowLeft className="mr-1 h-4 w-4" />上一步</Button>}{step === "confirm" ? <Button type="button" onClick={commit} title={commitBlockedReason || undefined} disabled={busy || !previewsReviewed || !!missingFonts.length || !!selectedReplacementCount || !sessionId || !duplicatesReady}><Upload className="mr-1 h-4 w-4" />{showEnabled ? "确认导入并创建放映素材" : "确认导入"}</Button> : step === "duplicates" ? <Button type="button" onClick={() => setStep("confirm")} disabled={busy || !duplicatesReady}>下一步：确认导入<ArrowRight className="ml-1 h-4 w-4" /></Button> : <Button type="button" onClick={next} disabled={busy || (step === "upload" ? !pptFile : step === "fonts" ? !sessionId || standardFontsLoading || !!standardFontsError || (!!missingFonts.length && !selectedReplacementCount) : !previewsReviewed)}>{step === "upload" ? "创建上传任务" : step === "fonts" ? (missingFonts.length || selectedReplacementCount ? "应用替换并下一步" : "字体已确认，下一步") : "图片已确认，下一步"}<ArrowRight className="ml-1 h-4 w-4" /></Button>}</>}</div></footer>
+    <footer className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t pt-3"><span role="status" className="text-xs text-muted-foreground">第 {stepIndex + 1} / {steps.length} 步 · {steps[stepIndex].label}{sessionId && createdCount === null && sessionRemainingMs !== null && <span className={cn("ml-1", sessionRemainingMs < 10 * 60_000 && "font-medium text-amber-700")}>· 临时会话剩余 {formatSessionRemaining(sessionRemainingMs)}</span>}</span><div className="flex flex-wrap justify-end gap-2">{createdCount !== null ? <Button type="button" onClick={close}>{templateMode ? "返回标准模板" : "返回素材库"}</Button> : <><Button type="button" variant="ghost" onClick={close} disabled={busy && operation !== "render"}><X className="mr-1 h-4 w-4" />关闭</Button>{stepIndex > 0 && <Button type="button" variant="outline" onClick={previous} disabled={busy}><ArrowLeft className="mr-1 h-4 w-4" />上一步</Button>}{step === "confirm" ? <Button type="button" onClick={commit} title={commitBlockedReason || undefined} disabled={busy || sessionLost || !previewsReviewed || !!missingFonts.length || !!selectedReplacementCount || !sessionId || !duplicatesReady}><Upload className="mr-1 h-4 w-4" />{showEnabled ? "确认导入并创建放映素材" : "确认导入"}</Button> : step === "duplicates" ? <Button type="button" onClick={() => setStep("confirm")} disabled={busy || sessionLost || !duplicatesReady}>下一步：确认导入<ArrowRight className="ml-1 h-4 w-4" /></Button> : <Button type="button" onClick={next} disabled={busy || sessionLost || (step === "upload" ? !pptFile : step === "fonts" ? !sessionId || standardFontsLoading || !!standardFontsError || (!!missingFonts.length && !selectedReplacementCount) : !previewsReviewed)}>{step === "upload" ? "创建上传任务" : step === "fonts" ? (missingFonts.length || selectedReplacementCount ? "应用替换并下一步" : "字体已确认，下一步") : "图片已确认，下一步"}<ArrowRight className="ml-1 h-4 w-4" /></Button>}</>}</div></footer>
   </div>
     <Dialog open={scopePicker !== null} onOpenChange={(open) => { if (!open) setScopePicker(null); }}>
       <DialogContent className="max-w-2xl">

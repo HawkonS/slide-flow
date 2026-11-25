@@ -4,8 +4,8 @@
 updated on 2026-11-15 from `app.main.app`. The capture imported the application
 but did not enter its startup/lifespan or initialize the live database.
 
-The baseline contains 223 registered routes (221 HTTP, one WebSocket and one
-static mount) and 181 OpenAPI paths. It includes the reviewed setup,
+The baseline contains 239 registered routes (237 HTTP, one WebSocket and one
+static mount) and 193 OpenAPI paths. It includes the reviewed setup,
 password-reset, paginated user management, bounded user search, managed user
 avatar, resource-share, renderer-font-task, renderer batch-source and bounded log-tail contracts,
 plus persistent system-upgrade status.
@@ -50,3 +50,11 @@ The notification-center review adds GET `/api/me/notifications`, GET
 `/api/me/notifications/{notification_id}/read` and POST
 `/api/me/notifications/read-all`. Notifications are derived from the current
 user's terminal tasks and do not add a task write hook or copy task state.
+
+The import-session lifetime review adds POST
+`/api/resource-import/{session_id}/touch`, which renews an open wizard session
+and reports the current deadline so the page can explain it. GET
+`/api/resource-import/{session_id}/result` keeps its parametrization but may now
+answer `expired` when neither a commit receipt nor a live session remains, which
+lets the recovery screen clear its pointer instead of asking the operator to
+keep guessing. Only this route was added; no existing route or model changed.
