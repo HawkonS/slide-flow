@@ -137,6 +137,12 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
   const [reusedCount, setReusedCount] = React.useState(0);
   const [namePrefix, setNamePrefix] = React.useState("");
   const nameEditedRef = React.useRef(false);
+  const [pageTitles, setPageTitles] = React.useState<string[]>([]);
+  const [sourceSlideCount, setSourceSlideCount] = React.useState(0);
+  const [skippedPages, setSkippedPages] = React.useState<number[]>([]);
+  const titlesSeededRef = React.useRef<string | null>(null);
+  const detectedTitlesRef = React.useRef<string[]>([]);
+  const titleNameFilledRef = React.useRef(false);
   const [subject, setSubject] = React.useState(DEFAULT_RESOURCE_SUBJECT);
   const [status, setStatus] = React.useState("");
   const [tagList, setTagList] = React.useState<string[]>([]);
@@ -209,6 +215,25 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
     return true;
   };
   const getPreviewUrl = (index: number) => { const base = previewUrls[index] || `/api/resource-import/${sessionId}/preview/${index}`; return `${base}${base.includes("?") ? "&" : "?"}retry=${previewRetries[index] || 0}`; };
+  const sourcePageNumbers = React.useMemo(() => {
+    const total = sourceSlideCount || slideCount;
+    if (!total) return [] as number[];
+    const skipped = new Set(skippedPages);
+    const numbers = Array.from({ length: total }, (_, index) => index + 1).filter((page) => !skipped.has(page));
+    while (numbers.length < slideCount) numbers.push(numbers.length + 1);
+    return numbers.slice(0, slideCount);
+  }, [sourceSlideCount, skippedPages, slideCount]);
+  const fallbackPageName = (index: number) => {
+    const prefix = namePrefix.trim();
+    if (!prefix) return "";
+    if (slideCount <= 1) return prefix;
+    const pageNumber = sourcePageNumbers[index] ?? index + 1;
+    const width = Math.max(2, String(Math.max(0, ...sourcePageNumbers)).length);
+    return `${prefix}_${String(pageNumber).padStart(width, "0")}`;
+  };
+  const effectivePageName = (index: number) => (pageTitles[index] || "").trim() || fallbackPageName(index);
+  const titledPageCount = pageTitles.slice(0, slideCount).filter((title) => title.trim()).length;
+  const showTitleEditor = !templateMode && slideCount > 1 && pageTitles.length > 0;
   onSuccessRef.current = onSuccess;
   onShowCreatedRef.current = onShowCreated;
   const completeCommit = React.useCallback((completedSessionId: string, created: number, message = "导入完成") => {
@@ -244,6 +269,9 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
     setDuplicateStatus("idle"); setDuplicateData(null); setDuplicateError(null); setDuplicateChoices({});
     duplicateTouchedRef.current.clear();
     setSessionExpiresAt(null); setSessionLost(false);
+    setPageTitles([]); setSourceSlideCount(0); setSkippedPages([]);
+    titlesSeededRef.current = null; detectedTitlesRef.current = [];
+    titleNameFilledRef.current = false;
     setCreatedCount(null); setReusedCount(0); setCreatedShow(null); setShowError(null); setShowRetryIds(null);
     setStep("upload");
   };
@@ -423,6 +451,13 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
     const timer = window.setInterval(() => setClock(Date.now()), 15_000);
     return () => window.clearInterval(timer);
   }, [sessionExpiresAt, createdCount]);
+  React.useEffect(() => {
+    // A single-page import has one editable name: prefill it from the title
+    // until the operator changes it, so the name field stays authoritative.
+    if (templateMode || slideCount !== 1 || nameEditedRef.current) return;
+    const title = (pageTitles[0] || "").trim();
+    if (title) { setNamePrefix(title); titleNameFilledRef.current = true; }
+  }, [pageTitles, slideCount, templateMode]);
   React.useEffect(() => { contentRef.current?.scrollTo({ top: 0 }); }, [step]);
   React.useEffect(() => { setPreviewIndex(null); }, [step, sessionId]);
   React.useEffect(() => {
@@ -553,7 +588,7 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
         const p = task.params || {};
         if (typeof p.session_id === "string") { sessionRef.current = p.session_id; setSessionId(p.session_id); }
         if (typeof p.file_name === "string" && !pptFile) setPptFile(new File([""], p.file_name));
-        if (typeof p.name_prefix === "string" && !nameEditedRef.current) setNamePrefix(p.name_prefix);
+        if (typeof p.name_prefix === "string" && !nameEditedRef.current && !titleNameFilledRef.current) setNamePrefix(p.name_prefix);
         // Re-applying the submitted form on every poll would revert edits made after
         // the task was created (scope, granted users, subject), which reads as "my
         // selection was not saved". Seed them once per session instead.
@@ -565,7 +600,36 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
           if (p.visibility_scope === "public" || p.visibility_scope === "partial" || p.visibility_scope === "private") setVisibilityScope(p.visibility_scope); if (p.management_scope === "public" || p.management_scope === "partial" || p.management_scope === "private") setManagementScope(p.management_scope);
           setVisibleUserIds(parseStoredIdList(p.visible_user_ids)); setManageUserIds(parseStoredIdList(p.manage_user_ids)); setVisibleUserTags(parseStoredStringList(p.visible_user_tags)); setManageUserTags(parseStoredStringList(p.manage_user_tags)); if (typeof p.remark_html === "string") setRemarkHtml(p.remark_html);
         }
-        if (typeof p.slide_count === "number") setSlideCount(p.slide_count); if (Array.isArray(p.fonts)) setFonts(p.fonts.filter((value): value is string => typeof value === "string")); if (Array.isArray(p.missing_fonts)) setMissingFonts(p.missing_fonts.filter((value): value is string => typeof value === "string"));
+        if (typeof p.slide_count === "number") setSlideCount(p.slide_count);
+        if (typeof p.source_slide_count === "number") setSourceSlideCount(p.source_slide_count);
+        const rawSkippedPages = p.skipped_pages;
+        if (Array.isArray(rawSkippedPages)) {
+          const skipped = rawSkippedPages.map((item) => {
+            if (item && typeof item === "object" && "page" in item) {
+              const page = Number((item as { page?: unknown }).page);
+              return Number.isInteger(page) && page > 0 ? page : null;
+            }
+            return null;
+          }).filter((page): page is number => page !== null);
+          setSkippedPages(skipped);
+        }
+        const rawPageTitles = p.page_titles;
+        if (Array.isArray(rawPageTitles)) {
+          const seedKey = typeof p.session_id === "string" ? p.session_id : String(taskId);
+          if (titlesSeededRef.current !== seedKey) {
+            const count = typeof p.slide_count === "number" && p.slide_count > 0 ? p.slide_count : rawPageTitles.length;
+            // Before the split finishes the task carries an empty title list.
+            // Wait for the real page count instead of marking that empty state
+            // as seeded, otherwise the later list would be ignored.
+            if (count > 0 || rawPageTitles.length > 0) {
+              const titles = Array.from({ length: count }, (_, index) => typeof rawPageTitles[index] === "string" ? String(rawPageTitles[index]) : "");
+              titlesSeededRef.current = seedKey;
+              detectedTitlesRef.current = titles;
+              setPageTitles(titles);
+            }
+          }
+        }
+        if (Array.isArray(p.fonts)) setFonts(p.fonts.filter((value): value is string => typeof value === "string")); if (Array.isArray(p.missing_fonts)) setMissingFonts(p.missing_fonts.filter((value): value is string => typeof value === "string"));
         if (typeof p.workflow_state === "string" && !(renderErrorRef.current && p.workflow_state === "rendering")) setWorkflowState(p.workflow_state);
         if (p.preview_status === "ready") {
           setPreviewStatus("ready");
@@ -635,6 +699,9 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
   const handlePptChange = (file: File | null) => {
     const suffix = file ? file.name.slice(file.name.lastIndexOf(".")).toLowerCase() : "";
     const error = file && (!PPT_EXTENSIONS.has(suffix) ? PPT_FORMAT_HINT : !file.size ? "PPT 文件为空，请重新选择" : file.size > MAX_PPT_BYTES ? "PPT 文件不能超过 10 GB" : null);
+    setPageTitles([]); setSourceSlideCount(0); setSkippedPages([]);
+    titlesSeededRef.current = null; detectedTitlesRef.current = [];
+    titleNameFilledRef.current = false;
     setPptFile(error ? null : file); setFileError(error);
     if (file && !error && !templateMode && (!nameEditedRef.current || !namePrefix.trim())) {
       setNamePrefix(file.name.slice(0, file.name.lastIndexOf(".")).trim());
@@ -753,7 +820,10 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
           choice.action === "new" ? { action: "new" } : { action: choice.action, resource_id: choice.resourceId },
         ]),
       );
-      const result = await api<{ created: number; reused?: number; iterated?: number; overwritten?: number; resource_ids?: number[] }>(`/api/resource-import/${sessionId}/commit`, { method: "POST", json: templateMode ? { series: templateSeries.trim(), subject: subject.trim(), platform: templatePlatform, ratio: templateRatio, template_type: templateType, visibility_scope: visibilityScope, management_scope: managementScope, visible_user_ids: visibleUserIds, visible_user_tags: visibleUserTags, manage_user_ids: manageUserIds, manage_user_tags: manageUserTags } : { name_prefix: namePrefix.trim(), subject: subject.trim() || DEFAULT_RESOURCE_SUBJECT, tags: serializeTags(tagList), status, visibility_scope: visibilityScope, management_scope: managementScope, visible_user_ids: visibleUserIds, visible_user_tags: visibleUserTags, manage_user_ids: manageUserIds, manage_user_tags: manageUserTags, remark_html: remarkHtml, ...(Object.keys(actions).length > 0 ? { actions } : {}) } });
+      const pageTitlePayload = !templateMode && slideCount > 1 && titlesSeededRef.current !== null
+        ? Array.from({ length: slideCount }, (_, index) => (pageTitles[index] || "").trim())
+        : null;
+      const result = await api<{ created: number; reused?: number; iterated?: number; overwritten?: number; resource_ids?: number[] }>(`/api/resource-import/${sessionId}/commit`, { method: "POST", json: templateMode ? { series: templateSeries.trim(), subject: subject.trim(), platform: templatePlatform, ratio: templateRatio, template_type: templateType, visibility_scope: visibilityScope, management_scope: managementScope, visible_user_ids: visibleUserIds, visible_user_tags: visibleUserTags, manage_user_ids: manageUserIds, manage_user_tags: manageUserTags } : { name_prefix: namePrefix.trim(), subject: subject.trim() || DEFAULT_RESOURCE_SUBJECT, tags: serializeTags(tagList), status, visibility_scope: visibilityScope, management_scope: managementScope, visible_user_ids: visibleUserIds, visible_user_tags: visibleUserTags, manage_user_ids: manageUserIds, manage_user_tags: manageUserTags, remark_html: remarkHtml, ...(pageTitlePayload ? { page_titles: pageTitlePayload } : {}), ...(Object.keys(actions).length > 0 ? { actions } : {}) } });
       if (result.created !== slideCount) throw new Error("服务器返回的保存数量异常，请核对任务结果");
       setReusedCount(result.reused ?? 0);
       if (!templateMode && showEnabled) {
@@ -835,7 +905,9 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
   const previousPreview = availablePreviewIndices[previewPosition - 1];
   const nextPreview = previewPosition < 0 ? undefined : availablePreviewIndices[previewPosition + 1];
   const importNamePreview = slideCount === 1 ? namePrefix.trim()
-    : `${namePrefix.trim()}_${String(1).padStart(Math.max(2, String(slideCount).length), "0")} ～ ${namePrefix.trim()}_${String(slideCount).padStart(Math.max(2, String(slideCount).length), "0")}`;
+    : titledPageCount > 0
+      ? `已提取 ${titledPageCount} / ${slideCount} 页标题；其余页使用「${fallbackPageName(0)}」等默认名称`
+      : `${fallbackPageName(0)} ～ ${fallbackPageName(slideCount - 1)}`;
 
   return <div onChangeCapture={markDefaultsTouched} className="relative flex h-full min-h-0 flex-col bg-background"><div className="flex h-full min-h-0 w-full flex-col gap-4 overflow-hidden">
     <header className="shrink-0"><h1 className="text-xl font-semibold tracking-tight">{templateMode ? "导入标准模板系列" : "导入单页素材"}</h1><p className="mt-1 text-sm text-muted-foreground">上传 PPT 并填写信息后，平台会在后台完成字体检测和图片渲染；{templateMode ? "每页将按 PPT 顺序保存为同一系列。" : "可留在此处继续，也可稍后从任务管理恢复。"}</p></header>
@@ -863,7 +935,7 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
           </> : <><div className="grid gap-1.5">
             <Label htmlFor="import-name">素材名称 <span className="text-destructive">*</span></Label>
             <Input id="import-name" maxLength={120} value={namePrefix} onChange={(event) => { nameEditedRef.current = true; setNamePrefix(event.target.value); }} placeholder="如：产品介绍" aria-describedby="import-name-hint" />
-            <p id="import-name-hint" className="text-xs text-muted-foreground">默认使用文件名，可修改。单页直接使用该名称，多页自动追加 _01、_02 等序号。</p>
+            <p id="import-name-hint" className="text-xs text-muted-foreground">默认使用文件名；导入后会优先使用每页 PPT 标题，没有标题的页使用该名称加序号。</p>
           </div>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <div className="grid gap-1.5">
@@ -906,6 +978,16 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
             <p>点击图片可放大查看，支持左右切换页面。</p>
             <p className="shrink-0 tabular-nums">共 {slideCount} 页，已生成 {renderedPageCount} 页、已加载 {loadedPreviewCount} 张{failedPreviewCount ? `，${failedPreviewCount} 张加载失败` : ""}。</p>
           </div>
+          {showTitleEditor && <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/20 p-3 text-sm">
+            <div>
+              <p className="font-medium">每页标题</p>
+              <p className="text-xs text-muted-foreground">已从 PPT 提取 {titledPageCount} / {slideCount} 页标题；可直接修改，留空的页使用素材名称加序号。</p>
+            </div>
+            <div className="flex flex-wrap gap-1">
+              <Button type="button" variant="ghost" size="sm" disabled={busy || commitProgress?.status === "processing"} onClick={() => setPageTitles(Array.from({ length: slideCount }, () => ""))}>清空全部标题</Button>
+              <Button type="button" variant="ghost" size="sm" disabled={busy || commitProgress?.status === "processing" || !detectedTitlesRef.current.some((title) => title.trim())} onClick={() => setPageTitles(Array.from({ length: slideCount }, (_, index) => detectedTitlesRef.current[index] ?? ""))}>恢复提取的标题</Button>
+            </div>
+          </div>}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">{Array.from({ length: Math.min(PREVIEW_PAGE_SIZE, Math.max(0, slideCount - previewPage * PREVIEW_PAGE_SIZE)) }, (_, offset) => {
             const index = previewPage * PREVIEW_PAGE_SIZE + offset;
             const url = getPreviewUrl(index);
@@ -914,7 +996,12 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
               {!available ? <div className="flex aspect-video items-center justify-center text-sm text-muted-foreground">第 {index + 1} 页等待渲染</div> : previewLoads[index] === "error" ?
                 <div className="flex aspect-video flex-col items-center justify-center gap-2 text-sm text-destructive"><AlertCircle className="h-5 w-5" />第 {index + 1} 页加载失败<Button type="button" size="sm" variant="outline" onClick={() => { setPreviewLoads((old) => { const next = { ...old }; delete next[index]; return next; }); setPreviewRetries((old) => ({ ...old, [index]: (old[index] || 0) + 1 })); }}>重试</Button></div> :
                 <button type="button" aria-label={`放大查看第 ${index + 1} 页`} className="block w-full cursor-zoom-in focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary" onClick={(event) => { previewTriggerRef.current = event.currentTarget; setPreviewIndex(index); }}><img src={url} alt={`第 ${index + 1} 页预览`} onLoad={() => setPreviewLoads((old) => ({ ...old, [index]: "loaded" }))} onError={() => setPreviewLoads((old) => ({ ...old, [index]: "error" }))} className="aspect-video w-full object-contain" /></button>}
-              <p className="border-t px-3 py-2 text-xs text-muted-foreground">第 {index + 1} 页</p>
+              <div className="border-t px-3 py-2 text-xs text-muted-foreground">
+                <div className="flex items-center justify-between gap-2"><span>第 {sourcePageNumbers[index] ?? index + 1} 页</span>{showTitleEditor && <span className="tabular-nums">{pageTitles[index]?.trim() ? "已提取标题" : "使用默认名称"}</span>}</div>
+                {showTitleEditor && <div className="mt-1 space-y-1">
+                  <Input aria-label={`第 ${sourcePageNumbers[index] ?? index + 1} 页标题`} maxLength={120} value={pageTitles[index] || ""} disabled={busy || commitProgress?.status === "processing"} placeholder={`留空则命名为 ${fallbackPageName(index)}`} onChange={(event) => { const value = event.target.value; setPageTitles((current) => { const next = Array.from({ length: Math.max(current.length, slideCount) }, (_, itemIndex) => current[itemIndex] ?? ""); next[index] = value; return next; }); }} className="h-8 text-xs" />
+                </div>}
+              </div>
             </div>;
           })}</div>
           {previewPageCount > 1 && <div className="flex items-center justify-between"><span className="text-xs text-muted-foreground">第 {previewPage + 1} / {previewPageCount} 组</span><div className="flex gap-2"><Button type="button" size="sm" variant="outline" disabled={!previewPage} onClick={() => setPreviewPage((value) => value - 1)}>上一组</Button><Button type="button" size="sm" variant="outline" disabled={previewPage + 1 >= previewPageCount} onClick={() => setPreviewPage((value) => value + 1)}>下一组</Button></div></div>}
@@ -923,7 +1010,7 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
       </section>}
 
           {step === "duplicates" && !templateMode && <section className="grid gap-4 rounded-lg border p-4"><h2 className="sr-only">4. 重复检查</h2><div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground"><p>点击图片可放大对比，支持闪烁查看差异。</p><p className="shrink-0 tabular-nums">{duplicateStatus === "checking" || duplicateStatus === "warming" ? (duplicateData?.text_remaining ? "正在补齐文字比对…" : "正在比对素材库…") : `共 ${slideCount} 页，${duplicateData?.items.length ?? 0} 页可处理`}</p></div><ImportDuplicatePanel status={duplicateStatus} data={duplicateData} error={duplicateError} skipped={duplicateSkipped} choices={duplicateChoices} pagePreviewUrl={getPreviewUrl} onChoiceChange={(index, choice) => { duplicateTouchedRef.current.add(index); setDuplicateChoices((previous) => ({ ...previous, [index]: choice })); }} onApplyAll={applyAllDuplicates} onSkip={() => setDuplicateSkipped(true)} disabled={busy || commitProgress?.status === "processing"} /></section>}
-      {step === "confirm" && <section className="grid gap-4 rounded-lg border p-4"><h2 className="sr-only">{templateMode ? "4" : "5"}. 确认导入</h2>{createdCount === null && commitBlockedReason && <p role="status" className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">暂时无法提交：{commitBlockedReason}</p>}{createdCount !== null ? <div className="rounded-md border border-green-300 bg-green-50 p-5 text-green-900"><p className="flex items-center gap-2 font-medium"><CheckCircle2 className="h-5 w-5" />导入完成，已保存 {createdCount} 个{templateMode ? "标准模板" : "单页素材"}{reusedCount > 0 ? `（复用 ${reusedCount} 个已有素材）` : ""}</p>{!templateMode && createdShow && <p className="mt-2 flex flex-wrap items-center gap-2 text-sm">已创建放映素材《{createdShow.name}》。<Button asChild size="sm" variant="outline"><Link to={`/shows/${createdShow.id}`} state={{ detailOrigin: { url: "/manage/shows", key: "", scroll: {} } }}>查看放映素材</Link></Button></p>}{!templateMode && showError && <div className="mt-2 space-y-2 text-sm text-amber-800"><p role="alert">素材已导入，但放映素材未创建：{showError}</p>{showRetryIds && !createdShow && <Button type="button" size="sm" variant="outline" disabled={showCreating} onClick={() => { if (!showCreating && showRetryIds) void createShowForImport(showRetryIds); }}>{showCreating ? "正在创建…" : "重试创建放映素材"}</Button>}</div>}</div> : <><dl className="grid gap-4 rounded-md bg-muted/30 p-4 text-sm sm:grid-cols-2"><div><dt className="text-muted-foreground">源文件</dt><dd className="mt-1 break-all font-medium">{pptFile?.name}</dd></div><div><dt className="text-muted-foreground">{templateMode ? "模板数量" : "素材数量"}</dt><dd className="mt-1 font-medium">{slideCount} 个{templateMode ? "标准模板" : "单页素材"}</dd></div><div><dt className="text-muted-foreground">{templateMode ? "系列" : "名称"}</dt><dd className="mt-1 break-all font-medium">{templateMode ? templateSeries.trim() : <div className="space-y-2"><Input aria-label="修改素材名称" maxLength={120} value={namePrefix} disabled={busy || commitProgress?.status === "processing"} onChange={(event) => { nameEditedRef.current = true; setNamePrefix(event.target.value); }} /><p className="text-xs font-normal text-muted-foreground">{importNamePreview}</p></div>}</dd></div><div><dt className="text-muted-foreground">主体</dt><dd className="mt-1 font-medium">{subject.trim() || "未设置"}</dd></div></dl>{!templateMode && <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/20 p-3 text-sm"><p>{duplicateSkipped ? "已跳过查重，本批页面将全部新建。" : `重复页面处理：复用 ${duplicateCounts.reuse} · 迭代 ${duplicateCounts.iterate} · 覆盖 ${duplicateCounts.overwrite} · 新建 ${duplicateCounts.new}`}</p><Button type="button" variant="ghost" size="sm" onClick={() => setStep("duplicates")}>返回修改</Button></div>}{!templateMode && <ImportShowOption enabled={showEnabled} onEnabledChange={toggleShowOption} draft={showDraft} onDraftChange={(next) => { if (next.name !== showDraft.name) showNameEditedRef.current = true; setShowDraft(next); setShowError(null); }} disabled={busy || commitProgress?.status === "processing"} ownerId={ownerId} error={showError} />}{(operation === "commit" || commitProgress?.status === "processing") && <div className="space-y-2 rounded-md border border-primary/20 bg-primary/5 p-4" role="status" aria-live="polite"><p className="flex items-center gap-2 text-sm font-medium"><Loader2 className="h-4 w-4 animate-spin" />{commitProgress?.message || "该导入会话正在处理中，请稍候…"}</p>{(commitProgress?.total || slideCount) > 0 && <><div className="h-2 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuemin={0} aria-valuemax={commitProgress?.total || slideCount} aria-valuenow={commitProgress?.progress || 0} aria-label="导入保存进度"><div className="h-full bg-primary transition-all" style={{ width: `${Math.min(100, Math.round(((commitProgress?.progress || 0) / (commitProgress?.total || slideCount)) * 100))}%` }} /></div><p className="text-xs text-muted-foreground">已保存 {commitProgress?.progress || 0} / {commitProgress?.total || slideCount} 个{templateMode ? "标准模板" : "单页素材"}</p></>}</div>}{uploadError && <p role="alert" className="rounded-none border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{uploadError}</p>}{uploadUncertain && <p className="text-sm text-amber-700">服务器响应中断，任务可能已经保存，请到任务管理核对，不要重复导入。</p>}</>}</section>}
+      {step === "confirm" && <section className="grid gap-4 rounded-lg border p-4"><h2 className="sr-only">{templateMode ? "4" : "5"}. 确认导入</h2>{createdCount === null && commitBlockedReason && <p role="status" className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">暂时无法提交：{commitBlockedReason}</p>}{createdCount !== null ? <div className="rounded-md border border-green-300 bg-green-50 p-5 text-green-900"><p className="flex items-center gap-2 font-medium"><CheckCircle2 className="h-5 w-5" />导入完成，已保存 {createdCount} 个{templateMode ? "标准模板" : "单页素材"}{reusedCount > 0 ? `（复用 ${reusedCount} 个已有素材）` : ""}</p>{!templateMode && createdShow && <p className="mt-2 flex flex-wrap items-center gap-2 text-sm">已创建放映素材《{createdShow.name}》。<Button asChild size="sm" variant="outline"><Link to={`/shows/${createdShow.id}`} state={{ detailOrigin: { url: "/manage/shows", key: "", scroll: {} } }}>查看放映素材</Link></Button></p>}{!templateMode && showError && <div className="mt-2 space-y-2 text-sm text-amber-800"><p role="alert">素材已导入，但放映素材未创建：{showError}</p>{showRetryIds && !createdShow && <Button type="button" size="sm" variant="outline" disabled={showCreating} onClick={() => { if (!showCreating && showRetryIds) void createShowForImport(showRetryIds); }}>{showCreating ? "正在创建…" : "重试创建放映素材"}</Button>}</div>}</div> : <><dl className="grid gap-4 rounded-md bg-muted/30 p-4 text-sm sm:grid-cols-2"><div><dt className="text-muted-foreground">源文件</dt><dd className="mt-1 break-all font-medium">{pptFile?.name}</dd></div><div><dt className="text-muted-foreground">{templateMode ? "模板数量" : "素材数量"}</dt><dd className="mt-1 font-medium">{slideCount} 个{templateMode ? "标准模板" : "单页素材"}</dd></div><div><dt className="text-muted-foreground">{templateMode ? "系列" : "名称"}</dt><dd className="mt-1 break-all font-medium">{templateMode ? templateSeries.trim() : <div className="space-y-2"><Input aria-label="修改素材名称" maxLength={120} value={namePrefix} disabled={busy || commitProgress?.status === "processing"} onChange={(event) => { nameEditedRef.current = true; setNamePrefix(event.target.value); }} /><p className="text-xs font-normal text-muted-foreground">{importNamePreview}</p>{!templateMode && slideCount > 1 && titledPageCount > 0 && <details open={slideCount <= 20} className="rounded-md border bg-muted/20 p-2"><summary className="cursor-pointer text-xs font-medium">各页名称（{slideCount} 页）</summary><div className="mt-2 max-h-48 space-y-1 overflow-y-auto pr-1 text-xs font-normal">{Array.from({ length: slideCount }, (_, index) => { const sourcePage = sourcePageNumbers[index] ?? index + 1; const choice = duplicateChoices[index]; const actionLabel = choice?.action === "reuse" ? "复用已有素材，不改名" : choice?.action === "iterate" ? "迭代已有素材，不改名" : choice?.action === "overwrite" ? "覆盖已有素材，不改名" : ""; return <div key={index} className="flex items-start justify-between gap-2"><span className="shrink-0 text-muted-foreground">第 {sourcePage} 页</span><span className="min-w-0 flex-1 truncate text-right font-medium" title={effectivePageName(index)}>{effectivePageName(index)}</span>{actionLabel && <span className="shrink-0 text-[11px] text-muted-foreground">{actionLabel}</span>}</div>; })}</div></details>}</div>}</dd></div><div><dt className="text-muted-foreground">主体</dt><dd className="mt-1 font-medium">{subject.trim() || "未设置"}</dd></div></dl>{!templateMode && <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/20 p-3 text-sm"><p>{duplicateSkipped ? "已跳过查重，本批页面将全部新建。" : `重复页面处理：复用 ${duplicateCounts.reuse} · 迭代 ${duplicateCounts.iterate} · 覆盖 ${duplicateCounts.overwrite} · 新建 ${duplicateCounts.new}`}</p><Button type="button" variant="ghost" size="sm" onClick={() => setStep("duplicates")}>返回修改</Button></div>}{!templateMode && <ImportShowOption enabled={showEnabled} onEnabledChange={toggleShowOption} draft={showDraft} onDraftChange={(next) => { if (next.name !== showDraft.name) showNameEditedRef.current = true; setShowDraft(next); setShowError(null); }} disabled={busy || commitProgress?.status === "processing"} ownerId={ownerId} error={showError} />}{(operation === "commit" || commitProgress?.status === "processing") && <div className="space-y-2 rounded-md border border-primary/20 bg-primary/5 p-4" role="status" aria-live="polite"><p className="flex items-center gap-2 text-sm font-medium"><Loader2 className="h-4 w-4 animate-spin" />{commitProgress?.message || "该导入会话正在处理中，请稍候…"}</p>{(commitProgress?.total || slideCount) > 0 && <><div className="h-2 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuemin={0} aria-valuemax={commitProgress?.total || slideCount} aria-valuenow={commitProgress?.progress || 0} aria-label="导入保存进度"><div className="h-full bg-primary transition-all" style={{ width: `${Math.min(100, Math.round(((commitProgress?.progress || 0) / (commitProgress?.total || slideCount)) * 100))}%` }} /></div><p className="text-xs text-muted-foreground">已保存 {commitProgress?.progress || 0} / {commitProgress?.total || slideCount} 个{templateMode ? "标准模板" : "单页素材"}</p></>}</div>}{uploadError && <p role="alert" className="rounded-none border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{uploadError}</p>}{uploadUncertain && <p className="text-sm text-amber-700">服务器响应中断，任务可能已经保存，请到任务管理核对，不要重复导入。</p>}</>}</section>}
     </div>
     <footer className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t pt-3"><span role="status" className="text-xs text-muted-foreground">第 {stepIndex + 1} / {steps.length} 步 · {steps[stepIndex].label}{sessionId && createdCount === null && sessionRemainingMs !== null && <span className={cn("ml-1", sessionRemainingMs < 10 * 60_000 && "font-medium text-amber-700")}>· 临时会话剩余 {formatSessionRemaining(sessionRemainingMs)}</span>}</span><div className="flex flex-wrap justify-end gap-2">{createdCount !== null ? <Button type="button" onClick={close}>{templateMode ? "返回标准模板" : "返回素材库"}</Button> : <><Button type="button" variant="ghost" onClick={close} disabled={busy && operation !== "render"}><X className="mr-1 h-4 w-4" />关闭</Button>{stepIndex > 0 && <Button type="button" variant="outline" onClick={previous} disabled={busy}><ArrowLeft className="mr-1 h-4 w-4" />上一步</Button>}{step === "confirm" ? <Button type="button" onClick={commit} title={commitBlockedReason || undefined} disabled={busy || sessionLost || !previewsReviewed || !!missingFonts.length || !!selectedReplacementCount || !sessionId || !duplicatesReady}><Upload className="mr-1 h-4 w-4" />{showEnabled ? "确认导入并创建放映素材" : "确认导入"}</Button> : step === "duplicates" ? <Button type="button" onClick={() => setStep("confirm")} disabled={busy || sessionLost || !duplicatesReady}>下一步：确认导入<ArrowRight className="ml-1 h-4 w-4" /></Button> : <Button type="button" onClick={next} disabled={busy || sessionLost || (step === "upload" ? !pptFile : step === "fonts" ? !sessionId || standardFontsLoading || !!standardFontsError || (!!missingFonts.length && !selectedReplacementCount) : !previewsReviewed)}>{step === "upload" ? "创建上传任务" : step === "fonts" ? (missingFonts.length || selectedReplacementCount ? "应用替换并下一步" : "字体已确认，下一步") : "图片已确认，下一步"}<ArrowRight className="ml-1 h-4 w-4" /></Button>}</>}</div></footer>
   </div>

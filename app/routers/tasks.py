@@ -214,6 +214,13 @@ def list_tasks(
     sql = f"SELECT * FROM tasks{where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?"
     rows = db.execute(sql, [*params_list, page_size, offset]).fetchall()
     items = [_serialize_task(row, db) for row in rows]
+    # Page titles belong to the task detail used by the import wizard. A list
+    # response can hold 100 tasks with up to 500 titles each, so keep them out
+    # of the list payload.
+    for item in items:
+        params = item.get("params")
+        if isinstance(params, dict):
+            params.pop("page_titles", None)
     attach_ai_target_briefs(db, items)
 
     return {

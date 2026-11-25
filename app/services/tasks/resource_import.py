@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from app.core.fonts import missing_fonts
 from app.core.errors import import_public_message
-from app.core.ppt import detect_ppt_fonts, slide_count
+from app.core.ppt import detect_ppt_fonts, extract_pptx_titles, slide_count
 from app.db import get_db, known_font_aliases
 from app.services.resource_import.render_tasks import ensure_render_task
 from app.services.resource_import.rendering import _normalize_import_ppt
@@ -117,6 +117,19 @@ def _execute_resource_import_task(task_id: int, session_id: str) -> None:
                 if font not in fonts:
                     fonts.append(font)
         missing = missing_fonts(fonts, known_font_aliases(db))
+        page_titles: list[str] = []
+        if session.get("import_target") != "templates":
+            # Titles are a best-effort naming aid. A parser failure must not
+            # block the import; the commit falls back to the name prefix.
+            try:
+                source_titles = extract_pptx_titles(source)
+            except Exception:
+                logger.warning("Resource import title extraction failed task=%s", task_id, exc_info=True)
+                source_titles = []
+            page_titles = [
+                source_titles[index] if 0 <= index < len(source_titles) else ""
+                for index in valid_source_page_indexes
+            ]
         session.update(
             source_path=str(source), slide_count=count, source_slide_count=source_count,
             split_paths=[str(path) for path in valid_split_files],
@@ -125,6 +138,7 @@ def _execute_resource_import_task(task_id: int, session_id: str) -> None:
             skipped_pages=skipped_pages, fonts=fonts,
             missing_fonts=missing, mode="ppt", preview_status="blocked" if missing else "pending",
             preview_error=None, task_id=task_id, expires_at=time.time() + 7 * 24 * 3600,
+            page_titles=page_titles,
         )
         _write_resource_import_session(session)
         params = json.loads(row["params"] or "{}")
@@ -133,6 +147,7 @@ def _execute_resource_import_task(task_id: int, session_id: str) -> None:
             "slide_count": count,
             "source_slide_count": source_count,
             "skipped_pages": skipped_pages,
+            "page_titles": page_titles,
             "fonts": fonts,
             "missing_fonts": missing,
             "preview_status": session["preview_status"] if missing else "rendering",

@@ -102,6 +102,7 @@ function serializedTask({
   fonts, missingFonts, renderReady, slideCount = 2, namePrefix = "四步回归",
   visibilityScope = "public", visibleUserIds = "[]", visibleUserTags = "[]",
   managementScope = "public", manageUserIds = "[]", manageUserTags = "[]",
+  pageTitles = null, sourceSlideCount = null, skippedPages = null,
 }) {
   return {
     id: 101,
@@ -128,6 +129,9 @@ function serializedTask({
       manage_user_tags: manageUserTags,
       remark_html: "",
       slide_count: slideCount,
+      source_slide_count: sourceSlideCount ?? undefined,
+      skipped_pages: skippedPages ?? undefined,
+      page_titles: pageTitles ?? undefined,
       fonts,
       missing_fonts: missingFonts,
       preview_status: renderReady ? "ready" : missingFonts.length ? "blocked" : "pending",
@@ -152,13 +156,13 @@ async function selectOption(page, label, option) {
   await page.getByRole("option", { name: option, exact: true }).click();
 }
 
-async function fillUploadStep(page) {
+async function fillUploadStep(page, { fillName = true } = {}) {
   await page.getByLabel("选择 PPT 文件", { exact: true }).setInputFiles({
     name: "wizard.pptx",
     mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     buffer: Buffer.from("mocked PPTX"),
   });
-  await page.getByPlaceholder("如：产品介绍", { exact: true }).fill("四步回归");
+  if (fillName) await page.getByPlaceholder("如：产品介绍", { exact: true }).fill("四步回归");
   await selectOption(page, "主体", "产品");
   await selectOption(page, "状态", "正常");
   await selectOption(page, "可见范围", "公开（全体可见）");
@@ -178,7 +182,7 @@ async function createHarness(t, options = {}) {
   const page = await context.newPage();
   const pageErrors = [];
   const calls = { upload: 0, replace: 0, render: 0, commit: 0, show: 0 };
-  const submitted = { uploadName: null, commitName: null, commitActions: null, showBody: null, polls: 0 };
+  const submitted = { uploadName: null, commitName: null, commitActions: null, commitPageTitles: null, showBody: null, polls: 0 };
   const slideCount = options.slideCount ?? 2;
   const duplicateItems = options.duplicateItems ?? [];
   const gates = {
@@ -219,6 +223,9 @@ async function createHarness(t, options = {}) {
       return ok(serializedTask({
         fonts, missingFonts, renderReady, slideCount,
         namePrefix: submitted.uploadName ?? "四步回归",
+        pageTitles: options.pageTitles,
+        sourceSlideCount: options.sourceSlideCount,
+        skippedPages: options.skippedPages,
         ...(options.scope ?? {}),
       }));
     }
@@ -250,6 +257,7 @@ async function createHarness(t, options = {}) {
       calls.commit += 1;
       submitted.commitName = request.postDataJSON().name_prefix;
       submitted.commitActions = request.postDataJSON().actions ?? null;
+      submitted.commitPageTitles = request.postDataJSON().page_titles ?? null;
       await gates.commit.promise;
       return ok({
         created: slideCount,
@@ -333,6 +341,77 @@ for (const slideCount of [1, 2]) {
     assert.equal(calls.commit, 1);
   });
 }
+
+test("extracted page titles prefill the editor and edits are submitted", async (t) => {
+  const { page, calls, gates, submitted } = await createHarness(t, {
+    missingFont: false, slideCount: 2, pageTitles: ["季度总结", "产品规划"],
+  });
+  await fillUploadStep(page);
+  gates.upload.resolve();
+  gates.render.resolve();
+  gates.commit.resolve();
+  await page.getByRole("button", { name: "创建上传任务", exact: true }).click();
+  await page.getByText("字体检测通过，请确认后继续。", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "字体已确认，下一步", exact: true }).click();
+  await page.getByText("共 2 页，已生成 2 页、已加载 2 张。", { exact: true }).waitFor();
+
+  const first = page.getByRole("textbox", { name: "第 1 页标题", exact: true });
+  const second = page.getByRole("textbox", { name: "第 2 页标题", exact: true });
+  await first.waitFor();
+  assert.equal(await first.inputValue(), "季度总结");
+  assert.equal(await second.inputValue(), "产品规划");
+  await second.fill("产品规划（定稿）");
+  await toConfirm(page);
+  await page.getByText("产品规划（定稿）", { exact: true }).waitFor();
+
+  await page.getByRole("button", { name: "确认导入", exact: true }).click();
+  await page.getByText("导入完成，已保存 2 个单页素材", { exact: true }).waitFor();
+  assert.deepEqual(submitted.commitPageTitles, ["季度总结", "产品规划（定稿）"]);
+  assert.equal(calls.commit, 1);
+});
+
+test("single-page import prefills the name from the extracted title", async (t) => {
+  const { page, gates, submitted } = await createHarness(t, {
+    missingFont: false, slideCount: 1, pageTitles: ["请输入标题内容"],
+  });
+  await fillUploadStep(page, { fillName: false });
+  gates.upload.resolve();
+  gates.render.resolve();
+  gates.commit.resolve();
+  await page.getByRole("button", { name: "创建上传任务", exact: true }).click();
+  await page.getByText("字体检测通过，请确认后继续。", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "字体已确认，下一步", exact: true }).click();
+  await page.getByText("共 1 页，已生成 1 页、已加载 1 张。", { exact: true }).waitFor();
+  await toConfirm(page);
+
+  const name = page.getByRole("textbox", { name: "修改素材名称", exact: true });
+  assert.equal(await name.inputValue(), "请输入标题内容");
+  await page.getByRole("button", { name: "确认导入", exact: true }).click();
+  await page.getByText("导入完成，已保存 1 个单页素材", { exact: true }).waitFor();
+  assert.equal(submitted.commitName, "请输入标题内容");
+  assert.equal(submitted.commitPageTitles, null);
+});
+
+test("blank extracted titles fall back to the prefix and original page number", async (t) => {
+  const { page, gates, submitted } = await createHarness(t, {
+    missingFont: false, slideCount: 2, pageTitles: ["", "产品规划"],
+  });
+  await fillUploadStep(page);
+  gates.upload.resolve();
+  gates.render.resolve();
+  gates.commit.resolve();
+  await page.getByRole("button", { name: "创建上传任务", exact: true }).click();
+  await page.getByText("字体检测通过，请确认后继续。", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "字体已确认，下一步", exact: true }).click();
+  await page.getByText("共 2 页，已生成 2 页、已加载 2 张。", { exact: true }).waitFor();
+  await toConfirm(page);
+
+  await page.getByText("四步回归_01", { exact: true }).waitFor();
+  await page.getByText("产品规划", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "确认导入", exact: true }).click();
+  await page.getByText("导入完成，已保存 2 个单页素材", { exact: true }).waitFor();
+  assert.deepEqual(submitted.commitPageTitles, ["", "产品规划"]);
+});
 
 test("confirmation can create a show prefilled from the upload metadata", async (t) => {
   const { page, calls, gates, submitted } = await createHarness(t, { missingFont: false, slideCount: 2 });

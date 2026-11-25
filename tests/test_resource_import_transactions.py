@@ -200,7 +200,8 @@ class ResourceImportTransactionTests(unittest.TestCase):
             (resource_id, version_no),
         ).fetchone()
 
-    def session(self, sid="a" * 32, *, owner=1, slides=2, expired=False):
+    def session(self, sid="a" * 32, *, owner=1, slides=2, expired=False,
+                page_titles=None, valid_source_page_indexes=None, source_slide_count=None):
         directory = self.imports / sid
         directory.mkdir()
         source = directory / "source.pptx"
@@ -216,6 +217,12 @@ class ResourceImportTransactionTests(unittest.TestCase):
             "slide_count": slides, "fonts": [], "missing_fonts": [], "preview_status": "ready",
             "expires_at": time.time() + (-60 if expired else 1800),
         }
+        if page_titles is not None:
+            session["page_titles"] = page_titles
+        if valid_source_page_indexes is not None:
+            session["valid_source_page_indexes"] = valid_source_page_indexes
+        if source_slide_count is not None:
+            session["source_slide_count"] = source_slide_count
         singles = self.split_source(source, directory / "rendered-sources")
         session.update(renderer_version=RESOURCE_IMPORT_RENDERER_VERSION,
                        preview_hashes=[sha256_file(Path(p)) for p in previews],
@@ -466,6 +473,59 @@ class ResourceImportTransactionTests(unittest.TestCase):
             [row["name"] for row in self.db.execute("SELECT name FROM resources ORDER BY id")],
             ["产品介绍（定稿）_01", "产品介绍（定稿）_02"],
         )
+
+    def test_extracted_page_titles_name_resources_and_blank_pages_fall_back(self):
+        session = self.session(slides=2, page_titles=["季度总结", ""])
+        result = asyncio.run(self.commit(session["session_id"], payload=self.payload))
+        self.assertEqual(result["created"], 2)
+        self.assertEqual(
+            [row["name"] for row in self.db.execute("SELECT name FROM resources ORDER BY id")],
+            ["季度总结", "事务测试_02"],
+        )
+
+    def test_submitted_page_titles_override_extracted_titles(self):
+        session = self.session(slides=2, page_titles=["旧标题一", "旧标题二"])
+        payload = {**self.payload, "page_titles": ["自定义一", "自定义二"]}
+        asyncio.run(self.commit(session["session_id"], payload=payload))
+        self.assertEqual(
+            [row["name"] for row in self.db.execute("SELECT name FROM resources ORDER BY id")],
+            ["自定义一", "自定义二"],
+        )
+
+    def test_single_page_name_field_wins_over_extracted_title(self):
+        session = self.session(slides=1, page_titles=["PPT 标题"])
+        payload = {**self.payload, "name_prefix": "手动名称"}
+        asyncio.run(self.commit(session["session_id"], payload=payload))
+        self.assertEqual(self.db.execute("SELECT name FROM resources").fetchone()["name"], "手动名称")
+
+    def test_skipped_source_page_keeps_the_original_number_in_fallback(self):
+        session = self.session(
+            slides=2, page_titles=["保留标题", ""],
+            valid_source_page_indexes=[0, 2], source_slide_count=3,
+        )
+        asyncio.run(self.commit(session["session_id"], payload=self.payload))
+        self.assertEqual(
+            [row["name"] for row in self.db.execute("SELECT name FROM resources ORDER BY id")],
+            ["保留标题", "事务测试_03"],
+        )
+
+    def test_invalid_page_title_payloads_are_rejected(self):
+        cases = [
+            ["only one"],
+            [1, "x"],
+            ["x" * 121, ""],
+            ["a\nb", ""],
+        ]
+        for index, titles in enumerate(cases, start=1):
+            with self.subTest(titles=titles):
+                session = self.session(sid=str(index) * 32, slides=2)
+                with self.assertRaises(HTTPException) as caught:
+                    asyncio.run(self.commit(
+                        session["session_id"],
+                        payload={**self.payload, "page_titles": titles},
+                    ))
+                self.assertEqual(caught.exception.status_code, 400)
+        self.assertEqual(self.count("resources"), 0)
 
     def test_status_reports_ready_processing_and_completed_snapshots(self):
         session = self.session()

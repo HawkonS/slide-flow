@@ -55,6 +55,38 @@ import uuid
 logger = logging.getLogger(__name__)
 
 
+def _page_title_overrides(raw: Any, count: int) -> list[str] | None:
+    """Validate the per-page titles submitted by the import wizard."""
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or len(raw) != count:
+        raise HTTPException(400, "每页标题数量与 PPT 页数不一致")
+    titles: list[str] = []
+    for value in raw:
+        if not isinstance(value, str):
+            raise HTTPException(400, "每页标题格式不正确")
+        if any(ord(char) < 32 for char in value):
+            raise HTTPException(400, "每页标题不能包含控制字符")
+        text = " ".join(value.split()).strip()
+        if len(text) > RESOURCE_IMPORT_MAX_NAME_LENGTH:
+            raise HTTPException(400, f"每页标题不能超过 {RESOURCE_IMPORT_MAX_NAME_LENGTH} 个字符")
+        titles.append(text)
+    return titles
+
+
+def _session_page_titles(session: dict[str, Any], count: int) -> list[str] | None:
+    """Read titles extracted during the background split, if they are usable."""
+    raw = session.get("page_titles")
+    if not isinstance(raw, list) or len(raw) != count:
+        return None
+    titles: list[str] = []
+    for value in raw:
+        if not isinstance(value, str):
+            return None
+        titles.append(" ".join(value.split()).strip()[:RESOURCE_IMPORT_MAX_NAME_LENGTH])
+    return titles
+
+
 def _commit_resource_iteration_sync(
     session_id: str,
     resource_id: int,
@@ -322,6 +354,21 @@ def _commit_resource_import_sync(
         if len(source_indexes) != len(split_files):
             raise RuntimeError("PPT 有效页码清单不一致")
         name_width = max(2, len(str(max(source_indexes, default=0) + 1)))
+        payload_titles = _page_title_overrides(payload.get("page_titles"), len(split_files))
+        session_titles = _session_page_titles(session, len(split_files))
+        names: list[str] = []
+        for index in range(len(split_files)):
+            source_page = int(source_indexes[index]) + 1
+            fallback = name_prefix if len(split_files) == 1 else f"{name_prefix}_{source_page:0{name_width}d}"
+            if payload_titles is not None:
+                title = payload_titles[index]
+            elif len(split_files) == 1:
+                # Single-page imports treat the name field as authoritative;
+                # the wizard prefills it from the extracted title.
+                title = ""
+            else:
+                title = session_titles[index] if session_titles is not None else ""
+            names.append((title or fallback)[:RESOURCE_IMPORT_MAX_NAME_LENGTH])
 
         # Stage all OSS writes before opening the SQLite write transaction.
         # Uploading a large deck used to keep the single writer lock for the
@@ -486,7 +533,7 @@ def _commit_resource_import_sync(
                 overwritten_count += 1
                 continue
 
-            name = name_prefix if len(split_files) == 1 else f"{name_prefix}_{item['source_page']:0{name_width}d}"
+            name = names[int(item["index"]) - 1]
             db.execute(
                 """INSERT INTO resources (detail_token, name, owner_id, subject, tags, status,
                    visibility_scope, management_scope, secrecy_level, current_version,

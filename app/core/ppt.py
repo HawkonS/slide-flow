@@ -4,6 +4,7 @@ The implementation is organized under :mod:`app.core.ppt_modules` by
 responsibility. Existing callers can continue importing from ``app.core.ppt``.
 """
 from app.core.ppt_modules.inspect import detect_ppt_fonts, slide_count
+from app.core.ppt_modules.titles import extract_pptx_titles
 from app.core.ppt_modules.split import split_pptx_to_single_pages
 from app.core.ppt_modules.merge import merge_pptx_files
 from app.core.ppt_modules.images import (
@@ -20,6 +21,7 @@ from app.core.ppt_modules.watermark import (
 __all__ = [
     "detect_ppt_fonts",
     "slide_count",
+    "extract_pptx_titles",
     "split_pptx_to_single_pages",
     "merge_pptx_files",
     "build_image_pptx",

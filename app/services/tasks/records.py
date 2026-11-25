@@ -40,6 +40,7 @@ _TASK_PARAMS_PUBLIC_KEYS = (
     "slide_count",
     "source_slide_count",
     "skipped_pages",
+    "page_titles",
     "fonts",
     "missing_fonts",
     "preview_status",

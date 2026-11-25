@@ -74,7 +74,7 @@ class PptPublicContractTests(unittest.TestCase):
 
     def test_legacy_facade_exports_callables(self):
         for name in (
-            "detect_ppt_fonts", "slide_count", "split_pptx_to_single_pages",
+            "detect_ppt_fonts", "slide_count", "extract_pptx_titles", "split_pptx_to_single_pages",
             "merge_pptx_files", "build_image_pptx", "determine_pdf_canvas_size",
             "fit_image_to_canvas", "_build_watermark_tile",
             "add_watermark_to_image", "add_watermark_to_pptx",
