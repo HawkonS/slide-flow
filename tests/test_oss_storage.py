@@ -288,6 +288,7 @@ class OSSStorageTests(unittest.TestCase):
         bucket = _SignedBucket()
         storage = OSSStorage()
         with (
+            patch.object(settings, "oss_worker_endpoint", "public"),
             patch.object(storage, "_public", return_value=bucket),
             patch.object(settings, "oss_bucket", "slides"),
             patch.object(settings, "oss_url_expire_seconds", 900),
@@ -299,6 +300,69 @@ class OSSStorageTests(unittest.TestCase):
         method, key, expires, kwargs = bucket.calls[0]
         self.assertEqual((method, key, expires), ("PUT", "_render_tasks/task/output/0000.png", 900))
         self.assertEqual(kwargs["headers"], {"Content-Type": "image/png"})
+
+    def test_signed_put_url_uses_internal_endpoint_for_worker_uploads(self):
+        internal_url = "https://oss-cn-beijing-internal.aliyuncs.com"
+        bucket = _SignedBucket()
+        storage = OSSStorage()
+        built = []
+        with (
+            patch.object(settings, "oss_worker_endpoint", "internal"),
+            patch.object(settings, "oss_internal_endpoint", internal_url),
+            patch.object(settings, "oss_endpoint", "https://oss-cn-beijing.aliyuncs.com"),
+            patch.object(settings, "oss_bucket", "slides"),
+            patch.object(settings, "oss_url_expire_seconds", 900),
+            patch.object(
+                storage, "_build_bucket",
+                side_effect=lambda endpoint: (built.append(endpoint), bucket)[1],
+            ),
+            patch.object(storage, "_public", side_effect=AssertionError("public endpoint must not be used")),
+        ):
+            storage.signed_put_url("oss://slides/_render_tasks/task/output/0000.png",
+                                   content_type="image/png")
+            storage.signed_put_url("oss://slides/_render_tasks/task/output/0001.png",
+                                   content_type="image/png")
+        self.assertEqual(built, [internal_url])
+        self.assertEqual(len(bucket.calls), 2)
+
+    def test_signed_put_url_keeps_public_endpoint_by_default(self):
+        bucket = _SignedBucket()
+        storage = OSSStorage()
+        with (
+            patch.object(settings, "oss_worker_endpoint", "public"),
+            patch.object(storage, "_public", return_value=bucket),
+            patch.object(settings, "oss_bucket", "slides"),
+        ):
+            storage.signed_put_url("oss://slides/_render_tasks/task/output/0000.png")
+        self.assertEqual(len(bucket.calls), 1)
+
+    def test_configuration_rejects_unknown_worker_upload_endpoint(self):
+        storage = OSSStorage()
+        with (
+            patch.object(settings, "storage_backend", "oss"),
+            patch.object(settings, "oss_endpoint", "https://oss-cn-beijing.aliyuncs.com"),
+            patch.object(settings, "oss_internal_endpoint", "https://oss-cn-beijing-internal.aliyuncs.com"),
+            patch.object(settings, "oss_public_endpoint", ""),
+            patch.object(settings, "oss_bucket", "slides"),
+            patch.object(settings, "oss_access_key_id", "test-key"),
+            patch.object(settings, "oss_access_key_secret", "test-secret"),
+            patch.object(settings, "oss_worker_endpoint", "external"),
+        ):
+            self.assertIn("oss.worker_endpoint", storage.configuration_error())
+
+    def test_configuration_requires_internal_endpoint_for_worker_uploads(self):
+        storage = OSSStorage()
+        with (
+            patch.object(settings, "storage_backend", "oss"),
+            patch.object(settings, "oss_endpoint", "https://oss-cn-beijing.aliyuncs.com"),
+            patch.object(settings, "oss_internal_endpoint", ""),
+            patch.object(settings, "oss_public_endpoint", ""),
+            patch.object(settings, "oss_bucket", "slides"),
+            patch.object(settings, "oss_access_key_id", "test-key"),
+            patch.object(settings, "oss_access_key_secret", "test-secret"),
+            patch.object(settings, "oss_worker_endpoint", "internal"),
+        ):
+            self.assertIn("oss.internal_endpoint", storage.configuration_error())
 
     def test_key_uses_configured_bucket_directory(self):
         storage = OSSStorage()

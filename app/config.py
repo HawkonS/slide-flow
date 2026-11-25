@@ -84,6 +84,7 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
             {"key": "oss.endpoint", "label": "OSS 外网 Endpoint", "default": "", "type": "str", "hot_reload": False, "desc": "服务端内网访问失败时的回退地址，也是默认外网地址，例如 https://oss-cn-hangzhou.aliyuncs.com"},
             {"key": "oss.internal_endpoint", "label": "OSS 内网 Endpoint", "default": "", "type": "str", "hot_reload": False, "desc": "服务端读写首选的同地域内网 Endpoint；网络类故障自动回退到 oss.endpoint，留空则直接使用外网"},
             {"key": "oss.public_endpoint", "label": "OSS 展示 Endpoint", "default": "", "type": "str", "hot_reload": False, "desc": "仅用于浏览器访问图片和下载签名 URL 的 Endpoint 或自定义域名；留空使用 oss.endpoint，不能填写内网地址"},
+            {"key": "oss.worker_endpoint", "label": "渲染节点上传 Endpoint", "default": "public", "type": "str", "hot_reload": False, "desc": "Windows 渲染节点领取的 PNG 上传地址：public（外网，默认）或 internal（同地域内网）；节点与 Bucket 同地域时选 internal，实测上传快约 40 倍"},
             {"key": "oss.bucket", "label": "OSS Bucket", "default": "", "type": "str", "hot_reload": False, "desc": "存放 PPT 和 PNG 的 Bucket 名称"},
             {"key": "oss.prefix", "label": "OSS Bucket 内目录", "default": "slide-flow", "type": "str", "hot_reload": False, "desc": "Bucket 内的对象目录/前缀，支持多级目录（例如 prod/slide-flow）；留空则直接写入 Bucket 根目录"},
             {"key": "oss.connect_timeout_seconds", "label": "OSS 连接超时（秒）", "default": "3", "type": "int", "hot_reload": False, "desc": "连接内网或外网 Endpoint 的超时；内网不可达时到期后自动尝试外网，建议 2–5 秒"},
@@ -338,6 +339,7 @@ _PROP_TO_ATTR: dict[str, str] = {
     "oss.endpoint": "oss_endpoint",
     "oss.internal_endpoint": "oss_internal_endpoint",
     "oss.public_endpoint": "oss_public_endpoint",
+    "oss.worker_endpoint": "oss_worker_endpoint",
     "oss.bucket": "oss_bucket",
     "oss.prefix": "oss_prefix",
     "oss.connect_timeout_seconds": "oss_connect_timeout_seconds",
@@ -433,6 +435,7 @@ class Settings:
     oss_endpoint: str = DEFAULT_PROPERTIES["oss.endpoint"]
     oss_internal_endpoint: str = DEFAULT_PROPERTIES["oss.internal_endpoint"]
     oss_public_endpoint: str = DEFAULT_PROPERTIES["oss.public_endpoint"]
+    oss_worker_endpoint: str = DEFAULT_PROPERTIES["oss.worker_endpoint"]
     oss_bucket: str = DEFAULT_PROPERTIES["oss.bucket"]
     oss_prefix: str = DEFAULT_PROPERTIES["oss.prefix"]
     oss_connect_timeout_seconds: int = int(DEFAULT_PROPERTIES["oss.connect_timeout_seconds"])
@@ -701,6 +704,7 @@ def load_settings() -> Settings:
     oss_endpoint = get_value("oss.endpoint")
     oss_internal_endpoint = get_value("oss.internal_endpoint")
     oss_public_endpoint = get_value("oss.public_endpoint")
+    oss_worker_endpoint = get_value("oss.worker_endpoint")
     oss_bucket = get_value("oss.bucket")
     oss_prefix = get_value("oss.prefix")
     oss_connect_timeout_seconds = int(get_value("oss.connect_timeout_seconds"))
@@ -748,6 +752,7 @@ def load_settings() -> Settings:
         oss_endpoint=oss_endpoint,
         oss_internal_endpoint=oss_internal_endpoint,
         oss_public_endpoint=oss_public_endpoint,
+        oss_worker_endpoint=oss_worker_endpoint,
         oss_bucket=oss_bucket,
         oss_prefix=oss_prefix,
         oss_connect_timeout_seconds=oss_connect_timeout_seconds,
