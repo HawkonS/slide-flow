@@ -1,4 +1,4 @@
-import { TableTags, TableText } from "@/components/common/TableContent";
+import { TableNumberCell, TableNumberHead, TableTags, TableText } from "@/components/common/TableContent";
 import * as React from "react";
 import { useSceneFilters } from "@/lib/tag-defaults";
 import { useSearchInput } from "@/lib/use-search-input";
@@ -461,7 +461,7 @@ export default function ResourceManagePage() {
                   <TableHead className="w-52">标签</TableHead>
                   <TableHead className="w-16">状态</TableHead>
                   <TableHead className="w-32">所有者</TableHead>
-                  <TableHead className="w-24">更新时间</TableHead>
+                  <TableNumberHead className="w-24">更新时间</TableNumberHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -526,9 +526,9 @@ export default function ResourceManagePage() {
                       <TableCell className="text-sm text-muted-foreground">
                         <TableText text={r.owner?.name || r.owner?.username || "-"} />
                       </TableCell>
-                      <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
+                      <TableNumberCell className="text-sm text-muted-foreground">
                         {formatDate(r.updated_at)}
-                      </TableCell>
+                      </TableNumberCell>
                     </TableRow>
                   );
                 })}

@@ -9,7 +9,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { TableTags, TableText } from "@/components/common/TableContent";
+import { TableNumberCell, TableNumberHead, TableTags, TableText } from "@/components/common/TableContent";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -70,8 +70,8 @@ export function ShowListView({
             <TableHead className="w-32">主体</TableHead>
             <TableHead className="w-48">标签</TableHead>
             <TableHead className="w-20">状态</TableHead>
-            <TableHead className="w-20">页数</TableHead>
-            <TableHead className="w-28">更新时间</TableHead>
+            <TableNumberHead className="w-20">页数</TableNumberHead>
+            <TableNumberHead className="w-28">更新时间</TableNumberHead>
             <TableHead className="w-12"><span className="sr-only">操作</span></TableHead>
           </TableRow>
         </TableHeader>
@@ -103,8 +103,8 @@ export function ShowListView({
                   <TableTags tags={tags} />
                 </TableCell>
                 <TableCell><Badge variant="outline" className="max-w-full text-[11px]"><TableText text={show.status} /></Badge></TableCell>
-                <TableCell className="text-muted-foreground">{show.all_resource_ids?.length ?? show.resources.length}</TableCell>
-                <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{new Date(show.updated_at).toLocaleDateString("zh-CN")}</TableCell>
+                <TableNumberCell className="text-muted-foreground">{show.all_resource_ids?.length ?? show.resources.length}</TableNumberCell>
+                <TableNumberCell className="text-xs text-muted-foreground">{new Date(show.updated_at).toLocaleDateString("zh-CN")}</TableNumberCell>
                 <TableCell>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild><button type="button" aria-label={`${show.name} 更多操作`} className="rounded p-1 hover:bg-accent"><MoreHorizontal className="h-4 w-4" /></button></DropdownMenuTrigger>

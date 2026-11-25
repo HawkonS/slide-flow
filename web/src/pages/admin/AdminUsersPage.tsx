@@ -52,7 +52,7 @@ import type {
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { ListFooter } from "@/components/common/ListFooter";
-import { TableText } from "@/components/common/TableContent";
+import { TableNumberCell, TableNumberHead, TableText } from "@/components/common/TableContent";
 import { PageHeader } from "@/components/common/PageHeader";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { TagInput } from "@/components/resource/TagInput";
@@ -1013,7 +1013,7 @@ export function AdminUsersPage() {
                     <TableHead>姓名</TableHead>
                     <TableHead>用户名</TableHead>
                     <TableHead>角色</TableHead>
-                    <TableHead>最后登录时间</TableHead>
+                    <TableNumberHead>最后登录时间</TableNumberHead>
                     <TableHead className="text-right">操作</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -1068,12 +1068,12 @@ export function AdminUsersPage() {
                             {USER_ROLE_LABEL[u.role] || u.role}
                           </Badge>
                         </TableCell>
-                        <TableCell>
+                        <TableNumberCell>
                           <TableText
-                            className="text-sm text-muted-foreground"
+                            className="text-right text-sm text-muted-foreground"
                             text={formatUserDateTime(u.last_login_at, "从未登录")}
                           />
-                        </TableCell>
+                        </TableNumberCell>
                         <TableCell onClick={(event) => event.stopPropagation()}>
                           <div className="flex justify-end gap-1">
                             <Button

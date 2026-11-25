@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
-import { TableTags, TableText } from "@/components/common/TableContent";
+import { TableNumberCell, TableNumberHead, TableTags, TableText } from "@/components/common/TableContent";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -73,7 +73,7 @@ export function ResourceListView({
             <TableHead className="w-28">主体</TableHead>
             <TableHead>标签</TableHead>
             <TableHead className="w-20">状态</TableHead>
-            <TableHead className="w-24">更新时间</TableHead>
+            <TableNumberHead className="w-24">更新时间</TableNumberHead>
             <TableHead className="w-12"><span className="sr-only">操作</span></TableHead>
           </TableRow>
         </TableHeader>
@@ -112,7 +112,7 @@ export function ResourceListView({
                   <TableTags tags={tags} fitToWidth />
                 </TableCell>
                 <TableCell><Badge variant="outline" className="max-w-full text-[11px]"><TableText text={resource.status} /></Badge></TableCell>
-                <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{new Date(resource.updated_at).toLocaleDateString("zh-CN")}</TableCell>
+                <TableNumberCell className="text-xs text-muted-foreground">{new Date(resource.updated_at).toLocaleDateString("zh-CN")}</TableNumberCell>
                 <TableCell>
                   {(resource.can_manage || user) && <DropdownMenu>
                     <DropdownMenuTrigger asChild><button type="button" aria-label={`${resource.name} 更多操作`} className="rounded p-1 hover:bg-accent"><MoreHorizontal className="h-4 w-4" /></button></DropdownMenuTrigger>

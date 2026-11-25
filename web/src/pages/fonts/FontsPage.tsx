@@ -1,4 +1,4 @@
-import { TableText } from "@/components/common/TableContent";
+import { TableNumberCell, TableNumberHead, TableText } from "@/components/common/TableContent";
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -349,7 +349,7 @@ export function FontsPage() {
                   <TableHead className="w-56">文件</TableHead>
                   <TableHead className="w-28">服务器</TableHead>
                   <TableHead className="hidden w-32 lg:table-cell">上传者</TableHead>
-                  <TableHead className="hidden w-44 md:table-cell">创建时间</TableHead>
+                  <TableNumberHead className="hidden w-44 md:table-cell">创建时间</TableNumberHead>
                   <TableHead className="w-36 text-right">操作</TableHead>
                 </TableRow>
               </TableHeader>
@@ -367,7 +367,7 @@ export function FontsPage() {
                         {font.installed_on_server ? <Badge variant="success" className="gap-1 text-[11px]"><Server className="h-3 w-3" />已安装</Badge> : <Badge variant="outline" className="gap-1 text-[11px] text-muted-foreground"><HardDriveDownload className="h-3 w-3" />未安装</Badge>}
                       </TableCell>
                       <TableCell className="hidden text-sm text-muted-foreground lg:table-cell"><TableText text={font.uploaded_by || "-"} /></TableCell>
-                      <TableCell className="hidden text-sm text-muted-foreground md:table-cell"><TableText text={font.created_at || "-"} /></TableCell>
+                      <TableNumberCell className="hidden text-sm text-muted-foreground md:table-cell"><TableText className="text-right" text={font.created_at || "-"} /></TableNumberCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-1">
                           <Button variant="outline" size="sm" onClick={() => handleDownload(font)}><Download className="mr-1 h-3.5 w-3.5" />下载</Button>

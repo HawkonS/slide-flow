@@ -1,4 +1,4 @@
-import { TableText } from "@/components/common/TableContent";
+import { TableNumberCell, TableNumberHead, TableText } from "@/components/common/TableContent";
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
@@ -1329,8 +1329,8 @@ function UploadTasksTab({ canManage }: { canManage: boolean }) {
                   <TableHead className="w-28">状态</TableHead>
                   <TableHead className="w-48">进度</TableHead>
                   {showOwner && <TableHead className="w-32">提交人</TableHead>}
-                  <TableHead className="w-28">提交时间</TableHead>
-                  <TableHead className="w-24">耗时</TableHead>
+                  <TableNumberHead className="w-28">提交时间</TableNumberHead>
+                  <TableNumberHead className="w-24">耗时</TableNumberHead>
                   <TableHead className="w-40">操作</TableHead>
                 </TableRow>
               </TableHeader>
@@ -1614,8 +1614,8 @@ function SyncTasksTab({ canManage }: { canManage: boolean }) {
                   <TableHead className="w-28">状态</TableHead>
                   <TableHead className="w-48">进度</TableHead>
                   {showOwner && <TableHead className="w-32">提交人</TableHead>}
-                  <TableHead className="w-28">提交时间</TableHead>
-                  <TableHead className="w-24">耗时</TableHead>
+                  <TableNumberHead className="w-28">提交时间</TableNumberHead>
+                  <TableNumberHead className="w-24">耗时</TableNumberHead>
                   <TableHead className="w-40">操作</TableHead>
                 </TableRow>
               </TableHeader>
@@ -1820,10 +1820,10 @@ function AiTaggingRow({
           </div>
         </TableCell>
       )}
-      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatRelativeTime(task.created_at)}</TableCell>
-      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+      <TableNumberCell className="text-xs text-muted-foreground">{formatRelativeTime(task.created_at)}</TableNumberCell>
+      <TableNumberCell className="text-xs text-muted-foreground">
         <span className="inline-flex items-center gap-1"><Clock className="h-3 w-3" />{formatDuration(task.created_at, task.completed_at)}</span>
-      </TableCell>
+      </TableNumberCell>
       <TableCell>
         <div className="flex flex-wrap items-center gap-1">
           {isCompleted && !applied && !task.params.target_deleted && (

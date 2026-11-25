@@ -2,6 +2,7 @@ import * as React from "react";
 import { Slot } from "@radix-ui/react-slot";
 
 import { Tooltip, TooltipContent, TooltipPortal, TooltipTrigger } from "@/components/ui/tooltip";
+import { TableCell, TableHead } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 
 const detailClassName = "max-h-64 max-w-[min(24rem,calc(100vw-2rem))] overflow-y-auto whitespace-normal break-words [overflow-wrap:anywhere] rounded-lg border bg-popover px-3 py-2 text-xs leading-relaxed text-popover-foreground shadow-lg";
@@ -88,6 +89,19 @@ function FittingTableTags({ tags }: { tags: string[] }) {
       </div>
     </div>
   );
+}
+
+/**
+ * 数值与时间列的表头。必须与 TableNumberCell 成对使用：
+ * 只右对齐单元格而不对齐表头，表头会与数据错位。
+ */
+export function TableNumberHead({ className, ...props }: React.ComponentProps<typeof TableHead>) {
+  return <TableHead className={cn("text-right", className)} {...props} />;
+}
+
+/** 数值与时间列：右对齐 + 等宽数字，保证个位对齐、动态刷新时不抖动。 */
+export function TableNumberCell({ className, ...props }: React.ComponentProps<typeof TableCell>) {
+  return <TableCell className={cn("whitespace-nowrap text-right tabular-nums", className)} {...props} />;
 }
 
 /** Keep tags on one line; optionally show every complete tag that fits. */
