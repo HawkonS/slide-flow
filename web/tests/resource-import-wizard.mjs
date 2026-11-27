@@ -71,6 +71,24 @@ async function waitForCount(read, expected, message) {
   assert.equal(read(), expected, message);
 }
 
+// React commits state updates for discrete events before the next frame. Wait
+// for that commit before dispatching a follow-up event that reads the same
+// state, otherwise the dialog's file handler can see the previous name.
+async function flushRender(page) {
+  await page.evaluate(() => new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
+}
+
+async function waitForInputValue(locator, expected, message) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (await locator.inputValue() === expected) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(await locator.inputValue(), expected, message);
+}
+
 async function toConfirm(page) {
   await page.getByRole("button", { name: "图片已确认，下一步", exact: true }).click();
   await page.getByRole("heading", { name: "4. 重复检查", exact: true }).waitFor();
@@ -302,7 +320,9 @@ test("file names fill the resource name while manual edits remain editable", asy
   await chooseFile("其他文件.pptx");
   assert.equal(await name.inputValue(), "手动修改的名称");
   await name.fill("");
+  await flushRender(page);
   await chooseFile("重新选取.pptx");
+  await waitForInputValue(name, "重新选取", "an empty name should follow the newly chosen file");
   assert.equal(await name.inputValue(), "重新选取");
 });
 
@@ -312,9 +332,14 @@ for (const slideCount of [1, 2]) {
     await fillUploadStep(page);
     // Exercise the file-name default, then edit at confirmation for multiple pages.
     await page.locator("#import-name").fill("");
+    await flushRender(page);
     await page.getByLabel("选择 PPT 文件", { exact: true }).setInputFiles({
       name: "产品介绍.v2.pptx", mimeType: "application/octet-stream", buffer: Buffer.from("mocked PPTX"),
     });
+    await waitForInputValue(
+      page.locator("#import-name"), "产品介绍.v2",
+      "choosing a file should refill the cleared resource name",
+    );
     gates.upload.resolve();
     gates.render.resolve();
     gates.commit.resolve();
