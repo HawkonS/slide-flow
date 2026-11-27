@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.config import settings
-from app.core.errors import PUBLIC_ERROR_MESSAGES
+from app.core.errors import PPT_STRUCTURE_ERROR_KIND, PUBLIC_ERROR_MESSAGES
 from app.core.sanitize import sanitize_html
 from pathlib import Path
 from typing import Any
@@ -40,6 +40,7 @@ _TASK_PARAMS_PUBLIC_KEYS = (
     "slide_count",
     "source_slide_count",
     "skipped_pages",
+    "stripped_links",
     "page_titles",
     "fonts",
     "missing_fonts",
@@ -174,7 +175,7 @@ def _serialize_task(row: sqlite3.Row, db: sqlite3.Connection | None = None) -> d
             key: raw_result_data[key]
             for key in (
                 "total", "created", "resource_ids", "template_ids", "message",
-                "expired", "skipped_pages", "target_type", "target_id",
+                "expired", "skipped_pages", "stripped_links", "target_type", "target_id",
                 "connection_id", "connection_name", "model", "suggested_tags",
                 "existing_tags", "applied_tags", "final_tags", "tags_applied",
                 "page_count", "departments_created", "departments_updated",
@@ -254,6 +255,12 @@ def _serialize_task(row: sqlite3.Row, db: sqlite3.Connection | None = None) -> d
             and len(str(raw_error)) <= 500
             and str(raw_error).startswith(_FEISHU_SYNC_PUBLIC_ERROR_PREFIXES)
         ):
+            safe_error = str(raw_error)
+        elif (
+            raw_params.get("error_kind") == PPT_STRUCTURE_ERROR_KIND
+            and len(str(raw_error)) <= 200
+        ):
+            # Written by the splitter for the uploader; never contains paths.
             safe_error = str(raw_error)
         else:
             # 旧任务记录可能保存了异常字符串（包含绝对路径/命令行参数）；接口只返回通用提示。

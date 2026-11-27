@@ -136,6 +136,7 @@ def _split_import_pages(
     *,
     max_total_bytes: int | None = None,
     progress_callback=None,
+    report: dict | None = None,
 ):
     """Split a deck and return valid pages, their source indexes and issues.
 
@@ -150,6 +151,7 @@ def _split_import_pages(
         output_dir,
         progress_callback=progress_callback,
         max_total_bytes=max_total_bytes,
+        report=report,
     )
     accepted: list[Path] = []
     source_indexes: list[int] = []

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from app.core.errors import storage_public_message
+from app.core.errors import PPT_STRUCTURE_ERROR_KIND, storage_public_message
+from app.core.ppt_modules.errors import PptStructureError
 from app.db import get_db
 from app.db import new_resource_detail_token, now_iso
 from app.services.common import (
@@ -106,11 +107,14 @@ def _execute_split_task(
             )
             db.commit()
 
+        split_report: dict = {}
         split_files, source_indexes, skipped_pages, source_slide_count = _split_import_pages(
             ppt_path,
             split_dir,
             progress_callback=on_split_progress,
+            report=split_report,
         )
+        stripped_links = split_report.get("stripped_links") or []
         if _task_is_cancelled(db, task_id, cancel_event):
             _cleanup_split_resources(db, resource_ids)
             return
@@ -122,7 +126,15 @@ def _execute_split_task(
                 (
                     "PPT 每一页都包含外部链接资源，请嵌入资源后重试"
                     if skipped_pages else "未能拆分 PPTX",
-                    json.dumps({**params, "source_slide_count": source_slide_count, "skipped_pages": skipped_pages}, ensure_ascii=False),
+                    json.dumps(
+                        {
+                            **params,
+                            "source_slide_count": source_slide_count,
+                            "skipped_pages": skipped_pages,
+                            "stripped_links": stripped_links,
+                        },
+                        ensure_ascii=False,
+                    ),
                     task_id,
                 ),
             )
@@ -134,6 +146,7 @@ def _execute_split_task(
             **params,
             "source_slide_count": source_slide_count,
             "skipped_pages": skipped_pages,
+            "stripped_links": stripped_links,
         }
         db.execute(
             "UPDATE tasks SET total = ?, message = '正在创建资源...', params = ?,"
@@ -301,12 +314,17 @@ def _execute_split_task(
             _delete_resource_files(pending_refs, [])
             if _task_is_cancelled(db, task_id, cancel_event):
                 return
-            safe_message = storage_public_message(e) or "批量导入任务处理失败，请重试或联系管理员"
+            safe_message = storage_public_message(e) or (
+                str(e) if isinstance(e, PptStructureError) else "批量导入任务处理失败，请重试或联系管理员"
+            )
+            failed_params = dict(params)
+            if isinstance(e, PptStructureError):
+                failed_params["error_kind"] = PPT_STRUCTURE_ERROR_KIND
             db.execute(
-                "UPDATE tasks SET status = 'failed', error_message = ?,"
+                "UPDATE tasks SET status = 'failed', error_message = ?, params = ?,"
                 " updated_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
                 " WHERE id = ? AND status <> 'cancelled'",
-                (safe_message, task_id),
+                (safe_message, json.dumps(failed_params, ensure_ascii=False), task_id),
             )
             db.commit()
         except Exception as inner_e:

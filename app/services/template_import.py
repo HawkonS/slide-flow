@@ -136,6 +136,7 @@ def _commit_template_import_sync(
             "created": len(template_ids),
             "total": int(session.get("source_slide_count") or slide_count),
             "skipped_pages": list(session.get("skipped_pages") or []),
+            "stripped_links": list(session.get("stripped_links") or []),
         }
         db.execute(
             "INSERT INTO resource_import_commits (session_id, owner_id, result_json, created_at) VALUES (?, ?, ?, ?)",

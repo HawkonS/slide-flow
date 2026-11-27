@@ -140,6 +140,7 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
   const [pageTitles, setPageTitles] = React.useState<string[]>([]);
   const [sourceSlideCount, setSourceSlideCount] = React.useState(0);
   const [skippedPages, setSkippedPages] = React.useState<number[]>([]);
+  const [strippedLinks, setStrippedLinks] = React.useState<Array<{ page: number; count: number }>>([]);
   const titlesSeededRef = React.useRef<string | null>(null);
   const detectedTitlesRef = React.useRef<string[]>([]);
   const titleNameFilledRef = React.useRef(false);
@@ -613,6 +614,15 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
           }).filter((page): page is number => page !== null);
           setSkippedPages(skipped);
         }
+        const rawStrippedLinks = p.stripped_links;
+        if (Array.isArray(rawStrippedLinks)) {
+          setStrippedLinks(rawStrippedLinks.flatMap((item) => {
+            if (!item || typeof item !== "object" || !("page" in item)) return [];
+            const page = Number((item as { page?: unknown }).page);
+            const count = Number((item as { count?: unknown }).count);
+            return Number.isInteger(page) && page > 0 && Number.isInteger(count) && count > 0 ? [{ page, count }] : [];
+          }));
+        }
         const rawPageTitles = p.page_titles;
         if (Array.isArray(rawPageTitles)) {
           const seedKey = typeof p.session_id === "string" ? p.session_id : String(taskId);
@@ -957,6 +967,7 @@ export function ResourceImportWizard({ onOpenChange, onSuccess, onShowCreated, o
       {step === "render" && <section className="grid gap-4 rounded-lg border p-4">
         <h2 className="sr-only">3. 图片渲染</h2>
         {previewError && <p role="alert" className="rounded-none border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{previewError}</p>}
+        {strippedLinks.length > 0 && <p className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">已自动移除 {strippedLinks.reduce((sum, item) => sum + item.count, 0)} 个跨页跳转链接（第 {strippedLinks.map((item) => item.page).join("、")} 页）。单页素材里这些链接会失效，不影响图片生成和导入。</p>}
         {previewStatus !== "ready" && <div className="space-y-3 rounded-md border border-dashed p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <Button type="button" variant="outline" onClick={() => void generatePreviews()} disabled={busy || !sessionId || !!missingFonts.length}>

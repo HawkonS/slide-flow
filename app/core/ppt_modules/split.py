@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
+from .errors import PptStructureError
 from .package import (
     PKG_CT_NS,
     P_NS,
@@ -340,13 +341,86 @@ def _rewrite_master_for_page(
     return new_master_xml, new_rels_xml
 
 
+def _is_foreign_slide_part(name: str, slide_path: str) -> bool:
+    """Return whether `name` is a slide part other than the page being split."""
+    return (
+        name.startswith("ppt/slides/")
+        and not name.startswith("ppt/slides/_rels/")
+        and name.endswith(".xml")
+        and name != slide_path
+    )
+
+
+def _part_path_for_rels(rels_path: str) -> str:
+    """Map a `.rels` entry path back to the part that owns it."""
+    rels_dir, file_name = posixpath.split(rels_path)
+    return posixpath.join(posixpath.dirname(rels_dir), file_name[: -len(".rels")])
+
+
+def _strip_rels_entries(rels_xml: bytes, rel_ids: set[str]) -> bytes:
+    """Remove the given relationship ids from a `.rels` part."""
+    try:
+        root = ET.fromstring(rels_xml)
+    except ET.ParseError:
+        return rels_xml
+    removed = False
+    for relation in list(root):
+        if relation.attrib.get("Id") in rel_ids:
+            root.remove(relation)
+            removed = True
+    return _serialize_rels_xml(root) if removed else rels_xml
+
+
+def _drop_relationship_refs(part_xml: bytes, rel_ids: set[str]) -> bytes:
+    """Remove XML references to relationships that were pruned.
+
+    A standalone page may keep a hyperlink element whose relationship is gone
+    only if the reference attribute is also removed; otherwise Office treats
+    the page as damaged. Elements that existed purely to carry the reference
+    (e.g. ``<a:hlinkClick>``) are removed entirely.
+    """
+    try:
+        root = ET.fromstring(part_xml)
+    except ET.ParseError:
+        return part_xml
+    rel_attr_prefix = f"{{{R_NS}}}"
+    changed = False
+    for parent in list(root.iter()):
+        for child in list(parent):
+            stale = [
+                key for key, value in child.attrib.items()
+                if key.startswith(rel_attr_prefix) and value in rel_ids
+            ]
+            if not stale:
+                continue
+            changed = True
+            for key in stale:
+                del child.attrib[key]
+            still_linkable = any(key.startswith(rel_attr_prefix) for key in child.attrib)
+            is_hyperlink = _local_name(child.tag).startswith("hlink")
+            if (is_hyperlink and not still_linkable) or (
+                not child.attrib and len(child) == 0 and not (child.text or "").strip()
+            ):
+                parent.remove(child)
+    if not changed:
+        return part_xml
+    return _serialize_xml_with_ns_preservation(root, part_xml)
+
+
 def _complete_slide_dependencies(entry_map, needed, slide_path, master_path, layout_path):
     """Follow cached diagrams/charts/media through their complete OPC graph.
 
     The former one-level collector omitted SmartArt drawing images and chart
     style/workbook parts. Keep those byte-for-byte, while still pruning the
     unrelated layouts and slides of the original deck.
+
+    Cross-slide links (``ppaction://hlinksldjump`` in a table of contents, for
+    instance) are pruned instead of failing the whole import: the link only
+    points at another slide and never embeds its content. The pruned
+    relationship ids are returned per `.rels` part so the caller can drop the
+    now-dangling XML references when writing the page.
     """
+    dropped: dict[str, set[str]] = {}
     pending = list(needed - {"ppt/presentation.xml", "ppt/_rels/presentation.xml.rels", "_rels/.rels"})
     visited = set()
     while pending:
@@ -366,25 +440,42 @@ def _complete_slide_dependencies(entry_map, needed, slide_path, master_path, lay
             if part == master_path and relation.get("Type", "").endswith("/slideLayout") and target != layout_path:
                 continue
             if target.startswith("ppt/slides/") and not target.endswith(".rels") and target != slide_path:
-                # A standalone resource must not silently contain another
-                # slide's confidential contents via an internal hyperlink.
-                raise ValueError("单页包含跳转到其他幻灯片的内部链接，请移除跨页链接后导入")
+                # Never ship the other slide's part: the jump target must not
+                # leak into a single-page resource. Just forget the link.
+                rel_id = relation.get("Id")
+                if rel_id:
+                    dropped.setdefault(rels_path, set()).add(rel_id)
+                continue
             if target in entry_map:
                 needed.add(target)
                 pending.append(target)
-    return needed
+    return needed, dropped
 
 
-def split_pptx_to_single_pages(pptx_path: Path, output_dir: Path, progress_callback=None, *, max_total_bytes=None) -> list[Path]:
+def split_pptx_to_single_pages(
+    pptx_path: Path,
+    output_dir: Path,
+    progress_callback=None,
+    *,
+    max_total_bytes=None,
+    report: dict | None = None,
+) -> list[Path]:
     """Create one PPTX per referenced slide by pruning presentation slide references.
 
     Optimized: only writes entries each page actually depends on, uses ZIP_STORED
     for pre-compressed media, and processes pages in parallel.
 
+    Links that jump to another slide cannot survive the split, so they are
+    dropped per page instead of rejecting the deck (see
+    ``_complete_slide_dependencies``).
+
     Args:
         pptx_path: Path to the source PPTX file.
         output_dir: Directory to write single-page PPTX files into.
         progress_callback: Optional callable(current_page, total_pages) invoked after each page.
+        max_total_bytes: Optional upper bound for the summed page bytes.
+        report: Optional mutable dict filled with ``stripped_links``:
+            ``[{"page": <1-based page>, "count": <dropped links>}]``.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     entries = _read_pptx_entries(pptx_path)
@@ -420,8 +511,9 @@ def split_pptx_to_single_pages(pptx_path: Path, output_dir: Path, progress_callb
     shared_entries = _get_shared_entries(entry_map)
     all_entry_names = set(entry_map.keys())
 
-    # Build page plans: (index, slide_id_elem, needed_entries, kept_rid, master_path, layout_path)
-    page_plans: list[tuple[int, ET.Element, set[str], str, str | None, str | None]] = []
+    # Build page plans:
+    # (index, slide_id_elem, needed_entries, kept_rid, master_path, layout_path, dropped_links)
+    page_plans: list[tuple[int, ET.Element, set[str], str, str | None, str | None, dict[str, set[str]]]] = []
     for index, slide_id in enumerate(slide_ids, start=1):
         kept_rid = slide_id.attrib.get(rel_id_attr)
         if not kept_rid:
@@ -432,12 +524,17 @@ def split_pptx_to_single_pages(pptx_path: Path, output_dir: Path, progress_callb
         if slide_path is not None and slide_path in entry_map:
             page_deps, master_path, layout_path = _collect_slide_deps_by_path(slide_path, entry_map)
             needed = shared_entries | page_deps
-            needed = _complete_slide_dependencies(entry_map, needed, slide_path, master_path, layout_path)
+            # Only this page's own slide part may ship. Anything else under
+            # ppt/slides/ was pulled in by a cross-slide jump target.
+            needed = {name for name in needed if not _is_foreign_slide_part(name, slide_path)}
+            needed, dropped_links = _complete_slide_dependencies(
+                entry_map, needed, slide_path, master_path, layout_path,
+            )
             needed.difference_update(embedded_font_parts)
             needed = {name for name in needed if not name.startswith("ppt/fonts/")}
         else:
-            raise ValueError(f"第 {index} 页的幻灯片关系无效，不能安全拆分")
-        page_plans.append((index, slide_id, needed, kept_rid, master_path, layout_path))
+            raise PptStructureError(f"第 {index} 页的幻灯片关系无效，不能安全拆分")
+        page_plans.append((index, slide_id, needed, kept_rid, master_path, layout_path, dropped_links))
 
     if max_total_bytes is not None:
         # Preflight before writing hundreds of copies of shared media. ZIP
@@ -445,14 +542,14 @@ def split_pptx_to_single_pages(pptx_path: Path, output_dir: Path, progress_callb
         # a tiny uploaded deck amplifying into an unbounded scratch directory.
         estimated = sum(sum(len(entry_map[n]) + 256 for n in plan[2]) for plan in page_plans)
         if estimated > max_total_bytes:
-            raise ValueError("拆分后的文件总量过大，请分批导入")
+            raise PptStructureError("拆分后的文件总量过大，请分批导入")
 
     # Pre-build per-page XML content (must be done in main thread due to ET not being thread-safe)
     # We'll build all presentation.xml and rels.xml variants upfront
-    # Tuple: (pres_xml, rels_xml, ct_xml, master_overrides)
-    # master_overrides: dict[str, bytes] mapping entry path -> rewritten bytes
+    # Tuple: (pres_xml, rels_xml, ct_xml, overrides)
+    # overrides: dict[str, bytes] mapping entry path -> rewritten bytes
     page_xmls: list[tuple[bytes, bytes, bytes, dict[str, bytes]]] = []
-    for index, slide_id, needed, kept_rid, master_path, layout_path in page_plans:
+    for index, slide_id, needed, kept_rid, master_path, layout_path, dropped_links in page_plans:
         # Build minimal rels: drop master-family relationships whose target is
         # not actually used by this page, so the output only carries this
         # page's own slideMaster (and optionally notesMaster/handoutMaster).
@@ -508,23 +605,39 @@ def split_pptx_to_single_pages(pptx_path: Path, output_dir: Path, progress_callb
         filtered_ct = _filter_content_types(ct_xml, needed) if ct_xml else b''
 
         # Rewrite the master so it only declares the layout this page uses.
-        master_overrides: dict[str, bytes] = {}
+        overrides: dict[str, bytes] = {}
         if master_path is not None and master_path in needed:
             rewritten = _rewrite_master_for_page(master_path, layout_path, entry_map, rel_id_attr)
             if rewritten is not None:
                 new_master_xml, new_master_rels_xml = rewritten
-                master_overrides[master_path] = new_master_xml
+                overrides[master_path] = new_master_xml
                 master_dir = posixpath.dirname(master_path)
                 master_name = posixpath.basename(master_path)
                 master_rels_path = f"{master_dir}/_rels/{master_name}.rels"
-                master_overrides[master_rels_path] = new_master_rels_xml
+                overrides[master_rels_path] = new_master_rels_xml
 
-        page_xmls.append((new_presentation_bytes, new_rels_bytes, filtered_ct, master_overrides))
+        # Prune cross-slide relationships that this page ships, together with
+        # the XML attributes that pointed at them.
+        stripped_rel_ids: set[str] = set()
+        for rels_path, rel_ids in dropped_links.items():
+            if rels_path not in needed or rels_path not in entry_map:
+                continue
+            stripped_rel_ids |= rel_ids
+            overrides[rels_path] = _strip_rels_entries(entry_map[rels_path], rel_ids)
+            owner_path = _part_path_for_rels(rels_path)
+            if owner_path in needed and owner_path in entry_map:
+                overrides[owner_path] = _drop_relationship_refs(entry_map[owner_path], rel_ids)
+        if stripped_rel_ids and report is not None:
+            report.setdefault("stripped_links", []).append(
+                {"page": index, "count": len(stripped_rel_ids)}
+            )
+
+        page_xmls.append((new_presentation_bytes, new_rels_bytes, filtered_ct, overrides))
 
     # Writer function for a single page
     def write_single_page(plan_index: int) -> tuple[int, Path]:
-        index, slide_id, needed, kept_rid, _mp, _lp = page_plans[plan_index]
-        pres_bytes, rels_bytes, ct_bytes, master_overrides = page_xmls[plan_index]
+        index, slide_id, needed, kept_rid, _mp, _lp, _dropped = page_plans[plan_index]
+        pres_bytes, rels_bytes, ct_bytes, overrides = page_xmls[plan_index]
 
         output_path = output_dir / f"page_{index:02d}.pptx"
         with zipfile.ZipFile(output_path, 'w') as zf:
@@ -535,8 +648,8 @@ def split_pptx_to_single_pages(pptx_path: Path, output_dir: Path, progress_callb
                     data = rels_bytes
                 elif name == '[Content_Types].xml':
                     data = ct_bytes
-                elif name in master_overrides:
-                    data = master_overrides[name]
+                elif name in overrides:
+                    data = overrides[name]
                 else:
                     data = entry_map[name]
 

@@ -11,6 +11,7 @@ import errno
 from typing import Any
 
 from app.core.oss import StorageConfigurationError, StorageUnavailableError
+from app.core.ppt_modules.errors import PptStructureError
 
 
 OSS_CONFIGURATION_MESSAGE = "对象存储未配置完整，请联系管理员检查 OSS 配置"
@@ -26,6 +27,10 @@ RENDERER_FONT_UNAVAILABLE_MESSAGE = "Windows 转换节点无法正确选用所�
 RENDERER_UNSAFE_PPTX_MESSAGE = "PPT 包含不支持的内嵌对象、宏、控件或外部链接资源，请移除或转为图片后重试"
 RENDERER_CHART_CACHE_MESSAGE = "PPT 图表缺少可用的显示缓存或需要刷新数据，请在 Office 中刷新并保存图表，或将图表转为图片后重试"
 IMPORT_GENERIC_MESSAGE = "上传任务处理失败，请重试或联系管理员"
+
+# Marks task rows whose error_message came from PptStructureError, so the task
+# serializer may return it verbatim instead of the generic fallback.
+PPT_STRUCTURE_ERROR_KIND = "ppt_structure"
 
 PUBLIC_ERROR_MESSAGES = frozenset({
     OSS_CONFIGURATION_MESSAGE,
@@ -121,10 +126,17 @@ def render_public_message(code: Any = None) -> str:
 
 
 def import_public_message(exc: BaseException, *, rendering: bool = False) -> str:
-    """Map a background import exception without exposing SDK details."""
+    """Map a background import exception without exposing SDK details.
+
+    PPT structure failures carry a message written for the uploader (for
+    example which page cannot be split), so they are shown as-is instead of
+    being reported as renderer-node trouble.
+    """
     storage_message = storage_public_message(exc)
     if storage_message:
         return storage_message
+    if isinstance(exc, PptStructureError):
+        return str(exc)
     if rendering:
         return RENDERER_GENERIC_MESSAGE
     return IMPORT_GENERIC_MESSAGE

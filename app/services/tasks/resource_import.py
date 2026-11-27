@@ -8,7 +8,8 @@ continue after the browser tab is closed.
 from __future__ import annotations
 
 from app.core.fonts import missing_fonts
-from app.core.errors import import_public_message
+from app.core.errors import PPT_STRUCTURE_ERROR_KIND, import_public_message
+from app.core.ppt_modules.errors import PptStructureError
 from app.core.ppt import detect_ppt_fonts, extract_pptx_titles, slide_count
 from app.db import get_db, known_font_aliases
 from app.services.resource_import.render_tasks import ensure_render_task
@@ -101,9 +102,11 @@ def _execute_resource_import_task(task_id: int, session_id: str) -> None:
         if source_count <= 0:
             raise RuntimeError("无法读取 PPT 页数")
         split_dir = temp_dir / "task-pages"
+        split_report: dict = {}
         valid_split_files, valid_source_page_indexes, skipped_pages, split_count = _split_import_pages(
-            source, split_dir, max_total_bytes=512 * 1024 * 1024,
+            source, split_dir, max_total_bytes=512 * 1024 * 1024, report=split_report,
         )
+        stripped_links = split_report.get("stripped_links") or []
         if split_count != source_count:
             raise RuntimeError("PPT 拆分页数不一致")
         if not valid_split_files:
@@ -136,6 +139,7 @@ def _execute_resource_import_task(task_id: int, session_id: str) -> None:
             split_hashes=[sha256_file(path) for path in valid_split_files],
             valid_source_page_indexes=valid_source_page_indexes,
             skipped_pages=skipped_pages, fonts=fonts,
+            stripped_links=stripped_links,
             missing_fonts=missing, mode="ppt", preview_status="blocked" if missing else "pending",
             preview_error=None, task_id=task_id, expires_at=time.time() + 7 * 24 * 3600,
             page_titles=page_titles,
@@ -147,6 +151,7 @@ def _execute_resource_import_task(task_id: int, session_id: str) -> None:
             "slide_count": count,
             "source_slide_count": source_count,
             "skipped_pages": skipped_pages,
+            "stripped_links": stripped_links,
             "page_titles": page_titles,
             "fonts": fonts,
             "missing_fonts": missing,
@@ -168,7 +173,7 @@ def _execute_resource_import_task(task_id: int, session_id: str) -> None:
             ensure_render_task(session)
     except Exception as exc:
         logger.exception("Resource import task %s failed", task_id)
-        row = db.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        row = db.execute("SELECT status, params FROM tasks WHERE id = ?", (task_id,)).fetchone()
         safe_message = import_public_message(exc, rendering=True)
         if row is not None and row["status"] != "cancelled":
             try:
@@ -180,6 +185,8 @@ def _execute_resource_import_task(task_id: int, session_id: str) -> None:
                 "preview_status": "error",
                 "preview_error": safe_message,
             })
+            if isinstance(exc, PptStructureError):
+                failed_params["error_kind"] = PPT_STRUCTURE_ERROR_KIND
             _task_update(
                 db, task_id, status="failed", message="", error_message=safe_message,
                 params=failed_params,

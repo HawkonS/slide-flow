@@ -10,9 +10,15 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config import settings
-from app.core.errors import RENDERER_GENERIC_MESSAGE, storage_public_message
+from app.core.errors import (
+    PPT_STRUCTURE_ERROR_KIND,
+    RENDERER_GENERIC_MESSAGE,
+    import_public_message,
+    storage_public_message,
+)
 from app.core.errors import RENDERER_TIMEOUT_MESSAGE
 from app.core.oss import StorageConfigurationError, StorageUnavailableError
+from app.core.ppt_modules.errors import PptStructureError
 from app.db import get_db
 from app.services.resource_import.previews import _preview_page_events, _preview_set_is_current
 from app.services.resource_import.render_tasks import ensure_render_task, render_task_state
@@ -26,7 +32,15 @@ from app.services.resource_import.sessions import (
 logger = logging.getLogger(__name__)
 
 
-def _persist_render_error(session: dict, message: str) -> None:
+def _persist_render_error(
+    session: dict, message: str, *, terminal: bool = False, error_kind: str | None = None,
+) -> None:
+    """Record a preview failure on the session and its durable task.
+
+    ``terminal`` marks failures that retrying cannot fix (the source deck
+    itself is unusable). Those tasks must end up ``failed``; transient ones stay
+    ``pending`` so the renderer can pick them up again.
+    """
     session.update(preview_status="error", preview_error=message)
     _write_resource_import_session(session)
     task_id = session.get("task_id")
@@ -42,17 +56,22 @@ def _persist_render_error(session: dict, message: str) -> None:
         except (TypeError, ValueError, json.JSONDecodeError):
             params = {}
         params.update({
-            "workflow_state": "awaiting_render",
+            "workflow_state": "failed" if terminal else "awaiting_render",
             "preview_status": "error",
             "preview_error": message,
             "render_stage": "failed",
             "render_completed": 0,
         })
+        if error_kind:
+            params["error_kind"] = error_kind
         db.execute(
-            "UPDATE tasks SET status='pending', message=?, error_message=?, params=?, "
+            "UPDATE tasks SET status=?, message=?, error_message=?, params=?, "
             "updated_at=strftime('%Y-%m-%dT%H:%M:%S','now','localtime') "
             "WHERE id=? AND status<>'cancelled'",
-            (message, message, json.dumps(params, ensure_ascii=False), task_id),
+            (
+                "failed" if terminal else "pending",
+                message, message, json.dumps(params, ensure_ascii=False), task_id,
+            ),
         )
         db.commit()
     finally:
@@ -80,7 +99,12 @@ def preview_stream(session_id, user):
                     raise HTTPException(503, message) from exc
                 except Exception as exc:
                     logger.exception("Preview render task creation failed session_id=%s", session_id)
-                    _persist_render_error(current, RENDERER_GENERIC_MESSAGE)
+                    terminal = isinstance(exc, PptStructureError)
+                    message = import_public_message(exc, rendering=True)
+                    _persist_render_error(
+                        current, message, terminal=terminal,
+                        error_kind=PPT_STRUCTURE_ERROR_KIND if terminal else None,
+                    )
                     raise HTTPException(400, "图片渲染任务创建失败，请检查 PPT 文件后重试") from exc
 
     async def body():

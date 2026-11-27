@@ -417,18 +417,25 @@ def create_render_task(session: dict[str, Any]) -> sqlite3.Row:
         if existing_splits:
             singles = existing_splits
         elif session.get("skipped_pages"):
+            split_report: dict = {}
             singles, source_indexes, skipped, _ = _split_import_pages(
-                source, source_dir, max_total_bytes=512 * 1024 * 1024,
+                source, source_dir, max_total_bytes=512 * 1024 * 1024, report=split_report,
             )
             session["valid_source_page_indexes"] = source_indexes
             session["skipped_pages"] = skipped
+            if split_report.get("stripped_links"):
+                session["stripped_links"] = split_report["stripped_links"]
             session["split_paths"] = [str(path) for path in singles]
             session["split_hashes"] = [sha256_file(path) for path in singles]
             _write_resource_import_session(session)
         else:
+            split_report = {}
             singles = split_pptx_to_single_pages(
-                source, source_dir, max_total_bytes=512 * 1024 * 1024
+                source, source_dir, max_total_bytes=512 * 1024 * 1024, report=split_report,
             )
+            if split_report.get("stripped_links"):
+                session["stripped_links"] = split_report["stripped_links"]
+                _write_resource_import_session(session)
         if len(singles) != expected:
             raise RuntimeError("PPT 拆分页数不一致，未提交渲染")
         batch_size = max(1, min(50, int(getattr(settings, "render_wps_batch_size", 20))))
